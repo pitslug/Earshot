@@ -101,13 +101,41 @@ pub fn vocabulary(store: &Store) -> Result<(Vocabulary, Option<UnknownSetting>),
     Ok(vocabulary_of(store.local_value(VOCABULARY_KEY)?.as_deref()))
 }
 
-/// Stored entries read without leading and trailing single quotes (T12.45): a word added from
-/// the transcript before quotes were stripped (`'Zorbek'`) reads as `Zorbek`, so it matches,
-/// is found for removal and is not added twice; [`Vocabulary::new`] then drops the repeat a
-/// stripped entry may make. Only quotes at the ends of a whole entry go: other punctuation the
-/// user typed stays.
+/// Stored entries read without the quotes at their ends ([`without_end_quotes`]; T12.45,
+/// T12.78): a word stored with its quotes by an earlier version (`'Zorbek'` from the
+/// transcript, `"test"` typed on the page) reads as `Zorbek` or `test`, so it matches, is found
+/// for removal and is not added twice; [`Vocabulary::new`] then drops the repeat a stripped
+/// entry may make. Only quotes at the ends of a whole entry go: other punctuation the user
+/// typed stays.
 fn stored_without_quotes(words: &[String]) -> Vec<&str> {
-    words.iter().map(|w| w.trim().trim_matches('\'')).collect()
+    words.iter().map(|w| stored_entry(w)).collect()
+}
+
+/// A stored entry or row as the readers take it ([`stored_without_quotes`], [`word_key`],
+/// [`joined`]): trimmed of every white space first, a tab included, as before T12.78, then
+/// [`without_end_quotes`]. Only stored text is read this way; what the user types goes through
+/// [`without_end_quotes`] alone, so a control character there is still refused.
+fn stored_entry(word: &str) -> &str {
+    without_end_quotes(word.trim())
+}
+
+/// The quotes [`without_end_quotes`] drops at the ends of an entry: straight single and double,
+/// and the curly ones (U+2018, U+2019, U+201C, U+201D). Mirrored by the UI's `END_QUOTES`
+/// (`packages/ui/src/detail/dictionaryWord.ts`).
+pub const END_QUOTES: [char; 6] = ['\'', '"', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}'];
+
+/// The one rule for quotes around a Dictionary entry (T12.78): [`END_QUOTES`] and white space
+/// at both ends dropped, repeatedly (`" 'test' "` is `test`), every quote or apostrophe inside
+/// kept (`O'Brien`, `rock'n'roll`); an entry that is only quotes is empty, so not a word. A
+/// control character is never dropped (a tab is white space too), so [`Vocabulary::new`] still
+/// refuses it. Every path in or out of the list goes through it: [`add_entry`],
+/// [`remove_entry`], [`set_vocabulary`], the stored-list reader, the row keys and the join
+/// ([`word_key`], [`row_key`], [`joined`]) and [`dictionary_word`]; the UI's
+/// `withoutEndQuotes` is its copy (`fixtures/ui/summary_settings_cases.json` `dictionary_adds`
+/// and `fixtures/ui/dictionary_word_cases.json`, which both suites run).
+#[must_use]
+pub fn without_end_quotes(entry: &str) -> &str {
+    entry.trim_matches(|c: char| END_QUOTES.contains(&c) || (c.is_whitespace() && !c.is_control()))
 }
 
 /// The Dictionary as the page shows it: the words in use (what summaries read) and how many
@@ -161,13 +189,13 @@ fn syncs_from(
     Ok(switch(crate::sync::SYNC_ON_KEY, false)? && switch(crate::sync::SYNC_DICTIONARY_KEY, true)?)
 }
 
-/// The comparison key of a stored word, by the rules [`joined`] reads rows with: trimmed,
-/// single quotes at the ends dropped, read by [`Vocabulary::new`] (inner white space joined),
+/// The comparison key of a stored word, by the rules [`joined`] reads rows with: trimmed and
+/// the quotes at the ends dropped ([`stored_entry`]), read by [`Vocabulary::new`] (inner white space joined),
 /// lower-cased as it compares repeats. `None` for a word it refuses on its own (too long, a
 /// control or formatting character) or that is empty; such a row is matched by its lower-cased
 /// text instead ([`row_key`]), so a row from another build can still be removed.
 fn word_key(word: &str) -> Option<String> {
-    let one = Vocabulary::new([word.trim().trim_matches('\'')]).ok()?;
+    let one = Vocabulary::new([stored_entry(word)]).ok()?;
     one.words().first().map(|w| w.to_lowercase())
 }
 
@@ -188,7 +216,7 @@ fn joined(rows: &[DictionaryWord]) -> (Vocabulary, usize) {
     let mut full = false;
     let mut not_in_use = 0;
     for row in rows.iter().filter(|r| r.is_live()) {
-        let Ok(one) = Vocabulary::new([row.word.trim().trim_matches('\'')]) else {
+        let Ok(one) = Vocabulary::new([stored_entry(&row.word)]) else {
             if seen.insert(row_key(&row.word)) {
                 not_in_use += 1;
             }
@@ -267,12 +295,28 @@ fn write_list_tx(tx: &mut StoreTx<'_>, words: &Vocabulary) -> Result<(), StoreEr
 /// every sync tick pulls and inside every write here, so a rebuild never loses them. Returns how
 /// many rows it made.
 ///
+/// It also tombstones every live row that is no word once its quotes are dropped
+/// ([`stored_entry`] empty): Earshot 0.3.11 kept the quotes of a typed entry, so an entry of
+/// only quotes (`"`) became a row of its own, which this version never reads as a word. The
+/// tombstone is synced, so the row leaves every device. Until a device runs this version, 0.3.11
+/// still counts such a row as a word in use, so its count of words not in use near the limits
+/// may differ from this version's by those rows (left as it is).
+///
 /// # Errors
 /// Store errors.
 pub(crate) fn reconcile_tx(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
 ) -> Result<usize, StoreError> {
+    for mut row in tx
+        .dictionary_words()?
+        .into_iter()
+        .filter(|r| r.is_live() && stored_entry(&r.word).is_empty())
+    {
+        if row.remove(stamp.hlc, stamp.clock) {
+            tx.put_dictionary_word(row)?;
+        }
+    }
     let (current, _) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
     let rows = tx.dictionary_words()?;
     let mut made = 0;
@@ -415,8 +459,10 @@ pub fn set_vocabulary<B: AsRef<str>, S: AsRef<str>>(
     base: &[B],
     words: &[S],
 ) -> Result<Vocabulary, SetVocabularyError> {
-    let vocabulary = Vocabulary::new(words).map_err(SetVocabularyError::Refused)?;
-    let base = Vocabulary::new(base).map_err(|_| SetVocabularyError::Stale)?;
+    let vocabulary = Vocabulary::new(words.iter().map(|w| without_end_quotes(w.as_ref())))
+        .map_err(SetVocabularyError::Refused)?;
+    let base = Vocabulary::new(base.iter().map(|w| without_end_quotes(w.as_ref())))
+        .map_err(|_| SetVocabularyError::Stale)?;
     with_stamp(
         services,
         |tx, stamp| -> Result<Vocabulary, SetVocabularyError> {
@@ -477,8 +523,9 @@ pub struct AddedEntry {
     pub words: Vocabulary,
 }
 
-/// Adds one entry typed on the Dictionary page (read by [`Vocabulary::new`]'s rules: trimmed,
-/// inner white space joined) at the end of the list. Reads the stored list and writes the row
+/// Adds one entry typed on the Dictionary page (the quotes at its ends dropped,
+/// [`without_end_quotes`], then read by [`Vocabulary::new`]'s rules: trimmed, inner white space
+/// joined) at the end of the list. Reads the stored list and writes the row
 /// and the list in one transaction, so nothing another computer added in between is lost.
 ///
 /// An entry already listed (case ignored) writes nothing (`added` false). While Dictionary sync
@@ -492,7 +539,7 @@ pub struct AddedEntry {
 /// is [`SetVocabularyError::NotAWord`]), [`SetVocabularyError::NotInUse`]; store errors. Nothing
 /// is stored on an error.
 pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocabularyError> {
-    let entry = Vocabulary::new([text]).map_err(SetVocabularyError::Refused)?;
+    let entry = Vocabulary::new([without_end_quotes(text)]).map_err(SetVocabularyError::Refused)?;
     let word = entry
         .words()
         .first()
@@ -550,7 +597,8 @@ pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocab
     )
 }
 
-/// Removes the Dictionary entry that is `word` (case ignored; surrounding white space ignored,
+/// Removes the Dictionary entry that is `word` (case ignored; quotes at its ends dropped as
+/// [`add_entry`] drops them; surrounding white space ignored,
 /// inner runs read as one space, as [`Vocabulary::new`] stores entries) and every live row of
 /// it, reading the stored list and writing in one transaction. Returns whether an entry went; a
 /// word not listed writes nothing. An entry that only contains `word` (a phrase) stays.
@@ -558,7 +606,10 @@ pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocab
 /// # Errors
 /// Store errors.
 pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabularyError> {
-    let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
+    let word = without_end_quotes(word)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if word.is_empty() {
         return Ok(false);
     }
@@ -596,16 +647,16 @@ pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabula
 /// (`fixtures/ui/dictionary_word_cases.json`, which both suites run).
 #[must_use]
 pub fn dictionary_word(token: &str) -> Option<&str> {
-    let core = without_single_quotes(split_punctuation(token.trim()).1);
+    let core = without_quotes_and_punctuation(split_punctuation(token.trim()).1);
     core.chars().any(char::is_alphabetic).then_some(core)
 }
 
-/// `core` without leading and trailing single quotes (T12.45: `'Zorbek'` adds `Zorbek`), split
-/// again after each strip so punctuation inside the quotes goes too (`'Zorbek.'`). An
-/// apostrophe inside the word stays (`don't`). Kept apart from the list's own checks.
-fn without_single_quotes(mut core: &str) -> &str {
+/// `core` without the quotes at its ends ([`without_end_quotes`]: T12.45 `'Zorbek'` adds
+/// `Zorbek`), split again after each strip so punctuation inside the quotes goes too
+/// (`'Zorbek.'`). An apostrophe inside the word stays (`don't`).
+fn without_quotes_and_punctuation(mut core: &str) -> &str {
     loop {
-        let stripped = core.trim_matches('\'');
+        let stripped = without_end_quotes(core);
         if stripped.len() == core.len() {
             return core;
         }
@@ -630,7 +681,7 @@ fn listed_in<S: AsRef<str>>(entries: &[S], word: &str) -> bool {
 pub fn words_to_offer<S: AsRef<str>>(before: &str, after: &str, listed: &[S]) -> Vec<String> {
     let before: HashSet<&str> = before
         .split_whitespace()
-        .map(|t| without_single_quotes(split_punctuation(t).1))
+        .map(|t| without_quotes_and_punctuation(split_punctuation(t).1))
         .collect();
     let mut seen = HashSet::new();
     after

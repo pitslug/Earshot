@@ -166,6 +166,49 @@ fn summary_vocabulary_refusals_of_t11_3e_follow_the_shared_table() {
 }
 
 #[test]
+fn summary_vocabulary_quotes_around_a_word_follow_the_shared_dictionary_adds() {
+    let table = crate::testutil::summary_cases();
+    let cases = table["dictionary_adds"]["cases"].as_array().unwrap();
+    assert!(cases.len() >= 12, "the table lost cases");
+    let mut wrong = Vec::new();
+    for case in cases {
+        let add = case["add"].as_str().unwrap();
+        let dir = TempDir::new("summary-vocabulary");
+        let svc = services(&dir);
+        // Stored as it is: the way an earlier version may have stored it.
+        let before = serde_json::to_vec(&case["before"]).unwrap();
+        svc.store()
+            .set_local_value(vocabulary::VOCABULARY_KEY, &before)
+            .unwrap();
+        match (add_word(&svc, add), case["error"].as_str()) {
+            (Err(e), Some(want)) if e.kind == "invalid_setting" && e.message == want => {}
+            (Ok(added), None) => {
+                let want_added = case["added"].as_bool().unwrap();
+                let shown = added.view.words.clone();
+                if added.added != want_added
+                    || !case["word"]
+                        .as_str()
+                        .is_some_and(|w| shown.iter().any(|s| s == w))
+                {
+                    wrong.push(format!("{add:?}: added {} {shown:?}", added.added));
+                }
+            }
+            (Err(e), _) => wrong.push(format!("{add:?}: refused {:?}", e.message)),
+            (Ok(_), Some(_)) => wrong.push(format!("{add:?}: not refused")),
+        }
+        if let Some(remove) = case["remove"].as_str() {
+            remove_word(&svc, remove).unwrap();
+        }
+        let want: Vec<String> = serde_json::from_value(case["stored"].clone()).unwrap();
+        let got = vocabulary_view(&svc).unwrap().words;
+        if got != want {
+            wrong.push(format!("{add:?}: stored {got:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
 fn summary_vocabulary_the_shared_table_holds_for_the_pages_one_word_adds() {
     // The page adds one word at a time (T11.3e): each case's words added in turn (blank ones
     // are never sent: the page's Add is off for them) end in the stored list, or the first

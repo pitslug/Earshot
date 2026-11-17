@@ -2,7 +2,7 @@
 // `earshot_runtime::word_choices` and `edit::use_word`, so a rule change edits both. The
 // sound matcher itself is not mirrored: the sample's suggestions are fixed data.
 
-import { dictionaryWord, splitToken, tokenPieces, tokensOf, withoutSingleQuotes } from "../detail/dictionaryWord";
+import { dictionaryWord, splitToken, tokenPieces, tokensOf, withoutQuotesAndPunctuation } from "../detail/dictionaryWord";
 import type { MeetingDetail, PersonItem } from "./ipc";
 
 /** Rust's `to_ascii_lowercase`: only A-Z fold. */
@@ -99,7 +99,7 @@ export const MOCK_COMMON_WORDS = new Set(
  * core of a token of `before`, leaving out common words (`MOCK_COMMON_WORDS`), words on
  * `listed` (case ignored) and repeats in another case; in line order. */
 export function wordsToOffer(before: string, after: string, listed: string[]): string[] {
-  const was = new Set(tokensOf(before).map((t) => withoutSingleQuotes(splitToken(t)[1])));
+  const was = new Set(tokensOf(before).map((t) => withoutQuotesAndPunctuation(splitToken(t)[1])));
   const onList = new Set(listed.map((w) => w.toLowerCase()));
   const seen = new Set<string>();
   const out: string[] = [];
