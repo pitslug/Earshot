@@ -3,7 +3,7 @@ import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach } from "vitest";
 
 import { installMatchMedia } from "./matchMedia";
-import { setWindowWatched } from "./windowWatched";
+import { restoreWindowWatched, setWindowWatched } from "./windowWatched";
 
 // Every test starts on a light system theme with a fresh fake `matchMedia` (jsdom has none), so a
 // test that switches it never reaches the next; a test that needs dark installs its own.
@@ -46,6 +46,8 @@ HTMLBodyElement.prototype.getBoundingClientRect = function (this: HTMLBodyElemen
 
 afterEach(() => {
   cleanup();
+  // A watched or unwatched window set by one test is not the next test's.
+  restoreWindowWatched();
   // The theme chosen in one test is not the next test's.
   window.localStorage.clear();
 });

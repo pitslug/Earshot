@@ -200,17 +200,21 @@ describe("AppShell status dots (T12.76)", () => {
     await user.click(row(/^Unread meeting/));
     // The summary is on screen, but nobody is looking at the window.
     expect(await screen.findByText(/TL;DR/)).toBeInTheDocument();
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    // The effect that marks a summary runs in the commit that shows it and calls
+    // `markSummarySeen` at once, so after one flush a call would already be in `seen` (the last
+    // step below shows that one flush is enough). No real time passes.
+    await act(async () => {});
     expect(seen).toEqual([]);
     expect(dot(row(/^Unread meeting/))).toBe("newSummary");
     // Focused but hidden (minimised or in the tray) is still not watched.
     act(() => setWindowWatched(false, true, true));
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await act(async () => {});
     expect(seen).toEqual([]);
-    // Brought up on that meeting: now it counts as read.
+    // Brought up on that meeting: now it counts as read, after the same single flush.
     act(() => setWindowWatched(true, true, true));
-    await waitFor(() => expect(dot(row(/^Unread meeting/))).toBeNull());
+    await act(async () => {});
     expect(seen).toEqual(["s2"]);
+    await waitFor(() => expect(dot(row(/^Unread meeting/))).toBeNull());
   });
 
   it("shows a running re-summary of a read meeting as green Summarising..., and no dot at its end", async () => {

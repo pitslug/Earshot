@@ -390,6 +390,46 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
     second_gone.meta.mark_deleted(&mut f.hlc, &f.clock);
     repo.put_summary(second_gone).unwrap();
     assert_eq!(current(&repo, m), None, "no live summary");
+
+    // Ties on `updated_at` (two live rows, as sync can leave them for a moment): the later in
+    // creation order, then the higher id, as `current_summary` over the rows in their order.
+    let a = f.summary(m, s_early.segment.id);
+    let mut b = f.summary(m, s_early.segment.id);
+    b.meta.updated_at = a.meta.updated_at;
+    assert!(b.meta.created_at > a.meta.created_at);
+    repo.put_summary(b.clone()).unwrap();
+    repo.put_summary(a.clone()).unwrap();
+    assert_eq!(
+        current(&repo, m),
+        Some(b.id),
+        "same update stamp: created later"
+    );
+    let mut b_gone = b;
+    b_gone.meta.mark_deleted(&mut f.hlc, &f.clock);
+    repo.put_summary(b_gone).unwrap();
+    // Equal stamps throughout: the higher id, whatever order the rows were written in.
+    let mut low = [0u8; 16];
+    low[6] = 0x70;
+    low[8] = 0x80;
+    let mut twin = f.summary(m, s_early.segment.id);
+    twin.id = EntityId::from_bytes(low);
+    twin.meta = a.meta;
+    assert!(twin.id < a.id);
+    repo.put_summary(twin.clone()).unwrap();
+    assert_eq!(current(&repo, m), Some(a.id), "equal stamps: the higher id");
+    let mut high = [0xffu8; 16];
+    high[6] = 0x7f;
+    high[8] = 0xbf;
+    let mut above = f.summary(m, s_early.segment.id);
+    above.id = EntityId::from_bytes(high);
+    above.meta = a.meta;
+    assert!(above.id > a.id);
+    repo.put_summary(above.clone()).unwrap();
+    assert_eq!(
+        current(&repo, m),
+        Some(above.id),
+        "equal stamps: the higher id"
+    );
 }
 
 /// [`AudioFileRepo`]: round trip, parent checks, order, hard delete.
