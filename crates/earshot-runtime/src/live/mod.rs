@@ -1684,20 +1684,7 @@ where
             }
         }
         // Mic finals the echo filter lets through (all of them once the pipeline ended).
-        for released in self.echo.release(self.ended.is_some()) {
-            let event = match released {
-                Released::Kept(segment) => {
-                    self.preview_settled(TrackId::Mic, segment.end);
-                    self.store_live(segment.clone());
-                    TranscriptEvent::Final(segment)
-                }
-                Released::Dropped(id) => TranscriptEvent::Discarded { id },
-            };
-            self.emit(RuntimeEvent::Transcript {
-                track: TrackId::Mic,
-                event,
-            });
-        }
+        self.release_mic_finals(self.ended.is_some());
         if latest_stats.is_some() {
             self.transcript_lags();
         }
@@ -1838,8 +1825,22 @@ where
         if !events.is_empty() {
             self.handle(events);
         }
+        // Every final up to these frontiers is out now, or held by the echo filter.
+        for &(track, done) in &frontiers {
+            self.preview_landed(track, self.settled_through(track, done));
+        }
         self.feed_summaries(&frontiers);
         self.mapped_events();
+    }
+
+    /// How far `track`'s settled text is out, its worker having decoded through `decoded` (read
+    /// before its events were handled): for the mic, no further than the first final the echo
+    /// filter still holds.
+    fn settled_through(&self, track: TrackId, decoded: MeetingTime) -> MeetingTime {
+        match (track, self.echo.held_from()) {
+            (TrackId::Mic, Some(held)) => decoded.min(held),
+            _ => decoded,
+        }
     }
 
     /// Sends the map worker every window that every transcribed track has settled past
@@ -1849,13 +1850,9 @@ where
         let Some(thread) = &self.summaries else {
             return;
         };
-        let held = self.echo.held_from();
         let Some(settled) = frontiers
             .iter()
-            .map(|(track, d)| match (track, held) {
-                (TrackId::Mic, Some(h)) => (*d).min(h),
-                _ => *d,
-            })
+            .map(|&(track, d)| self.settled_through(track, d))
             .min()
         else {
             return;
@@ -1982,6 +1979,19 @@ where
             }
             self.handle(events);
         }
+        // Every reference final is in, so the mic finals the echo filter still holds go out now,
+        // as the pipeline's `Ended` (handled below) would let them: the live transcript is whole
+        // when it is called finished, and its settled text lands before the provisional words it
+        // replaces leave (T12.12d). The filter cleans them with the same reference words and
+        // locks either way, so the stored words do not change. They need `release(true)`: the
+        // filter learns the far end's progress only from `echo.reference_progress`, which only
+        // `handle_workers` calls, never the loop above, so by its rule they would stay held. The
+        // pipeline has always ended here (the session's loop runs until it has).
+        #[cfg(test)]
+        if self.echo.held_from().is_some() {
+            self.witness_held_at_end();
+        }
+        self.release_mic_finals(true);
         let capture_ended = *self.capture_ended.get_or_insert_with(Instant::now);
         self.emit(RuntimeEvent::LiveTranscriptFinished {
             after_capture_end: capture_ended.elapsed(),
@@ -2045,6 +2055,25 @@ where
         }
         for event in std::mem::take(&mut self.deferred) {
             self.handle(vec![event]);
+        }
+    }
+
+    /// Shows and stores the mic finals the echo filter lets through now; with `all`, every one it
+    /// holds.
+    fn release_mic_finals(&mut self, all: bool) {
+        for released in self.echo.release(all) {
+            let event = match released {
+                Released::Kept(segment) => {
+                    self.preview_settled(TrackId::Mic, segment.end);
+                    self.store_live(segment.clone());
+                    TranscriptEvent::Final(segment)
+                }
+                Released::Dropped(id) => TranscriptEvent::Discarded { id },
+            };
+            self.emit(RuntimeEvent::Transcript {
+                track: TrackId::Mic,
+                event,
+            });
         }
     }
 

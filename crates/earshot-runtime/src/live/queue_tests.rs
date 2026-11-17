@@ -233,6 +233,11 @@ pub(super) fn source_of(
         .reference(MonoBuffer::new(R16, scene.them.clone()))
         .build()
         .unwrap();
+    end_when_released(source)
+}
+
+/// `source`, holding back its end until released (the handles say when it has delivered).
+pub(super) fn end_when_released<S>(source: S) -> (EndWhenReleased<S>, Handles) {
     let (released, delivered) = (Arc::default(), Arc::default());
     (
         EndWhenReleased {

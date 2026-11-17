@@ -1119,3 +1119,33 @@ Judged again:
 - **Desktop, CUDA transcription beside the card's summary: still fails** points 1 (settled median +2.5 and +1.6 s against +1 s), 2 (on screen +4.63 and +3.78 s against +3 s), 3 (catch-up 2.70 and 2.54 s against 2.44 s), 5 (summaries 6 to 7 times slower against 1.25) and the card margin (run 1: 15.48 of 15.92 GiB; run 2 had 0.52 GiB free). It keeps waiting with the existing banner.
 
 Not yet checked on a real meeting: the Surface accept step (a second meeting during a local summary shows words at once, with the banner).
+
+## Shown words that left before their settled text (T12.12d, 2026-11-17)
+
+**Cause.** The live echo filter holds a mic final until the far end's decode has caught up with it (`live::echo::LiveEchoFilter::release`). At the end of a meeting the far end's last stretch is often still decoding when the mic's last stretch settles, so that final stayed held until the pipeline's `Ended` was handled, which the session defers until after `finish_workers`. By then `LiveTranscriptFinished` had gone out and `finish_previews` had cleared every shown word, so the last mic stretch's provisional words (on `bundled` a 12 s stretch: all 51 of the run's flickering words) left the screen about 0.1 s before the settled text holding them landed. Mid-meeting the same hold had a second, rarer path: a preview thread took words away at the mic worker's decoded frontier, which runs ahead of the settled text while a final is held.
+
+**Fix** (no rule, threshold or stored word changed):
+
+- `finish_workers` releases every held mic final once all workers have finished and the pipeline has ended (`Session::release_mic_finals`, the code `Ended` already ran), before `LiveTranscriptFinished` and before the previews are cleared. Every far-end final is in by then, so the filter cleans them with the same words and locks as before.
+- A preview thread takes words away only behind what the session has landed (`PreviewThread::landed`, published by `Session::preview_landed` after each `handle_workers`: the worker frontier read before its events, and on the mic no further than the first held final, `Session::settled_through`, the rule the live summary windows already used).
+
+**After review** (same day):
+
+- Words a held final keeps on screen no longer anchor the next stretch: the provisional agreement starts afresh once the worker has decoded past every shown word (`PreviewWords::settled(landed, decoded)`), as it did before, so a stretch opening with the last one's last word still shows it.
+- What the mic holds on screen is bounded by existing rules: a held final waits for the far end's decoded frontier, which moves at least every `max_piece` of its audio unless its worker's queue grows; in a call the mic's previews now stop for falling behind when either track's queue passes `fell_behind` (`check_previews`, the existing limit and reason), not only the mic's own.
+
+**Tests.** Two session tests on a call whose far end decodes nothing until a witness says so (rendezvous, no sleeps): `live_preview_own_voice_words_stay_while_a_mic_final_is_held` (the far end waits until the mic's preview thread has acted on a shown word behind its decoded frontier and ahead of what has landed; fails with the thread trimming at the worker's frontier) and `live_preview_own_voice_held_mic_text_lands_before_the_end` (the far end waits for the whole replay, so finals are still held when every worker has finished; fails without the release in `finish_workers`; checks stored words equal a run without previews). `live_preview_a_held_stretch_does_not_anchor_the_next_one` and `live_preview_own_voice_falls_behind_with_the_far_end` cover the review fixes, each with its negative control in its doc comment. `words_left_early` now judges each track by its own settled text (across both tracks the far end's text hid a mic word that left early); `words_back_after_leaving` checks the whole event stream, the end included.
+
+**Measured** on the desktop CPU, `--audio bundled --previews everyone` (reports in `docs/live-previews/t1212d/`, unmodified):
+
+| Run | Host load, median / max | Mic vanished (settled later) | Far end vanished | Catch-up after end | Stored hashes |
+|---|---|---|---|---|---|
+| before | 3% / 4% | 52 (51) | 1 (never settled) | 0.94 s | equal to off |
+| after | 2% / 3% | 1 (1) | 1 (never settled) | 1.17 s | equal to off |
+| after, host loaded (another lane building) | 28% / 56% | 1 (1) | 1 (never settled) | 1.10 s | equal to off |
+| after review fixes (`t1212d-after-review.json`) | 6% / 8% | 1 (1) | 1 (never settled) | 1.40 s | equal to off |
+| off | 2% / 2% | - | - | 1.02 s | - |
+
+Mic vanished words are now at the far end's rate. "Everyone" on the NPU can be judged again with the owner on the amended point 5.
+
+**A design considered and not taken (2026-11-17, the lane-merge review's advisory 5).** Each track now has three frontiers (the worker's `decoded_through`, the session's `landed` and the preview thread's own), with the session publishing `landed` for the preview thread to read. Moving the trimming of shown words into the session, which emits the finals, would make "leave only after landing" hold by structure. Not done: the published frontier is tested both ways, the measured flicker is gone, and the rewrite would need its own measurement round for no change in behaviour.
