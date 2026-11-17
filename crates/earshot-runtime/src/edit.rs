@@ -8,6 +8,8 @@
 //!   and keeps it (`earshot_store::identities`: any write after the pass is an edit).
 //! - The user's voice in the room: [`mark_me`] and its undo [`unmark_me`] (T9.12), in-room
 //!   meetings only: the row becomes the meeting's one "Me" row, with no biometric data made.
+//! - A voice named as the wrong person: [`not_this_person`] (T12.77) unlinks it, gives it
+//!   back "Speaker N" and ignores it.
 //! - Persons: [`rename_person`] (rewrites that person's speaker rows in every meeting,
 //!   since [`MeetingView`] names come from `Speaker.display_name`), [`list_persons`].
 //! - Voiceprints (biometric, opt-in): [`remember_voices`] enrols named speakers from the
@@ -200,6 +202,10 @@ pub enum EditError {
     /// The line (the id) already has a speaker: only a line with no speaker (an unknown
     /// speaker, T12.65) is given one from the line ([`assign_line_speaker`]).
     LineHasSpeaker(EntityId),
+    /// The speaker (the id) is the meeting's "Me" row, or linked to the user: "Not <name>"
+    /// is for someone else ([`not_this_person`], T12.77); "This isn't me" ([`unmark_me`])
+    /// covers the user's own row.
+    UserRow(EntityId),
 }
 
 /// What is wrong with a title or transcript text.
@@ -325,6 +331,10 @@ impl fmt::Display for EditError {
                     "segment {id} has no changed word at that position to put back"
                 )
             }
+            Self::UserRow(id) => write!(
+                f,
+                "speaker {id} is you; \"Not <name>\" is for someone else's voice"
+            ),
             Self::MeetingStillWorking(id) => write!(
                 f,
                 "meeting {id} is still being recorded or processed; allow the summary writer \
@@ -1986,6 +1996,97 @@ pub fn unignore_speaker(
                 i.given_stamp = Some(row.meta.updated_at);
             }
         })
+    })
+}
+
+/// Whether `row` is the user's: the meeting's "Me" row, or a row whose person resolves to the
+/// user ([`resolve_person`]; a person merged into the user by [`merge_into_me`] counts). The
+/// one rule [`not_this_person`] refuses by and [`can_not_this_person`] offers by.
+fn is_users_row<R: VoiceprintRepo + ?Sized>(repo: &R, row: &Speaker) -> Result<bool, RuntimeError> {
+    if row.role == SpeakerRole::Me {
+        return Ok(true);
+    }
+    let Some(linked) = row.person_id else {
+        return Ok(false);
+    };
+    Ok(resolve_person(repo, linked)
+        .map_err(voiceprint_err)?
+        .is_some_and(|p| p.is_me))
+}
+
+/// Whether [`not_this_person`] would accept `row` with these `identities`, reading persons
+/// from `repo` (a store the caller has locked): what the Speakers panel offers, by the
+/// refusals' own rules. The user's rows (`is_users_row`, which follows merges) are not
+/// offered.
+///
+/// # Errors
+/// Store errors.
+pub fn can_not_this_person<R: VoiceprintRepo + ?Sized>(
+    repo: &R,
+    row: &Speaker,
+    identities: &[crate::identities::SpeakerIdentity],
+) -> Result<bool, RuntimeError> {
+    Ok(row.person_id.is_some()
+        && identities.iter().any(|i| i.speaker == row.id)
+        && !is_users_row(repo, row)?)
+}
+
+/// "Not <name>" (T12.77): voice `speaker` of `meeting` was named, or recognised by a
+/// voiceprint, as a person it is not. In one transaction the row is unlinked, gets back the
+/// smallest free "Speaker N" ([`first_free_speaker_name`]) and is ignored
+/// ([`ignore_speaker`]): its identity entry reads as the pass's own naming of that label with
+/// the ignore on top, so a re-run continues it unlinked whatever voiceprint it matches, and
+/// "Stop ignoring" ([`unignore_speaker`]) leaves a voice that needs a name. The person and
+/// their voiceprints are not touched: a voice saved for them from this meeting stays in their
+/// voiceprint (`SpeakerIdentity::enrolled` stays as it was), because f32 addition cannot be
+/// undone exactly. Returns the person the row was linked to.
+///
+/// Refused while a live session, a final pass, a summary or a job works on the meeting, as
+/// line edits are (`line_edit_claim`): the final pass would otherwise rewrite the entry.
+///
+/// # Errors
+/// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::UserRow`] for "Me" or a
+/// row linked to the user, [`EditError::NoPerson`] for an unlinked voice,
+/// [`EditError::NoStoredVoice`] for a voice without an identity entry);
+/// [`RuntimeError::MeetingBusy`] (retryable) while the meeting is busy; store errors.
+pub fn not_this_person(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<EntityId, RuntimeError> {
+    let _claim = line_edit_claim(services, meeting)?;
+    write(services, |tx, stamp| {
+        let mut row = live_speaker(&*tx, meeting, speaker)?;
+        if is_users_row(&*tx, &row)? {
+            return Err(EditError::UserRow(speaker).into());
+        }
+        let linked = row.person_id.ok_or(EditError::NoPerson(speaker))?;
+        let key = crate::identities::record_key(meeting);
+        let has_entry = matches!(
+            tx.local_value(key.as_str())?.map(|b| crate::identities::decode(&b)),
+            Some(StoredIdentities::Record(r)) if r.speakers.iter().any(|i| i.speaker == speaker)
+        );
+        if !has_entry {
+            return Err(EditError::NoStoredVoice(speaker).into());
+        }
+        let taken: Vec<String> = tx
+            .speakers(meeting)?
+            .into_iter()
+            .filter(|s| !s.meta.deleted && s.id != speaker)
+            .map(|s| s.display_name)
+            .collect();
+        row.person_id = None;
+        row.display_name = first_free_speaker_name(&taken);
+        row.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_speaker(row.clone())?;
+        update_identity_entry(tx, meeting, speaker, |i| {
+            i.given_name.clone_from(&row.display_name);
+            i.given_person = None;
+            i.given_stamp = Some(row.meta.updated_at);
+            i.user_edited = false;
+            i.ignored = true;
+        })?;
+        Ok(linked)
     })
 }
 

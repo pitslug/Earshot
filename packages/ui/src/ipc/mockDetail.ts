@@ -126,6 +126,7 @@ function sampleSpeakers(): SpeakerCard[] {
       needs_name: false,
       ignored: false,
       can_ignore: false,
+      can_not_this_person: false,
       can_mark_me: false,
       can_unmark_me: false,
       recognised_me: false,
@@ -141,6 +142,7 @@ function sampleSpeakers(): SpeakerCard[] {
       needs_name: false,
       ignored: false,
       can_ignore: false,
+      can_not_this_person: true,
       can_mark_me: false,
       can_unmark_me: false,
       recognised_me: false,
@@ -156,6 +158,7 @@ function sampleSpeakers(): SpeakerCard[] {
       needs_name: true,
       ignored: false,
       can_ignore: true,
+      can_not_this_person: false,
       can_mark_me: false,
       can_unmark_me: false,
       recognised_me: false,
@@ -171,6 +174,7 @@ function sampleSpeakers(): SpeakerCard[] {
       needs_name: true,
       ignored: false,
       can_ignore: true,
+      can_not_this_person: false,
       can_mark_me: false,
       can_unmark_me: false,
       recognised_me: false,
@@ -262,6 +266,7 @@ export function sampleInRoomDetail(item: MeetingListItem): MeetingDetail {
       needs_name: true,
       ignored: false,
       can_ignore: true,
+      can_not_this_person: false,
       can_mark_me: true,
     }),
   );
@@ -288,6 +293,7 @@ export function sampleRecognisedInRoomDetail(item: MeetingListItem): MeetingDeta
             person: { id: user.id, name: user.name, has_voiceprint: true },
             needs_name: false,
             can_ignore: false,
+            can_not_this_person: false,
             can_mark_me: false,
             recognised_me: true,
           }
@@ -347,6 +353,10 @@ export function linked(detail: MeetingDetail, id: string, person: PersonItem): M
             needs_name: false,
             ignored: false,
             can_ignore: false,
+            // `edit::can_not_this_person`: not the user's row, not linked to the user, and a
+            // stored voice (the mock reads one from the voice's own offers before the link).
+            can_not_this_person:
+              s.kind === "Other" && !person.is_me && (s.can_ignore || s.can_not_this_person),
           }
         : s,
     ),
@@ -370,8 +380,33 @@ export function markedMe(detail: MeetingDetail, id: string, user: PersonItem): M
     ...next,
     speakers: next.speakers.map((s) =>
       s.id === id
-        ? { ...s, kind: "Me", can_mark_me: false, can_unmark_me: true }
+        ? { ...s, kind: "Me", can_mark_me: false, can_unmark_me: true, can_not_this_person: false }
         : { ...s, can_mark_me: false },
+    ),
+  };
+}
+
+/** `detail` after "Not <name>" on `id` (T12.77): unlinked, the smallest free "Speaker N",
+ * ignored. */
+export function notThisPersonVoice(detail: MeetingDetail, id: string): MeetingDetail {
+  const taken = detail.speakers.filter((s) => s.id !== id).map((s) => s.name);
+  let n = 1;
+  while (taken.includes(`Speaker ${n}`)) n += 1;
+  const next = renamed(detail, id, `Speaker ${n}`);
+  return {
+    ...next,
+    speakers: next.speakers.map((s) =>
+      s.id === id
+        ? {
+            ...s,
+            person: null,
+            source: s.source === "Voiceprint" ? "FarEnd" : s.source,
+            needs_name: false,
+            ignored: true,
+            can_ignore: true,
+            can_not_this_person: false,
+          }
+        : s,
     ),
   };
 }
@@ -392,6 +427,7 @@ export function unmarkedMe(detail: MeetingDetail, id: string): MeetingDetail {
             person: null,
             needs_name: true,
             can_ignore: true,
+            can_not_this_person: false,
             can_mark_me: true,
             can_unmark_me: false,
             recognised_me: false,

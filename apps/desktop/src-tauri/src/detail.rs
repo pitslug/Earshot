@@ -6,7 +6,7 @@
 //! deletion. The store lock is held for each read only; nothing here holds it across FLAC
 //! decoding or vault work (the runtime functions take it themselves).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use earshot_core::asr::Segment;
 use earshot_core::audio::{SampleRate, WavFormat, i16_to_f32, write_wav};
@@ -223,6 +223,9 @@ pub struct SpeakerCard {
     pub ignored: bool,
     /// The user may ignore this voice (`edit::can_ignore`).
     pub can_ignore: bool,
+    /// The user may say this named voice is not that person ("Not <name>", T12.77:
+    /// `edit::can_not_this_person`).
+    pub can_not_this_person: bool,
     /// The user may say this voice is theirs ("This is me": `edit::can_mark_me`).
     pub can_mark_me: bool,
     /// The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`).
@@ -615,6 +618,12 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "Earshot is still working on this meeting, and that work keeps the summary on this \
              computer. Allow the summary writer once it has finished.",
         ),
+        // T12.77: "Not <name>" is for someone else's voice.
+        EditError::UserRow(_) => err(
+            "user_row",
+            "This voice is you. Only a voice named as someone else can be put back as an \
+             unnamed speaker.",
+        ),
         // T12.65: only an unknown speaker's line is given a speaker from the line.
         EditError::LineHasSpeaker(_) => err(
             "line_has_speaker",
@@ -723,6 +732,7 @@ fn speaker_cards(
     identities: &[SpeakerIdentity],
     voiceprint_me: Option<EntityId>,
     resolved: &BTreeMap<EntityId, EntityId>,
+    not_person: &BTreeSet<EntityId>,
 ) -> Vec<SpeakerCard> {
     let total: u64 = view.segments.iter().map(duration_ms).sum();
     // `list_persons_in` counts the voiceprints of everyone merged into a person, as
@@ -779,6 +789,7 @@ fn speaker_cards(
                 needs_name: needs_name(s.role, s.person_id.is_some(), ignored),
                 ignored,
                 can_ignore: edit::can_ignore(s, identities),
+                can_not_this_person: not_person.contains(&s.id),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
                 can_unmark_me: edit::can_unmark_me(&view.tracks, s, voiceprint_me, user_print),
                 recognised_me: edit::recognised_me(&view.tracks, s, voiceprint_me, user_print),
@@ -836,10 +847,19 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
                 resolved.insert(id, to);
             }
         }
+        let entries = edit::identities_in(&db, meeting)?;
+        // Where "Not <name>" is offered (T12.77), by the runtime's own rule over this snapshot.
+        let mut not_person = BTreeSet::new();
+        for s in &view.speakers {
+            if edit::can_not_this_person(&**db, s, &entries)? {
+                not_person.insert(s.id);
+            }
+        }
         let identities = (
-            edit::identities_in(&db, meeting)?,
+            entries,
             edit::voiceprint_me_in(&db, meeting)?,
             resolved,
+            not_person,
         );
         let backend = match view.pass {
             Some(TranscriptPass::Final) => pass_backend(&db, meeting, TranscriptPass::Final, None)?,
@@ -970,7 +990,14 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             summary_edited,
             transcript_backend: backend.map(|b| backend_label(b.kind).to_owned()),
         },
-        speakers: speaker_cards(&view, &persons, &identities.0, identities.1, &identities.2),
+        speakers: speaker_cards(
+            &view,
+            &persons,
+            &identities.0,
+            identities.1,
+            &identities.2,
+            &identities.3,
+        ),
         summary,
         transcript,
         can_undo_summary,

@@ -1186,6 +1186,7 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::NoWordChoice(id), "no_word_choice"),
         (EditError::MeetingStillWorking(id), "meeting_still_working"),
         (EditError::LineHasSpeaker(id), "line_has_speaker"),
+        (EditError::UserRow(id), "user_row"),
     ];
     for (e, kind) in all {
         let ipc = IpcError::from(RuntimeError::Edit(e.clone()));
@@ -1332,6 +1333,47 @@ fn give_identity(svc: &Services, meeting: EntityId, speaker: EntityId) {
             ignored: false,
         });
     db.set_local_value(&key, &encode(&record)).unwrap();
+}
+
+#[test]
+fn detail_not_this_person_puts_a_named_voice_back_as_an_ignored_speaker() {
+    let dir = TempDir::new("detail-not-person");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 61);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    // Offered on a named voice with a stored voice, never on "Me" or an unnamed voice.
+    assert!(card(&d, f.priya).can_not_this_person);
+    assert!(!card(&d, f.me).can_not_this_person);
+    assert!(!card(&d, f.unnamed).can_not_this_person);
+
+    edit::not_this_person(&svc, f.meeting, f.priya).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let c = card(&d, f.priya);
+    assert!(c.person.is_none() && c.ignored && !c.needs_name && !c.can_not_this_person);
+    // "Speaker 2" is taken by the unnamed voice: the next free label.
+    assert_eq!(c.name, "Speaker 1");
+    assert_eq!(d.transcript[2].speaker, "Speaker 1");
+
+    let e: IpcError = edit::not_this_person(&svc, f.meeting, f.me)
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "user_row");
+}
+
+#[test]
+fn detail_not_this_person_is_not_offered_on_a_voice_linked_to_a_person_merged_into_the_user() {
+    let dir = TempDir::new("detail-not-person-me");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 62);
+    earshot_runtime::my_voice::set_my_name(&svc, "Priya Shah").unwrap();
+    edit::merge_into_me(&svc, f.priya_person).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!card(&d, f.priya).can_not_this_person);
+    let e: IpcError = edit::not_this_person(&svc, f.meeting, f.priya)
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "user_row");
+    assert!(!e.message.contains("This isn't me"), "{}", e.message);
 }
 
 #[test]

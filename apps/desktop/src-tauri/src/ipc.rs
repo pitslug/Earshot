@@ -68,6 +68,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             save_voice,
             ignore_speaker,
             unignore_speaker,
+            not_this_person,
             forget_person_voices,
             remove_person,
             speaker_sample,
@@ -1022,6 +1023,24 @@ async fn unignore_speaker(
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
     blocking(move || {
         earshot_runtime::edit::unignore_speaker(&services, meeting, speaker)?;
+        Ok(())
+    })
+    .await
+}
+
+/// "Not <name>" on a named voice (T12.77): unlinks it from the person, gives it back
+/// "Speaker N" and ignores it in this meeting.
+#[tauri::command]
+#[specta::specta]
+async fn not_this_person(
+    state: State<'_, AppState>,
+    meeting: String,
+    speaker: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
+    blocking(move || {
+        earshot_runtime::edit::not_this_person(&services, meeting, speaker)?;
         Ok(())
     })
     .await

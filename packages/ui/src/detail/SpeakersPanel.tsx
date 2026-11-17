@@ -6,7 +6,8 @@
 // "This isn't me" in an in-room meeting. Ignored voices keep their label and can be named
 // after all. T12.44: a typed name that is someone's says "Links to <name>" before Save; after
 // "This is me" a separate person with the user's name is offered for merging into the user;
-// "This isn't me" waits on a voice the user's voiceprint named.
+// "This isn't me" waits on a voice the user's voiceprint named. T12.77: "Not <name>" puts a
+// voice named or recognised as the wrong person back as an ignored "Speaker N".
 
 import {
   Accordion,
@@ -148,6 +149,8 @@ export interface SpeakersPanelProps {
   onIgnore(speaker: string): Promise<void>;
   /** Undoes "Ignore". */
   onUnignore(speaker: string): Promise<void>;
+  /** "Not <name>": the voice is not that person; back to an ignored "Speaker N". */
+  onNotThisPerson(speaker: string): Promise<void>;
   /** Says this voice is the user's, in this meeting. */
   onMarkMe(speaker: string): Promise<void>;
   /** Puts the user's row back as a voice that needs a name. */
@@ -159,6 +162,9 @@ export interface SpeakersPanelProps {
   /** The meeting is still finishing (T12.28): the voices can be seen and heard, but every edit
    * waits, because the final pass may change who is who and would drop it. */
   locked?: boolean;
+  /** The meeting is busy as line edits see it (recording, finishing, or a job on it): the runtime
+   * refuses "Not <name>" then (it holds the line-edit claim), so it waits too. */
+  linesLocked?: boolean;
   /** A separate person named after the user, offered for merging into the user after "This is
    * me" (T12.44); `null` or absent when there is none. */
   mergeOffer?: PersonItem | null;
@@ -188,6 +194,14 @@ export function ownNameHint(user: PersonItem, canMarkMe: boolean): string {
 export function mergeOfferText(person: PersonItem): string {
   const voice = person.has_voiceprint ? " Earshot will then recognise you by the voice saved for them." : "";
   return `There is also a person called ${person.name}. If that is you, merge them into you.${voice}`;
+}
+
+/** What "Not <name>" does (T12.77), for its tooltip. Until T12.77b, a voice saved for the
+ * person stays in their saved voice, so the tooltip says so; `forgetShown`: the row shows
+ * Forget voice (the person has a saved voice), which deletes that saved voice only. */
+export function notThisPersonHint(name: string, forgetShown: boolean): string {
+  const forget = forgetShown ? ` Forget voice deletes ${name}'s saved voice.` : "";
+  return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it.${forget}`;
 }
 
 /** Why the Speakers panel's edits wait while the meeting finishes. */
@@ -496,7 +510,18 @@ function IgnoredRow(props: RowProps) {
 /** A voice with a name: the user, a linked voice or a recognised one. */
 function NamedRow(props: RowProps) {
   const styles = useStyles();
-  const { card, persons, onRename, onLink, onUnmarkMe, onForget, onRenamePerson, locked } = props;
+  const {
+    card,
+    persons,
+    onRename,
+    onLink,
+    onUnmarkMe,
+    onNotThisPerson,
+    onForget,
+    onRenamePerson,
+    locked,
+    linesLocked,
+  } = props;
   // Which rename is open: this meeting's row, or the person in every meeting.
   const [editing, setEditing] = useState<"row" | "person" | null>(null);
   const [forgetting, setForgetting] = useState(false);
@@ -570,6 +595,21 @@ function NamedRow(props: RowProps) {
           </Tooltip>
         )}
         <LinkPopover card={card} persons={persons} onLink={onLink} locked={locked} />
+        {card.can_not_this_person && card.person !== null && editing === null && (
+          <Tooltip
+            content={notThisPersonHint(card.person.name, card.person.has_voiceprint)}
+            relationship="description"
+          >
+            <Button
+              size="small"
+              appearance="subtle"
+              disabled={locked || linesLocked}
+              onClick={() => void onNotThisPerson(card.id)}
+            >
+              Not {card.person.name}
+            </Button>
+          </Tooltip>
+        )}
         {card.kind === "Other" && editing === null && (
           <Button size="small" appearance="subtle" disabled={locked} onClick={() => setEditing("row")}>
             Rename here

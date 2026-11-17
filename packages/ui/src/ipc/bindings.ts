@@ -125,6 +125,11 @@ export const commands = {
 	ignoreSpeaker: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("ignore_speaker", { meeting, speaker })),
 	/**  Undoes "Ignore": the voice needs a name again. */
 	unignoreSpeaker: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("unignore_speaker", { meeting, speaker })),
+	/**
+	 *  "Not <name>" on a named voice (T12.77): unlinks it from the person, gives it back
+	 *  "Speaker N" and ignores it in this meeting.
+	 */
+	notThisPerson: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("not_this_person", { meeting, speaker })),
 	/**  Forgets every voiceprint of a person; returns how many were forgotten. */
 	forgetPersonVoices: (person: string) => typedError<number, IpcError>(__TAURI_INVOKE("forget_person_voices", { person })),
 	/**  Removes a person: their name and voice, from this computer (the Speakers page). */
@@ -1985,6 +1990,11 @@ export type SpeakerCard = {
 	ignored: boolean,
 	/**  The user may ignore this voice (`edit::can_ignore`). */
 	can_ignore: boolean,
+	/**
+	 *  The user may say this named voice is not that person ("Not <name>", T12.77:
+	 *  `edit::can_not_this_person`).
+	 */
+	can_not_this_person: boolean,
 	/**  The user may say this voice is theirs ("This is me": `edit::can_mark_me`). */
 	can_mark_me: boolean,
 	/**  The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`). */

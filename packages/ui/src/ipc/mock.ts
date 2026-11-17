@@ -42,6 +42,7 @@ import {
   linked,
   markedMe,
   merged,
+  notThisPersonVoice,
   renamed,
   resummarised,
   sampleDetail,
@@ -1208,6 +1209,22 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       speakerOf(detailOf(meeting), speaker);
       update(meeting, (x) => ignoredVoice(x, speaker, false));
     },
+    notThisPerson: async (meeting, speaker) => {
+      call("notThisPerson", meeting, speaker);
+      const card = speakerOf(detailOf(meeting), speaker);
+      // The card's person is the resolved one: a person merged into the user shows as the user.
+      if (card.kind === "Me" || persons.some((p) => p.is_me && p.id === card.person?.id)) {
+        fail("user_row", "This voice is you. Only a voice named as someone else can be put back as an unnamed speaker.");
+      }
+      if (card.person === null) fail("no_person", "Name this voice or link it to a person first.");
+      if (!card.can_not_this_person) {
+        fail(
+          "no_stored_voice",
+          "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the meeting, then ignore it.",
+        );
+      }
+      update(meeting, (x) => notThisPersonVoice(x, speaker));
+    },
     markMe: async (meeting, speaker) => {
       call("markMe", meeting, speaker);
       const d = detailOf(meeting);
@@ -1255,7 +1272,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         details.set(id, {
           ...d,
           speakers: d.speakers.map((s) =>
-            s.person?.id === person || s.person?.id === user.id ? { ...s, person: me } : s,
+            s.person?.id === person || s.person?.id === user.id
+              ? { ...s, person: me, can_not_this_person: false }
+              : s,
           ),
         });
       }
@@ -1324,7 +1343,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             let n = 1;
             while (taken.includes(`Speaker ${n}`)) n += 1;
             taken.push(`Speaker ${n}`);
-            return { ...s, name: `Speaker ${n}`, person: null, needs_name: true, can_ignore: true };
+            return {
+              ...s,
+              name: `Speaker ${n}`,
+              person: null,
+              needs_name: true,
+              can_ignore: true,
+              can_not_this_person: false,
+            };
           }),
         });
       }

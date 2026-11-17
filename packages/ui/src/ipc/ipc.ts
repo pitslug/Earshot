@@ -155,6 +155,10 @@ export interface IpcCommands
   ignoreSpeaker(meeting: string, speaker: string): Promise<void>;
   /** Undoes "Ignore": the voice needs a name again. */
   unignoreSpeaker(meeting: string, speaker: string): Promise<void>;
+  /** "Not <name>" on a named voice (T12.77): unlinked from the person, back to "Speaker N" and
+   * ignored in this meeting. Rejects with `user_row`, `no_person`, `no_stored_voice` or a
+   * retryable `meeting_busy`. */
+  notThisPerson(meeting: string, speaker: string): Promise<void>;
   /** Forgets every voiceprint of a person. */
   forgetPersonVoices(person: string): Promise<number>;
   removePerson(person: string): Promise<void>;
