@@ -2007,7 +2007,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - found (the owner, 2026-11-14): the sidebar rows showed only the time and the length, so a meeting under "Earlier" had no date.
   - do: the row's second line starts with the local recording date (`D Mon YYYY`, fixed English month names) before the time, in every group.
   - accept: `cmd /c pnpm --filter @earshot/ui test` (shell tests); screenshots of the list in light and dark
-- [~] T12.36 Clear the advisory backlog in TODO.md
+- [x] T12.36 Clear the advisory backlog in TODO.md
+  - result (2026-11-17): closed. TODO.md holds 3 lines, each saying what it waits on (a real card under 16 GB, a real fault in the shared encoder, a real sleep during a final pass); every later batch fixed its own advisories.
   - claimed (2026-11-13): the desktop, overnight lanes `lane/todo-*`.
   - status (2026-11-14): triage found 2 stale, 29 bugs, 42 gaps, 51 tidy and 32 owner lines. Five lanes (edits, live, desktop, ui, tools) each passed a lane-merge review and fixed their own review advisories before merging (the desktop lane's review blocked once: a cancel grace that would have abandoned a model load; fixed and re-reviewed). 156 lines became 93, each tagged `[owner]`, `[waits: <task> merge]` or `[open]`. TODO 15 (pnpm in a job) was reverted after its test failed under ci, then redone in the second sweep with a robust control. Second sweep (2026-11-14, after the Surface merge): five more lanes (capture, previews, proc, desktop, tools), each reviewed, the tools lane blocked once (a UTF-16 name scan miss and an unwritten `--max-items` header, both fixed). TODO.md now holds 56 lines: 51 for the owner and 5 open (two idle-host re-runs and three small follow-ups found by the sweep).
   - found (the owner, 2026-11-13): 156 advisory lines had piled up in TODO.md because the review policy adds them and no task takes them out.
