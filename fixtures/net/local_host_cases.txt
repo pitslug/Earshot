@@ -24,3 +24,10 @@ https://api.anthropic.com/ false
 https://my-server.local/ false
 https://8.8.8.8/ false
 http://2130706433/ true
+http://[fc::1]/ false
+http://localhost./ false
+http://app.localhost/ false
+http://127.0.0.1@example.com/ false
+http://user@192.168.1.5/ true
+http://[::ffff:127.0.0.1]/ true
+http://0.0.0.0/ false

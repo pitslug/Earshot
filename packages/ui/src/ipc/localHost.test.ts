@@ -30,4 +30,15 @@ describe("local endpoint addresses", () => {
     expect(endpointHost("")).toBeNull();
     expect(endpointHost("not an address")).toBeNull();
   });
+
+  it("trims Unicode white space as Rust's trim does, but not U+FEFF", () => {
+    expect(endpointHost("  http://192.168.1.5/v1 　")).toEqual({ host: "192.168.1.5", local: true });
+    expect(endpointHost("﻿http://192.168.1.5/v1")).toBeNull();
+  });
+
+  it("knows only http and https addresses, as the app's check does", () => {
+    expect(endpointHost("ftp://192.168.1.5/")).toBeNull();
+    expect(endpointHost("ws://localhost:8080/")).toBeNull();
+    expect(endpointHost("HTTPS://api.example.com/")).toEqual({ host: "api.example.com", local: false });
+  });
 });

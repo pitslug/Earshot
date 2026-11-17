@@ -229,8 +229,10 @@ function EndpointForm({
   const wizard = saveOnNext !== undefined;
   // Next saves the fields only when they differ from what is stored: an endpoint form nobody
   // typed in (shown under the list whether or not the endpoint is set up) never holds Next.
-  // Choosing Anthropic alone fills in its address; with no model typed that is not an edit.
-  const onlyPrefill = prefilled && url === settings.anthropic_url && model.trim() === "" && stored.url === "";
+  // Choosing Anthropic alone fills in its address; with nothing else typed (no model, no API key)
+  // that is not an edit. A typed key makes it one, so Next asks for the model.
+  const onlyPrefill =
+    prefilled && url === settings.anthropic_url && model.trim() === "" && key.trim() === "" && stored.url === "";
   const edited = !onlyPrefill && (provider !== stored.provider || url !== stored.url || model !== stored.model);
   // Where the transcript would go: in the wizard the address being typed, as soon as it is one
   // (T12.79 review), else what is stored and in use.

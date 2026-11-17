@@ -353,6 +353,19 @@ describe("First run wizard", () => {
       expect((await s.ipc.summarySettings()).value).toMatchObject({ url: "", model: "" });
     });
 
+    it("a typed API key with only Anthropic's own address asks for the model, and saves no key", async () => {
+      const s = setup();
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      await s.user.type(await screen.findByLabelText(/^API key/), "test-key");
+      await s.user.click(button("Next"));
+      expect(await screen.findByText("Enter the model name the endpoint expects.")).toBeInTheDocument();
+      expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
+      await stepHeading(STEPS[0].title);
+      expect(await s.ipc.hasApiKey()).toBe(false);
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
+    });
+
     it("names where the transcript would go as soon as an address that is not local is typed", async () => {
       const s = setup();
       const form = within(await screen.findByRole("group", { name: "Your own server" }));

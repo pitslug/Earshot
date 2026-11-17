@@ -11,14 +11,18 @@ export interface EndpointHost {
   local: boolean;
 }
 
-/** The host of `url` and whether it is local, or null when `url` is not an address with a host. */
+/** The host of `url` and whether it is local, or null when `url` is not an http or https address
+ * with a host. Trimmed as Rust's `str::trim` does (Unicode White_Space, not U+FEFF), as
+ * earshot-net's `validate_url` does before parsing. */
 export function endpointHost(url: string): EndpointHost | null {
   let parsed: URL;
   try {
-    parsed = new URL(url.trim());
+    parsed = new URL(url.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""));
   } catch {
     return null;
   }
+  // earshot-net's `check_url_shape`: only http and https.
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
   const host = parsed.hostname.replace(/^\[|\]$/g, "");
   if (host === "") return null;
   return { host, local: isLocalHost(host) };
