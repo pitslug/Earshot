@@ -1,6 +1,6 @@
 # The sync relay (T11.2, docs/sync-spec.md section 4). Build from the repository root:
 #
-#   docker build -f crates/earshot-sync-server/Dockerfile -t earshot-sync-server .
+#   docker build -f crates/earshot-sync-server/Dockerfile -t earshot-server .
 #
 # Two stages, base images pinned by digest (T11.6, the same as the worker's): the pinned Rust
 # toolchain builds the relay alone, and a slim Debian runs it as a user without a login, with

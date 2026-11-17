@@ -1,5 +1,5 @@
 # The sync relay's image (T11.2b) and the summary worker's (T11.6): built when a release tag is
-# pushed, from that tag only, and pushed to ghcr.io/<owner>/earshot-sync-server and
+# pushed, from that tag only, and pushed to ghcr.io/<owner>/earshot-server and
 # ghcr.io/<owner>/earshot-worker as the version and as `latest` (the owner, 2026-11-15: the two
 # are released side by side). One job builds both and checks both (each starts on the runner and
 # answers its health check) before either is pushed, so one is never published without the
@@ -54,7 +54,11 @@ jobs:
           esac
           echo "VERSION=${tag}" >> "${GITHUB_ENV}"
           echo "LATEST=${latest}" >> "${GITHUB_ENV}"
-          echo "RELAY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-sync-server" >> "${GITHUB_ENV}"
+          echo "RELAY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-server" >> "${GITHUB_ENV}"
+          # The relay's name until 0.3.12 (the owner, 2026-11-17: "the sync is implied"). The same
+          # image is also pushed under it for 0.3.12 only, so a compose file still naming it gets
+          # this release and the note to switch; remove this line and its push after 0.3.12.
+          echo "RELAY_OLD=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-sync-server" >> "${GITHUB_ENV}"
           echo "WORKER=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-worker" >> "${GITHUB_ENV}"
 
       - name: Build the relay image
@@ -111,11 +115,12 @@ jobs:
           printf '%s' "${TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           # Both version tags first, then both `latest`, so `latest` never names a relay and a
           # worker of different releases while the other is still on its way.
-          for image in "${RELAY}" "${WORKER}"; do
+          docker tag "${RELAY}:${VERSION}" "${RELAY_OLD}:${VERSION}"
+          for image in "${RELAY}" "${RELAY_OLD}" "${WORKER}"; do
             docker push "${image}:${VERSION}"
           done
           if [ "${LATEST}" = "true" ]; then
-            for image in "${RELAY}" "${WORKER}"; do
+            for image in "${RELAY}" "${RELAY_OLD}" "${WORKER}"; do
               docker tag "${image}:${VERSION}" "${image}:latest"
               docker push "${image}:latest"
             done
