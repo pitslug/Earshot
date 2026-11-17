@@ -13,7 +13,7 @@
 //! | `EARSHOT_WORKER_LLM_CONTEXT` | `16384` | The endpoint's context window in tokens (the compose file starts llama.cpp with the same) |
 //! | `EARSHOT_WORKER_LLM_TIMEOUT_S` | `1800` | The longest one summary request may take |
 //! | `EARSHOT_WORKER_NAME` | `Earshot server` | The name the other devices show |
-//! | `EARSHOT_WORKER_MODEL_PLACE` | (none) | Where the model server runs, from the compose `.env` (a label set beside the profile): `processor` (`cpu`) or `graphics-card` (`gpu`), empty or unset for none; presence names it beside "local model" while the endpoint is the worker's own model (T11.6a). Any other value refuses to start |
+//! | `EARSHOT_WORKER_MODEL_PLACE` | (none) | Where the model server runs, from the compose `.env` (a label set beside the profile): `cpu` or `gpu`, the profile's own word (`processor` and `graphics-card`, 0.3.11's words, still read), empty or unset for none; presence names it beside "local model" while the endpoint is the worker's own model (T11.6a). Any other value refuses to start |
 //! | `EARSHOT_WORKER_KEY_FILE` | `<data>/vault/key` | The vault key file (a Docker secret's path may be given) |
 //! | `EARSHOT_WORKER_TOKEN_FILE` | `<data>/vault/token` | The device token file (likewise) |
 
@@ -137,7 +137,7 @@ impl Config {
         .ok_or(ConfigError("EARSHOT_WORKER_NAME"))?;
         let model_place = match get("EARSHOT_WORKER_MODEL_PLACE") {
             Some(word) => {
-                Some(ModelPlace::parse(&word).ok_or(ConfigError("EARSHOT_WORKER_MODEL_PLACE"))?)
+                Some(place_of_env(&word).ok_or(ConfigError("EARSHOT_WORKER_MODEL_PLACE"))?)
             }
             None => None,
         };
@@ -192,6 +192,21 @@ impl Config {
     }
 }
 
+/// The `.env` word for a model on the processor: the compose profile's own name.
+pub const ENV_CPU: &str = "cpu";
+/// The `.env` word for a model on the graphics card: the compose profile's own name.
+pub const ENV_GPU: &str = "gpu";
+
+/// The place an `EARSHOT_WORKER_MODEL_PLACE` value names: the profile words [`ENV_CPU`] and
+/// [`ENV_GPU`] (the owner, 2026-11-17), or 0.3.11's presence words, which a `.env` written for
+/// that release may still hold. Exact, lower case; `None` for anything else.
+fn place_of_env(word: &str) -> Option<ModelPlace> {
+    match word {
+        ENV_CPU => Some(ModelPlace::Processor),
+        ENV_GPU => Some(ModelPlace::GraphicsCard),
+        other => ModelPlace::parse(other),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,9 +273,10 @@ mod tests {
             ("EARSHOT_WORKER_LLM_SERVICE", "llama.lan"),
             ("EARSHOT_WORKER_LLM_SERVICE", "localhost"),
             ("EARSHOT_WORKER_NAME", "\u{7}"),
-            ("EARSHOT_WORKER_MODEL_PLACE", "gpu"),
             ("EARSHOT_WORKER_MODEL_PLACE", "graphics card"),
             ("EARSHOT_WORKER_MODEL_PLACE", "Processor"),
+            ("EARSHOT_WORKER_MODEL_PLACE", "GPU"),
+            ("EARSHOT_WORKER_MODEL_PLACE", "cuda"),
         ] {
             let e = of(&[
                 (name, value),
@@ -272,14 +288,17 @@ mod tests {
         }
     }
 
-    /// T11.6a: each place word is read; the variable left out names no place.
+    /// T11.6a: each place word is read (the profiles' `cpu` and `gpu`, and 0.3.11's presence
+    /// words); the variable left out names no place.
     #[test]
     fn config_model_place_words_are_read() {
         let subnet = ("EARSHOT_WORKER_MODEL_SUBNET", "172.31.250.0/24");
         for (word, place) in [
+            ("cpu", ModelPlace::Processor),
+            ("gpu", ModelPlace::GraphicsCard),
+            (" gpu ", ModelPlace::GraphicsCard),
             ("processor", ModelPlace::Processor),
             ("graphics-card", ModelPlace::GraphicsCard),
-            (" graphics-card ", ModelPlace::GraphicsCard),
         ] {
             let c = of(&[subnet, ("EARSHOT_WORKER_MODEL_PLACE", word)]).unwrap();
             assert_eq!(c.model_place, Some(place), "{word}");
@@ -300,9 +319,8 @@ mod tests {
         );
         assert_eq!(compose.matches("\n  earshot-worker:\n").count(), 1);
         let documented = format!(
-            "#      EARSHOT_WORKER_MODEL_PLACE=<{} with --profile cpu, {} with --profile gpu>\n",
-            ModelPlace::Processor.word(),
-            ModelPlace::GraphicsCard.word()
+            "#      EARSHOT_WORKER_MODEL_PLACE=<{}, or {}: the same word as the profile below>\n",
+            ENV_CPU, ENV_GPU
         );
         assert!(
             compose.contains(&documented),
