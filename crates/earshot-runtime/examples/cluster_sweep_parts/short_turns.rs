@@ -325,6 +325,57 @@ pub fn old_speakers(base: &Diarization, at: &Diarization) -> Vec<Kept> {
         .collect()
 }
 
+/// One frame of a regrouped run against the baseline (`was` and `now` the speaker labels on
+/// the frame in each run, `map` from [`old_speakers`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrameMove {
+    /// A baseline speaker is on here that was not on here in the baseline (the regrouping
+    /// promises never).
+    pub gained: bool,
+    /// Baseline speakers (indices in the baseline) on here in the baseline and not now, while
+    /// a new speaker is on here: speech moved from them to a new speaker.
+    pub lost: Vec<usize>,
+    /// New speakers on here (indices in the regrouped run).
+    pub new_here: Vec<usize>,
+}
+
+/// The [`FrameMove`] of one frame. Shared by the short-turn measures and the owner's calls
+/// (T12.73), so both count moved and gained speech by one rule.
+pub fn frame_move(was: &[String], now: &[String], map: &[Kept]) -> FrameMove {
+    let was_here: Vec<usize> = was.iter().map(|l| label_index(l)).collect();
+    let gained = now.iter().any(|l| match map[label_index(l)] {
+        Kept::New => false,
+        Kept::Base(b) => !was_here.contains(&b),
+        Kept::Missing => true,
+    });
+    let new_here: Vec<usize> = now
+        .iter()
+        .map(|l| label_index(l))
+        .filter(|&n| map[n] == Kept::New)
+        .collect();
+    let lost = if new_here.is_empty() {
+        Vec::new()
+    } else {
+        let kept: Vec<usize> = now
+            .iter()
+            .filter_map(|l| match map[label_index(l)] {
+                Kept::Base(b) => Some(b),
+                _ => None,
+            })
+            .collect();
+        was_here
+            .iter()
+            .copied()
+            .filter(|b| !kept.contains(b))
+            .collect()
+    };
+    FrameMove {
+        gained,
+        lost,
+        new_here,
+    }
+}
+
 /// The rule doc's measures of `at` against the baseline `base` (both of `item`), `talker` the
 /// short-turn talker of a short scene.
 pub fn measure(
@@ -366,36 +417,17 @@ pub fn measure(
     let now = floors::paint(&hyp, uem);
     let (mut right, mut wrong, mut gained) = (0.0, 0.0, 0.0);
     for i in 0..floors::frames(uem) {
-        let was_here: Vec<usize> = was[i].iter().map(|l| label_index(l)).collect();
-        // A baseline speaker on here that was not on here in the baseline.
-        if now[i].iter().any(|l| match map[label_index(l)] {
-            Kept::New => false,
-            Kept::Base(b) => !was_here.contains(&b),
-            Kept::Missing => true,
-        }) {
+        let f = frame_move(&was[i], &now[i], &map);
+        if f.gained {
             gained += floors::FRAME_S;
         }
-        let new_here: Vec<&String> = now[i]
-            .iter()
-            .filter(|l| map[label_index(l)] == Kept::New)
-            .collect();
-        if new_here.is_empty() {
+        if f.new_here.is_empty() || f.lost.is_empty() {
             continue;
         }
-        let kept: Vec<usize> = now[i]
+        let ok = f
+            .new_here
             .iter()
-            .filter_map(|l| match map[label_index(l)] {
-                Kept::Base(b) => Some(b),
-                _ => None,
-            })
-            .collect();
-        let lost = was_here.iter().any(|b| !kept.contains(b));
-        if !lost {
-            continue;
-        }
-        let ok = new_here
-            .iter()
-            .any(|l| owner_of(l).is_some_and(|o| refs[i].iter().any(|r| r == o)));
+            .any(|n| owner_of(&format!("S{n}")).is_some_and(|o| refs[i].iter().any(|r| r == o)));
         if ok {
             right += floors::FRAME_S;
         } else {
@@ -480,7 +512,7 @@ pub fn pick(points: &[ShortPoint], base: &Baseline) -> Option<usize> {
 
 // ---- the run -----------------------------------------------------------------------------
 
-fn diarize_with(
+pub fn diarize_with(
     parts: (Segmenter, Embedder),
     config: &DiarizationConfig,
     regroup: Option<Regroup>,
@@ -489,6 +521,63 @@ fn diarize_with(
     let mut config = config.clone();
     config.clustering.regroup = regroup;
     diarize_at(parts, &config, HELD, floors::OFF, audio)
+}
+
+/// One item's runs, shared with the owner's calls (T12.73): records the model outputs in a
+/// direct baseline run, fails unless the replayed baseline equals it and made no new speaker,
+/// then replays each of `regroups`. Returns the baseline, one run per regrouping, the number
+/// of embeddings the direct run computed, and the models (their logs cleared: a log serves
+/// one item). `name` is what a failure names.
+pub fn item_runs(
+    mut parts: (Segmenter, Embedder),
+    config: &DiarizationConfig,
+    regroups: &[Regroup],
+    buffer: &MonoBuffer,
+    name: &str,
+) -> (Diarization, Vec<Diarization>, usize, (Segmenter, Embedder)) {
+    parts.0.replay = false;
+    parts.1.replay = false;
+    parts.1.outputs = 0;
+    let (direct, p) = diarize_with(parts, config, None, buffer);
+    parts = p;
+    let embeddings = parts.1.outputs;
+    parts.0.replay = true;
+    parts.1.replay = true;
+    let (again, p) = diarize_with(parts, config, None, buffer);
+    parts = p;
+    if again != direct {
+        fail(format!(
+            "{name}: the replayed baseline differs from the direct run"
+        ));
+    }
+    if !direct.new_speakers.is_empty() {
+        fail(format!("{name}: the baseline made a new speaker"));
+    }
+    let mut runs = Vec::with_capacity(regroups.len());
+    for r in regroups {
+        let (d, p) = diarize_with(parts, config, Some(*r), buffer);
+        parts = p;
+        runs.push(d);
+    }
+    parts.0.log.clear();
+    parts.1.log.clear();
+    (direct, runs, embeddings, parts)
+}
+
+/// Fails when a regrouped run gave a baseline speaker anything (`what` names the item and
+/// setting): a speaker from a cluster with no frame in the baseline, or any gained second.
+pub fn check_kept(what: &str, unmatched: Option<usize>, gained_s: f64) {
+    if let Some(k) = unmatched {
+        fail(format!(
+            "{what}: speaker S{k} comes from a cluster that holds no frame in the baseline, \
+             so a baseline speaker gained frames"
+        ));
+    }
+    if gained_s > 0.0 {
+        fail(format!(
+            "{what}: baseline speakers hold {gained_s:.2} s they did not hold in the baseline"
+        ));
+    }
 }
 
 /// `--short-turns`: `items` are the AMI dev meetings then the long scenes; the short scenes
@@ -519,49 +608,17 @@ pub fn run(
     for (i, item) in items.iter().enumerate() {
         eprintln!("cluster_sweep --short-turns: {}", item.name);
         let buffer = MonoBuffer::new(PIPELINE_RATE, item.audio.clone());
-        parts.0.replay = false;
-        parts.1.replay = false;
-        parts.1.outputs = 0;
-        let (direct, p) = diarize_with(parts, config, None, &buffer);
+        let regroups: Vec<Regroup> = settings.iter().map(|s| s.regroup()).collect();
+        let (direct, runs, n, p) = item_runs(parts, config, &regroups, &buffer, &item.name);
         parts = p;
-        embeddings.push(parts.1.outputs);
-        parts.0.replay = true;
-        parts.1.replay = true;
-        let (again, p) = diarize_with(parts, config, None, &buffer);
-        parts = p;
-        if again != direct {
-            fail(format!(
-                "{}: the replayed baseline differs from the direct run",
-                item.name
-            ));
-        }
-        if !direct.new_speakers.is_empty() {
-            fail(format!("{}: the baseline made a new speaker", item.name));
-        }
+        embeddings.push(n);
         baseline.push(measure(item, &direct, &direct, talker(i)));
         let mut row = Vec::with_capacity(settings.len());
-        for s in &settings {
-            let (d, p) = diarize_with(parts, config, Some(s.regroup()), &buffer);
-            parts = p;
-            let m = measure(item, &direct, &d, talker(i));
-            if let Some(k) = m.unmatched {
-                fail(format!(
-                    "{} at {s:?}: speaker S{k} comes from a cluster that holds no frame in the \
-                     baseline, so a baseline speaker gained frames",
-                    item.name
-                ));
-            }
-            if m.gained_s > 0.0 {
-                fail(format!(
-                    "{} at {s:?}: baseline speakers hold {:.2} s they did not hold in the \
-                     baseline",
-                    item.name, m.gained_s
-                ));
-            }
+        for (s, d) in settings.iter().zip(&runs) {
+            let m = measure(item, &direct, d, talker(i));
+            check_kept(&format!("{} at {s:?}", item.name), m.unmatched, m.gained_s);
             row.push(m);
         }
-        parts.0.log.clear();
-        parts.1.log.clear();
         rows.push(row);
     }
 

@@ -173,3 +173,46 @@ fn read_only_open_reads_persons_voiceprints_and_local_values_and_refuses_their_w
     let db = |v: &[(String, Vec<u8>)]| v.iter().find(|(n, _)| n == "earshot.db").cloned();
     assert_eq!(db(&after), db(&before));
 }
+
+#[test]
+fn read_only_open_reads_audio_file_rows_and_refuses_their_writes() {
+    use earshot_core::capture::TrackId;
+    use earshot_core::model::{AudioFileRepo, ClockDomain, Track};
+    use earshot_store::{AudioProvenance, DataDir};
+    let dir = TempDir::new("read-only-audio");
+    let data = DataDir::new(dir.path());
+    let clock = ManualClock::new(1_800_000_000_000);
+    let mut hlc = Hlc::new(DeviceId::from_bytes([6; 16]));
+    let mut rng = ChaCha8Rng::seed_from_u64(73);
+    let m = meeting("An invented call", 4);
+    let file = {
+        let mut store = Store::open(&data.db_path()).unwrap();
+        store.put_meeting(m.clone()).unwrap();
+        let mut stamp = Stamp {
+            clock: &clock,
+            hlc: &mut hlc,
+            rng: &mut rng,
+        };
+        let t = Track::new(m.id, TrackId::Reference, None, ClockDomain::Qpc, &mut stamp);
+        store.put_track(t.clone()).unwrap();
+        let mut w = data.track_writer(m.id, t.kind, 16_000).unwrap();
+        w.write(&[0.1; 1600]).unwrap();
+        let provenance = AudioProvenance {
+            pipeline_version: "earshot-0.1.0".into(),
+            aec_version: None,
+        };
+        store
+            .finalize_track_audio(w, &data, &t, provenance, &clock, &mut rng)
+            .unwrap()
+    };
+    let before = std::fs::read(data.db_path()).unwrap();
+    {
+        let mut ro = ReadOnlyStore::open(&data.db_path()).unwrap();
+        assert_eq!(ro.audio_files(m.id).unwrap(), vec![file.clone()]);
+        assert_eq!(ro.all_audio_files().unwrap(), vec![file.clone()]);
+        assert!(ro.put_audio_file(file.clone()).is_err());
+        assert!(ro.delete_audio_file(file.id).is_err());
+        assert_eq!(ro.audio_files(m.id).unwrap().len(), 1);
+    }
+    assert_eq!(std::fs::read(data.db_path()).unwrap(), before);
+}

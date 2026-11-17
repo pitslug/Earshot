@@ -1228,3 +1228,20 @@ impl VoiceprintRepo for ReadOnlyStore {
         Err(vp_err(read_only()))
     }
 }
+
+/// Reads audio file rows as [`Store`] does (T12.73, which reads the recordings they name in
+/// place); every write is refused before SQLite sees it.
+impl AudioFileRepo for ReadOnlyStore {
+    fn audio_files(&self, meeting: EntityId) -> Result<Vec<AudioFile>, RepoError> {
+        audio_of(&self.conn, meeting)
+    }
+    fn all_audio_files(&self) -> Result<Vec<AudioFile>, RepoError> {
+        all_audio(&self.conn)
+    }
+    fn put_audio_file(&mut self, _file: AudioFile) -> Result<(), RepoError> {
+        Err(read_only())
+    }
+    fn delete_audio_file(&mut self, _id: EntityId) -> Result<bool, RepoError> {
+        Err(read_only())
+    }
+}

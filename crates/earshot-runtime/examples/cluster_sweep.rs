@@ -5,6 +5,17 @@
 //!     --models <dir> [--out <file.json>] [--floors | --short-turns]
 //! ```
 //!
+//! With `--calls` (T12.73) no repo root is given and nothing is swept: the owner's call and
+//! their other kept far-end recordings, read from a copy of their store, at the baseline and
+//! at T12.66's pick, counts and times only (module `cluster_sweep_parts/calls.rs`, rule in
+//! `docs/far-speakers/short-turns.md`, "The owner's calls (T12.73)"):
+//!
+//! ```text
+//! cargo run --release -p earshot-runtime --example cluster_sweep -- --calls \
+//!     --db <earshot.db> --into fixtures/private/real-meetings/<run> --models <dir> \
+//!     [--call-file <t1273.toml>]
+//! ```
+//!
 //! With `--short-turns` (T12.66) the threshold and floor are held and the small-cluster
 //! regrouping of `earshot_core::diar::cluster` (step 6) is swept, with 10 short-turn scenes
 //! added to the data: the data, measures and rule are `docs/far-speakers/short-turns.md`
@@ -36,6 +47,10 @@ use serde_json::{Value, json};
 
 #[path = "cluster_sweep_parts/ami.rs"]
 mod ami;
+#[path = "cluster_sweep_parts/calls.rs"]
+mod calls;
+#[path = "store_parts/copy.rs"]
+mod copy;
 #[path = "cluster_sweep_parts/floors.rs"]
 mod floors;
 #[path = "cluster_sweep_parts/short_turns.rs"]
@@ -918,8 +933,39 @@ fn run_floors(
     }
 }
 
+/// The production final-pass speaker models on the CPU wrapped for record and replay, the
+/// final pass's diarisation settings and the embedding model's id. Fails unless the committed
+/// clustering threshold is the held one.
+fn load_parts(models: &ModelDir) -> ((Segmenter, Embedder), DiarizationConfig, String) {
+    init_onnx(models, Accelerator::Cpu).unwrap_or_else(|e| fail(format!("ONNX Runtime: {e}")));
+    let (segmenter, embedder) =
+        load_diarisation(models, Accelerator::Cpu).unwrap_or_else(|e| fail(e));
+    let model = embedder.info().model.clone();
+    let post = PostConfig::default();
+    let calibrated = post
+        .clustering_threshold(&model)
+        .unwrap_or_else(|e| fail(e));
+    if (calibrated - threshold(HELD)).abs() > 1e-6 {
+        fail(format!("the committed threshold is {calibrated}, not 0.68"));
+    }
+    (
+        (Cached::new(segmenter), Cached::new(embedder)),
+        post.diarization.clone(),
+        model.to_string(),
+    )
+}
+
 fn main() {
-    let mut it = std::env::args().skip(1);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--calls") {
+        let a = calls::parse_args(args.into_iter().filter(|a| a != "--calls"))
+            .unwrap_or_else(|e| fail(e));
+        let picks = calls::prepare(&a).unwrap_or_else(|e| fail(e));
+        let (parts, config, model) = load_parts(&a.models);
+        calls::run(picks, parts, &config, &model, &a.into);
+        return;
+    }
+    let mut it = args.into_iter();
     let root = PathBuf::from(
         it.next()
             .unwrap_or_else(|| fail("usage: cluster_sweep <repo-root> --models <dir>")),
@@ -961,32 +1007,13 @@ fn main() {
         None
     };
 
-    init_onnx(&models, Accelerator::Cpu).unwrap_or_else(|e| fail(format!("ONNX Runtime: {e}")));
-    let (segmenter, embedder) =
-        load_diarisation(&models, Accelerator::Cpu).unwrap_or_else(|e| fail(e));
-    let model = embedder.info().model.clone();
-    let post = PostConfig::default();
-    let calibrated = post
-        .clustering_threshold(&model)
-        .unwrap_or_else(|e| fail(e));
-    if (calibrated - threshold(HELD)).abs() > 1e-6 {
-        fail(format!("the committed threshold is {calibrated}, not 0.68"));
-    }
-    let config = post.diarization.clone();
-    let mut parts = (Cached::new(segmenter), Cached::new(embedder));
+    let (mut parts, config, model) = load_parts(&models);
     if floor_mode {
-        run_floors(&items, parts, &config, &model.to_string(), out.as_deref());
+        run_floors(&items, parts, &config, &model, out.as_deref());
         return;
     }
     if let Some(short_scenes) = short_scenes {
-        short_turns::run(
-            items,
-            short_scenes,
-            parts,
-            &config,
-            &model.to_string(),
-            out.as_deref(),
-        );
+        short_turns::run(items, short_scenes, parts, &config, &model, out.as_deref());
         return;
     }
 
@@ -1093,7 +1120,7 @@ fn main() {
         })
     };
     let report = json!({
-        "model": model.to_string(),
+        "model": model,
         "rule": "docs/far-speakers/ami-dev-calibration.md",
         "items": items.iter().map(|i| json!({
             "name": i.name,
