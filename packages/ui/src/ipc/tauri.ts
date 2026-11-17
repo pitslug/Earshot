@@ -236,6 +236,7 @@ export function createTauriIpc(): Ipc {
     onAudioCheckEvent: (handler) => events.audioCheckEvent.listen((event) => handler(event.payload)),
     onBenchmarkEvent: (handler) => events.benchmarkEvent.listen((event) => handler(event.payload)),
     onShellEvent: (handler) => events.shellEvent.listen((event) => handler(event.payload)),
+    onSyncEvent: (handler) => events.syncEvent.listen((event) => handler(event.payload)),
     onUpdateEvent: (handler) => events.updateEvent.listen((event) => handler(event.payload)),
     updateStatus: async () => unwrap(await commands.updateStatus()),
     checkForUpdate: async () => {

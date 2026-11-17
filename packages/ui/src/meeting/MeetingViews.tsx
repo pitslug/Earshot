@@ -819,7 +819,9 @@ export function MeetingStatus({
   const p = meeting.progress;
   const s = meeting.summary;
   const banners = afterMeetingBanners(meeting);
-  const result = s !== null && s.kind !== "Stored" && showResult;
+  // A summary another computer writes has one banner, the meeting page's own, read with the
+  // meeting so it goes when the summary arrives by sync (T12.81).
+  const result = s !== null && s.kind !== "Stored" && s.kind !== "Offloaded" && showResult;
   const captureFailed = meeting.endedReason === "Failed";
   const error = retryError !== null && showResult;
   if (s !== null && !result && banners.length === 0 && !captureFailed && !error) return null;
@@ -970,17 +972,9 @@ function ResultNotice({
           </MessageBarActions>
         </MessageBar>
       );
-    // Another computer writes it (T11.3db): it arrives by sync, or this computer writes it.
+    // Another computer writes it (T11.3db): the meeting page's waiting banner says so (T12.81).
     case "Offloaded":
-      return (
-        <MessageBar intent="info" layout="multiline" role="status">
-          <MessageBarBody>
-            <MessageBarTitle>Summary on another computer</MessageBarTitle>
-            {s.message} If it does not answer, this computer writes it.
-          </MessageBarBody>
-          <MessageBarActions>{dismiss}</MessageBarActions>
-        </MessageBar>
-      );
+      return null;
     case "Cancelled":
       return (
         <MessageBar intent="info" layout="multiline" role="status">

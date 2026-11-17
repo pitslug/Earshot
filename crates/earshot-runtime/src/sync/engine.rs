@@ -39,7 +39,7 @@ const MAX_RETRY: usize = 500;
 /// Sealed bytes per push request, under the relay's 4 MiB request limit after base64 and JSON.
 const PUSH_BYTES: usize = 2 * 1024 * 1024;
 
-/// What one tick did. Counts only.
+/// What one tick did: counts, and the ids of the meetings it changed here.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickReport {
     /// Rows sent and stored by the relay.
@@ -62,7 +62,31 @@ pub struct TickReport {
     pub deleted_meetings: usize,
     /// Repairs made by the convergence rules: "Me" people merged and summaries replaced.
     pub repaired: usize,
+    /// The meetings whose rows this tick wrote or deleted here (ids only;
+    /// [`earshot_store::Applied::meetings`] plus the meetings deleted here).
+    pub meetings: BTreeSet<EntityId>,
 }
+
+impl TickReport {
+    /// Whether the tick changed anything here: rows written, a meeting deleted or a repair.
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        self.written > 0 || self.deleted_meetings > 0 || self.repaired > 0
+    }
+}
+
+/// What a tick changed here, as the window hears it (T12.81): the ids of the meetings it touched,
+/// never anything they hold. Empty when only rows outside any meeting changed (people, folders,
+/// Dictionary words), which still changes what the meeting list shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncChanges {
+    /// The meetings whose rows were written or deleted here, in id order.
+    pub meetings: Vec<EntityId>,
+}
+
+/// Told after every tick that changed rows here ([`SyncClient::with_changes`]), on the sync
+/// thread, with no store lock held. It must not block: a host forwards the ids and returns.
+pub type ChangeListener = Arc<dyn Fn(&SyncChanges) + Send + Sync>;
 
 /// Another device's presence, as this device reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +123,8 @@ pub struct SyncClient {
     /// Where a summary worker's own local model runs ([`SyncClient::with_model_place`],
     /// T11.6a); sent only by a worker whose writer kind is `local` now.
     model_place: Option<super::presence::ModelPlace>,
+    /// Told after every tick that changed rows here ([`SyncClient::with_changes`]).
+    changes: Option<ChangeListener>,
 }
 
 impl std::fmt::Debug for SyncClient {
@@ -207,6 +233,7 @@ impl SyncClient {
             retried_all: AtomicBool::new(false),
             worker: None,
             model_place: None,
+            changes: None,
         })
     }
 
@@ -245,6 +272,16 @@ impl SyncClient {
     #[must_use]
     pub const fn with_model_place(mut self, place: Option<super::presence::ModelPlace>) -> Self {
         self.model_place = place;
+        self
+    }
+
+    /// After every tick that changed rows here (written, a meeting deleted, a repair), whatever
+    /// the tick's outcome, `listener` hears the ids of the meetings it touched (T12.81): the app
+    /// tells its window, which reads them again. A tick that only pushed, or pulled nothing
+    /// newer, says nothing.
+    #[must_use]
+    pub fn with_changes(mut self, listener: ChangeListener) -> Self {
+        self.changes = Some(listener);
         self
     }
 
@@ -378,19 +415,29 @@ impl SyncClient {
     pub fn tick(&self) -> Result<TickReport, SyncProblem> {
         let mut report = TickReport::default();
         let outcome = self.tick_into(&mut report);
-        let mut db = self.services.store();
-        let mut status = sync_status(&db).unwrap_or_default();
-        status.unreadable = status
-            .unreadable
-            .saturating_add(u64::try_from(report.unreadable).unwrap_or(u64::MAX));
-        match &outcome {
-            Ok(()) => {
-                status.problem = None;
-                status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
+        {
+            let mut db = self.services.store();
+            let mut status = sync_status(&db).unwrap_or_default();
+            status.unreadable = status
+                .unreadable
+                .saturating_add(u64::try_from(report.unreadable).unwrap_or(u64::MAX));
+            match &outcome {
+                Ok(()) => {
+                    status.problem = None;
+                    status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
+                }
+                Err(p) => status.problem = Some(*p),
             }
-            Err(p) => status.problem = Some(*p),
+            let _ = set_sync_status(&mut db, &status);
         }
-        let _ = set_sync_status(&mut db, &status);
+        // With the store lock free: what a failed tick applied before its problem is told too.
+        if report.changed()
+            && let Some(listener) = &self.changes
+        {
+            listener(&SyncChanges {
+                meetings: report.meetings.iter().copied().collect(),
+            });
+        }
         outcome.map(|()| report)
     }
 
@@ -596,7 +643,10 @@ impl SyncClient {
         }
         for meeting in self.meetings_deleted_elsewhere(page)? {
             match self.services.delete_meeting(meeting) {
-                Ok(_) => report.deleted_meetings += 1,
+                Ok(_) => {
+                    report.deleted_meetings += 1;
+                    report.meetings.insert(meeting);
+                }
                 // In use here: the apply holds its rows until it is free.
                 Err(crate::RuntimeError::MeetingBusy(_)) => {}
                 Err(_) => return Err(SyncProblem::Store),
@@ -628,6 +678,7 @@ impl SyncClient {
         report.held += applied.held.iter().sum::<usize>();
         report.repaired +=
             applied.mes_merged + applied.summaries_replaced + applied.withdrawals_kept;
+        report.meetings.extend(applied.meetings);
         Ok(())
     }
 

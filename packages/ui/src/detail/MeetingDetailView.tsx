@@ -375,8 +375,20 @@ export interface MeetingDetailViewProps {
   /** Changes when the meeting may have changed outside this page (its final transcript or its
    * summary was stored): the page reads it again. */
   refresh?: number;
+  /** Changes when a sync tick changed the meeting here (T12.81): the page reads it again. */
+  synced?: number;
   /** Changes when the meeting's summary was stored: the page shows it. */
   showSummary?: number;
+}
+
+/** The title of the waiting banner (T11.3db). */
+export const WAITING_TITLE = "Summary on another computer";
+
+/** Whether a job ended by asking another computer for the summary: the page's waiting banner
+ * (`MeetingDetail.waiting_for`) says so, once, so the job adds no notice of its own (T12.81). */
+function jobAskedAnotherComputer(job: JobView): boolean {
+  const e = job.last;
+  return e !== null && (e.type === "Offloaded" || (e.type === "Summary" && e.result.kind === "Offloaded"));
 }
 
 /** Why Re-transcribe and Summarise wait while the meeting finishes. */
@@ -518,6 +530,7 @@ export function MeetingDetailView({
   finishing = false,
   initialTab = "summary",
   refresh = 0,
+  synced = 0,
   showSummary = 0,
 }: MeetingDetailViewProps) {
   const styles = useStyles();
@@ -599,6 +612,13 @@ export function MeetingDetailView({
     seenRefresh.current = refresh;
     void reload();
   }, [refresh, reload]);
+  // Sync changed it here (another computer's summary, title or lines): read again (T12.81).
+  const seenSynced = useRef(synced);
+  useEffect(() => {
+    if (seenSynced.current === synced) return;
+    seenSynced.current = synced;
+    void reload();
+  }, [synced, reload]);
   const seenSummary = useRef(showSummary);
   useEffect(() => {
     if (seenSummary.current === showSummary) return;
@@ -728,8 +748,9 @@ export function MeetingDetailView({
   // Re-summarise on another computer (T11.3db): the meeting shows it waits.
   const askHelper = async (device: string) => {
     try {
-      const line = await ipc.askSummaryHelper(id, device);
-      setNotice({ key: "job", intent: "info", text: line });
+      await ipc.askSummaryHelper(id, device);
+      // The page's waiting banner says it, read with the meeting (T12.81).
+      setNotice((n) => (n?.key === "job" ? null : n));
       await reload();
       onChanged();
     } catch (e) {
@@ -738,7 +759,7 @@ export function MeetingDetailView({
   };
 
   const title = displayTitle(item);
-  const jobBar = job !== undefined ? jobNotice(job) : null;
+  const jobBar = job !== undefined && !jobAskedAnotherComputer(job) ? jobNotice(job) : null;
   const voices = detail ? voicesToName(detail) : 0;
   // A new summary being written replaces the one shown, so there is nothing settled to copy.
   const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
@@ -852,6 +873,16 @@ export function MeetingDetailView({
       </div>
 
       {status}
+      {/* The one banner for a summary written on another computer (T12.81): on either tab, and
+          gone once the summary arrives or the request settles, by sync or here. */}
+      {detail?.waiting_for != null && (
+        <MessageBar intent="info" layout="multiline" role="status">
+          <MessageBarBody>
+            <MessageBarTitle>{WAITING_TITLE}</MessageBarTitle>
+            {detail.waiting_for}
+          </MessageBarBody>
+        </MessageBar>
+      )}
       {jobBar !== null && (
         <MessageBar intent={jobBar.intent} layout="multiline">
           <MessageBarBody>
@@ -1358,20 +1389,19 @@ function SummaryTab({
           </MessageBarActions>
         </MessageBar>
       )}
-      {detail.waiting_for !== null && (
-        <MessageBar intent="info" layout="multiline" role="status">
-          <MessageBarBody>
-            <MessageBarTitle>Summary on another computer</MessageBarTitle>
-            {detail.waiting_for}
-          </MessageBarBody>
-        </MessageBar>
-      )}
       {detail.summary_run !== null && detail.waiting_for === null && (
         <MessageBar intent="info" layout="multiline" role="status">
           <MessageBarBody>{detail.summary_run}</MessageBarBody>
         </MessageBar>
       )}
-      <KeptLocal keptLocal={detail.kept_local} onAllow={onAllowWriter} />
+      {/* Only where it offers something (T12.81): its "Let <writer> summarise it". Not while
+          another computer writes the summary, whose banner is the page's one word on it. */}
+      <KeptLocal
+        keptLocal={
+          detail.waiting_for === null && detail.kept_local?.writer != null ? detail.kept_local : null
+        }
+        onAllow={onAllowWriter}
+      />
       {handoverLine(detail) !== null && <Caption1 className={styles.muted}>{handoverLine(detail)}</Caption1>}
       {s === null ? (
         <Body1 className={styles.muted}>

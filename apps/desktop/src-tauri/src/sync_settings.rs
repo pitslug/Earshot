@@ -18,8 +18,8 @@ use std::time::Duration;
 use earshot_runtime::Services;
 use earshot_runtime::offload::OffloadHost;
 use earshot_runtime::sync::{
-    AddressRefused, SyncClient, SyncOverview, SyncProblem, SyncThread, SyncTiming, SyncVault,
-    check_address,
+    AddressRefused, ChangeListener, SyncChanges, SyncClient, SyncOverview, SyncProblem, SyncThread,
+    SyncTiming, SyncVault, check_address,
 };
 use serde::Serialize;
 use specta::Type;
@@ -109,6 +109,27 @@ pub struct SyncHost {
     /// Who does summary offload's work (T11.3db): set once the app's meeting driver and job
     /// runner exist; a thread started without it runs no offload step.
     offload: Mutex<Option<Arc<dyn OffloadHost>>>,
+    /// Who hears what a tick changed here (T12.81): the window, through [`SyncEvent`]. A thread
+    /// started without it tells no one.
+    changes: Mutex<Option<ChangeListener>>,
+}
+
+/// What sync brought to this computer (T12.81): the meetings a tick changed here, by id only
+/// (never a title, a line or a summary), so the window reads them again. Sent only after a tick
+/// that changed rows; `meetings` is empty when only people, folders or Dictionary words changed,
+/// which the meeting list still reads again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type, tauri_specta::Event)]
+pub struct SyncEvent {
+    /// Meeting ids.
+    pub meetings: Vec<String>,
+}
+
+/// The window's event for what a tick changed: ids only.
+#[must_use]
+pub fn sync_event(changes: &SyncChanges) -> SyncEvent {
+    SyncEvent {
+        meetings: changes.meetings.iter().map(ToString::to_string).collect(),
+    }
 }
 
 impl std::fmt::Debug for SyncHost {
@@ -133,7 +154,14 @@ impl SyncHost {
             lifecycle: Mutex::new(()),
             timing,
             offload: Mutex::new(None),
+            changes: Mutex::new(None),
         }
+    }
+
+    /// Sets who hears what a tick changed here; threads started from now on tell it after every
+    /// tick that changed rows ([`SyncClient::with_changes`]).
+    pub fn set_change_listener(&self, listener: ChangeListener) {
+        *self.changes.lock().unwrap_or_else(PoisonError::into_inner) = Some(listener);
     }
 
     /// Sets who does summary offload's work; threads started from now on run its step after
@@ -179,9 +207,18 @@ impl SyncHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let changes = self
+            .changes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let next = if ready {
             SyncClient::new(services.clone(), self.vault())
                 .ok()
+                .map(|c| match changes {
+                    Some(l) => c.with_changes(l),
+                    None => c,
+                })
                 .and_then(|c| match offload {
                     Some(host) => SyncThread::start_offloading(c, self.timing, host).ok(),
                     None => SyncThread::start(c, self.timing).ok(),

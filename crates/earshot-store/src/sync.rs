@@ -298,6 +298,11 @@ pub struct Applied {
     /// Summary requests this device withdrew that came back open (claimed elsewhere before
     /// that device heard of the withdrawal): the withdrawal was stamped again here.
     pub withdrawals_kept: usize,
+    /// The meetings a row written here belongs to (a meeting's own row, its tracks, lines,
+    /// speakers, notes, summaries and summary requests), including a summary the convergence
+    /// rules replaced: ids only, so the window can read again what changed (T12.81). A row
+    /// held, ignored or skipped names nothing.
+    pub meetings: std::collections::BTreeSet<EntityId>,
 }
 
 impl Applied {
@@ -462,6 +467,7 @@ fn converge<C: Clock + ?Sized>(
             replaced.meta.touch(hlc, clock);
             crate::repo::put_summary(&tx.conn, &replaced)?;
             out.summaries_replaced += 1;
+            out.meetings.insert(replaced.meeting_id);
         }
     }
     Ok(())
@@ -781,6 +787,7 @@ impl Store {
                             unhold(tx, inc)?;
                             let _ = hlc.observe(inc.stamp, clock);
                             out.written += 1;
+                            out.meetings.insert(there.meeting_id);
                             continue;
                         }
                         Withdrawal::KeepMine => {
@@ -837,6 +844,9 @@ impl Store {
                 unhold(tx, inc)?;
                 let _ = hlc.observe(inc.stamp, clock);
                 out.written += 1;
+                if let Some(m) = row.meeting() {
+                    out.meetings.insert(m);
+                }
                 if let SyncedRow::Person(p) = row
                     && p.meta.deleted
                     && person_was_live

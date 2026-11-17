@@ -192,6 +192,56 @@ fn sync_two_devices_converge_after_concurrent_edits() {
 }
 
 #[test]
+fn sync_a_tick_that_changed_rows_names_their_meetings_and_only_then() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let heard: Arc<std::sync::Mutex<Vec<super::SyncChanges>>> = Arc::default();
+    let sink = Arc::clone(&heard);
+    let ca = a.client();
+    let cb = b
+        .client()
+        .with_changes(Arc::new(move |c: &super::SyncChanges| {
+            sink.lock().unwrap().push(c.clone());
+        }));
+    let calls = || heard.lock().unwrap().clone();
+
+    // Rows of its own pushed, nothing pulled: nothing changed here, nothing is said.
+    let own = meeting(&b.svc, "Pushed only", 6);
+    cb.tick().unwrap();
+    assert!(calls().is_empty(), "{:?}", calls());
+
+    // Rows pulled and written: one call naming their meeting, by id only.
+    let m = meeting(&a.svc, "From the other computer", 7);
+    ca.tick().unwrap();
+    let r = cb.tick().unwrap();
+    assert!(r.written > 0, "{r:?}");
+    assert_eq!(
+        calls(),
+        vec![super::SyncChanges { meetings: vec![m] }],
+        "the other device's meeting, and not this device's own ({own:?})"
+    );
+
+    // A quiet tick says nothing.
+    cb.tick().unwrap();
+    assert_eq!(calls().len(), 1);
+
+    // A rename there names the meeting again; a deletion there names it too.
+    a.clock.advance_ms(1_000);
+    a.rename(m, "Renamed there");
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    assert_eq!(calls().len(), 2);
+    assert_eq!(calls()[1].meetings, vec![m]);
+    a.clock.advance_ms(1_000);
+    a.svc.delete_meeting(m).unwrap();
+    ca.tick().unwrap();
+    let r = cb.tick().unwrap();
+    assert_eq!(r.deleted_meetings, 1, "{r:?}");
+    assert_eq!(calls().len(), 3);
+    assert_eq!(calls()[2].meetings, vec![m]);
+}
+
+#[test]
 fn sync_a_meeting_being_recorded_is_not_pushed_until_it_is_saved() {
     let relay = relay();
     let (a, b) = pair(&relay);

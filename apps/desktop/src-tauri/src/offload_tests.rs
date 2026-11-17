@@ -122,6 +122,23 @@ fn offload_copy_matches_the_shared_table() {
         assert!(!written_here_template(&why).contains("wrote"), "{why:?}");
     }
     assert_eq!(t["waiting"].as_str(), Some(WAITING_TEMPLATE));
+    let after = t["if_no_answer"].as_object().unwrap();
+    assert_eq!(after.len(), 3);
+    for (word, then) in [
+        ("writes_here", IfNoAnswer::WritesHere),
+        ("next_computer", IfNoAnswer::NextComputer),
+        ("nothing", IfNoAnswer::Nothing),
+    ] {
+        assert_eq!(
+            after[word].as_str(),
+            Some(if_no_answer_copy(then)),
+            "{word}"
+        );
+    }
+    assert_eq!(
+        waiting_banner(Some("Invented desk"), IfNoAnswer::WritesHere),
+        "Waiting for Invented desk to write the summary. If it does not answer, this computer writes it."
+    );
     assert_eq!(t["unnamed"].as_str(), Some(UNNAMED));
     assert_eq!(t["unnamed_inline"].as_str(), Some(UNNAMED_INLINE));
     // A name fills the sentence; without one the copy says "your other computer".
@@ -161,6 +178,90 @@ fn summary_reply() -> earshot_llm_replay::mock::MockResponse {
         &serde_json::to_string(&summary).unwrap(),
         "stop",
     )
+}
+
+/// The waiting banner says what follows the computer step (T12.81): the first step after it not
+/// yet tried, nothing after a named run, and this computer for a request from before the order.
+#[test]
+fn offload_waiting_banner_says_what_happens_if_the_computer_does_not_answer() {
+    use earshot_runtime::summary_order::OrderStep;
+    use earshot_runtime::summary_order::run::{
+        RunOrigin, RunState, RunView, StepOutcome, SummaryRun,
+    };
+    let desk = earshot_core::identity::DeviceId::from_bytes([4; 16]);
+    let laptop = earshot_core::identity::DeviceId::from_bytes([5; 16]);
+    let waiting = |origin, steps: Vec<OrderStep>, cursor, outcomes| {
+        RunView::Waiting(SummaryRun {
+            run: 1,
+            origin,
+            steps,
+            cursor,
+            outcomes,
+            waiting_on: None,
+            state: RunState::Waiting,
+            writer: None,
+        })
+    };
+    let order = vec![
+        OrderStep::Computer(desk),
+        OrderStep::Computer(laptop),
+        OrderStep::LOCAL,
+    ];
+    assert_eq!(
+        if_no_answer(&waiting(RunOrigin::Order, order.clone(), 1, vec![])),
+        IfNoAnswer::NextComputer
+    );
+    // Waiting on the second computer: the local model follows.
+    assert_eq!(
+        if_no_answer(&waiting(RunOrigin::Order, order.clone(), 2, vec![])),
+        IfNoAnswer::WritesHere
+    );
+    // A later step already tried (dropped) is passed over.
+    let tried = vec![StepOutcome {
+        step: 2,
+        word: earshot_runtime::summary_order::run::OutcomeWord::Offline,
+    }];
+    assert_eq!(
+        if_no_answer(&waiting(
+            RunOrigin::Order,
+            vec![
+                OrderStep::Computer(desk),
+                OrderStep::LOCAL,
+                OrderStep::Computer(laptop)
+            ],
+            1,
+            vec![StepOutcome {
+                step: 1,
+                word: earshot_runtime::summary_order::run::OutcomeWord::Offline,
+            }],
+        )),
+        IfNoAnswer::NextComputer
+    );
+    assert_eq!(
+        if_no_answer(&waiting(RunOrigin::Order, order.clone(), 3, tried)),
+        IfNoAnswer::Nothing
+    );
+    // The order's only step, and a named computer: nothing follows.
+    assert_eq!(
+        if_no_answer(&waiting(
+            RunOrigin::Order,
+            vec![OrderStep::Computer(desk)],
+            1,
+            vec![]
+        )),
+        IfNoAnswer::Nothing
+    );
+    assert_eq!(
+        if_no_answer(&waiting(
+            RunOrigin::Named,
+            vec![OrderStep::Computer(desk)],
+            1,
+            vec![]
+        )),
+        IfNoAnswer::Nothing
+    );
+    // No run waits: a request from before the order, whose hand-back writes here.
+    assert_eq!(if_no_answer(&RunView::None), IfNoAnswer::WritesHere);
 }
 
 /// The banner says this computer wrote the summary only when one was stored; for a summary
@@ -491,10 +592,14 @@ fn offload_resummarise_on_another_computer_asks_it_only_when_it_would_be_asked()
         ),
         (RequestState::Requested, 3, b.id())
     );
+    // The meeting's one banner names the computer and says what follows (T12.81): a named run
+    // writes nothing here if it does not answer.
     let detail = crate::detail::meeting_detail(&a.svc, m).unwrap();
     assert_eq!(
         detail.waiting_for.as_deref(),
-        Some("Waiting for your other computer to write the summary.")
+        Some(
+            "Waiting for Invented desk to write the summary. If it does not answer, no summary is written. Re-summarise to try again."
+        )
     );
     // A meeting in use is refused (its own summary step decides).
     let lease = a

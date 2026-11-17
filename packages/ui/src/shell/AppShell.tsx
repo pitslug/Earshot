@@ -385,6 +385,8 @@ export function AppShell({
   const [quitting, setQuitting] = useState(false);
   const [quitError, setQuitError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  // Per meeting, how many sync ticks changed it (T12.81): its open page reads it again.
+  const [synced, setSynced] = useState<Record<string, number>>({});
   const [nameVoices, setNameVoices] = useState(0);
   // The meeting the delete dialog asks about, and why a delete was refused.
   // With what deleting it means now (T12.38), asked before the dialog opens.
@@ -484,6 +486,32 @@ export function AppShell({
           return { ...all, [e.meeting]: { job: kind, last: e, seq, cancelling } };
         });
         if (isTerminal(e)) refresh();
+      })
+      .then((s) => {
+        if (live) stop = s;
+        else s();
+      });
+    return () => {
+      live = false;
+      stop?.();
+    };
+  }, [ipc, refresh]);
+
+  // What sync brought (T12.81): the list is read again, and so is each named meeting's page when
+  // it is open, so a summary, title or transcript from another computer shows without leaving it.
+  useEffect(() => {
+    let live = true;
+    let stop: (() => void) | null = null;
+    void ipc
+      .onSyncEvent((e) => {
+        if (!live) return;
+        refresh();
+        if (e.meetings.length === 0) return;
+        setSynced((all) => {
+          const next = { ...all };
+          for (const id of e.meetings) next[id] = (next[id] ?? 0) + 1;
+          return next;
+        });
       })
       .then((s) => {
         if (live) stop = s;
@@ -1280,6 +1308,7 @@ export function AppShell({
             selected={selected}
             ended={ended}
             refresh={detailRefresh}
+            synced={selected !== null ? (synced[selected.id] ?? 0) : 0}
             summaryStored={summaryStored}
             onNewMeeting={newMeeting}
             nameVoices={nameVoices}
@@ -1573,6 +1602,7 @@ function Detail({
   selected,
   ended,
   refresh,
+  synced,
   summaryStored,
   onNewMeeting,
   nameVoices,
@@ -1587,6 +1617,8 @@ function Detail({
   selected: MeetingListItem | null;
   ended: EndedMeeting | null;
   refresh: number;
+  /** Changes when sync changed the selected meeting (T12.81). */
+  synced: number;
   summaryStored: number;
   onNewMeeting: () => void;
   nameVoices: number;
@@ -1637,6 +1669,7 @@ function Detail({
       finishing={own?.finishing ?? false}
       initialTab={own?.finishing ? "transcript" : "summary"}
       refresh={own !== null ? refresh : 0}
+      synced={synced}
       showSummary={own !== null ? summaryStored : 0}
       nameVoices={nameVoices}
       onChanged={onChanged}

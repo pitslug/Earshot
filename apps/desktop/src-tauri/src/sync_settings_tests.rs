@@ -412,6 +412,83 @@ fn sync_host_starts_only_when_on_and_set_up() {
     a.host.stop_and_wait();
 }
 
+#[test]
+fn sync_event_carries_meeting_ids_only() {
+    let id = earshot_core::identity::EntityId::from_bytes([7; 16]);
+    let e = sync_event(&SyncChanges { meetings: vec![id] });
+    let json = serde_json::to_value(&e).unwrap();
+    assert_eq!(json, serde_json::json!({ "meetings": [id.to_string()] }));
+    // A change outside any meeting (people, folders) still says something, naming none.
+    let none = serde_json::to_value(sync_event(&SyncChanges::default())).unwrap();
+    assert_eq!(none, serde_json::json!({ "meetings": [] }));
+}
+
+/// A meeting with a title, made on `svc`'s device.
+fn titled_meeting(svc: &Services, title: &str) -> earshot_core::identity::EntityId {
+    use earshot_core::model::{Meeting, MeetingRepo, Stamp};
+    use earshot_core::prompt::Template;
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+    let clock = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(81);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let mut m = Meeting::new(title, 1_800_000_000_000, 600, Template::General, &mut stamp);
+    m.duration_ms = Some(60_000);
+    let id = m.id;
+    store.put_meeting(m).unwrap();
+    id
+}
+
+#[test]
+fn sync_host_tells_the_window_which_meetings_a_tick_changed() {
+    let env = relay();
+    let a = computer("sync-changes-a");
+    let b = computer("sync-changes-b");
+    let heard: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let sink = Arc::clone(&heard);
+    b.host.set_change_listener(Arc::new(move |c: &SyncChanges| {
+        sink.lock()
+            .unwrap()
+            .push(serde_json::to_string(&sync_event(c)).unwrap());
+    }));
+    let url = env.relay.url();
+    set_up(&a.svc, &a.host, &url, SECRET).unwrap();
+    let code = offer_code(&a.svc, &a.host).unwrap();
+    join(&b.svc, &b.host, &url, &code.code).unwrap();
+
+    let title = "An invented planning meeting";
+    let m = titled_meeting(&a.svc, title);
+    a.host.nudge();
+    let want = serde_json::json!({ "meetings": [m.to_string()] }).to_string();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if heard.lock().unwrap().contains(&want) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "never told: {:?}",
+            heard.lock().unwrap()
+        );
+        b.host.nudge();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Every event is ids only: no title, ever.
+    for e in heard.lock().unwrap().iter() {
+        assert!(!e.contains(title), "{e}");
+        let v: serde_json::Value = serde_json::from_str(e).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 1, "{e}");
+    }
+    a.host.stop_and_wait();
+    b.host.stop_and_wait();
+}
+
 /// Whether `b` lists the other computer as online, within `limit`.
 fn sync_other_online_within(b: &Computer, want: bool, limit: Duration) -> bool {
     let deadline = Instant::now() + limit;

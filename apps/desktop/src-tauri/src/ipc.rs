@@ -183,7 +183,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::audio_check::AudioCheckEvent,
             crate::benchmark::BenchmarkEvent,
             crate::cuda_settings::CudaEvent,
-            crate::shell::ShellEvent
+            crate::shell::ShellEvent,
+            crate::sync_settings::SyncEvent
         ])
         .dangerously_cast_bigints_to_number()
 }
