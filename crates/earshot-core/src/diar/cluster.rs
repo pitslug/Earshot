@@ -36,6 +36,15 @@
 //!    "cosine")`), unless that best cosine is below [`ClusteringConfig::unassigned_floor`]:
 //!    such a small cluster is kept apart and marked unassigned ([`Clustering::unassigned`]),
 //!    so its speech gets no speaker rather than an unlike one (T12.65).
+//! 6. **Regrouping small clusters** (T12.66, off by default, [`ClusteringConfig::regroup`]):
+//!    the small clusters of step 5 whose best cosine to every large centroid is below
+//!    [`Regroup::floor`] are clustered among themselves (centroid linkage, each small cluster
+//!    one node, merging while the closest pair is at most [`Regroup::distance`] apart), and a
+//!    grouped cluster holding at least [`Regroup::min_speech_s`] of speech becomes a new
+//!    speaker ([`Clustering::new_speakers`]). Steps 1-5 are unchanged by it: the labels and
+//!    centroids are step 5's, and the new speakers are an extra output a caller may use
+//!    ([`super::pipeline`] step 5). The rule and the measurement are
+//!    `docs/far-speakers/short-turns.md`.
 //!
 //! The search keeps each cluster's nearest neighbour and recomputes it only for clusters
 //! affected by a merge (the "generic" algorithm of D. Müllner, "Modern hierarchical,
@@ -107,6 +116,54 @@ pub struct ClusteringConfig {
     /// default -1, which never leaves anything out (pyannote 3.1 bit for bit). A model's
     /// value comes from [`calibrated_unassigned_floor`].
     pub unassigned_floor: f32,
+    /// Regrouping of small clusters like no large cluster into new speakers (module docs,
+    /// step 6; T12.66, `docs/far-speakers/short-turns.md`). Default `None`: off, today's
+    /// clustering. Evaluation only: nothing in the app sets it.
+    pub regroup: Option<Regroup>,
+}
+
+/// Settings of the small-cluster regrouping (T12.66, module docs step 6).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Regroup {
+    /// A small cluster whose highest cosine to every large centroid is below this is a
+    /// candidate group (the test of [`ClusteringConfig::unassigned_floor`]); at 1 or above
+    /// every small cluster is one. In `[-1, 1]`.
+    pub floor: f32,
+    /// Candidate groups merge while the closest pair's centroid distance (Euclidean between
+    /// the means of their members' unit embeddings, as step 2) is at most this. In `[0, 2]`.
+    pub distance: f32,
+    /// A grouped cluster becomes a new speaker only with at least this much speech (seconds,
+    /// the sum of its members' speech estimates). Finite and `>= 0`.
+    pub min_speech_s: f32,
+    /// Weighted linkage: each member embedding counts in a mean by its speech estimate
+    /// instead of once. A candidate group with no speech at all then takes no part.
+    pub weighted: bool,
+}
+
+impl Regroup {
+    /// Checks parameter ranges.
+    ///
+    /// # Errors
+    /// [`DiarError::Config`] for a floor outside `[-1, 1]`, a distance outside `[0, 2]` or a
+    /// negative or non-finite minimum speech.
+    pub fn validate(&self) -> Result<(), DiarError> {
+        if !(-1.0..=1.0).contains(&self.floor) {
+            return Err(DiarError::Config(
+                "the regroup floor must be a cosine in [-1, 1]".to_owned(),
+            ));
+        }
+        if !(0.0..=2.0).contains(&self.distance) {
+            return Err(DiarError::Config(
+                "the regroup distance must be in [0, 2]".to_owned(),
+            ));
+        }
+        if !(self.min_speech_s.is_finite() && self.min_speech_s >= 0.0) {
+            return Err(DiarError::Config(
+                "the regroup minimum speech must be finite and >= 0".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for ClusteringConfig {
@@ -118,6 +175,7 @@ impl Default for ClusteringConfig {
             min_cluster_size: 12,
             max_train_embeddings: 1000,
             unassigned_floor: -1.0,
+            regroup: None,
         }
     }
 }
@@ -227,9 +285,12 @@ impl ClusteringConfig {
     ///
     /// # Errors
     /// [`DiarError::Config`] for a threshold outside `[0, 2]`, `min_speakers == 0`,
-    /// `max_speakers < min_speakers`, `max_train_embeddings == 0`, or an unassigned floor
-    /// outside `[-1, 1]`.
+    /// `max_speakers < min_speakers`, `max_train_embeddings == 0`, an unassigned floor
+    /// outside `[-1, 1]`, or invalid [`Regroup`] settings.
     pub fn validate(&self) -> Result<(), DiarError> {
+        if let Some(r) = &self.regroup {
+            r.validate()?;
+        }
         if !(-1.0..=1.0).contains(&self.unassigned_floor) {
             return Err(DiarError::Config(
                 "the unassigned floor must be a cosine in [-1, 1]".to_owned(),
@@ -268,24 +329,76 @@ pub struct Clustering {
     /// Per cluster: a small cluster left unassigned because it is like no large cluster
     /// (module docs, step 5). Always all false with the default floor.
     pub unassigned: Vec<bool>,
+    /// Unit-length centroid of each new speaker made by the regrouping (module docs, step 6;
+    /// the normalised plain mean of its members' unit embeddings), in order of its lowest
+    /// small cluster. Empty unless [`ClusteringConfig::regroup`] is set.
+    pub new_speakers: Vec<Vec<f32>>,
+    /// Per input embedding, the new speaker it belongs to (an index into
+    /// [`Clustering::new_speakers`]). A training embedding belongs to the new speaker made
+    /// from its small cluster; an embedding outside the training subset belongs to the most
+    /// similar new speaker only when it is more similar to it than to its cluster's centroid.
+    /// All `None` unless [`ClusteringConfig::regroup`] is set.
+    pub new_speaker_of: Vec<Option<usize>>,
 }
 
-/// Clusters `embeddings` (all the same dimension, any scale). See the module docs.
+/// Clusters `embeddings` (all the same dimension, any scale). See the module docs. The same as
+/// [`cluster_embeddings_with`] with no speech estimates, so a [`ClusteringConfig::regroup`]
+/// setting is refused.
 ///
 /// # Errors
-/// [`DiarError::Config`] for an invalid `cfg`, [`DiarError::Shape`] for differing
-/// dimensions or a non-finite or all-zero embedding.
+/// [`DiarError::Config`] for an invalid `cfg` or one with a regroup setting,
+/// [`DiarError::Shape`] for differing dimensions or a non-finite or all-zero embedding.
 pub fn cluster_embeddings(
     embeddings: &[Vec<f32>],
     cfg: &ClusteringConfig,
 ) -> Result<Clustering, DiarError> {
+    cluster_embeddings_with(embeddings, None, cfg)
+}
+
+/// [`cluster_embeddings`] with each embedding's speech estimate in seconds (`speech[i]` for
+/// `embeddings[i]`), which the regrouping (module docs, step 6) needs for its minimum speech
+/// and weighting. Without a regroup setting the speech estimates change nothing.
+///
+/// # Errors
+/// [`DiarError::Config`] for an invalid `cfg` or a regroup setting without `speech`;
+/// [`DiarError::Shape`] for differing dimensions, a non-finite or all-zero embedding, a
+/// `speech` of another length or a negative or non-finite speech estimate.
+pub fn cluster_embeddings_with(
+    embeddings: &[Vec<f32>],
+    speech: Option<&[f32]>,
+    cfg: &ClusteringConfig,
+) -> Result<Clustering, DiarError> {
     cfg.validate()?;
     let n = embeddings.len();
+    if let Some(sp) = speech {
+        if sp.len() != n {
+            return Err(DiarError::Shape(format!(
+                "{} speech estimates for {n} embeddings",
+                sp.len()
+            )));
+        }
+        if sp.iter().any(|x| !(x.is_finite() && *x >= 0.0)) {
+            return Err(DiarError::Shape(
+                "a speech estimate is negative or non-finite".to_owned(),
+            ));
+        }
+    }
+    let regroup = match (&cfg.regroup, speech) {
+        (None, _) => None,
+        (Some(r), Some(sp)) => Some((*r, sp)),
+        (Some(_), None) => {
+            return Err(DiarError::Config(
+                "regrouping small clusters needs each embedding's speech".to_owned(),
+            ));
+        }
+    };
     if n == 0 {
         return Ok(Clustering {
             labels: Vec::new(),
             centroids: Vec::new(),
             unassigned: Vec::new(),
+            new_speakers: Vec::new(),
+            new_speaker_of: Vec::new(),
         });
     }
     let dim = embeddings[0].len();
@@ -437,11 +550,19 @@ pub fn cluster_embeddings(
     // A floor of -1 never leaves anything out (exactly pyannote's step 5).
     let floor = f64::from(cfg.unassigned_floor);
     let mut left_out: Vec<Vec<usize>> = Vec::new();
+    // Step 6's candidate groups (T12.66): small clusters merged here whose best cosine is
+    // below the regroup floor. Collected only with a regroup setting.
+    let mut candidates: Vec<Vec<usize>> = Vec::new();
     for g in small_groups {
         let (target, best) = nearest_with_cosine(&sum_of(&g), &large_centroids);
         if floor > -1.0 && best < floor {
             left_out.push(g);
         } else {
+            if let Some((r, _)) = &regroup
+                && (r.floor >= 1.0 || best < f64::from(r.floor))
+            {
+                candidates.push(g.clone());
+            }
             final_members[target].extend(g);
         }
     }
@@ -501,11 +622,137 @@ pub fn cluster_embeddings(
             unassigned[*l] = r >= assigned_count;
         }
     }
+    let (new_speakers, new_speaker_of) = match regroup {
+        None => (Vec::new(), vec![None; n]),
+        Some((r, sp)) => {
+            let embedding_of = |t: usize| train[t];
+            let speech_of = |t: usize| f64::from(sp[train[t]]);
+            let made = regroup_candidates(&candidates, &units, &speech_of, &r, dim, &embedding_of);
+            let mut of = vec![None; n];
+            for (s, (_, members)) in made.iter().enumerate() {
+                for &t in members {
+                    of[train[t]] = Some(s);
+                }
+            }
+            let new_sums: Vec<Vec<f64>> = made.into_iter().map(|(sum, _)| sum).collect();
+            if !new_sums.is_empty() {
+                for i in (0..n).filter(|&i| !in_train[i]) {
+                    let u: Vec<f64> = units[i].iter().map(|&x| f64::from(x)).collect();
+                    let (s, to_new) = nearest_with_cosine(&u, &new_sums);
+                    let own = raw_labels[i];
+                    let (_, to_own) = nearest_with_cosine(&u, &centroids[own..=own]);
+                    if to_new > to_own {
+                        of[i] = Some(s);
+                    }
+                }
+            }
+            let speakers = new_sums
+                .iter()
+                .map(|c| {
+                    let nrm = norm(c).max(f64::MIN_POSITIVE);
+                    c.iter().map(|&x| (x / nrm) as f32).collect()
+                })
+                .collect();
+            (speakers, of)
+        }
+    };
     Ok(Clustering {
         labels,
         centroids: out_centroids,
         unassigned,
+        new_speakers,
+        new_speaker_of,
     })
+}
+
+/// Step 6 (T12.66): clusters the candidate groups (each a list of training indices `t`, whose
+/// unit embedding is `units[embedding_of(t)]` and speech estimate `speech_of(t)`) among
+/// themselves by centroid linkage while the closest pair is at most `r.distance` apart (lowest
+/// index on ties), and keeps every grouped cluster with at least `r.min_speech_s` of speech.
+/// Returns, per new speaker in order of its lowest group, the plain sum of its members' unit
+/// embeddings and its members.
+fn regroup_candidates(
+    candidates: &[Vec<usize>],
+    units: &[Vec<f32>],
+    speech_of: &dyn Fn(usize) -> f64,
+    r: &Regroup,
+    dim: usize,
+    embedding_of: &dyn Fn(usize) -> usize,
+) -> Vec<(Vec<f64>, Vec<usize>)> {
+    // Linkage sums and sizes: plain counts every member once, weighted by its speech.
+    let weight = |t: usize| if r.weighted { speech_of(t) } else { 1.0 };
+    let mut sums: Vec<Vec<f64>> = Vec::with_capacity(candidates.len());
+    let mut sizes: Vec<f64> = Vec::with_capacity(candidates.len());
+    let mut members: Vec<Vec<usize>> = candidates.to_vec();
+    for g in candidates {
+        let mut s = vec![0.0f64; dim];
+        let mut total = 0.0;
+        for &t in g {
+            let w = weight(t);
+            total += w;
+            for (x, &y) in s.iter_mut().zip(&units[embedding_of(t)]) {
+                *x += w * f64::from(y);
+            }
+        }
+        sums.push(s);
+        sizes.push(total);
+    }
+    // A weighted group with no speech has no mean: it takes no part (stays where step 5 put
+    // it, since it could not reach a positive minimum speech on its own either).
+    let mut alive: Vec<bool> = sizes.iter().map(|&w| w > 0.0).collect();
+    let limit = f64::from(r.distance);
+    loop {
+        // Closest live pair, lowest (a, b) on ties.
+        let mut best: Option<(f64, usize, usize)> = None;
+        for a in (0..sums.len()).filter(|&a| alive[a]) {
+            for b in (a + 1..sums.len()).filter(|&b| alive[b]) {
+                let (wa, wb) = (1.0 / sizes[a], 1.0 / sizes[b]);
+                let d = sums[a]
+                    .iter()
+                    .zip(&sums[b])
+                    .map(|(x, y)| {
+                        let d = x * wa - y * wb;
+                        d * d
+                    })
+                    .sum::<f64>()
+                    .sqrt();
+                if best.is_none_or(|(bd, _, _)| d < bd) {
+                    best = Some((d, a, b));
+                }
+            }
+        }
+        let Some((d, a, b)) = best else { break };
+        if d > limit {
+            break;
+        }
+        let gone = std::mem::take(&mut sums[b]);
+        for (x, y) in sums[a].iter_mut().zip(&gone) {
+            *x += y;
+        }
+        sizes[a] += sizes[b];
+        let moved = std::mem::take(&mut members[b]);
+        members[a].extend(moved);
+        alive[b] = false;
+    }
+    let min_speech = f64::from(r.min_speech_s);
+    let mut out = Vec::new();
+    for (a, mem) in members.into_iter().enumerate() {
+        if !alive[a] {
+            continue;
+        }
+        let speech: f64 = mem.iter().map(|&t| speech_of(t)).sum();
+        if speech < min_speech {
+            continue;
+        }
+        let mut s = vec![0.0f64; dim];
+        for &t in &mem {
+            for (x, &y) in s.iter_mut().zip(&units[embedding_of(t)]) {
+                *x += f64::from(y);
+            }
+        }
+        out.push((s, mem));
+    }
+    out
 }
 
 /// One row of the dendrogram: cluster slot `gone` merged into slot `keep` (`keep < gone`;

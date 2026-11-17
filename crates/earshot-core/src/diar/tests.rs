@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::pipeline::{assign_locals, window_starts};
+use super::pipeline::{assign_locals, frame_with_new, window_starts};
 use super::*;
 use crate::asr::{CancelToken, MeetingTime, Segment, Word};
 use crate::audio::{MonoBuffer, SampleRate};
@@ -1567,4 +1567,438 @@ fn diar_end_to_end_words_get_their_true_speaker() {
         &d.turns,
     );
     assert_eq!(words, vec![Some(map(0)), Some(map(1))]);
+}
+
+// ---------------------------------------------------------------- regrouping (T12.66)
+
+fn regroup(floor: f32, distance: f32, min_speech_s: f32, weighted: bool) -> Option<Regroup> {
+    Some(Regroup {
+        floor,
+        distance,
+        min_speech_s,
+        weighted,
+    })
+}
+
+fn regrouped(base: &ClusteringConfig, r: Option<Regroup>) -> ClusteringConfig {
+    ClusteringConfig {
+        regroup: r,
+        ..base.clone()
+    }
+}
+
+/// `dim`-dimensional unit vector at `degrees` in the plane of axes `a` and `b`.
+fn in_plane(a: usize, b: usize, degrees: f32, dim: usize) -> Vec<f32> {
+    let mut v = vec![0.0; dim];
+    let r = degrees.to_radians();
+    v[a] = r.cos();
+    v[b] = r.sin();
+    v
+}
+
+/// Two large clusters on axes 0 and 1 (30 points each, 1 s of speech each), then three small
+/// clusters of 4 points (1 s each) of one voice in directions near axis 5 that stay apart at a
+/// 0.3 threshold, then one small cluster of 4 points (1 s each) on axis 10, unlike all.
+/// Returns the points, their speech and the index of the first voice point.
+fn speakers_and_a_split_voice() -> (Vec<Vec<f32>>, Vec<f32>, usize) {
+    let dim = 64;
+    let (mut pts, _) = points(&[axis(0, dim), axis(1, dim)], 30, 0.02, 91);
+    let first = pts.len();
+    let mut n = Noise(95);
+    let mut dirs: Vec<Vec<f32>> = (6..9)
+        .map(|k| {
+            let mut v = axis(5, dim);
+            v[k] = 0.4;
+            v
+        })
+        .collect();
+    dirs.push(axis(10, dim));
+    for d in &dirs {
+        for _ in 0..4 {
+            pts.push(d.iter().map(|&x| x + 0.01 * n.next()).collect());
+        }
+    }
+    let speech = vec![1.0; pts.len()];
+    (pts, speech, first)
+}
+
+#[test]
+fn diar_cluster_regroup_never_changes_the_clustering_it_starts_from() {
+    // The labels, centroids and unassigned flags are those of today's clustering whatever the
+    // regroup setting (the inputs and expected bits of
+    // `diar_cluster_unassigned_floor_of_minus_one_is_todays_clustering`); a setting nothing
+    // qualifies for (floor -1) makes no new speaker.
+    assert_eq!(ClusteringConfig::default().regroup, None);
+    let c = unit_centroids(4, 64, 81);
+    let (mut pts, _) = points(&c, 20, 0.05, 82);
+    pts.extend(outliers(3, 64, 83));
+    let speech = vec![0.5; pts.len()];
+    let cases: [(ClusteringConfig, u64); 4] = [
+        (cfg(PYANNOTE_THRESHOLD, 12), 0x309c_a7dc_18ec_7f5b),
+        (cfg(0.2, 12), 0x4bdf_9397_468a_9b3e),
+        (cfg(2.0, 12).with_num_speakers(4), 0x309c_a7dc_18ec_7f5b),
+        (cfg(0.5, 1), 0x964c_e42f_4c55_66ac),
+    ];
+    for (base, hash) in cases {
+        let today = cluster_embeddings(&pts, &base).unwrap();
+        assert_eq!(centroid_hash(&today.centroids), hash, "{base:?}");
+        assert!(today.new_speakers.is_empty());
+        assert_eq!(today.new_speaker_of, vec![None; pts.len()]);
+        let none = cluster_embeddings_with(&pts, Some(&speech), &base).unwrap();
+        assert_eq!(none, today, "{base:?}");
+        let nothing = cluster_embeddings_with(
+            &pts,
+            Some(&speech),
+            &regrouped(&base, regroup(-1.0, 2.0, 0.0, false)),
+        )
+        .unwrap();
+        assert_eq!(nothing, today, "{base:?}");
+        for weighted in [false, true] {
+            let all = cluster_embeddings_with(
+                &pts,
+                Some(&speech),
+                &regrouped(&base, regroup(1.0, 2.0, 0.0, weighted)),
+            )
+            .unwrap();
+            assert_eq!(all.labels, today.labels, "{base:?}");
+            assert_eq!(all.centroids, today.centroids, "{base:?}");
+            assert_eq!(all.unassigned, today.unassigned, "{base:?}");
+        }
+    }
+}
+
+#[test]
+fn diar_cluster_regroup_makes_one_new_speaker_of_a_voice_split_into_small_clusters() {
+    let (pts, speech, first) = speakers_and_a_split_voice();
+    let base = cfg(0.3, 12);
+    let today = cluster_embeddings(&pts, &base).unwrap();
+    // Today the voice's three small clusters (and the unlike one) go to the two speakers.
+    assert_eq!(today.centroids.len(), 2);
+    let r = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(0.3, 0.6, 8.0, false)),
+    )
+    .unwrap();
+    assert_eq!(r.labels, today.labels);
+    assert_eq!(r.centroids, today.centroids);
+    assert_eq!(r.new_speakers.len(), 1);
+    assert!(cosine(&r.new_speakers[0], &axis(5, 64)) > 0.9);
+    // The voice's 12 points are the new speaker; the speakers and the unlike cluster (4 s,
+    // below the 8 s minimum, and too far from the voice to join it) are not.
+    assert!(
+        r.new_speaker_of[first..first + 12]
+            .iter()
+            .all(|s| *s == Some(0))
+    );
+    assert!(r.new_speaker_of[..first].iter().all(Option::is_none));
+    assert!(r.new_speaker_of[first + 12..].iter().all(Option::is_none));
+    // At a distance below the clusters' spacing nothing groups, and 4 s each is not enough.
+    let apart = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(0.3, 0.3, 8.0, false)),
+    )
+    .unwrap();
+    assert!(apart.new_speakers.is_empty());
+    // A floor below the voice's cosine to the speakers (about 0) takes no candidate.
+    let strict = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(-0.5, 0.6, 8.0, false)),
+    )
+    .unwrap();
+    assert!(strict.new_speakers.is_empty());
+}
+
+#[test]
+fn diar_cluster_regroup_with_too_little_speech_falls_back_to_the_baseline() {
+    let (pts, speech, _) = speakers_and_a_split_voice();
+    let base = cfg(0.3, 12);
+    let today = cluster_embeddings(&pts, &base).unwrap();
+    for weighted in [false, true] {
+        let r = cluster_embeddings_with(
+            &pts,
+            Some(&speech),
+            &regrouped(&base, regroup(0.3, 0.6, 12.5, weighted)),
+        )
+        .unwrap();
+        assert_eq!(r, today, "weighted {weighted}");
+    }
+    // Exactly the minimum is enough.
+    let r = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(0.3, 0.6, 12.0, false)),
+    )
+    .unwrap();
+    assert_eq!(r.new_speakers.len(), 1);
+}
+
+#[test]
+fn diar_cluster_regroup_weighted_and_plain_linkage_differ() {
+    // Three single-point small clusters at 0, +30 and -30 degrees in the plane of axes 5 and
+    // 6 (0.52 apart from 0 to each side). 0 and +30 merge first (lowest index on the tie).
+    // Plain, their mean is 0.75 from -30, beyond 0.6; weighted, the 0-degree point's 10 s
+    // pulls the mean to 0.54 from -30, so all three group.
+    let dim = 64;
+    let (mut pts, _) = points(&[axis(0, dim), axis(1, dim)], 30, 0.02, 91);
+    let first = pts.len();
+    for deg in [0.0, 30.0, -30.0] {
+        pts.push(in_plane(5, 6, deg, dim));
+    }
+    let mut speech = vec![1.0; first];
+    speech.extend([10.0, 0.5, 3.0]);
+    let base = cfg(0.3, 12);
+    let plain = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(0.3, 0.6, 4.0, false)),
+    )
+    .unwrap();
+    assert_eq!(plain.new_speakers.len(), 1);
+    assert_eq!(&plain.new_speaker_of[first..], &[Some(0), Some(0), None]);
+    let weighted = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(0.3, 0.6, 4.0, true)),
+    )
+    .unwrap();
+    assert_eq!(weighted.new_speakers.len(), 1);
+    assert_eq!(
+        &weighted.new_speaker_of[first..],
+        &[Some(0), Some(0), Some(0)]
+    );
+    assert_eq!(plain.labels, weighted.labels);
+    // A weighted group with no speech takes no part.
+    speech[first + 2] = 0.0;
+    let silent = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(0.3, 0.6, 4.0, true)),
+    )
+    .unwrap();
+    assert_eq!(&silent.new_speaker_of[first..], &[Some(0), Some(0), None]);
+}
+
+#[test]
+fn diar_cluster_regroup_gives_embeddings_outside_the_training_subset_by_similarity() {
+    // Only 60 of the 76 embeddings train: an embedding left out goes to the new speaker only
+    // when it is more like it than like its own cluster's centroid.
+    let (pts, speech, first) = speakers_and_a_split_voice();
+    let base = ClusteringConfig {
+        max_train_embeddings: 60,
+        ..cfg(0.3, 12)
+    };
+    let today = cluster_embeddings(&pts, &base).unwrap();
+    let r = cluster_embeddings_with(
+        &pts,
+        Some(&speech),
+        &regrouped(&base, regroup(0.3, 0.6, 3.0, false)),
+    )
+    .unwrap();
+    assert_eq!(r.labels, today.labels);
+    assert_eq!(r.new_speakers.len(), 1, "{:?}", r.new_speaker_of);
+    let voice = &r.new_speakers[0];
+    for (i, p) in pts.iter().enumerate() {
+        let to_new = cosine(p, voice);
+        let to_own = cosine(p, &today.centroids[today.labels[i]]);
+        if i < first || i >= first + 12 {
+            assert_eq!(r.new_speaker_of[i], None, "{i}");
+        } else {
+            assert!(to_new > to_own, "{i}");
+            assert_eq!(r.new_speaker_of[i], Some(0), "{i}");
+        }
+    }
+}
+
+#[test]
+fn diar_cluster_regroup_is_validated_and_needs_speech() {
+    let bad = [
+        (-1.01, 0.8, 4.0),
+        (1.01, 0.8, 4.0),
+        (f32::NAN, 0.8, 4.0),
+        (0.3, -0.01, 4.0),
+        (0.3, 2.01, 4.0),
+        (0.3, f32::NAN, 4.0),
+        (0.3, 0.8, -1.0),
+        (0.3, 0.8, f32::INFINITY),
+        (0.3, 0.8, f32::NAN),
+    ];
+    for (f, d, m) in bad {
+        let c = regrouped(&ClusteringConfig::default(), regroup(f, d, m, false));
+        assert!(
+            matches!(c.validate(), Err(DiarError::Config(_))),
+            "{f} {d} {m}"
+        );
+    }
+    let good = regrouped(&ClusteringConfig::default(), regroup(1.0, 2.0, 0.0, true));
+    assert!(good.validate().is_ok());
+    let (pts, speech, _) = speakers_and_a_split_voice();
+    assert!(matches!(
+        cluster_embeddings(&pts, &good),
+        Err(DiarError::Config(_))
+    ));
+    assert!(matches!(
+        cluster_embeddings_with(&pts, Some(&speech[1..]), &good),
+        Err(DiarError::Shape(_))
+    ));
+    let mut negative = speech.clone();
+    negative[3] = -1.0;
+    assert!(matches!(
+        cluster_embeddings_with(&pts, Some(&negative), &good),
+        Err(DiarError::Shape(_))
+    ));
+}
+
+/// For each 10 ms frame of `total_ms`, the speakers of `d` active at its centre.
+fn frame_speakers(d: &Diarization, total_ms: u64) -> Vec<Vec<usize>> {
+    (0..total_ms / 10)
+        .map(|f| {
+            let t = MeetingTime::from_millis(f * 10 + 5);
+            let mut v: Vec<usize> = d
+                .turns
+                .iter()
+                .filter(|x| x.start <= t && t < x.end)
+                .map(|x| x.speaker)
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        })
+        .collect()
+}
+
+#[test]
+fn diar_pipeline_regroup_moves_speech_only_to_new_speakers() {
+    // Two speakers in long turns and a third voice in one short turn (a small cluster unlike
+    // both). Regrouped with a floor above its cosine, its turn becomes a new speaker; no frame
+    // moves from one of today's speakers to another, and with too high a minimum speech the
+    // result is today's exactly.
+    let mut turns = Vec::new();
+    let mut t = 500;
+    for r in 0..24 {
+        turns.push(SceneTurn::new(r % 2, t, t + 6_000));
+        t += 6_300;
+        if r == 11 {
+            turns.push(SceneTurn::new(2, t, t + 600));
+            t += 1_100;
+        }
+    }
+    let total = t + 500;
+    let short = *turns.iter().find(|t| t.speaker == 2).unwrap();
+    let today = run_exact(&turns, total, DiarizationConfig::default());
+    assert_eq!(today.speakers.len(), 2);
+    assert!(today.new_speakers.is_empty());
+    let with = |r: Option<Regroup>| DiarizationConfig {
+        clustering: ClusteringConfig {
+            regroup: r,
+            ..ClusteringConfig::default()
+        },
+        ..DiarizationConfig::default()
+    };
+    let d = run_exact(&turns, total, with(regroup(0.6, 0.8, 0.3, false)));
+    assert_eq!(d.speakers.len(), 3);
+    assert_eq!(d.new_speakers.len(), 1);
+    let new = d.new_speakers[0];
+    let mid = MeetingTime::from_millis(u64::midpoint(short.start_ms, short.end_ms));
+    assert!(
+        d.turns
+            .iter()
+            .any(|t| t.speaker == new && t.start <= mid && mid < t.end),
+        "{:?}",
+        d.turns
+    );
+    // Map each of d's old speakers to today's by the cluster it came from; they keep their
+    // centroids too.
+    assert_eq!(d.speaker_clusters.len(), d.speakers.len());
+    let to_today: Vec<Option<usize>> = d
+        .speakers
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if d.new_speakers.contains(&i) {
+                return None;
+            }
+            let old = today
+                .speaker_clusters
+                .iter()
+                .position(|&c| c == d.speaker_clusters[i])
+                .expect("an old speaker was one of today's");
+            assert_eq!(today.speakers[old].centroid, s.centroid);
+            Some(old)
+        })
+        .collect();
+    let (was, now) = (frame_speakers(&today, total), frame_speakers(&d, total));
+    let mut moved = 0;
+    for (w, n) in was.iter().zip(&now) {
+        for &s in n {
+            match to_today[s] {
+                Some(old) => assert!(w.contains(&old), "speech moved between speakers"),
+                None => moved += 1,
+            }
+        }
+    }
+    assert!(moved > 0);
+    // The new speaker's speech is the short turn's (within the window edges), and scored
+    // against the full reference the regrouping finds the voice.
+    assert!(score(&turns, &d).der() < score(&turns, &today).der());
+    let too_little = run_exact(&turns, total, with(regroup(0.6, 0.8, 5.0, true)));
+    assert_eq!(too_little, today);
+}
+
+/// The frame's speakers by today's marking: the `count` most active clusters with activity.
+fn top_count(act: &[u32], count: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..act.len()).filter(|&c| act[c] > 0).collect();
+    order.sort_by(|&a, &b| act[b].cmp(&act[a]).then(a.cmp(&b)));
+    order.truncate(count);
+    order
+}
+
+#[test]
+fn diar_pipeline_regroup_frame_never_lets_another_baseline_speaker_win_at_count_one() {
+    // Count 1, A (cluster 0) active in 4 covering windows, B (cluster 1) in 3: the baseline
+    // marks A. Two of A's locals move to new speaker N: A keeps 2, loses 2.
+    let (a, b, n) = (0, 1, 2);
+    assert_eq!(top_count(&[4, 3], 1), vec![a]);
+    // Marking afresh over A 2, B 3, N 2 would hand B a frame it never had.
+    assert_eq!(top_count(&[2, 3, 2], 1), vec![b]);
+    // The rule keeps the baseline marking: a loss equal to what A kept does not replace it.
+    assert_eq!(frame_with_new(&[a], &[2, 3], &[2, 0], 1), vec![a]);
+    // Three of A's four moved: N takes A's frame; B still never wins.
+    assert_eq!(frame_with_new(&[a], &[1, 3], &[3, 0], 1), vec![n]);
+    // N is the new speaker that took most of A's activity (lowest on ties).
+    assert_eq!(frame_with_new(&[a], &[0, 3], &[1, 2, 0, 0], 2), vec![3]);
+    assert_eq!(frame_with_new(&[a], &[0, 3], &[2, 2, 0, 0], 2), vec![2]);
+}
+
+#[test]
+fn diar_pipeline_regroup_frame_at_count_two_replaces_only_the_speaker_that_lost() {
+    // Count 2, A and B marked. A loses 3 of 4 to N: N and B. B never moves to a new speaker it
+    // did not lose to, and an unmarked cluster C (2) is never added.
+    let n = 3;
+    assert_eq!(
+        frame_with_new(&[0, 1], &[1, 3, 5], &[3, 0, 0], 1),
+        vec![n, 1]
+    );
+    // Both lose to N: N replaces only the one that lost most (A, 3 against 2).
+    assert_eq!(
+        frame_with_new(&[0, 1], &[1, 1, 5], &[3, 2, 0], 1),
+        vec![n, 1]
+    );
+    // An equal loss goes to the lower speaker.
+    assert_eq!(
+        frame_with_new(&[0, 1], &[0, 0, 5], &[2, 2, 0], 1),
+        vec![n, 1]
+    );
+    // Each loses to its own new speaker: both are replaced.
+    assert_eq!(
+        frame_with_new(&[0, 1], &[0, 0, 5], &[2, 0, 0, 2, 0, 0], 2),
+        vec![n, n + 1]
+    );
+    // Nothing lost: the baseline marking.
+    assert_eq!(
+        frame_with_new(&[0, 1], &[4, 3, 5], &[0, 0, 0], 1),
+        vec![0, 1]
+    );
 }

@@ -24,12 +24,30 @@
 //!    with the highest cosine similarity (pyannote's `assign_embeddings`). With
 //!    `constrained_assignment`, the local speakers of one window go to distinct clusters
 //!    (Hungarian assignment maximising total similarity, as pyannote's
-//!    `constrained_argmax`).
+//!    `constrained_argmax`). With [`ClusteringConfig::regroup`] set (T12.66, off by
+//!    default, `docs/far-speakers/short-turns.md`) this stitching is computed first,
+//!    unchanged; then each local speaker whose embedding belongs to a new speaker of the
+//!    clustering ([`super::Clustering::new_speaker_of`]) is given to that new speaker instead,
+//!    except that of two locals of one window given to the same new speaker only the more
+//!    cosine-similar one (the lower local on ties) goes there and the other keeps its
+//!    speaker. An embedded local outside the clustering's input (the `min_active_ratio`
+//!    filter) goes to its most similar new speaker only when it is more similar to it than
+//!    to the centroid it was stitched to. Each training embedding's speech estimate is its
+//!    clean frames times the frame step, divided by the windows covering one moment (window
+//!    over window step). Step 6 then keeps each frame's baseline speakers by construction
+//!    (see there), and step 7 runs over the clusters plus the new speakers
+//!    ([`Diarization::new_speakers`]).
 //! 6. **Reconstruction and overlap.** Per global frame, each cluster's activity is the
 //!    fraction of covering windows in which one of its local speakers is active, and the
 //!    instantaneous speaker count is the rounded (ties to even, as `np.rint`) mean number
 //!    of active local speakers over the covering windows. The `count` most active clusters
-//!    are marked active, so overlapped speech yields two simultaneous turns.
+//!    are marked active, so overlapped speech yields two simultaneous turns. With new speakers
+//!    (T12.66) the marking is first made exactly as without them, from the stitching before
+//!    any local moved; then in each frame a marked speaker X is replaced by the new speaker N
+//!    that took most of X's activity there (lowest N on ties) when the activity X lost to N
+//!    exceeds the activity X kept, and one N replaces at most one X per frame (the X that lost
+//!    most to it, the lower X on ties); see [`frame_with_new`]. So a baseline speaker never
+//!    gains a frame and loses one only to a new speaker.
 //! 7. **Turns.** Runs of active frames per cluster become [`SpeakerTurn`]s; same-speaker
 //!    gaps up to `merge_gap` are closed. Speakers are numbered by first turn. The runs of
 //!    clusters the clustering left unassigned (T12.65) become [`Diarization::unassigned`]
@@ -70,7 +88,7 @@
 
 use std::time::Duration;
 
-use super::cluster::{ClusteringConfig, cluster_embeddings, cosine_similarity, normalized};
+use super::cluster::{ClusteringConfig, cluster_embeddings_with, cosine_similarity, normalized};
 use super::stream::{DiarStream, Local, WindowParams, WindowResults};
 use super::types::{
     DiarError, Embedding, EmbeddingModelId, LocalActivity, SegmenterInfo, SpeakerEmbedder,
@@ -192,6 +210,13 @@ pub struct Diarization {
     /// [`super::cluster`] step 5), sorted and non-overlapping. Empty with the default
     /// floor. Not in [`Diarization::der_turns`], so it scores as missed speech.
     pub unassigned: Vec<UnassignedSpan>,
+    /// Indices into [`Diarization::speakers`] of the speakers made by the small-cluster
+    /// regrouping (T12.66, [`ClusteringConfig::regroup`]), ascending. Empty unless it is set.
+    pub new_speakers: Vec<usize>,
+    /// Per speaker, the cluster of the clustering it came from (a new speaker `s` is
+    /// `clusters + s`), so speakers of two runs over the same clustering can be matched.
+    /// Empty for a diarisation the pipeline did not make.
+    pub speaker_clusters: Vec<usize>,
     /// The embedding model that produced the centroids.
     pub embedding_model: EmbeddingModelId,
 }
@@ -421,6 +446,8 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
                 speakers: Vec::new(),
                 turns: Vec::new(),
                 unassigned: Vec::new(),
+                new_speakers: Vec::new(),
+                speaker_clusters: Vec::new(),
                 embedding_model: model,
             });
         }
@@ -437,8 +464,20 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
             .iter()
             .filter_map(|&i| locals[i].embedding.clone())
             .collect();
-        let clustering = cluster_embeddings(&vectors, &self.config.clustering)?;
-        let (centroids, left_out) = (clustering.centroids, clustering.unassigned);
+        // Speech estimate per training embedding (T12.66): clean frames over the windows
+        // that cover one moment.
+        let cover_per_moment = info.window as f64 / step as f64;
+        let speech: Vec<f32> = train
+            .iter()
+            .map(|&i| {
+                (locals[i].clean_frames as f64 * info.frame_step as f64
+                    / f64::from(PIPELINE_RATE.hz())
+                    / cover_per_moment) as f32
+            })
+            .collect();
+        let clustering = cluster_embeddings_with(&vectors, Some(&speech), &self.config.clustering)?;
+        let (mut centroids, mut left_out) = (clustering.centroids, clustering.unassigned);
+        let new_centroids = clustering.new_speakers;
         // 5: stitching, one window at a time.
         let mut by_window: Vec<Vec<usize>> = vec![Vec::new(); bins.len()];
         for &i in &embedded {
@@ -458,9 +497,64 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
                 win_cluster[locals[i].window][locals[i].local] = Some(c);
             }
         }
+        // 5b (T12.66): locals of new speakers leave their baseline cluster, in a copy of the
+        // stitching; step 6 marks frames from the baseline stitching first.
+        let base_k = centroids.len();
+        let mut moved: Option<Vec<Vec<Option<usize>>>> = None;
+        if !new_centroids.is_empty() {
+            let mut mv = win_cluster.clone();
+            let mut new_of: Vec<Option<usize>> = vec![None; locals.len()];
+            for (&i, s) in train.iter().zip(&clustering.new_speaker_of) {
+                new_of[i] = *s;
+            }
+            for &i in &embedded {
+                if train.binary_search(&i).is_ok() {
+                    continue;
+                }
+                let e = locals[i].embedding.as_deref().unwrap_or(&[]);
+                let Some(c) = win_cluster[locals[i].window][locals[i].local] else {
+                    continue;
+                };
+                let own = cosine_similarity(e, &centroids[c]);
+                let mut best: Option<(f32, usize)> = None;
+                for (s, nc) in new_centroids.iter().enumerate() {
+                    let v = cosine_similarity(e, nc);
+                    if best.is_none_or(|(b, _)| v > b) {
+                        best = Some((v, s));
+                    }
+                }
+                if let Some((v, s)) = best
+                    && v > own
+                {
+                    new_of[i] = Some(s);
+                }
+            }
+            for idx in &by_window {
+                // Per new speaker, the most similar local of this window (lowest on ties).
+                let mut keep: Vec<Option<(f32, usize)>> = vec![None; new_centroids.len()];
+                for &i in idx {
+                    if let Some(s) = new_of[i] {
+                        let e = locals[i].embedding.as_deref().unwrap_or(&[]);
+                        let v = cosine_similarity(e, &new_centroids[s]);
+                        if keep[s].is_none_or(|(b, _)| v > b) {
+                            keep[s] = Some((v, i));
+                        }
+                    }
+                }
+                for (s, kept) in keep.iter().enumerate() {
+                    if let Some((_, i)) = kept {
+                        mv[locals[*i].window][locals[*i].local] = Some(base_k + s);
+                    }
+                }
+            }
+            moved = Some(mv);
+            centroids.extend(new_centroids);
+            left_out.resize(centroids.len(), false);
+        }
 
-        // 6: reconstruction on the global frame grid with the per-frame speaker count.
-        let k = centroids.len();
+        // 6: reconstruction on the global frame grid with the per-frame speaker count (from
+        // the baseline stitching).
+        let k = base_k;
         let fstep = info.frame_step;
         let valid_frames = |start: usize| {
             let valid = (total - start).min(info.window);
@@ -514,6 +608,64 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
                 on[g * k + c] = true;
             }
         }
+        // 6b (T12.66): new speakers take frames only from the speakers marked above.
+        let (k, on) = match &moved {
+            None => (k, on),
+            Some(mv) => {
+                let nn = centroids.len() - base_k;
+                // Per frame and baseline cluster: windows where it kept an active local, and
+                // windows where it lost one to each new speaker.
+                let mut kept = vec![0u32; g_total * base_k];
+                let mut lost = vec![0u32; g_total * base_k * nn];
+                let mut pairs: Vec<(usize, usize)> = Vec::with_capacity(nloc);
+                for (w, &s) in starts.iter().enumerate() {
+                    let b = base(s);
+                    for f in 0..valid_frames(s) {
+                        let g = b + f;
+                        pairs.clear();
+                        for j in 0..nloc {
+                            if !bins[w][f * nloc + j] {
+                                continue;
+                            }
+                            if let (Some(x), Some(c)) = (win_cluster[w][j], mv[w][j])
+                                && !pairs.contains(&(x, c))
+                            {
+                                pairs.push((x, c));
+                            }
+                        }
+                        let mut kept_here: Vec<usize> = Vec::with_capacity(pairs.len());
+                        for &(x, c) in &pairs {
+                            if c < base_k {
+                                if !kept_here.contains(&c) {
+                                    kept_here.push(c);
+                                    kept[g * base_k + c] += 1;
+                                }
+                            } else {
+                                lost[(g * base_k + x) * nn + (c - base_k)] += 1;
+                            }
+                        }
+                    }
+                }
+                let k2 = centroids.len();
+                let mut on2 = vec![false; g_total * k2];
+                let mut marked: Vec<usize> = Vec::with_capacity(base_k);
+                for g in 0..g_total {
+                    marked.clear();
+                    marked.extend((0..base_k).filter(|&c| on[g * base_k + c]));
+                    if marked.is_empty() {
+                        continue;
+                    }
+                    let rows = (
+                        &kept[g * base_k..(g + 1) * base_k],
+                        &lost[g * base_k * nn..(g + 1) * base_k * nn],
+                    );
+                    for c in frame_with_new(&marked, rows.0, rows.1, nn) {
+                        on2[g * k2 + c] = true;
+                    }
+                }
+                (k2, on2)
+            }
+        };
 
         // 7: turns. Global frame g stands for samples [frame_lo(g), frame_hi(g)); the
         // first and last frames extend to the ends of the audio.
@@ -591,6 +743,8 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
             });
         }
         turns.sort_by_key(|t| (t.start, t.speaker));
+        let new_speakers: Vec<usize> = (0..used.len()).filter(|&l| used[l] >= base_k).collect();
+        let speaker_clusters = used.clone();
         let unassigned = merged
             .into_iter()
             .map(|(lo, hi)| UnassignedSpan {
@@ -602,6 +756,8 @@ impl<S: SpeakerSegmenter, E: SpeakerEmbedder> Diarizer<S, E> {
             speakers,
             turns,
             unassigned,
+            new_speakers,
+            speaker_clusters,
             embedding_model: model,
         })
     }
@@ -859,6 +1015,49 @@ pub(crate) fn window_starts(total: usize, window: usize, step: usize) -> Vec<usi
         v.push(total - window);
     }
     v
+}
+
+/// One frame's marked speakers with new speakers (T12.66, module docs step 6): `marked` are
+/// the baseline clusters marked in the frame, `kept[x]` the windows in which cluster `x` kept an
+/// active local, `lost[x * new + n]` those in which it lost one to new speaker `n`. A marked
+/// `x` is replaced by the new speaker `n` it lost most to (lowest `n` on ties) when that loss
+/// exceeds what it kept; a new speaker replaces at most one `x` (the one that lost most to it,
+/// the lowest `x` on ties) and the others stay. Returns the frame's speakers: baseline clusters
+/// as they are, new speaker `n` as `kept.len() + n`. Nothing unmarked is ever returned.
+pub(crate) fn frame_with_new(
+    marked: &[usize],
+    kept: &[u32],
+    lost: &[u32],
+    new: usize,
+) -> Vec<usize> {
+    let base = kept.len();
+    // Per marked speaker, the new speaker that would replace it and the loss.
+    let mut wants: Vec<Option<(usize, u32)>> = Vec::with_capacity(marked.len());
+    for &x in marked {
+        let row = &lost[x * new..(x + 1) * new];
+        let mut best: Option<(usize, u32)> = None;
+        for (n, &v) in row.iter().enumerate() {
+            if best.is_none_or(|(_, b)| v > b) {
+                best = Some((n, v));
+            }
+        }
+        wants.push(best.filter(|&(_, v)| v > kept[x]));
+    }
+    let mut out = Vec::with_capacity(marked.len());
+    for (i, &x) in marked.iter().enumerate() {
+        let replaced = wants[i].is_some_and(|(n, v)| {
+            // `x` wins `n` unless another marked speaker lost more to it, or as much with a
+            // lower index.
+            marked.iter().enumerate().all(|(j, &y)| {
+                j == i || !wants[j].is_some_and(|(m, w)| m == n && (w > v || (w == v && y < x)))
+            })
+        });
+        match wants[i] {
+            Some((n, _)) if replaced => out.push(base + n),
+            _ => out.push(x),
+        }
+    }
+    out
 }
 
 /// Cluster of each local speaker of one window from its similarity to every centroid

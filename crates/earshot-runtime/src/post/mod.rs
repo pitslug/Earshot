@@ -1403,6 +1403,8 @@ where
             speakers: Vec::new(),
             turns: Vec::new(),
             unassigned: Vec::new(),
+            new_speakers: Vec::new(),
+            speaker_clusters: Vec::new(),
             embedding_model: model.clone(),
         };
         let two = recorded.contains(&TrackId::Mic) && recorded.contains(&TrackId::Reference);

@@ -86,4 +86,18 @@ Second correction (2026-11-17, before any result was seen): a review of the tool
 
 ## Result
 
-Not run yet.
+**First run (2026-11-17, desktop, CPU, release build of `cluster_sweep --short-turns`): the rule picks f 0.60, d 0.80, m 8 s, plain.** Raw output: `short-turns.json` beside this file, the tool's unmodified report.
+
+- The replayed baseline equalled the direct run on every item, and no baseline speaker gained a frame at any setting (kept speakers gaining 0.00 s throughout); the tool fails on either.
+- Talker speech per short scene: 18.8 to 33.0 s, as predicted. Embeddings: 1239 to 2592 per AMI dev meeting (all five above the 1000 trained), 357 to 619 per scene (none above).
+- **Baseline:** talkers found 6 of 10. Pooled DER: A 0.1014, L 0.1456, S 0.1748.
+- **Pick (f 0.60, d 0.80, m 8, plain):** talkers found 9 of 10; 0 new speakers on any L scene or AMI meeting and 0 false new speakers on S (3 new speakers, all owned by their scene's talker). Moved speech 45.5 s: 43.8 s right, 1.7 s wrong. Pooled DER: A 0.1014 (every meeting unchanged), L 0.1456 (unchanged), S 0.1615. The three scenes that gained the talker went from 0.2322, 0.1921 and 0.1788 to 0.1715, 0.1554 and 0.1421; the other seven are unchanged. One talker (short-7) is still not found.
+- 72 of the 240 settings pass, at f 0.2 to 0.6 and d 0.80 to 1.10; 38 of them find 9 talkers, none finds 10. The weighted variant ties the plain one at the pick (same counts, plain wins the tie-break). Settings with f 1.0 fail rule 4 (new speakers on AMI meetings); at d 0.68 almost nothing is regrouped.
+
+What this does not show:
+
+- **The AMI guard was not exercised at the pick.** It made no new speaker on any AMI dev meeting, so rule 4 held trivially. Part of the reason may be the under-counted speech estimate on meetings above 1000 embeddings (see above): on a long real meeting the same `m` makes a new speaker less readily than on a 300 s scene.
+- **The baseline already finds 6 of the 10 synthetic talkers,** so these scenes are easier than the private call that raised the question. The gain is 3 talkers on clean read speech.
+- Ten talkers and one seed per scene: a weak signal (see "How far this can be trusted").
+
+Per the rule, the next step is a production task for the owner to agree: the per-model setting with its source, a re-run of `cargo xtask accept m3` and `accept m6`, and, before it ships, a look at the private recording that raised the question.

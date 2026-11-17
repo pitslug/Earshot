@@ -40,7 +40,9 @@ pub use assign::{
     UNKNOWN_SPEAKER, UnassignedLabelling, assign_words, label_segment_speakers,
     label_segment_speakers_unassigned, label_segments,
 };
-pub use cluster::{Clustering, ClusteringConfig, cluster_embeddings};
+pub use cluster::{
+    Clustering, ClusteringConfig, Regroup, cluster_embeddings, cluster_embeddings_with,
+};
 pub use echo::{
     CALIBRATED_SPEAKER_ECHO_MARGINS, CAMPPLUS_SPEAKER_ECHO_MARGIN, CalibratedSpeakerEchoMargin,
     ECHO_SPAN_PIECE_MS, EchoSpanPiece, SpanEmbedding, SpeakerEchoConfig,

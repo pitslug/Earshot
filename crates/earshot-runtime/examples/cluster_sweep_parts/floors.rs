@@ -34,17 +34,17 @@ pub struct Moved {
     pub unassigned_s: f64,
 }
 
-fn frames(uem: (f64, f64)) -> usize {
+pub fn frames(uem: (f64, f64)) -> usize {
     ((uem.1 - uem.0) / FRAME_S).ceil().max(0.0) as usize
 }
 
 /// Frame `i` of the scored region covers `[uem.0 + i FRAME_S, ...)`; its centre decides.
-fn centre(uem: (f64, f64), i: usize) -> f64 {
+pub fn centre(uem: (f64, f64), i: usize) -> f64 {
     uem.0 + (i as f64 + 0.5) * FRAME_S
 }
 
 /// For each frame, the labels of the turns covering its centre.
-fn paint(turns: &[Turn], uem: (f64, f64)) -> Vec<Vec<String>> {
+pub fn paint(turns: &[Turn], uem: (f64, f64)) -> Vec<Vec<String>> {
     let n = frames(uem);
     let mut out: Vec<Vec<String>> = vec![Vec::new(); n];
     for t in turns {

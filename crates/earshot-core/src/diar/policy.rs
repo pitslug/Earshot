@@ -268,6 +268,8 @@ mod tests {
             speakers,
             turns,
             unassigned: Vec::new(),
+            new_speakers: Vec::new(),
+            speaker_clusters: Vec::new(),
             embedding_model: model(),
         }
     }

@@ -2,8 +2,13 @@
 //!
 //! ```text
 //! cargo run --release -p earshot-runtime --example cluster_sweep -- <repo-root> \
-//!     --models <dir> [--out <file.json>] [--floors]
+//!     --models <dir> [--out <file.json>] [--floors | --short-turns]
 //! ```
+//!
+//! With `--short-turns` (T12.66) the threshold and floor are held and the small-cluster
+//! regrouping of `earshot_core::diar::cluster` (step 6) is swept, with 10 short-turn scenes
+//! added to the data: the data, measures and rule are `docs/far-speakers/short-turns.md`
+//! (module `cluster_sweep_parts/short_turns.rs`).
 //!
 //! With `--floors` (T12.65) the threshold is held and the unassigned floor is swept instead:
 //! the data are the same, the measures and rule are `docs/far-speakers/unassigned-floor.md`
@@ -33,6 +38,8 @@ use serde_json::{Value, json};
 mod ami;
 #[path = "cluster_sweep_parts/floors.rs"]
 mod floors;
+#[path = "cluster_sweep_parts/short_turns.rs"]
+mod short_turns;
 
 /// The held constant.
 const HELD: u32 = 68;
@@ -93,6 +100,8 @@ struct Cached<T, O> {
     inner: T,
     log: HashMap<u64, Vec<O>>,
     replay: bool,
+    /// Outputs of the wrapped model while recording (T12.66 reports the embeddings per item).
+    outputs: usize,
 }
 
 impl<T, O: Clone> Cached<T, O> {
@@ -101,6 +110,7 @@ impl<T, O: Clone> Cached<T, O> {
             inner,
             log: HashMap::new(),
             replay: false,
+            outputs: 0,
         }
     }
 
@@ -121,6 +131,7 @@ impl<T, O: Clone> Cached<T, O> {
             return Ok(out.clone());
         }
         let out = run(&mut self.inner)?;
+        self.outputs += out.len();
         self.log.entry(key).or_insert_with(|| out.clone());
         Ok(out)
     }
@@ -428,24 +439,62 @@ fn read_flac(path: &Path) -> Vec<f32> {
         .collect()
 }
 
-/// A speaker's utterances in path order joined with [`GAP_MS`] of silence, up to `want`.
-fn stream(dir: &Path, want: usize) -> Vec<f32> {
-    let gap = vec![0f32; HZ * GAP_MS / 1000];
+/// A speaker's utterance files in path order.
+fn utterances(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for chapter in sorted_entries(dir).into_iter().filter(|p| p.is_dir()) {
-        for flac in sorted_entries(&chapter)
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "flac"))
-        {
-            out.extend(read_flac(&flac));
-            out.extend_from_slice(&gap);
-            if out.len() >= want {
-                out.truncate(want);
-                return out;
-            }
-        }
+        out.extend(
+            sorted_entries(&chapter)
+                .into_iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "flac")),
+        );
     }
     out
+}
+
+/// One utterance file's samples in a stream.
+type FileSpan = (PathBuf, std::ops::Range<usize>);
+
+/// A speaker's utterances joined with [`GAP_MS`] of silence, up to `want`: in path order, or
+/// from the last one backwards (each utterance itself plays forwards). Also where each file's
+/// samples lie in the stream.
+fn stream_files(dir: &Path, want: usize, backwards: bool) -> (Vec<f32>, Vec<FileSpan>) {
+    let gap = vec![0f32; HZ * GAP_MS / 1000];
+    let mut paths = utterances(dir);
+    if backwards {
+        paths.reverse();
+    }
+    let mut out = Vec::new();
+    let mut files = Vec::new();
+    for flac in paths {
+        let start = out.len();
+        out.extend(read_flac(&flac));
+        files.push((flac, start..out.len().min(want)));
+        out.extend_from_slice(&gap);
+        if out.len() >= want {
+            out.truncate(want);
+            break;
+        }
+    }
+    (out, files)
+}
+
+/// The utterance files whose samples the turns of `slot` play.
+fn files_used(
+    turns: &[SceneTurn],
+    slot: usize,
+    files: &[FileSpan],
+) -> std::collections::BTreeSet<PathBuf> {
+    files
+        .iter()
+        .filter(|(_, r)| {
+            turns
+                .iter()
+                .filter(|t| t.slot == slot)
+                .any(|t| t.source.start < r.end && r.start < t.source.end)
+        })
+        .map(|(p, _)| p.clone())
+        .collect()
 }
 
 /// The next value of the scene LCG (`far_speakers`'s constants).
@@ -568,13 +617,18 @@ fn build_scene(kind: Kind, streams: &[&[f32]], seed: u64) -> (Vec<f32>, Vec<Scen
             break;
         }
     }
+    (mix(streams, &turns), turns)
+}
+
+/// The scene audio of `turns` from their speakers' streams, scaled down if it would clip.
+fn mix(streams: &[&[f32]], turns: &[SceneTurn]) -> Vec<f32> {
     let total = turns
         .iter()
         .map(|t| t.start + t.source.len())
         .max()
         .unwrap_or(0);
     let mut audio = vec![0f32; total];
-    for t in &turns {
+    for t in turns {
         for (a, s) in audio[t.start..]
             .iter_mut()
             .zip(&streams[t.slot][t.source.clone()])
@@ -587,7 +641,7 @@ fn build_scene(kind: Kind, streams: &[&[f32]], seed: u64) -> (Vec<f32>, Vec<Scen
         let g = 0.99 / peak;
         audio.iter_mut().for_each(|x| *x *= g);
     }
-    (audio, turns)
+    audio
 }
 
 /// Two turns of one slot that play overlapping samples of its stream, if any.
@@ -602,7 +656,8 @@ fn reused(turns: &[SceneTurn]) -> Option<(usize, usize)> {
     None
 }
 
-fn scene_items(fixtures: &Path) -> Vec<Item> {
+/// The 40 dev-clean speaker folders in sorted order.
+fn dev_clean_speakers(fixtures: &Path) -> Vec<PathBuf> {
     let root = fixtures.join("librispeech/dev-clean/LibriSpeech/dev-clean");
     let speakers: Vec<PathBuf> = sorted_entries(&root)
         .into_iter()
@@ -614,6 +669,19 @@ fn scene_items(fixtures: &Path) -> Vec<Item> {
             root.display()
         ));
     }
+    speakers
+}
+
+fn speaker_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The 16 long scenes and, per speaker position, the utterance files its scene's turns play.
+fn scene_items(fixtures: &Path) -> (Vec<Item>, Vec<std::collections::BTreeSet<PathBuf>>) {
+    let speakers = dev_clean_speakers(fixtures);
+    let mut used_files = vec![std::collections::BTreeSet::new(); speakers.len()];
     let plan = scene_plan();
     let mut used: Vec<usize> = plan.iter().flat_map(|(_, s)| s.clone()).collect();
     used.sort_unstable();
@@ -622,23 +690,21 @@ fn scene_items(fixtures: &Path) -> Vec<Item> {
     }
     let mut items = Vec::new();
     for (index, (kind, positions)) in plan.into_iter().enumerate() {
-        let streams: Vec<Vec<f32>> = positions
+        let (streams, files): (Vec<Vec<f32>>, Vec<Vec<FileSpan>>) = positions
             .iter()
-            .map(|&p| stream(&speakers[p], SCENE_S * HZ))
-            .collect();
+            .map(|&p| stream_files(&speakers[p], SCENE_S * HZ, false))
+            .unzip();
         let refs: Vec<&[f32]> = streams.iter().map(Vec::as_slice).collect();
         let (audio, turns) = build_scene(kind, &refs, SCENE_SEED + index as u64);
         if let Some((i, j)) = reused(&turns) {
             fail(format!("scene {index}: turns {i} and {j} reuse audio"));
         }
+        for (slot, &p) in positions.iter().enumerate() {
+            used_files[p] = files_used(&turns, slot, &files[slot]);
+        }
         let names: Vec<String> = positions
             .iter()
-            .map(|&p| {
-                speakers[p]
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            })
+            .map(|&p| speaker_name(&speakers[p]))
             .collect();
         let reference: Vec<Turn> = turns
             .iter()
@@ -666,7 +732,7 @@ fn scene_items(fixtures: &Path) -> Vec<Item> {
             uem: (0.0, len),
         });
     }
-    items
+    (items, used_files)
 }
 
 fn fixtures_dir() -> PathBuf {
@@ -858,10 +924,14 @@ fn main() {
         it.next()
             .unwrap_or_else(|| fail("usage: cluster_sweep <repo-root> --models <dir>")),
     );
-    let (mut models, mut out, mut floor_mode) = (None, None, false);
+    let (mut models, mut out, mut floor_mode, mut short_mode) = (None, None, false, false);
     while let Some(flag) = it.next() {
         if flag == "--floors" {
             floor_mode = true;
+            continue;
+        }
+        if flag == "--short-turns" {
+            short_mode = true;
             continue;
         }
         let value = it
@@ -874,13 +944,22 @@ fn main() {
         }
     }
     let models = models.unwrap_or_else(|| fail("--models is required"));
+    if floor_mode && short_mode {
+        fail("--floors and --short-turns are separate runs");
+    }
     let short = short_curve(
         &std::fs::read_to_string(root.join("docs/far-speakers/long-scenes-calibration.txt"))
             .unwrap_or_else(|e| fail(format!("long-scenes-calibration.txt: {e}"))),
     );
     let fixtures = fixtures_dir();
     let mut items: Vec<Item> = AMI_DEV.iter().map(|m| ami_item(&fixtures, m)).collect();
-    items.extend(scene_items(&fixtures));
+    let (scenes, long_files) = scene_items(&fixtures);
+    items.extend(scenes);
+    let short_scenes = if short_mode {
+        Some(short_turns::short_items(&fixtures, &long_files))
+    } else {
+        None
+    };
 
     init_onnx(&models, Accelerator::Cpu).unwrap_or_else(|e| fail(format!("ONNX Runtime: {e}")));
     let (segmenter, embedder) =
@@ -897,6 +976,17 @@ fn main() {
     let mut parts = (Cached::new(segmenter), Cached::new(embedder));
     if floor_mode {
         run_floors(&items, parts, &config, &model.to_string(), out.as_deref());
+        return;
+    }
+    if let Some(short_scenes) = short_scenes {
+        short_turns::run(
+            items,
+            short_scenes,
+            parts,
+            &config,
+            &model.to_string(),
+            out.as_deref(),
+        );
         return;
     }
 

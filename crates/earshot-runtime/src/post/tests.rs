@@ -326,6 +326,76 @@ fn post_final_pass_diarises_names_and_stores_speakers() {
 }
 
 #[test]
+fn post_never_regroups_small_clusters_by_default() {
+    // T12.66: the small-cluster regrouping is evaluation only (docs/far-speakers/short-turns.md);
+    // turning it on in the app needs its own task.
+    assert!(
+        PostConfig::default()
+            .diarization
+            .clustering
+            .regroup
+            .is_none()
+    );
+}
+
+/// Source files under `dir` (recursively) holding any of `needles`.
+fn rust_files_holding(
+    dir: &std::path::Path,
+    needles: &[&str],
+    found: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_files_holding(&path, needles, found);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            if needles.iter().any(|n| text.contains(n)) {
+                found.push(path);
+            }
+        }
+    }
+}
+
+/// T12.66: the small-cluster regrouping is evaluation only. No shipped source outside
+/// earshot-core's diar module sets it or builds its settings (the `cluster_sweep` example, not
+/// shipped, may).
+#[test]
+fn post_regroup_is_used_by_no_shipped_code() {
+    let needles = [concat!("regroup: ", "Some("), concat!("Regroup", " {")];
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut sources: Vec<std::path::PathBuf> = std::fs::read_dir(repo.join("crates"))
+        .expect("the crates folder")
+        .flatten()
+        .map(|e| e.path().join("src"))
+        .filter(|p| p.is_dir())
+        .collect();
+    sources.push(repo.join("apps/desktop/src-tauri/src"));
+    sources.push(repo.join("xtask/src"));
+    let diar = repo.join("crates/earshot-core/src/diar");
+    let mut found = Vec::new();
+    for dir in &sources {
+        assert!(dir.is_dir(), "{} is not a folder", dir.display());
+        rust_files_holding(dir, &needles, &mut found);
+    }
+    found.retain(|p| !p.starts_with(&diar));
+    assert!(
+        found.is_empty(),
+        "shipped code sets the regrouping: {found:?}"
+    );
+    // A negative control: the scan finds the settings where they are declared.
+    let mut declared = Vec::new();
+    rust_files_holding(&diar, &needles, &mut declared);
+    assert!(
+        !declared.is_empty(),
+        "the scan found nothing in earshot-core's diar module"
+    );
+}
+
+#[test]
 fn post_without_calibration_is_an_error_at_construction() {
     let missing_clustering = PostConfig {
         clustering_thresholds: ModelThresholds::new(),
@@ -2564,6 +2634,8 @@ fn diar_of(centroids: &[Vec<f32>], turns: &[(u64, u64)]) -> Diarization {
             })
             .collect(),
         unassigned: Vec::new(),
+        new_speakers: Vec::new(),
+        speaker_clusters: Vec::new(),
         embedding_model: EmbeddingModelId::new(MODEL),
     }
 }
