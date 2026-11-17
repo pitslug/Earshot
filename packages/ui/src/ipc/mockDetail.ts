@@ -205,6 +205,7 @@ export function assignedLine(detail: MeetingDetail, segment: string, speaker: Sp
         : r,
     ),
     summary_stale: detail.summary !== null || detail.summary_stale,
+    summary_stale_names: false,
   };
 }
 
@@ -242,6 +243,7 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     speakers,
     can_undo_summary: false,
     summary_stale: false,
+    summary_stale_names: false,
     audio_kept: true,
     waiting_for: null,
     summary_run: null,

@@ -722,6 +722,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         summary: next,
         can_undo_summary: d.summary !== null,
         summary_stale: false,
+        summary_stale_names: false,
       });
       const voices = d.speakers.filter((s) => s.needs_name).length;
       emitJob({
@@ -1029,6 +1030,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             ...d,
             transcript: d.transcript.map((r) => (r.segment_id === segment ? { ...r, text: t, edited: true } : r)),
             summary_stale: d.summary !== null || d.summary_stale,
+            summary_stale_names: false,
           },
           segment,
         );
@@ -1090,7 +1092,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       update(meeting, (d) => {
         const next = withWord(d, segment, token, listed, decoded);
         const changed = next.transcript.find((r) => r.segment_id === segment)?.text !== row.text;
-        return changed ? { ...next, summary_stale: d.summary !== null || d.summary_stale } : next;
+        return changed
+          ? { ...next, summary_stale: d.summary !== null || d.summary_stale, summary_stale_names: false }
+          : next;
       });
     },
     putBackWord: async (meeting, segment, token) => {
@@ -1107,6 +1111,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         return {
           ...next,
           summary_stale: d.summary !== null || d.summary_stale,
+          summary_stale_names: false,
           transcript: next.transcript.map((r) =>
             r.segment_id === segment && suggestion
               ? { ...r, suggestions: [...r.suggestions, suggestion].sort((a, b) => a.token - b.token) }

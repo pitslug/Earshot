@@ -1309,11 +1309,17 @@ export type MeetingDetail = {
 	/**  The previous summary can be restored ("Switch to previous summary"). */
 	can_undo_summary: boolean,
 	/**
-	 *  The current summary no longer matches the transcript
-	 *  (`MeetingView::summary_out_of_date`): it cites segments the transcript no longer has,
-	 *  or the user edited the transcript's text after it was written (T12.16).
+	 *  The current summary is out of date (`MeetingView::summary_out_of_date`): it cites
+	 *  segments the transcript no longer has, the user edited the transcript's text after it
+	 *  was written (T12.16), or it uses a speaker's name the user has since changed (T12.82).
 	 */
 	summary_stale: boolean,
+	/**
+	 *  The summary is out of date only because it uses a speaker's name as it was before the
+	 *  user changed it (`MeetingView::summary_names_changed`, T12.82), so the note says that
+	 *  rather than an earlier transcript.
+	 */
+	summary_stale_names: boolean,
 	/**
 	 *  At least one track's recording is still kept: re-transcription and speaker samples
 	 *  need it (T7.4k: audio retention deletes recordings, everything else stays).

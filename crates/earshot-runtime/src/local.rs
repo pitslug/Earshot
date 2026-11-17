@@ -118,6 +118,9 @@ meeting_records! {
     /// `summary-seen/<meeting>`: the summary row this device last showed in the meeting's detail
     /// (T12.76; a row id only, [`crate::summary_seen`]).
     SummarySeen => "summary-seen/", meeting at 0;
+    /// `summary-names/<meeting>`: per summary row, the speakers' earlier names it used (T12.82;
+    /// content: names, erased with the meeting, [`crate::summary_names`]).
+    SummaryNames => "summary-names/", meeting at 0;
 }
 
 impl MeetingRecord {

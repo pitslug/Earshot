@@ -110,6 +110,7 @@ pub mod summary_child;
 pub mod summary_edits;
 #[cfg(feature = "engines")]
 pub mod summary_model;
+pub mod summary_names;
 pub mod summary_order;
 pub mod summary_seen;
 pub mod summary_settings;

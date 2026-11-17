@@ -1022,9 +1022,11 @@ pub fn rename_speaker(
         if row.display_name == name {
             return Ok(false);
         }
-        row.display_name = name;
+        let old = std::mem::replace(&mut row.display_name, name);
         row.meta.touch(stamp.hlc, stamp.clock);
+        let new = row.display_name.clone();
         tx.put_speaker(row)?;
+        crate::summary_names::name_changed_tx(tx, meeting, &old, &new)?;
         Ok(true)
     })
 }
@@ -1246,10 +1248,12 @@ fn link_in(
             i.ignored = false;
         })?;
     }
+    let old = std::mem::take(&mut row.display_name);
     row.person_id = Some(person.id);
     row.display_name.clone_from(&person.display_name);
     row.meta.touch(stamp.hlc, stamp.clock);
     tx.put_speaker(row)?;
+    crate::summary_names::name_changed_tx(tx, meeting, &old, &person.display_name)?;
     Ok(person.id)
 }
 
@@ -1496,11 +1500,13 @@ pub fn mark_me(
         let me = me_person(tx, stamp).map_err(voiceprint_err)?;
         // A mark is the user's, never the voiceprint's (T12.44).
         drop_voiceprint_me(tx, meeting, speaker)?;
+        let old = std::mem::take(&mut row.display_name);
         row.role = SpeakerRole::Me;
         row.person_id = Some(me.id);
         row.display_name.clone_from(&me.display_name);
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row)?;
+        crate::summary_names::name_changed_tx(tx, meeting, &old, &me.display_name)?;
         // The entry is the user's voice now: forgetting the user's voice drops it, and
         // removing a person the pass had matched to the voice does not.
         update_identity_entry(tx, meeting, speaker, |i| {
@@ -1555,10 +1561,11 @@ pub fn unmark_me(
             .collect();
         row.role = SpeakerRole::Room;
         row.person_id = None;
-        row.display_name = first_free_speaker_name(&taken);
+        let old = std::mem::replace(&mut row.display_name, first_free_speaker_name(&taken));
         drop_voiceprint_me(tx, meeting, speaker)?;
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row.clone())?;
+        crate::summary_names::name_changed_tx(tx, meeting, &old, &row.display_name)?;
         update_identity_entry(tx, meeting, speaker, |i| {
             i.given_name.clone_from(&row.display_name);
             i.given_person = None;
@@ -1607,9 +1614,10 @@ pub fn rename_person(
                 {
                     continue;
                 }
-                s.display_name.clone_from(&name);
+                let old = std::mem::replace(&mut s.display_name, name.clone());
                 s.meta.touch(stamp.hlc, stamp.clock);
                 tx.put_speaker(s)?;
+                crate::summary_names::name_changed_tx(tx, m.id, &old, &name)?;
                 rewritten += 1;
             }
         }
@@ -2112,9 +2120,10 @@ pub fn not_this_person(
             .map(|s| s.display_name)
             .collect();
         row.person_id = None;
-        row.display_name = first_free_speaker_name(&taken);
+        let old = std::mem::replace(&mut row.display_name, first_free_speaker_name(&taken));
         row.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(row.clone())?;
+        crate::summary_names::name_changed_tx(tx, meeting, &old, &row.display_name)?;
         update_identity_entry(tx, meeting, speaker, |i| {
             i.given_name.clone_from(&row.display_name);
             i.given_person = None;
@@ -2176,8 +2185,27 @@ pub fn remove_person(
             return Err(EditError::PersonIsTheUser(person).into());
         }
     }
+    // The rows the removal sends back to "Speaker N", read first so a summary that used the
+    // person's name is marked as a naming edit would (T12.82), under the same lock.
+    let identity = identity_of(store, person).map_err(voiceprint_err)?;
+    let mut rows: std::collections::BTreeMap<EntityId, BTreeSet<EntityId>> =
+        std::collections::BTreeMap::new();
+    for m in store.meetings()? {
+        if m.meta.deleted {
+            continue;
+        }
+        for s in store.speakers(m.id)? {
+            if !s.meta.deleted && s.person_id.is_some_and(|p| identity.contains(&p)) {
+                rows.entry(m.id).or_default().insert(s.id);
+            }
+        }
+    }
+    let before = crate::summary_names::names_before(store, &rows)?;
     let (store, hlc) = db.parts();
-    Ok(store.remove_person(person, hlc, &*clock)?)
+    let removal = store.remove_person(person, hlc, &*clock)?;
+    // A second transaction, still under the lock: a crash between the two loses only the mark.
+    store.transaction(|tx| crate::summary_names::names_changed_tx(tx, &before))?;
+    Ok(removal)
 }
 
 /// The previous summary of a meeting ([`summary_history`]).
@@ -2395,7 +2423,7 @@ where
     )?;
     let summary_stale = {
         let db = services.store();
-        MeetingView::load(&**db, meeting)?.is_some_and(|v| v.summary_out_of_date())
+        MeetingView::load_named(&db, meeting)?.is_some_and(|v| v.summary_out_of_date())
     };
     Ok(Retranscribed {
         missing_tracks,

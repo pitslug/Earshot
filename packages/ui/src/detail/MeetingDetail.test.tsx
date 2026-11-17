@@ -151,6 +151,17 @@ describe("MeetingDetailView", () => {
     expect(calls).toContainEqual(["resummarise", ITEM.id]);
   });
 
+  it("says a summary uses an earlier name when only a name changed (T12.82)", async () => {
+    const detail = { ...sampleDetail(ITEM), summary_stale: true, summary_stale_names: true };
+    const { user, calls } = await setup({ details: { [ITEM.id]: detail } });
+    const note = await screen.findByText(/uses a speaker's earlier name/);
+    expect(screen.queryByText(/refers to lines of an earlier transcript/)).not.toBeInTheDocument();
+    const [, prompt] = screen.getAllByRole("button", { name: "Re-summarise" });
+    expect(note.closest(".fui-MessageBar")).toContainElement(prompt);
+    await user.click(prompt);
+    expect(calls).toContainEqual(["resummarise", ITEM.id]);
+  });
+
   describe("editing the title and the transcript (T12.16)", () => {
     const LINE_1 = "So the lead time on the second pump set is now looking like eleven weeks.";
 

@@ -443,3 +443,72 @@ fn my_name_is_stored_on_the_users_person_and_can_be_taken_back() {
     set_my_name(&svc, "   ").unwrap();
     assert_eq!(my_voice(&svc).unwrap().name, None);
 }
+
+#[test]
+fn my_voice_renaming_yourself_marks_a_summary_that_used_your_name() {
+    use rand_core::SeedableRng;
+    let dir = TempDir::new("my-name-summary");
+    let (svc, _) = services(&dir);
+    set_my_name(&svc, "Casey").unwrap();
+    let me = svc
+        .store()
+        .persons()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.is_me && p.is_live())
+        .unwrap()
+        .id;
+    let named = |m| {
+        crate::view::MeetingView::load_named(&svc.store(), m)
+            .unwrap()
+            .unwrap()
+    };
+    let mut meetings = Vec::new();
+    for (seed, tldr) in [
+        (1, "Casey will send the plan."),
+        (2, "The plan was agreed."),
+    ] {
+        let m = crate::testutil::meeting(&svc, "Planning", seed);
+        let row = named(m)
+            .speakers
+            .into_iter()
+            .find(|s| s.role == earshot_core::diar::SpeakerRole::Me)
+            .unwrap();
+        crate::edit::link_speaker(&svc, m, row.id, &crate::edit::PersonChoice::Existing(me))
+            .unwrap();
+        let v = named(m);
+        let s = earshot_core::summary::SummaryV1 {
+            title: "Planning".into(),
+            tldr: tldr.into(),
+            enhanced_notes: vec![],
+            decisions: vec![],
+            action_items: vec![],
+            open_questions: vec![],
+            topics: vec![],
+        };
+        crate::summary::store_summary(
+            &svc,
+            &v,
+            "test-model".into(),
+            &s,
+            &mut rand_chacha::ChaCha8Rng::seed_from_u64(seed + 10),
+        )
+        .unwrap();
+        meetings.push(m);
+    }
+    assert!(!named(meetings[0]).summary_out_of_date());
+
+    set_my_name(&svc, "Casey Lee").unwrap();
+    assert!(
+        named(meetings[0]).summary_names_changed(),
+        "renamed yourself"
+    );
+    assert!(
+        !named(meetings[1]).summary_out_of_date(),
+        "a summary that never used the name"
+    );
+
+    set_my_name(&svc, "casey").unwrap();
+    assert!(!named(meetings[0]).summary_out_of_date(), "put back");
+    assert!(!named(meetings[1]).summary_out_of_date());
+}

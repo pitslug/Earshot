@@ -280,10 +280,14 @@ pub struct MeetingDetail {
     pub speakers: Vec<SpeakerCard>,
     /// The previous summary can be restored ("Switch to previous summary").
     pub can_undo_summary: bool,
-    /// The current summary no longer matches the transcript
-    /// (`MeetingView::summary_out_of_date`): it cites segments the transcript no longer has,
-    /// or the user edited the transcript's text after it was written (T12.16).
+    /// The current summary is out of date (`MeetingView::summary_out_of_date`): it cites
+    /// segments the transcript no longer has, the user edited the transcript's text after it
+    /// was written (T12.16), or it uses a speaker's name the user has since changed (T12.82).
     pub summary_stale: bool,
+    /// The summary is out of date only because it uses a speaker's name as it was before the
+    /// user changed it (`MeetingView::summary_names_changed`, T12.82), so the note says that
+    /// rather than an earlier transcript.
+    pub summary_stale_names: bool,
     /// At least one track's recording is still kept: re-transcription and speaker samples
     /// need it (T7.4k: audio retention deletes recordings, everything else stays).
     pub audio_kept: bool,
@@ -967,6 +971,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         .as_ref()
         .map(|s| summary_view(s.id, &s.summary, &rows));
     let summary_stale = view.summary_out_of_date();
+    let summary_stale_names = view.summary_names_changed() && !view.summary_transcript_changed();
     let can_undo_summary = history.previous.is_some_and(|p| p.restorable);
     // The CLIs this meeting was handed to: an agent-CLI writer name counts only with one.
     let handed_to: Vec<earshot_runtime::claude_code::HandoverCli> =
@@ -1007,6 +1012,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         transcript,
         can_undo_summary,
         summary_stale,
+        summary_stale_names,
         audio_kept,
         handovers: handovers
             .entries

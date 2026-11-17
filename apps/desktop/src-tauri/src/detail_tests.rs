@@ -606,6 +606,32 @@ two",
 }
 
 #[test]
+fn detail_a_name_the_summary_used_changing_marks_it_out_of_date_with_its_own_reason() {
+    // T12.82: the summary names Priya Shah (an action's owner); renaming the unnamed voice it
+    // never mentions leaves it current, renaming Priya marks it, and a new summary clears it.
+    let dir = TempDir::new("detail-names");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 47);
+    put_summary(&svc, f.meeting, vec![f.segments[2]], vec![], false, 48);
+    edit::rename_speaker(&svc, f.meeting, f.unnamed, "Jordan").unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!d.summary_stale && !d.summary_stale_names);
+
+    edit::rename_person(&svc, f.priya_person, "Priya Shah-Ng").unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(d.summary_stale && d.summary_stale_names);
+
+    // A transcript edit as well: the transcript's reason is the one shown.
+    edit::edit_segment(&svc, f.meeting, f.segments[2], "yes, that works for us").unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(d.summary_stale && !d.summary_stale_names);
+
+    put_summary(&svc, f.meeting, vec![f.segments[2]], vec![], false, 49);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(!d.summary_stale && !d.summary_stale_names);
+}
+
+#[test]
 fn detail_a_line_with_no_speaker_is_an_unknown_speaker_the_user_can_assign() {
     // T12.65: a final line the final pass gave no speaker, on a track whose other lines have
     // one, shows as the unknown speaker; giving it Priya from the line names it and marks it

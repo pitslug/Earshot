@@ -405,8 +405,9 @@ pub fn forget_my_voice(services: &Services) -> Result<usize, RuntimeError> {
 }
 
 /// Gives the user's person `name` (trimmed, the rule of every person's name; empty goes back to
-/// the default) in every meeting. A summary already written keeps its wording until it is
-/// written again. Returns how many speaker rows changed.
+/// the default) in every meeting, through [`crate::edit::rename_person`]. A summary already
+/// written keeps its wording until it is written again; one that used the old name reads out of
+/// date (T12.82, `crate::summary_names`). Returns how many speaker rows changed.
 ///
 /// # Errors
 /// [`crate::edit::EditError`] for an unusable name; store errors.

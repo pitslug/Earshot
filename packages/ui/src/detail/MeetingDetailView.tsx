@@ -1386,8 +1386,9 @@ function SummaryTab({
       {detail.summary_stale && (
         <MessageBar intent="warning" layout="multiline">
           <MessageBarBody>
-            This summary refers to lines of an earlier transcript. Re-summarise to match the
-            current one.
+            {detail.summary_stale_names
+              ? "This summary uses a speaker's earlier name. Re-summarise to use the current names."
+              : "This summary refers to lines of an earlier transcript. Re-summarise to match the current one."}
           </MessageBarBody>
           <MessageBarActions>
             <Button size="small" onClick={onResummarise}>

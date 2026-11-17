@@ -210,7 +210,7 @@ fn hit_in(view: &MeetingView, query: &Query) -> Option<SearchHit> {
 }
 
 /// The summary's text as the meeting screen shows it, which leaves out its topics.
-fn summary_texts(s: &SummaryV1) -> impl Iterator<Item = &str> {
+pub(crate) fn summary_texts(s: &SummaryV1) -> impl Iterator<Item = &str> {
     std::iter::once(s.title.as_str())
         .chain(std::iter::once(s.tldr.as_str()))
         .chain(s.decisions.iter().map(|d| d.text.as_str()))
