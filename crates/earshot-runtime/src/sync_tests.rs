@@ -255,6 +255,54 @@ fn sync_a_name_the_summary_used_changed_elsewhere_marks_the_summary_here() {
 }
 
 #[test]
+fn sync_a_rename_and_a_new_summary_in_one_page_leave_the_new_summary_current() {
+    use rand_core::SeedableRng;
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let named = |dev: &Device, m| {
+        crate::view::MeetingView::load_named(&dev.svc.store(), m)
+            .unwrap()
+            .unwrap()
+    };
+    let summarise = |m, tldr: &str, seed| {
+        let mut s = summary_of("Planning");
+        s.tldr = tldr.into();
+        crate::summary::store_summary(
+            &a.svc,
+            &named(&a, m),
+            "test-model".into(),
+            &s,
+            &mut rand_chacha::ChaCha8Rng::seed_from_u64(seed),
+        )
+        .unwrap()
+        .0
+    };
+    let m = meeting(&a.svc, "Planning", 1);
+    summarise(m, "Alice will send the plan.", 2);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+
+    // Renamed and summarised again before the second computer hears of either; the new name
+    // holds the old one, so only the summary the rename found may be judged.
+    let alice = named(&a, m)
+        .speakers
+        .into_iter()
+        .find(|s| s.display_name == "Alice")
+        .unwrap();
+    a.clock.advance_ms(1_000);
+    crate::edit::rename_speaker(&a.svc, m, alice.id, "Alice Smith").unwrap();
+    a.clock.advance_ms(1_000);
+    let fresh = summarise(m, "Alice Smith will send the plan.", 3);
+    assert!(!named(&a, m).summary_out_of_date());
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    let here = named(&b, m);
+    assert_eq!(here.summary.as_ref().map(|s| s.id), Some(fresh));
+    assert!(!here.summary_out_of_date(), "the new summary is current");
+}
+
+#[test]
 fn sync_a_tick_that_changed_rows_names_their_meetings_and_only_then() {
     let relay = relay();
     let (a, b) = pair(&relay);

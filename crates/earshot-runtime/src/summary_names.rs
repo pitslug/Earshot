@@ -2,30 +2,35 @@
 //!
 //! A summary is written right after a meeting, before voices are named, so it says "Speaker 2
 //! will..." about a voice the user then names. Linking a voice, renaming it here or renaming
-//! its person, "Not <name>", "This is me" and "This isn't me" each change a speaker row's
-//! name; such a change marks the meeting's current summary out of date
-//! ([`crate::view::MeetingView::summary_out_of_date`]) only when that summary uses the name the
-//! row had before the change: a whole word, case folded with [`crate::search::fold_case`], in
-//! any text the meeting search reads in a summary. A summary that never used the old name
-//! stays current, so naming voices does not put the note on almost every meeting. A change of
-//! case alone is not a change of name.
+//! its person, "Not <name>", "This is me", "This isn't me" and removing a person each change a
+//! speaker row's name. Such a change records the old name against the meeting's current
+//! summary only when that summary uses it: a whole word, case folded with
+//! [`crate::search::fold_case`], in any text the meeting search reads in a summary
+//! ([`uses_name`]). The user's default name ([`DEFAULT_ME_NAME`], "Me") is never recorded: as a
+//! word it is mostly the pronoun. A change of case alone is not a change of name.
 //!
-//! The mark is the device-local record `summary-names/<meeting>`
-//! ([`crate::local::MeetingRecord::SummaryNames`]): `version u32 LE | JSON list` of the summary
-//! row ids marked, so a new summary (a re-summarise) is current again by having another id, and
-//! a summary an undo brings back keeps its mark. A naming edit records it in its own
-//! transaction ([`name_changed_tx`]). Nothing new is synced: the name change itself travels
-//! as the synced speaker row, and another computer applying that row judges it by the same rule
-//! against the name its own copy of the row had ([`names_changed_tx`], run in the applied
-//! page's transaction). A computer that never held the old name cannot tell, so it shows no
-//! mark. The record holds row ids only, no text; one this version cannot read is no marks (a
-//! lost mark only hides the note). Meeting deletion erases it with the meeting's other records.
+//! The summary is out of date ([`crate::view::MeetingView::summary_out_of_date`]) while its text
+//! still uses a recorded earlier name that no live speaker row of the meeting has now
+//! ([`out_of_date_by_names`], judged at every read): a name put back reads current again, and
+//! a new summary (a re-summarise) has no recorded names. A summary an undo brings back keeps
+//! its names.
+//!
+//! The record is the device-local `summary-names/<meeting>`
+//! ([`crate::local::MeetingRecord::SummaryNames`]): `version u32 LE | JSON object` from summary
+//! row id to the earlier names it used. It holds names (content); meeting deletion erases it
+//! with the meeting's other records. One this version cannot read is no names (a lost name only
+//! hides the note). Nothing new is synced: the name change travels as the synced speaker row,
+//! and another computer applying that row judges it by the same rule against the name its own
+//! copy had and against the summary that was current before the page ([`names_before`],
+//! [`names_changed_tx`]), so a summary written after the rename and pulled in the same page is
+//! never marked. A computer that never held the old name cannot tell, so it shows no mark.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use earshot_core::identity::EntityId;
-use earshot_core::model::{MeetingRepo, current_summary};
+use earshot_core::model::{MeetingRepo, Speaker, Summary, current_summary};
 use earshot_core::summary::SummaryV1;
+use earshot_core::voiceprint::DEFAULT_ME_NAME;
 use earshot_store::{Store, StoreError, StoreTx};
 
 use crate::RuntimeError;
@@ -35,34 +40,43 @@ use crate::search::{fold_case, summary_texts};
 /// The record's version, written before its JSON payload.
 pub const RECORD_VERSION: u32 = 1;
 
+/// Summary row id to the earlier names it used.
+pub type EarlierNames = BTreeMap<EntityId, Vec<String>>;
+
 /// The record's key for `meeting`.
 pub(crate) fn record_key(meeting: EntityId) -> LocalKey {
     MeetingRecord::SummaryNames.key(&[], meeting, &[])
 }
 
-/// The record's bytes for `ids`.
+/// The record's bytes for `names`.
 ///
 /// # Errors
-/// [`StoreError::Corrupt`] if the list does not serialise.
-pub fn encode(ids: &BTreeSet<EntityId>) -> Result<Vec<u8>, StoreError> {
-    let text: Vec<String> = ids.iter().map(ToString::to_string).collect();
+/// [`StoreError::Corrupt`] if the record does not serialise.
+pub fn encode(names: &EarlierNames) -> Result<Vec<u8>, StoreError> {
+    let text: BTreeMap<String, &Vec<String>> =
+        names.iter().map(|(id, n)| (id.to_string(), n)).collect();
     earshot_store::encode_versioned(RECORD_VERSION, &text)
         .map_err(|_| StoreError::Corrupt("summary names encoding".into()))
 }
 
-/// The ids of a stored record; one this version cannot read is no ids.
-fn decode(bytes: &[u8]) -> BTreeSet<EntityId> {
+/// A stored record; one this version cannot read is no names.
+fn decode(bytes: &[u8]) -> EarlierNames {
     let Some((version, body)) = earshot_store::split_version(bytes) else {
-        return BTreeSet::new();
+        return EarlierNames::new();
     };
     if version != RECORD_VERSION {
-        return BTreeSet::new();
+        return EarlierNames::new();
     }
-    serde_json::from_slice::<Vec<String>>(body)
+    serde_json::from_slice::<BTreeMap<String, Vec<String>>>(body)
         .unwrap_or_default()
-        .iter()
-        .filter_map(|s| s.parse().ok())
+        .into_iter()
+        .filter_map(|(id, n)| Some((id.parse().ok()?, n)))
         .collect()
+}
+
+/// Whether two names are one name: trimmed, case folded.
+fn same_name(a: &str, b: &str) -> bool {
+    fold_case(a.trim()).eq(fold_case(b.trim()))
 }
 
 /// Whether `summary` uses `name`: as a whole word (no letter or digit right before or after
@@ -86,9 +100,47 @@ pub fn uses_name(summary: &SummaryV1, name: &str) -> bool {
     })
 }
 
-/// Records, inside the naming edit's transaction, that a speaker row of `meeting` went from
-/// `old` to `new` (module docs): when the meeting's current summary uses `old`, its id joins
-/// the record. Returns whether it was marked now.
+/// Whether `summary` is out of date by names: its text uses one of `earlier` (its recorded
+/// earlier names) that no live row of `speakers` has as its name now.
+#[must_use]
+pub fn out_of_date_by_names(summary: &SummaryV1, earlier: &[String], speakers: &[Speaker]) -> bool {
+    earlier.iter().any(|name| {
+        uses_name(summary, name)
+            && !speakers
+                .iter()
+                .any(|s| !s.meta.deleted && same_name(&s.display_name, name))
+    })
+}
+
+/// Records `old` against `summary` when a speaker row of `meeting` went from `old` to `new`
+/// and the summary uses `old` (module docs). Returns whether a name was recorded.
+fn record_tx(
+    tx: &mut StoreTx<'_>,
+    meeting: EntityId,
+    summary: &Summary,
+    old: &str,
+    new: &str,
+) -> Result<bool, StoreError> {
+    if same_name(old, new) || same_name(old, DEFAULT_ME_NAME) || !uses_name(&summary.summary, old) {
+        return Ok(false);
+    }
+    let key = record_key(meeting);
+    let mut names = tx
+        .local_value(key.as_str())?
+        .map(|b| decode(&b))
+        .unwrap_or_default();
+    let list = names.entry(summary.id).or_default();
+    if list.iter().any(|n| same_name(n, old)) {
+        return Ok(false);
+    }
+    list.push(old.trim().to_owned());
+    crate::local::set_tx(tx, &key, &encode(&names)?)?;
+    Ok(true)
+}
+
+/// Records, inside a naming edit's transaction, that a speaker row of `meeting` went from
+/// `old` to `new`, against the meeting's current summary (module docs). Returns whether a name
+/// was recorded.
 ///
 /// # Errors
 /// Store errors.
@@ -98,83 +150,90 @@ pub(crate) fn name_changed_tx(
     old: &str,
     new: &str,
 ) -> Result<bool, StoreError> {
-    if fold_case(old.trim()).eq(fold_case(new.trim())) {
-        return Ok(false);
-    }
     let Some(current) = current_summary(tx.summaries(meeting)?) else {
         return Ok(false);
     };
-    if !uses_name(&current.summary, old) {
-        return Ok(false);
-    }
-    let key = record_key(meeting);
-    let mut ids = tx
-        .local_value(key.as_str())?
-        .map(|b| decode(&b))
-        .unwrap_or_default();
-    if !ids.insert(current.id) {
-        return Ok(false);
-    }
-    crate::local::set_tx(tx, &key, &encode(&ids)?)?;
-    Ok(true)
+    record_tx(tx, meeting, &current, old, new)
 }
 
-/// A live speaker row's name before a pulled page was applied: (meeting, speaker, name).
-pub(crate) type NameBefore = (EntityId, EntityId, String);
+/// One meeting's current summary and the names of some of its live speaker rows, read before
+/// a change made outside a naming edit (a pulled sync page, removing a person).
+#[derive(Debug, Clone)]
+pub(crate) struct NamesBefore {
+    meeting: EntityId,
+    summary: EntityId,
+    names: Vec<(EntityId, String)>,
+}
 
-/// The names this device's live copies of `rows` have now, read before a pulled page is
-/// applied ([`names_changed_tx`]).
+/// The names the live rows `rows` (meeting to speaker ids) have now, with each meeting's
+/// current summary: one read of each per meeting. A meeting without a summary is left out.
 ///
 /// # Errors
 /// Store errors.
-pub(crate) fn names_before(
-    store: &Store,
-    rows: impl IntoIterator<Item = (EntityId, EntityId)>,
-) -> Result<Vec<NameBefore>, StoreError> {
+pub(crate) fn names_before<R: MeetingRepo + ?Sized>(
+    repo: &R,
+    rows: &BTreeMap<EntityId, BTreeSet<EntityId>>,
+) -> Result<Vec<NamesBefore>, StoreError> {
     let mut out = Vec::new();
-    for (meeting, speaker) in rows {
-        if let Some(row) = store
-            .speakers(meeting)?
+    for (meeting, speakers) in rows {
+        let Some(summary) = current_summary(repo.summaries(*meeting)?) else {
+            continue;
+        };
+        let names: Vec<(EntityId, String)> = repo
+            .speakers(*meeting)?
             .into_iter()
-            .find(|s| s.id == speaker && !s.meta.deleted)
-        {
-            out.push((meeting, speaker, row.display_name));
+            .filter(|s| !s.meta.deleted && speakers.contains(&s.id))
+            .map(|s| (s.id, s.display_name))
+            .collect();
+        if !names.is_empty() {
+            out.push(NamesBefore {
+                meeting: *meeting,
+                summary: summary.id,
+                names,
+            });
         }
     }
     Ok(out)
 }
 
-/// [`name_changed_tx`] for every row of `before` whose name a pulled page changed, run in that
-/// page's transaction after its writes. Returns how many summaries were marked.
+/// Records every name of `before` that has changed since, against the summary that was current
+/// then and only while it still is (a summary the change brought in is new and records
+/// nothing). Run in the change's transaction after its writes. Returns how many names were
+/// recorded.
 ///
 /// # Errors
 /// Store errors.
 pub(crate) fn names_changed_tx(
     tx: &mut StoreTx<'_>,
-    before: &[NameBefore],
+    before: &[NamesBefore],
 ) -> Result<usize, StoreError> {
-    let mut marked = 0;
-    for (meeting, speaker, old) in before {
-        let Some(now) = tx
-            .speakers(*meeting)?
-            .into_iter()
-            .find(|s| s.id == *speaker && !s.meta.deleted)
-        else {
+    let mut recorded = 0;
+    for b in before {
+        let Some(current) = current_summary(tx.summaries(b.meeting)?) else {
             continue;
         };
-        if name_changed_tx(tx, *meeting, old, &now.display_name)? {
-            marked += 1;
+        if current.id != b.summary {
+            continue;
+        }
+        let now = tx.speakers(b.meeting)?;
+        for (speaker, old) in &b.names {
+            let Some(row) = now.iter().find(|s| s.id == *speaker && !s.meta.deleted) else {
+                continue;
+            };
+            if record_tx(tx, b.meeting, &current, old, &row.display_name)? {
+                recorded += 1;
+            }
         }
     }
-    Ok(marked)
+    Ok(recorded)
 }
 
-/// The summary rows of `meeting` marked as using a changed name. A record this version cannot
-/// read counts as none.
+/// The earlier names recorded for `meeting`'s summaries. A record this version cannot read
+/// counts as none.
 ///
 /// # Errors
 /// Store errors.
-pub fn read(store: &Store, meeting: EntityId) -> Result<BTreeSet<EntityId>, RuntimeError> {
+pub fn read(store: &Store, meeting: EntityId) -> Result<EarlierNames, RuntimeError> {
     Ok(store
         .local_value(record_key(meeting).as_str())?
         .map(|b| decode(&b))
@@ -259,24 +318,72 @@ mod tests {
 
     #[test]
     fn view_summary_names_record_round_trips_and_refuses_another_version() {
-        let ids: BTreeSet<EntityId> =
-            [EntityId::from_bytes([1; 16]), EntityId::from_bytes([2; 16])]
-                .into_iter()
-                .collect();
-        let bytes = encode(&ids).unwrap();
-        assert_eq!(decode(&bytes), ids);
+        let names: EarlierNames = [
+            (EntityId::from_bytes([1; 16]), vec!["Speaker 2".into()]),
+            (
+                EntityId::from_bytes([2; 16]),
+                vec!["Alice".into(), "Rowan".into()],
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let bytes = encode(&names).unwrap();
+        assert_eq!(decode(&bytes), names);
         let mut other = bytes.clone();
         other[0] = 9;
         assert!(decode(&other).is_empty());
         assert!(decode(b"ab").is_empty());
-        assert!(decode(&[1, 0, 0, 0, b'{']).is_empty());
+        assert!(decode(&[1, 0, 0, 0, b'[']).is_empty());
     }
 
     #[test]
     fn view_summary_names_record_bytes_are_pinned() {
-        let ids: BTreeSet<EntityId> = [EntityId::from_bytes([1; 16])].into_iter().collect();
+        let names: EarlierNames = [(EntityId::from_bytes([1; 16]), vec!["Speaker 2".into()])]
+            .into_iter()
+            .collect();
         let mut want = 1u32.to_le_bytes().to_vec();
-        want.extend_from_slice(br#"["01010101-0101-0101-0101-010101010101"]"#);
-        assert_eq!(encode(&ids).unwrap(), want);
+        want.extend_from_slice(br#"{"01010101-0101-0101-0101-010101010101":["Speaker 2"]}"#);
+        assert_eq!(encode(&names).unwrap(), want);
+    }
+
+    #[test]
+    fn view_summary_names_out_of_date_only_while_no_speaker_has_the_name_now() {
+        let s = summary("Speaker 2 will book the venue.");
+        let earlier = vec!["Speaker 2".to_owned()];
+        let row = |name: &str| {
+            let clock = earshot_core::identity::ManualClock::new(1);
+            let mut hlc = earshot_core::identity::Hlc::new(
+                earshot_core::identity::DeviceId::from_bytes([3; 16]),
+            );
+            let mut rng = <rand_chacha::ChaCha8Rng as rand_core::SeedableRng>::seed_from_u64(1);
+            let mut stamp = earshot_core::model::Stamp {
+                clock: &clock,
+                hlc: &mut hlc,
+                rng: &mut rng,
+            };
+            Speaker::new(
+                EntityId::from_bytes([4; 16]),
+                earshot_core::diar::SpeakerRole::Remote,
+                name,
+                None,
+                &mut stamp,
+            )
+        };
+        assert!(out_of_date_by_names(&s, &earlier, &[row("Rowan")]));
+        assert!(
+            !out_of_date_by_names(&s, &earlier, &[row("speaker 2")]),
+            "the name is back"
+        );
+        let mut gone = row("Speaker 2");
+        gone.meta.deleted = true;
+        assert!(
+            out_of_date_by_names(&s, &earlier, &[gone]),
+            "a tombstone has no name now"
+        );
+        assert!(!out_of_date_by_names(
+            &summary("The venue was booked."),
+            &earlier,
+            &[]
+        ));
     }
 }

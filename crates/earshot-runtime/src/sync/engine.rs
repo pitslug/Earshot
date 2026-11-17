@@ -707,15 +707,17 @@ impl SyncClient {
         let is_leased = |m: EntityId| leased.contains(&m);
         let clock = std::sync::Arc::clone(&self.services.clock);
         let mut db = self.services.store();
-        // A speaker row's name before the page, so a name the current summary used is judged
-        // here as on the computer that changed it (T12.82, `crate::summary_names`).
-        let names_before = crate::summary_names::names_before(
-            &db,
-            page.iter().filter_map(|inc| match &inc.row {
-                Some(SyncedRow::Speaker(s)) => Some((s.meeting_id, s.id)),
-                _ => None,
-            }),
-        )?;
+        // Speaker rows' names and each meeting's current summary before the page, so a name
+        // the summary used is judged here as on the computer that changed it, and a summary
+        // the page brings in is never judged (T12.82, `crate::summary_names`).
+        let mut speakers: std::collections::BTreeMap<EntityId, BTreeSet<EntityId>> =
+            std::collections::BTreeMap::new();
+        for inc in page {
+            if let Some(SyncedRow::Speaker(s)) = &inc.row {
+                speakers.entry(s.meeting_id).or_default().insert(s.id);
+            }
+        }
+        let names_before = crate::summary_names::names_before(&**db, &speakers)?;
         // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in
         // the page's own transaction, so the list never differs from the rows it came from.
         let after = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {

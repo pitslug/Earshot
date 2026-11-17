@@ -47,16 +47,15 @@ pub struct MeetingView {
     /// The final lines diarisation left without a speaker (T12.65, `crate::unknown_lines`):
     /// empty from [`MeetingView::load`], read by [`MeetingView::load_named`].
     pub unknown_lines: BTreeSet<EntityId>,
-    /// The summary rows that use a speaker's name the user has since changed (T12.82,
-    /// `crate::summary_names`): empty from [`MeetingView::load`], read by
-    /// [`MeetingView::load_named`].
-    pub names_changed: BTreeSet<EntityId>,
+    /// The earlier speaker names each summary row used (T12.82, `crate::summary_names`):
+    /// empty from [`MeetingView::load`], read by [`MeetingView::load_named`].
+    pub earlier_names: crate::summary_names::EarlierNames,
 }
 
 impl MeetingView {
     /// [`MeetingView::load`] with the lines left without a speaker
     /// ([`MeetingView::unknown_lines`]) and the summaries that use a changed name
-    /// ([`MeetingView::names_changed`]), for anything that shows speaker names: summaries,
+    /// ([`MeetingView::earlier_names`]), for anything that shows speaker names: summaries,
     /// exports and the meeting detail.
     ///
     /// # Errors
@@ -69,7 +68,7 @@ impl MeetingView {
             return Ok(None);
         };
         view.unknown_lines = crate::unknown_lines::read(store, meeting)?;
-        view.names_changed = crate::summary_names::read(store, meeting)?;
+        view.earlier_names = crate::summary_names::read(store, meeting)?;
         Ok(Some(view))
     }
 
@@ -122,7 +121,7 @@ impl MeetingView {
             notes,
             summary,
             unknown_lines: BTreeSet::new(),
-            names_changed: BTreeSet::new(),
+            earlier_names: crate::summary_names::EarlierNames::new(),
         }))
     }
 
@@ -152,13 +151,17 @@ impl MeetingView {
     }
 
     /// Whether the current summary uses a speaker's name as it was before the user changed it
-    /// (T12.82, `crate::summary_names`): its row is in [`MeetingView::names_changed`], so a
-    /// new summary is current again. `false` without a summary.
+    /// (T12.82, `crate::summary_names::out_of_date_by_names`): an earlier name recorded for it
+    /// ([`MeetingView::earlier_names`]) that its text still uses and no live speaker has now. A
+    /// new summary is current again, and so is one whose name was put back. `false` without a
+    /// summary.
     #[must_use]
     pub fn summary_names_changed(&self) -> bool {
-        self.summary
-            .as_ref()
-            .is_some_and(|s| self.names_changed.contains(&s.id))
+        self.summary.as_ref().is_some_and(|s| {
+            self.earlier_names.get(&s.id).is_some_and(|earlier| {
+                crate::summary_names::out_of_date_by_names(&s.summary, earlier, &self.speakers)
+            })
+        })
     }
 
     /// The name shown for `segment`: its speaker's display name after diarisation,

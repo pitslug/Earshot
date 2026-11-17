@@ -2185,8 +2185,27 @@ pub fn remove_person(
             return Err(EditError::PersonIsTheUser(person).into());
         }
     }
+    // The rows the removal sends back to "Speaker N", read first so a summary that used the
+    // person's name is marked as a naming edit would (T12.82), under the same lock.
+    let identity = identity_of(store, person).map_err(voiceprint_err)?;
+    let mut rows: std::collections::BTreeMap<EntityId, BTreeSet<EntityId>> =
+        std::collections::BTreeMap::new();
+    for m in store.meetings()? {
+        if m.meta.deleted {
+            continue;
+        }
+        for s in store.speakers(m.id)? {
+            if !s.meta.deleted && s.person_id.is_some_and(|p| identity.contains(&p)) {
+                rows.entry(m.id).or_default().insert(s.id);
+            }
+        }
+    }
+    let before = crate::summary_names::names_before(store, &rows)?;
     let (store, hlc) = db.parts();
-    Ok(store.remove_person(person, hlc, &*clock)?)
+    let removal = store.remove_person(person, hlc, &*clock)?;
+    // A second transaction, still under the lock: a crash between the two loses only the mark.
+    store.transaction(|tx| crate::summary_names::names_changed_tx(tx, &before))?;
+    Ok(removal)
 }
 
 /// The previous summary of a meeting ([`summary_history`]).

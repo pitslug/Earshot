@@ -70,6 +70,80 @@ fn edit_names_a_rename_of_a_name_the_summary_does_not_use_leaves_it() {
 }
 
 #[test]
+fn edit_names_a_name_put_back_reads_current_again() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 834);
+    let alice = speaker(&svc, m, "Alice").id;
+    store(&svc, m, "Alice will send the release plan.", 835);
+    assert!(rename_speaker(&svc, m, alice, "Alicia").unwrap());
+    assert!(named(&svc, m).summary_names_changed());
+    assert!(rename_speaker(&svc, m, alice, "alice").unwrap());
+    assert!(!named(&svc, m).summary_out_of_date(), "renamed back");
+
+    // Link, then "Not": the voice is "Speaker N" again, the name the summary used.
+    let m = processed(&svc, 836);
+    let s = remote_speakers(&svc, m)[0].clone();
+    store(
+        &svc,
+        m,
+        &format!("{} will book the venue.", s.display_name),
+        837,
+    );
+    link_speaker(
+        &svc,
+        m,
+        s.id,
+        &PersonChoice::New {
+            name: "Rowan".into(),
+        },
+    )
+    .unwrap();
+    assert!(named(&svc, m).summary_names_changed());
+    not_this_person(&svc, m, s.id).unwrap();
+    assert_eq!(
+        view(&svc, m)
+            .speakers
+            .iter()
+            .find(|r| r.id == s.id)
+            .unwrap()
+            .display_name,
+        s.display_name
+    );
+    assert!(!named(&svc, m).summary_out_of_date(), "Not Rowan");
+}
+
+#[test]
+fn edit_names_removing_a_person_marks_a_summary_that_used_their_name() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 838);
+    let s = remote_speakers(&svc, m)[0].clone();
+    let rowan = link_speaker(
+        &svc,
+        m,
+        s.id,
+        &PersonChoice::New {
+            name: "Rowan".into(),
+        },
+    )
+    .unwrap();
+    store(&svc, m, "Rowan will book the venue.", 839);
+    let other = processed(&svc, 840);
+    store(&svc, other, "The venue was booked.", 841);
+    let o = remote_speakers(&svc, other)[0].clone();
+    link_speaker(&svc, other, o.id, &PersonChoice::Existing(rowan)).unwrap();
+    assert!(!named(&svc, m).summary_out_of_date());
+
+    remove_person(&svc, rowan).unwrap();
+    assert!(named(&svc, m).summary_names_changed());
+    assert!(
+        !named(&svc, other).summary_out_of_date(),
+        "never named there"
+    );
+}
+
+#[test]
 fn edit_names_a_name_inside_another_word_does_not_count() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);

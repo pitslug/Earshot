@@ -837,13 +837,21 @@ fn edit_mark_me_and_unmark_me_mark_a_summary_that_uses_the_old_name() {
     mark_me(&svc, m, first).unwrap();
     assert!(named(&svc).summary_names_changed(), "This is me");
 
-    store(&svc, m, "Me to order the pump.", 842);
+    // The user's default name is never recorded: as a word it is mostly the pronoun.
+    store(&svc, m, "Speaker 2 said to let me know by Friday.", 842);
     assert!(!named(&svc).summary_out_of_date());
+    unmark_me(&svc, m, first).unwrap();
+    assert!(!named(&svc).summary_out_of_date(), "\"me\" is not a name");
+
+    // The user's own name is a name.
+    crate::my_voice::set_my_name(&svc, "Casey").unwrap();
+    mark_me(&svc, m, first).unwrap();
+    store(&svc, m, "Casey will order the pump.", 843);
     unmark_me(&svc, m, first).unwrap();
     assert!(named(&svc).summary_names_changed(), "This isn't me");
 
     // A summary that does not use the name is left alone.
-    store(&svc, m, "The pump arrives on Monday.", 843);
+    store(&svc, m, "The pump arrives on Monday.", 844);
     mark_me(&svc, m, first).unwrap();
     assert!(!named(&svc).summary_out_of_date());
 }
