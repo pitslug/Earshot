@@ -702,27 +702,51 @@ function linkOf(pick: PersonPick): { choice: LinkChoice; name: string } | null {
   }
 }
 
-/** The keys that move through the list: only after one of them does Enter or Tab choose the
- * option it reached; the highlight a keystroke leaves never decides by itself. */
-const MOVE_KEYS = new Set(["ArrowDown", "ArrowUp", "Home", "End", "PageUp", "PageDown"]);
-
 /** Starts every option's `text`, so no typed text ever starts an option's text. Fluent then
  * finds no option to highlight from the typed text (it would match the options of the render
  * before the keystroke, a stale list) and, once the new options render, highlights the first
- * one: by this field's order, the option Enter takes (the one person with the whole typed name,
- * else "New person"). Where Enter takes no option the highlight is turned off (`disableAutoFocus`).
- * The input never shows `text`: its value is controlled here. */
+ * one: by this field's order, the option the typed name means (the one person with the whole
+ * typed name, else "New person"). Where the typed name means no option the highlight is turned
+ * off (`disableAutoFocus`). The input never shows `text`: its value is controlled here. */
 const OPTION_TEXT_PREFIX = "⁣";
+
+/** The attribute naming an option's value on its element, read back by [`keyAction`]. */
+const OPTION_VALUE_ATTRIBUTE = "data-person-option";
+
+/** Whether two picks link the same way. */
+function samePick(a: PersonPick, b: PersonPick): boolean {
+  if (a.kind === "existing" && b.kind === "existing") return a.person.id === b.person.id;
+  if (a.kind === "new" && b.kind === "new") return a.name === b.name;
+  return false;
+}
+
+/** What Enter or Tab does in a person field: the one rule, decided from the option highlighted
+ * in the open list as the user saw it, never from key history.
+ * - A highlighted disabled option (the user, on another voice's row): nothing.
+ * - A highlighted option that is not what the hint says: choose it (the hint then says it);
+ *   nothing is saved, because Save is the consent to remember the voice (T12.19).
+ * - Otherwise (no highlighted option, or the one the hint already says): Enter does what the
+ *   hint says (link to the one person, or a new person); several people or no name: nothing.
+ *   Tab never saves. */
+export function keyAction(
+  key: "Enter" | "Tab",
+  highlighted: { disabled: true } | { disabled: false; pick: PersonPick } | null,
+  pick: PersonPick,
+): { kind: "nothing" } | { kind: "choose"; pick: PersonPick } | { kind: "save"; pick: PersonPick } {
+  if (highlighted?.disabled) return { kind: "nothing" };
+  if (highlighted && !samePick(highlighted.pick, pick)) return { kind: "choose", pick: highlighted.pick };
+  if (key === "Enter" && linkOf(pick) !== null) return { kind: "save", pick };
+  return { kind: "nothing" };
+}
 
 /** The person combobox of a voice (T12.80): typing filters saved people by any part of the name,
  * case and accents ignored; each is listed with how many meetings they are in, the user
- * disabled (only the user's own row can be them), and "New person: <name>" for the typed name.
- * "New person: <name>" is offered only for a name no one other than the user has, so a click
- * never makes a second person with a saved name. Choosing an option (a click, or Enter or Tab
- * after moving through the list) picks it and shows what Save will do, saving nothing (Save is
- * the consent to remember the voice, T12.19); else the whole typed name decides: the one person
- * with it, several (the user must choose), or a new person. `onEnter` gets the pick of an Enter
- * that did not just choose an option. */
+ * disabled (only the user's own row can be them), and "New person: <name>" for a name no one
+ * other than the user has, so a click never makes a second person with a saved name. A click on
+ * an option, or Enter or Tab on a highlighted option the hint does not already say, chooses it
+ * and shows what Save will do; else the whole typed name decides: the one person with it,
+ * several (the user must choose), or a new person ([`keyAction`]). `onEnter` gets the pick an
+ * Enter saves. */
 function usePersonField({
   card,
   persons,
@@ -742,13 +766,7 @@ function usePersonField({
 }): { element: ReactElement; pick: PersonPick; hint: ReactElement | null } {
   const styles = useStyles();
   const [value, setValue] = useState("");
-  // The chosen option, in state for rendering and in a ref for the Enter that chose it (Fluent
-  // selects before this field's own Enter handler runs, in the same event).
   const [chosen, setChosen] = useState<PersonPick | null>(null);
-  const chosenNow = useRef<PersonPick | null>(null);
-  const navigated = useRef(false);
-  // An Enter that chose an option (after moving through the list) chooses only.
-  const choseOnEnter = useRef(false);
   const own = card.kind === "Me";
   const typed = value.trim();
 
@@ -766,9 +784,16 @@ function usePersonField({
   };
   const pick = pickOf(chosen);
 
-  const choose = (choice: PersonPick | null) => {
-    chosenNow.current = choice;
+  // The pick of an option's value; null for the user on another voice's row (disabled).
+  const pickOfOption = (optionValue: string): PersonPick | null => {
+    if (optionValue === NEW_PERSON) return typed === "" ? null : { kind: "new", name: typed };
+    const person = persons.find((p) => p.id === optionValue);
+    if (!person || (person.is_me && !own)) return null;
+    return { kind: "existing", person };
+  };
+  const choose = (choice: PersonPick) => {
     setChosen(choice);
+    if (choice.kind === "existing") setValue(choice.person.name);
   };
 
   // The user's own name makes a separate person (only the meeting's own row can be the user,
@@ -787,21 +812,32 @@ function usePersonField({
   const hintId = `${card.id}-links-to`;
 
   // Persons with the whole typed name (case, accents and spaces ignored) first, so the first
-  // option is the person Enter links to (`OPTION_TEXT_PREFIX`).
+  // option is the person the typed name means (`OPTION_TEXT_PREFIX`).
   const named = own ? [] : personsNamed(typed, persons);
   const listed = personsMatching(typed, own ? persons.filter((p) => p.is_me) : persons);
   const ordered = [...named, ...listed.filter((p) => !named.includes(p))];
   const personOptions = ordered.map((p) => {
     const user = p.is_me && !own;
     return (
-      <Option key={p.id} value={p.id} text={OPTION_TEXT_PREFIX + p.name} disabled={user}>
+      <Option
+        key={p.id}
+        value={p.id}
+        text={OPTION_TEXT_PREFIX + p.name}
+        disabled={user}
+        {...{ [OPTION_VALUE_ATTRIBUTE]: p.id }}
+      >
         {user ? `${p.name} (you)` : `${p.name} (${meetingsText(p.meetings)})`}
       </Option>
     );
   });
   const newOption =
     !own && typed !== "" && named.length === 0 ? (
-      <Option key={NEW_PERSON} value={NEW_PERSON} text={OPTION_TEXT_PREFIX + typed}>
+      <Option
+        key={NEW_PERSON}
+        value={NEW_PERSON}
+        text={OPTION_TEXT_PREFIX + typed}
+        {...{ [OPTION_VALUE_ATTRIBUTE]: NEW_PERSON }}
+      >
         {`New person: ${typed}`}
       </Option>
     ) : null;
@@ -825,31 +861,30 @@ function usePersonField({
       ref={inputRef}
       onChange={(e) => {
         setValue(e.target.value);
-        choose(null);
-        navigated.current = false;
+        setChosen(null);
       }}
       onOptionSelect={(e, d) => {
-        if (d.optionValue === undefined) return;
-        if (e.type === "keydown" && !navigated.current) return;
-        navigated.current = false;
-        if (e.type === "keydown" && "key" in e && e.key === "Enter") choseOnEnter.current = true;
-        if (d.optionValue === NEW_PERSON) {
-          if (typed !== "") choose({ kind: "new", name: typed });
-          return;
-        }
-        const person = persons.find((p) => p.id === d.optionValue);
-        if (!person || (person.is_me && !own)) return;
-        choose({ kind: "existing", person });
-        setValue(person.name);
+        // Keys are decided by `keyAction` in `onKeyDown`; only a click chooses here.
+        if (e.type === "keydown" || d.optionValue === undefined) return;
+        const choice = pickOfOption(d.optionValue);
+        if (choice !== null) choose(choice);
       }}
       onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-        if (MOVE_KEYS.has(e.key)) navigated.current = true;
-        if (e.key !== "Enter") return;
-        if (choseOnEnter.current) {
-          choseOnEnter.current = false;
-          return;
+        if ((e.key !== "Enter" && e.key !== "Tab") || e.nativeEvent.isComposing) return;
+        // The list and highlight as last rendered, which is what the user saw: Fluent's own
+        // handler has already run for this key, but nothing it changed is drawn yet.
+        const input = e.currentTarget;
+        const id = input.getAttribute("aria-expanded") === "true" ? input.getAttribute("aria-activedescendant") : null;
+        const option = id ? input.ownerDocument.getElementById(id) : null;
+        const optionValue = option?.getAttribute(OPTION_VALUE_ATTRIBUTE) ?? null;
+        let highlighted: Parameters<typeof keyAction>[1] = null;
+        if (option !== null && optionValue !== null) {
+          const choice = option.getAttribute("aria-disabled") === "true" ? null : pickOfOption(optionValue);
+          highlighted = choice === null ? { disabled: true } : { disabled: false, pick: choice };
         }
-        onEnter(pickOf(chosenNow.current));
+        const action = keyAction(e.key === "Enter" ? "Enter" : "Tab", highlighted, pick);
+        if (action.kind === "choose") choose(action.pick);
+        if (action.kind === "save") onEnter(action.pick);
       }}
     >
       {options}

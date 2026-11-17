@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { POST_STEP_MS, RECOGNISED_ME_COPY, SAMPLE_SPEAKERS, sampleDetail, samplePersons } from "../ipc";
 import { ITEM, setup, panel, speakerRow, openNamed } from "../test/meetingDetail";
-import { notThisPersonHint } from "./SpeakersPanel";
+import { keyAction, notThisPersonHint } from "./SpeakersPanel";
 
 describe("MeetingDetailView", () => {
   it("offers This is me only in the room, and it and its undo follow through the transcript", async () => {
@@ -649,5 +649,63 @@ describe("Speakers panel person field (T12.80)", () => {
       ]),
     );
     expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+  });
+});
+
+describe("Speakers panel person field keys (T12.80 re-review)", () => {
+  const POOLE = [
+    { id: "9e000000-0000-7000-8000-000000000001", name: "Casey Poole", has_voiceprint: true, is_me: true, meetings: 12 },
+    ...samplePersons().filter((p) => !p.is_me),
+  ];
+
+  it("does nothing on Enter over the user's disabled option", async () => {
+    const { user, calls } = await setup({ persons: POOLE });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "casey");
+    // "New person: casey" is highlighted; the arrow lands on the user, who is disabled.
+    await user.keyboard("{ArrowDown}");
+    const you = screen.getByRole("option", { name: "Casey Poole (you)" });
+    expect(field).toHaveAttribute("aria-activedescendant", you.id);
+    await user.keyboard("{Enter}");
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+    expect(field).toHaveValue("casey");
+    expect(within(speakerRow("Speaker 2")).getByText("New person: casey")).toBeInTheDocument();
+  });
+
+  it("does what the hint says on Enter after Escape closed the list", async () => {
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "r");
+    await user.keyboard("{ArrowDown}{Escape}");
+    // The list is closed, so nothing is highlighted: the hint says what Enter does.
+    expect(field).toHaveAttribute("aria-expanded", "false");
+    expect(within(speakerRow("Speaker 2")).getByText("New person: r")).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "r" }]),
+    );
+    expect(calls.filter((c) => c[0] === "saveVoice")).toHaveLength(1);
+  });
+});
+
+describe("keyAction", () => {
+  const tom = samplePersons()[2];
+  const priya = samplePersons()[1];
+  const pickTom = { kind: "existing" as const, person: tom };
+  it("decides Enter and Tab from the highlighted option and the hint", () => {
+    expect(keyAction("Enter", { disabled: true }, { kind: "new", name: "casey" })).toEqual({ kind: "nothing" });
+    expect(keyAction("Enter", { disabled: false, pick: pickTom }, { kind: "new", name: "r" })).toEqual({
+      kind: "choose",
+      pick: pickTom,
+    });
+    expect(keyAction("Enter", { disabled: false, pick: pickTom }, pickTom)).toEqual({ kind: "save", pick: pickTom });
+    expect(keyAction("Enter", null, pickTom)).toEqual({ kind: "save", pick: pickTom });
+    expect(keyAction("Enter", null, { kind: "several", name: "Priya Shah", count: 2 })).toEqual({ kind: "nothing" });
+    expect(keyAction("Enter", null, { kind: "none" })).toEqual({ kind: "nothing" });
+    expect(keyAction("Tab", { disabled: false, pick: { kind: "existing", person: priya } }, pickTom)).toEqual({
+      kind: "choose",
+      pick: { kind: "existing", person: priya },
+    });
+    expect(keyAction("Tab", null, pickTom)).toEqual({ kind: "nothing" });
   });
 });
