@@ -655,8 +655,18 @@ fn live_preview_blank_decodes_in_a_session_keep_what_is_shown() {
 }
 
 /// Words a [`RuntimeEvent::LivePreview`] took away before settled text had reached them, up to the
-/// end of the live transcript (which clears what is left).
+/// end of the live transcript (which clears what is left). Judged per track: one track's settled
+/// text never covers the other's words (T12.12d: a check across both tracks let the far end's
+/// settled text hide a mic word that left early).
 fn words_left_early(events: &[RuntimeEvent]) -> Vec<Word> {
+    [TrackId::Mic, TrackId::Reference]
+        .into_iter()
+        .flat_map(|track| words_left_early_on(events, track))
+        .collect()
+}
+
+/// [`words_left_early`] on one track.
+fn words_left_early_on(events: &[RuntimeEvent], on: TrackId) -> Vec<Word> {
     let mut settled = MeetingTime::ZERO;
     let mut last: Vec<Word> = Vec::new();
     let mut early = Vec::new();
@@ -664,10 +674,10 @@ fn words_left_early(events: &[RuntimeEvent]) -> Vec<Word> {
         match event {
             RuntimeEvent::LiveTranscriptFinished { .. } => break,
             RuntimeEvent::Transcript {
+                track,
                 event: TranscriptEvent::Final(s),
-                ..
-            } => settled = settled.max(s.end),
-            RuntimeEvent::LivePreview { words, .. } => {
+            } if *track == on => settled = settled.max(s.end),
+            RuntimeEvent::LivePreview { track, words } if *track == on => {
                 early.extend(
                     last.iter()
                         .filter(|w| !words.contains(w) && w.start + COVERED_SLACK >= settled)
@@ -679,6 +689,254 @@ fn words_left_early(events: &[RuntimeEvent]) -> Vec<Word> {
         }
     }
     early
+}
+
+/// The per-track check can fail where a check across both tracks would not: the far end's settled
+/// text is later than a mic word that left with no mic text at it.
+#[test]
+fn live_preview_words_left_early_judges_each_track_by_its_own_settled_text() {
+    let mic = word("mine", 1000);
+    let events = [
+        RuntimeEvent::LivePreview {
+            track: TrackId::Mic,
+            words: vec![mic.clone()],
+        },
+        RuntimeEvent::Transcript {
+            track: TrackId::Reference,
+            event: TranscriptEvent::Final(earshot_core::asr::Segment::from_words(
+                EntityId::from_bytes([1; 16]),
+                EntityId::from_bytes([2; 16]),
+                vec![word("theirs", 1700)],
+                MeetingTime::ZERO,
+            )),
+        },
+        RuntimeEvent::LivePreview {
+            track: TrackId::Mic,
+            words: Vec::new(),
+        },
+    ];
+    assert_eq!(words_left_early(&events), vec![mic]);
+}
+
+/// [`leaky_call`] where the user pauses: short stretches of their own voice, settled one by one,
+/// while the far end talks on through the loudspeakers.
+fn paused_call() -> earshot_core::sim::SimOutput {
+    use earshot_core::sim::{Scenario, SpeechPool, simulate};
+    let scenario: Scenario = serde_json::from_value(serde_json::json!({
+        "name": "live-paused",
+        "duration_s": 16.0,
+        "seed": 61,
+        "near_speech": true,
+        "near_start_s": 1.0,
+        "delay_ms": 100.0,
+        "echo": true,
+        "ser_db": 10.0,
+        "near_silent_s": [[3.0, 4.5], [6.5, 8.0], [10.0, 11.5], [13.5, 16.0]],
+    }))
+    .unwrap();
+    let burst = |seed: u64, ms: u64| noise(seed, (ms * 16) as usize, 0.3);
+    let far: Vec<Vec<f32>> = (0..6).map(|k| burst(100 + k, 1_400 + 150 * k)).collect();
+    let near: Vec<Vec<f32>> = (0..6).map(|k| burst(200 + k, 1_200 + 100 * k)).collect();
+    let pool = SpeechPool {
+        far: &far,
+        near: &near,
+    };
+    simulate(
+        &scenario,
+        &toml_setup(),
+        &pool,
+        &mut ChaCha8Rng::seed_from_u64(scenario.seed),
+    )
+    .unwrap()
+}
+
+/// T12.12d: in a call under Everyone a mic final waits in the live echo filter until the far end's
+/// decode has caught up with it, so the mic's own decoded frontier passes words whose settled text
+/// has not landed. A shown mic word stays until that text lands. The far end decodes slowly here,
+/// so mic finals are held while the mic worker moves on; what is stored does not change.
+#[test]
+fn live_preview_own_voice_words_stay_until_the_held_mic_text_lands() {
+    let sim = paused_call();
+    let n = sim.mic.len() / earshot_core::aec::BLOCK * earshot_core::aec::BLOCK;
+    let (mic, reference) = (sim.mic[..n].to_vec(), sim.reference[..n].to_vec());
+    let far = region_words("far", &sim.far_regions, 0);
+    let near = region_words("near", &sim.near_regions, 0);
+    let mut mic_words: Vec<Word> = near
+        .iter()
+        .cloned()
+        .chain(
+            far.iter()
+                .map(|w| w.shifted(MeetingTime::from_millis(102)))
+                .filter(|w| w.end.as_millis() < (n / 16) as u64),
+        )
+        .collect();
+    mic_words.sort_by_key(|w| w.start);
+    let run = |previews: Option<LivePreviews>| {
+        let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, mic.clone()))
+            .reference(MonoBuffer::new(R16, reference.clone()))
+            .build()
+            .unwrap();
+        let paced = Paced::new(
+            source,
+            Arc::new(FastClock(Instant::now(), 10)),
+            true,
+            Arc::new(PaceState::default()),
+        );
+        let cfg = LiveConfig {
+            pipeline: PipelineConfig {
+                drift_correction: false,
+                ..PipelineConfig::default()
+            },
+            ..config_with(previews)
+        };
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let session = start_live(
+            paced,
+            svc.clone(),
+            cfg,
+            Some(leak_asr(
+                cleaned(&mic, &reference),
+                mic_words.clone(),
+                reference.clone(),
+                far.clone(),
+                // Each far-end decode takes this long: at ten times real time, seconds of audio.
+                Some(Duration::from_millis(300)),
+            )),
+            Box::new(ChaCha8Rng::seed_from_u64(347)),
+        )
+        .unwrap();
+        let meeting = session.meeting();
+        let (events, outcome) = collect(session);
+        (by_kind(&svc, meeting), events, outcome)
+    };
+    // The preview models say what the real ones say, as a real model mostly does.
+    let says = |audio: Vec<f32>, words: Vec<Word>| -> PreviewLoader {
+        Arc::new(move |_| {
+            Ok(
+                Box::new(crate::testutil::timeline(audio.clone(), words.clone()))
+                    as Box<dyn earshot_core::asr::Transcriber + Send>,
+            )
+        })
+    };
+    let config = LivePreviews {
+        own_voice: Some(says(cleaned(&mic, &reference), mic_words.clone())),
+        ..previews(says(reference.clone(), far.clone()))
+    };
+    let (with, events, outcome) = run(Some(config));
+    assert!(!outcome.echo_locks.is_empty(), "the canceller locked");
+    assert!(shown_on(&events, TrackId::Mic), "nothing shown on the mic");
+    assert_eq!(
+        words_left_early_on(&events, TrackId::Mic),
+        Vec::<Word>::new()
+    );
+    assert_eq!(
+        words_left_early_on(&events, TrackId::Reference),
+        Vec::<Word>::new()
+    );
+    // Through the end of the meeting too: no word leaves and then comes back as settled text.
+    for track in [TrackId::Mic, TrackId::Reference] {
+        assert_eq!(
+            words_back_after_leaving(&events, track),
+            Vec::<Word>::new(),
+            "{track:?}"
+        );
+    }
+    assert_settled_before_finished(&events);
+    let (without, ..) = run(None);
+    assert_eq!(with, without);
+}
+
+/// Over the whole event stream, the end of the meeting included: preview words of `on` that left
+/// the screen while no settled text held them, and that settled text then brought back (the same
+/// word within 1 s, as `live_lag`'s `own_settled_after` counts the flicker T12.12d fixed).
+fn words_back_after_leaving(events: &[RuntimeEvent], on: TrackId) -> Vec<Word> {
+    let mut settled: Vec<Word> = Vec::new();
+    let mut last: Vec<Word> = Vec::new();
+    // Each word that left, with how many settled words had arrived when it did.
+    let mut left: Vec<(Word, usize)> = Vec::new();
+    for event in events {
+        match event {
+            RuntimeEvent::Transcript {
+                track,
+                event: TranscriptEvent::Final(s),
+            } if *track == on => settled.extend(s.words.iter().cloned()),
+            RuntimeEvent::LivePreview { track, words } if *track == on => {
+                let end = settled.last().map_or(MeetingTime::ZERO, |w| w.end);
+                left.extend(
+                    last.iter()
+                        .filter(|w| !words.contains(w) && w.start + COVERED_SLACK >= end)
+                        .map(|w| (w.clone(), settled.len())),
+                );
+                last.clone_from(words);
+            }
+            _ => {}
+        }
+    }
+    let near = |a: &Word, b: &Word| {
+        a.text == b.text && a.start.as_millis().abs_diff(b.start.as_millis()) <= 1000
+    };
+    left.into_iter()
+        .filter(|(w, at)| settled[*at..].iter().any(|s| near(s, w)))
+        .map(|(w, _)| w)
+        .collect()
+}
+
+/// No settled text lands after `LiveTranscriptFinished`: the live transcript is whole when it is
+/// called finished (the mic's finals the echo filter held included).
+fn assert_settled_before_finished(events: &[RuntimeEvent]) {
+    let finished = events
+        .iter()
+        .position(|e| matches!(e, RuntimeEvent::LiveTranscriptFinished { .. }))
+        .expect("the live transcript finished");
+    let late: Vec<&RuntimeEvent> = events[finished..]
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                RuntimeEvent::Transcript {
+                    event: TranscriptEvent::Final(_),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert!(late.is_empty(), "settled text after the end: {late:?}");
+}
+
+/// The check above can fail: a word that leaves and is then brought back by settled text is found,
+/// one that settled text had already brought is not.
+#[test]
+fn live_preview_words_back_after_leaving_finds_a_word_that_left_too_soon() {
+    let shown = |words: Vec<Word>| RuntimeEvent::LivePreview {
+        track: TrackId::Mic,
+        words,
+    };
+    let final_of = |words: Vec<Word>| RuntimeEvent::Transcript {
+        track: TrackId::Mic,
+        event: TranscriptEvent::Final(earshot_core::asr::Segment::from_words(
+            EntityId::from_bytes([1; 16]),
+            EntityId::from_bytes([2; 16]),
+            words,
+            MeetingTime::ZERO,
+        )),
+    };
+    let a = word("a", 1000);
+    let events = [
+        shown(vec![a.clone()]),
+        shown(Vec::new()),
+        final_of(vec![word("a", 1050)]),
+    ];
+    assert_eq!(
+        words_back_after_leaving(&events, TrackId::Mic),
+        vec![a.clone()]
+    );
+    let events = [
+        shown(vec![a.clone()]),
+        final_of(vec![word("a", 1050)]),
+        shown(Vec::new()),
+    ];
+    assert!(words_back_after_leaving(&events, TrackId::Mic).is_empty());
 }
 
 /// The check above can fail.

@@ -34,6 +34,13 @@
 //! (`Transcriber::may_skip_speech`) shows nothing new and takes nothing away. Words the real decode
 //! covers leave as it lands; ones it does not hold are gone with them.
 //!
+//! **Landed, not decoded (T12.12d).** Shown words leave only behind the frontier the session has
+//! landed ([`PreviewThread::landed`]), never the worker's decoded frontier alone: a mic final waits
+//! in the live echo filter until the far end's decode has caught up with it, so on the mic the
+//! worker's frontier runs ahead of the settled text the user sees. The session publishes it after
+//! it has emitted (or holds) every final up to the worker frontier it read before them; decodes
+//! still start at the worker's frontier, so a word between the two stays from earlier windows.
+//!
 //! **A streaming model instead (evaluation only, T12.23).** With [`LivePreviews::stream`] set, a
 //! track's thread feeds every packet of its audio, once, to a [`StreamingPreview`] and shows the
 //! words it finished, rather than decoding windows: nothing else changes (when previews start and
@@ -535,6 +542,8 @@ struct PreviewWork {
     backend: BackendInfo,
     /// The worker's decoded frontier (pipeline frames).
     frontier: Arc<AtomicU64>,
+    /// How far the session has landed the track's settled text (pipeline frames, module docs).
+    landed: Arc<AtomicU64>,
     /// The worker's queue (samples).
     queued: Arc<AtomicU64>,
     busy: u64,
@@ -548,6 +557,16 @@ struct PreviewWork {
 impl PreviewWork {
     fn add(&self, f: impl FnOnce(&mut PreviewReport)) {
         f(&mut self.report.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+
+    /// Where shown words may leave: the settled text the session has landed, never past what the
+    /// worker has decoded (module docs).
+    fn landed(&self) -> MeetingTime {
+        let landed = self
+            .landed
+            .load(Ordering::SeqCst)
+            .min(self.frontier.load(Ordering::SeqCst));
+        MeetingTime::from_pipeline_frames(landed)
     }
 
     fn run(self) {
@@ -606,8 +625,7 @@ impl PreviewWork {
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
             let frontier = self.frontier.load(Ordering::SeqCst);
-            let settled_to = MeetingTime::from_pipeline_frames(frontier);
-            if words.settled(settled_to) {
+            if words.settled(self.landed()) {
                 let _ = self.out.send(FromPreview::Words(words.shown().to_vec()));
             }
             if Instant::now() < due {
@@ -746,8 +764,7 @@ impl PreviewWork {
                 }
                 self.add(|r| r.audio_s += PIPELINE_RATE.duration_of(audio.len()).as_secs_f64());
             }
-            let frontier = MeetingTime::from_pipeline_frames(self.frontier.load(Ordering::SeqCst));
-            if let Some((words, added)) = feed.show(frontier) {
+            if let Some((words, added)) = feed.show(self.landed()) {
                 if added > 0 {
                     self.add(|r| r.words_shown += added as u64);
                 }
@@ -901,6 +918,9 @@ pub(super) struct PreviewThread {
     fell_behind: u64,
     /// The end of the settled text so far.
     settled: MeetingTime,
+    /// How far the session has landed the track's settled text (pipeline frames): shown words
+    /// leave only behind it (module docs). Written only by [`Session::preview_landed`].
+    landed: Arc<AtomicU64>,
     /// The words last sent to the UI.
     sent: Vec<Word>,
     thread: Option<JoinHandle<()>>,
@@ -922,10 +942,12 @@ impl PreviewThread {
         report.lock().unwrap_or_else(PoisonError::into_inner).track = Some(track);
         let busy = PIPELINE_RATE.frames_for(REAL_DECODE_QUEUE) as u64;
         let fell_behind = PIPELINE_RATE.frames_for(previews.fell_behind) as u64;
+        let landed = Arc::new(AtomicU64::new(0));
         let work = PreviewWork {
             previews: previews.clone(),
             backend,
             frontier,
+            landed: Arc::clone(&landed),
             queued: Arc::clone(&queued),
             busy,
             inbox,
@@ -948,6 +970,7 @@ impl PreviewThread {
             busy,
             fell_behind,
             settled: MeetingTime::ZERO,
+            landed,
             sent: Vec::new(),
             thread: Some(thread),
         })
@@ -1137,6 +1160,16 @@ where
         }
     }
 
+    /// The session has landed `track`'s settled text up to `through`: every final ending there
+    /// has been emitted, or is held (and `through` stops before it). Shown words behind it may
+    /// leave (module docs).
+    pub(super) fn preview_landed(&self, track: TrackId, through: MeetingTime) {
+        if let PreviewState::Running(p) = &self.previews[slot(track)] {
+            p.landed
+                .fetch_max(through.to_pipeline_frames(), Ordering::SeqCst);
+        }
+    }
+
     /// Settled text of `track` now reaches `end`.
     pub(super) fn preview_settled(&mut self, track: TrackId, end: MeetingTime) {
         if let PreviewState::Running(p) = &mut self.previews[slot(track)] {
@@ -1300,9 +1333,10 @@ where
                 }
             }
         }
-        // A thread trims words after the worker's frontier moved, and a worker sends a decode's
-        // finals before it publishes the frontier: so the finals behind these messages are queued
-        // now, and go out first. Settled text always lands before the words it replaces leave.
+        // A thread trims words only behind what the session has landed (`preview_landed`), so the
+        // finals behind these messages have gone out already; handling the workers first also
+        // sends anything newer before these words. Settled text always lands before the words it
+        // replaces leave.
         if messages.iter().any(|m| !m.is_empty()) {
             self.handle_workers();
         }
