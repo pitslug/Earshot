@@ -3,7 +3,6 @@
 import {
   IpcFailure,
   type MeetingDetail,
-  type PersonItem,
   type RememberOutcome,
   type SpeakerCard,
   type SummaryView,
@@ -122,12 +121,6 @@ export function speakerGroups(d: MeetingDetail): {
 /** A voice the final pass named from a stored voiceprint ("Recognised"). */
 export function recognised(s: SpeakerCard): boolean {
   return s.source === "Voiceprint";
-}
-
-/** The persons a speaker may be linked to: the user's own person only for the "Me" row, and
- * only other people for everyone else. */
-export function linkablePersons(card: SpeakerCard, persons: PersonItem[]): PersonItem[] {
-  return persons.filter((p) => (card.kind === "Me" ? p.is_me : !p.is_me));
 }
 
 /** Plain copy for a failed call. */

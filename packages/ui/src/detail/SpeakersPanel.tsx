@@ -703,16 +703,26 @@ function linkOf(pick: PersonPick): { choice: LinkChoice; name: string } | null {
 }
 
 /** The keys that move through the list: only after one of them does Enter or Tab choose the
- * option it reached. Fluent marks the first option starting with the typed text by itself, and
- * that one never decides (the whole typed name does). */
+ * option it reached; the highlight a keystroke leaves never decides by itself. */
 const MOVE_KEYS = new Set(["ArrowDown", "ArrowUp", "Home", "End", "PageUp", "PageDown"]);
+
+/** Starts every option's `text`, so no typed text ever starts an option's text. Fluent then
+ * finds no option to highlight from the typed text (it would match the options of the render
+ * before the keystroke, a stale list) and, once the new options render, highlights the first
+ * one: by this field's order, the option Enter takes (the one person with the whole typed name,
+ * else "New person"). Where Enter takes no option the highlight is turned off (`disableAutoFocus`).
+ * The input never shows `text`: its value is controlled here. */
+const OPTION_TEXT_PREFIX = "⁣";
 
 /** The person combobox of a voice (T12.80): typing filters saved people by any part of the name,
  * case and accents ignored; each is listed with how many meetings they are in, the user
  * disabled (only the user's own row can be them), and "New person: <name>" for the typed name.
- * Choosing an option (a click, or Enter or Tab after moving through the list) picks it; else
- * the whole typed name decides: the one person with it, several (the user must choose), or a
- * new person. `onEnter` gets the pick as Enter left it. */
+ * "New person: <name>" is offered only for a name no one other than the user has, so a click
+ * never makes a second person with a saved name. Choosing an option (a click, or Enter or Tab
+ * after moving through the list) picks it and shows what Save will do, saving nothing (Save is
+ * the consent to remember the voice, T12.19); else the whole typed name decides: the one person
+ * with it, several (the user must choose), or a new person. `onEnter` gets the pick of an Enter
+ * that did not just choose an option. */
 function usePersonField({
   card,
   persons,
@@ -737,6 +747,8 @@ function usePersonField({
   const [chosen, setChosen] = useState<PersonPick | null>(null);
   const chosenNow = useRef<PersonPick | null>(null);
   const navigated = useRef(false);
+  // An Enter that chose an option (after moving through the list) chooses only.
+  const choseOnEnter = useRef(false);
   const own = card.kind === "Me";
   const typed = value.trim();
 
@@ -774,24 +786,27 @@ function usePersonField({
             : null;
   const hintId = `${card.id}-links-to`;
 
+  // Persons with the whole typed name (case, accents and spaces ignored) first, so the first
+  // option is the person Enter links to (`OPTION_TEXT_PREFIX`).
+  const named = own ? [] : personsNamed(typed, persons);
   const listed = personsMatching(typed, own ? persons.filter((p) => p.is_me) : persons);
-  const personOptions = listed.map((p) => {
+  const ordered = [...named, ...listed.filter((p) => !named.includes(p))];
+  const personOptions = ordered.map((p) => {
     const user = p.is_me && !own;
     return (
-      <Option key={p.id} value={p.id} text={p.name} disabled={user}>
+      <Option key={p.id} value={p.id} text={OPTION_TEXT_PREFIX + p.name} disabled={user}>
         {user ? `${p.name} (you)` : `${p.name} (${meetingsText(p.meetings)})`}
       </Option>
     );
   });
   const newOption =
-    !own && typed !== "" ? (
-      <Option key={NEW_PERSON} value={NEW_PERSON} text={typed}>
+    !own && typed !== "" && named.length === 0 ? (
+      <Option key={NEW_PERSON} value={NEW_PERSON} text={OPTION_TEXT_PREFIX + typed}>
         {`New person: ${typed}`}
       </Option>
     ) : null;
   // A name someone has lists them first; any other name lists "New person" first.
-  const options =
-    personsNamed(typed, persons).length > 0 ? [...personOptions, newOption] : [newOption, ...personOptions];
+  const options = newOption === null ? personOptions : [newOption, ...personOptions];
   const selected =
     pick.kind === "existing" && chosen !== null ? [pick.person.id] : pick.kind === "new" && chosen !== null ? [NEW_PERSON] : [];
 
@@ -802,6 +817,7 @@ function usePersonField({
       freeform
       value={value}
       selectedOptions={selected}
+      disableAutoFocus={pick.kind !== "existing" && pick.kind !== "new"}
       placeholder={placeholder}
       aria-label={label}
       aria-describedby={hintText ? hintId : undefined}
@@ -815,6 +831,8 @@ function usePersonField({
       onOptionSelect={(e, d) => {
         if (d.optionValue === undefined) return;
         if (e.type === "keydown" && !navigated.current) return;
+        navigated.current = false;
+        if (e.type === "keydown" && "key" in e && e.key === "Enter") choseOnEnter.current = true;
         if (d.optionValue === NEW_PERSON) {
           if (typed !== "") choose({ kind: "new", name: typed });
           return;
@@ -826,7 +844,12 @@ function usePersonField({
       }}
       onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
         if (MOVE_KEYS.has(e.key)) navigated.current = true;
-        if (e.key === "Enter") onEnter(pickOf(chosenNow.current));
+        if (e.key !== "Enter") return;
+        if (choseOnEnter.current) {
+          choseOnEnter.current = false;
+          return;
+        }
+        onEnter(pickOf(chosenNow.current));
       }}
     >
       {options}

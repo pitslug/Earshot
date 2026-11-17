@@ -1646,7 +1646,9 @@ pub fn person_name_key(name: &str) -> String {
 }
 
 /// Whether the person filter lists a person called `name` for the typed `query`: any part
-/// of the name, compared by [`person_name_key`]. An empty query lists everyone.
+/// of the name, compared by [`person_name_key`]. An empty query lists everyone. This is the
+/// reference rule: the UI's `personMatches` (`packages/ui/src/detail/personFilter.ts`) mirrors
+/// it, and `fixtures/ui/person_filter_cases.json`, run by both suites, pins the two together.
 #[must_use]
 pub fn person_name_matches(name: &str, query: &str) -> bool {
     person_name_key(name).contains(&person_name_key(query))
