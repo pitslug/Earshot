@@ -110,12 +110,14 @@ workspace = true
 # scene construction, scoring) run with the crate's tests.
 [[example]]
 name = "diar_eval"
+required-features = ["engines"]
 test = true
 
 # ASR model evaluation (docs/asr-models.md); its unit tests pin the offline gap evidence of the
 # gate12 corpus (`gaps.rs`, T12.51), among them a measured outcome on simulated double talk.
 [[example]]
 name = "model_eval"
+required-features = ["engines"]
 test = true
 
 [dev-dependencies]
@@ -134,46 +136,54 @@ earshot-sync-server = { path = "../earshot-sync-server" }
 # `cargo xtask accept m2`; its unit tests run with the crate's tests.
 [[example]]
 name = "m2_prod"
+required-features = ["engines"]
 test = true
 
 # Shorter speech stretches for Parakeet (T12.24, evaluation only; docs/live-previews.md); its
 # unit tests pin the cut and doubled-word counts.
 [[example]]
 name = "stretch_eval"
+required-features = ["engines"]
 test = true
 
 # The word-boundary report (T6.9a); its unit tests pin the rule and the scoring.
 [[example]]
 name = "word_changes"
+required-features = ["engines"]
 test = true
 
 # The clustering threshold sweep with AMI dev meetings (T12.9, measurement only); its unit tests
 # pin the scenes, the measures and the rule of docs/far-speakers/ami-dev-calibration.md.
 [[example]]
 name = "cluster_sweep"
+required-features = ["engines"]
 test = true
 
 # T12.67: voiceprint matches on AMI dev meeting audio (docs/voiceprint-meetings.md).
 [[example]]
 name = "vp_meetings"
+required-features = ["engines"]
 test = true
 
 # `cargo xtask bench` (T8.1): RTF, live latency and peak memory; its unit tests run with the
 # crate's tests.
 [[example]]
 name = "bench"
+required-features = ["engines"]
 test = true
 
 # How long words take from speech to the screen (T9.1m), a real-time replay of public audio; its
 # unit tests run with the crate's tests.
 [[example]]
 name = "live_lag"
+required-features = ["engines"]
 test = true
 
 # Summary inputs from a read-only copy of the owner's store (T12.25a, evaluation only, run by
 # `cargo xtask sum-eval --store-db`); its unit tests use invented meetings in a temporary store.
 [[example]]
 name = "store_inputs"
+required-features = ["engines"]
 test = true
 
 # T12.71: voiceprint names on a read-only copy of the owner's store under the shipped setting
@@ -181,10 +191,79 @@ test = true
 # store.
 [[example]]
 name = "vp_readout"
+required-features = ["engines"]
 test = true
 
 # Your words in the transcript (T12.15b, a spike, evaluation only; docs/vocabulary.md); its unit
 # tests pin the lists, boosting graph, correction pass and scoring.
 [[example]]
 name = "vocab_eval"
+required-features = ["engines"]
 test = true
+
+# Integration tests that need the in-process engines (T11.6b): skipped, not failed, in a build
+# without them.
+[[test]]
+name = "catalogue_clean_install"
+required-features = ["engines"]
+
+[[test]]
+name = "cuda_load_order"
+required-features = ["engines"]
+
+[[test]]
+name = "cuda_onnx_gate"
+required-features = ["engines"]
+
+[[test]]
+name = "cuda_transcription"
+required-features = ["engines"]
+
+[[test]]
+name = "llama_hold"
+required-features = ["engines"]
+
+[[test]]
+name = "meeting_queue_cancel"
+required-features = ["engines"]
+
+[[test]]
+name = "meeting_queue_cuda"
+required-features = ["engines"]
+
+[[test]]
+name = "meeting_queue_gate"
+required-features = ["engines"]
+
+[[test]]
+name = "npu_compiled_note"
+required-features = ["engines"]
+
+[[test]]
+name = "qnn_fallback"
+required-features = ["engines"]
+
+[[test]]
+name = "summary_child_registered"
+required-features = ["engines"]
+
+# Examples found by name that need the in-process engines (T11.6b).
+[[example]]
+name = "far_speakers"
+required-features = ["engines"]
+
+[[example]]
+name = "gate12_diag"
+required-features = ["engines"]
+
+[[example]]
+name = "post_bench"
+required-features = ["engines"]
+
+[[example]]
+name = "skip_gaps"
+required-features = ["engines"]
+
+[[example]]
+name = "span_levels"
+required-features = ["engines"]

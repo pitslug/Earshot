@@ -596,6 +596,30 @@ mod tests {
         );
     }
 
+    /// T11.6b review: the worker builds the runtime without its engines, where a prepared summary
+    /// has no local model to hold, so what its summary holds is always "off this computer" (the
+    /// runtime's no-engines `SummaryHold::of`, compiled only in this crate's builds).
+    #[test]
+    fn worker_a_prepared_summary_without_engines_holds_nothing_here() {
+        let (host, _dir) = make_host(
+            "hold",
+            "https://summaries.example.com/v1",
+            production("llama"),
+        );
+        let url = Url::parse("https://summaries.example.com/v1").unwrap();
+        let service = SummaryService::new(
+            &summary_config(&host.config, &url),
+            Arc::clone(&host.services.clock),
+        )
+        .unwrap();
+        let prepared = earshot_runtime::summary_step::PreparedSummary::off_this_computer(service);
+        assert_eq!(
+            SummaryHold::of(Some(&prepared)),
+            SummaryHold::OffThisComputer
+        );
+        assert_eq!(SummaryHold::of(None), SummaryHold::OffThisComputer);
+    }
+
     /// The own model at a checked private address builds a writer for any meeting.
     #[test]
     fn worker_host_its_own_model_at_a_private_address_writes_kept_local_meetings() {

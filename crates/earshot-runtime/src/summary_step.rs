@@ -21,6 +21,18 @@ pub struct PreparedSummary {
     pub local: Option<(SummaryModelChoice, bool)>,
 }
 
+impl PreparedSummary {
+    /// A summary written by `service` off this computer (no local model), in any build.
+    #[must_use]
+    pub fn off_this_computer(service: SummaryService) -> Self {
+        Self {
+            service,
+            #[cfg(feature = "engines")]
+            local: None,
+        }
+    }
+}
+
 impl std::fmt::Debug for PreparedSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut d = f.debug_struct("PreparedSummary");
