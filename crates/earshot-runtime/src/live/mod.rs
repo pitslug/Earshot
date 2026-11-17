@@ -1983,10 +1983,15 @@ where
         // as the pipeline's `Ended` (handled below) would let them: the live transcript is whole
         // when it is called finished, and its settled text lands before the provisional words it
         // replaces leave (T12.12d). The filter cleans them with the same reference words and
-        // locks either way, so the stored words do not change.
-        if self.pipeline.is_ended() {
-            self.release_mic_finals(true);
+        // locks either way, so the stored words do not change. They need `release(true)`: the
+        // filter learns the far end's progress only from `echo.reference_progress`, which only
+        // `handle_workers` calls, never the loop above, so by its rule they would stay held. The
+        // pipeline has always ended here (the session's loop runs until it has).
+        #[cfg(test)]
+        if self.echo.held_from().is_some() {
+            self.witness_held_at_end();
         }
+        self.release_mic_finals(true);
         let capture_ended = *self.capture_ended.get_or_insert_with(Instant::now);
         self.emit(RuntimeEvent::LiveTranscriptFinished {
             after_capture_end: capture_ended.elapsed(),

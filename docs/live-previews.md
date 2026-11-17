@@ -1129,7 +1129,12 @@ Not yet checked on a real meeting: the Surface accept step (a second meeting dur
 - `finish_workers` releases every held mic final once all workers have finished and the pipeline has ended (`Session::release_mic_finals`, the code `Ended` already ran), before `LiveTranscriptFinished` and before the previews are cleared. Every far-end final is in by then, so the filter cleans them with the same words and locks as before.
 - A preview thread takes words away only behind what the session has landed (`PreviewThread::landed`, published by `Session::preview_landed` after each `handle_workers`: the worker frontier read before its events, and on the mic no further than the first held final, `Session::settled_through`, the rule the live summary windows already used).
 
-**Tests.** `live_preview_own_voice_words_stay_until_the_held_mic_text_lands` runs a call whose far end decodes slowly, so mic finals are held: it failed on the mid-meeting path before the second fix and on the end path before the first, and checks the stored words equal a run without previews. `words_left_early` now judges each track by its own settled text (across both tracks the far end's text hid a mic word that left early); `words_back_after_leaving` checks the whole event stream, the end included.
+**After review** (same day):
+
+- Words a held final keeps on screen no longer anchor the next stretch: the provisional agreement starts afresh once the worker has decoded past every shown word (`PreviewWords::settled(landed, decoded)`), as it did before, so a stretch opening with the last one's last word still shows it.
+- What the mic holds on screen is bounded by existing rules: a held final waits for the far end's decoded frontier, which moves at least every `max_piece` of its audio unless its worker's queue grows; in a call the mic's previews now stop for falling behind when either track's queue passes `fell_behind` (`check_previews`, the existing limit and reason), not only the mic's own.
+
+**Tests.** Two session tests on a call whose far end decodes nothing until a witness says so (rendezvous, no sleeps): `live_preview_own_voice_words_stay_while_a_mic_final_is_held` (the far end waits until the mic's preview thread has acted on a shown word behind its decoded frontier and ahead of what has landed; fails with the thread trimming at the worker's frontier) and `live_preview_own_voice_held_mic_text_lands_before_the_end` (the far end waits for the whole replay, so finals are still held when every worker has finished; fails without the release in `finish_workers`; checks stored words equal a run without previews). `live_preview_a_held_stretch_does_not_anchor_the_next_one` and `live_preview_own_voice_falls_behind_with_the_far_end` cover the review fixes, each with its negative control in its doc comment. `words_left_early` now judges each track by its own settled text (across both tracks the far end's text hid a mic word that left early); `words_back_after_leaving` checks the whole event stream, the end included.
 
 **Measured** on the desktop CPU, `--audio bundled --previews everyone` (reports in `docs/live-previews/t1212d/`, unmodified):
 
@@ -1138,6 +1143,7 @@ Not yet checked on a real meeting: the Surface accept step (a second meeting dur
 | before | 3% / 4% | 52 (51) | 1 (never settled) | 0.94 s | equal to off |
 | after | 2% / 3% | 1 (1) | 1 (never settled) | 1.17 s | equal to off |
 | after, host loaded (another lane building) | 28% / 56% | 1 (1) | 1 (never settled) | 1.10 s | equal to off |
+| after review fixes (`t1212d-after-review.json`) | 6% / 8% | 1 (1) | 1 (never settled) | 1.40 s | equal to off |
 | off | 2% / 2% | - | - | 1.02 s | - |
 
 Mic vanished words are now at the far end's rate. "Everyone" on the NPU can be judged again with the owner on the amended point 5.

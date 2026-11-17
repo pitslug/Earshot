@@ -365,7 +365,21 @@ impl earshot_core::asr::Transcriber for SlowReal {
 }
 
 fn real_factory(open: Arc<AtomicBool>, decode: Duration) -> LiveAsrFactory {
+    real_factory_gating(open, decode, |_| true)
+}
+
+/// [`real_factory`] whose decodes wait for `open` only on the tracks `gated` names.
+fn real_factory_gating(
+    open: Arc<AtomicBool>,
+    decode: Duration,
+    gated: fn(TrackId) -> bool,
+) -> LiveAsrFactory {
     Box::new(move |track, entity| {
+        let open = if gated(track) {
+            Arc::clone(&open)
+        } else {
+            Arc::new(AtomicBool::new(true))
+        };
         let first = u8::from(track == TrackId::Reference) + 0xC1;
         let mut n = 0u8;
         let segment_ids: earshot_core::asr::SegmentIds = Box::new(move || {
@@ -750,38 +764,101 @@ fn paused_call() -> earshot_core::sim::SimOutput {
     .unwrap()
 }
 
-/// T12.12d: in a call under Everyone a mic final waits in the live echo filter until the far end's
-/// decode has caught up with it, so the mic's own decoded frontier passes words whose settled text
-/// has not landed. A shown mic word stays until that text lands. The far end decodes slowly here,
-/// so mic finals are held while the mic worker moves on; what is stored does not change.
-#[test]
-fn live_preview_own_voice_words_stay_until_the_held_mic_text_lands() {
-    let sim = paused_call();
-    let n = sim.mic.len() / earshot_core::aec::BLOCK * earshot_core::aec::BLOCK;
-    let (mic, reference) = (sim.mic[..n].to_vec(), sim.reference[..n].to_vec());
-    let far = region_words("far", &sim.far_regions, 0);
-    let near = region_words("near", &sim.near_regions, 0);
-    let mut mic_words: Vec<Word> = near
-        .iter()
-        .cloned()
-        .chain(
-            far.iter()
-                .map(|w| w.shifted(MeetingTime::from_millis(102)))
-                .filter(|w| w.end.as_millis() < (n / 16) as u64),
+/// What a [`PausedCall`] run stored, sent and ended with.
+type PausedRun = (
+    Vec<(TrackId, String, u64, u64)>,
+    Vec<RuntimeEvent>,
+    LiveOutcome,
+);
+
+/// [`paused_call`] as the live session hears it: the mic, the far end, and the words the real
+/// models (and the preview models, which say the same) find in each.
+struct PausedCall {
+    mic: Vec<f32>,
+    reference: Vec<f32>,
+    mic_words: Vec<Word>,
+    far: Vec<Word>,
+}
+
+impl PausedCall {
+    fn new() -> Self {
+        let sim = paused_call();
+        let n = sim.mic.len() / earshot_core::aec::BLOCK * earshot_core::aec::BLOCK;
+        let (mic, reference) = (sim.mic[..n].to_vec(), sim.reference[..n].to_vec());
+        let far = region_words("far", &sim.far_regions, 0);
+        let near = region_words("near", &sim.near_regions, 0);
+        // The echo of each far word on the mic, at the bulk delay plus the direct path.
+        let mut mic_words: Vec<Word> = near
+            .iter()
+            .cloned()
+            .chain(
+                far.iter()
+                    .map(|w| w.shifted(MeetingTime::from_millis(102)))
+                    .filter(|w| w.end.as_millis() < (n / 16) as u64),
+            )
+            .collect();
+        mic_words.sort_by_key(|w| w.start);
+        Self {
+            mic,
+            reference,
+            mic_words,
+            far,
+        }
+    }
+
+    /// Previews on both tracks (Everyone) from models that say what the real ones say.
+    fn previews(&self, hooks: TestHooks) -> LivePreviews {
+        let says = |audio: Vec<f32>, words: Vec<Word>| -> PreviewLoader {
+            Arc::new(move |_| {
+                Ok(
+                    Box::new(crate::testutil::timeline(audio.clone(), words.clone()))
+                        as Box<dyn earshot_core::asr::Transcriber + Send>,
+                )
+            })
+        };
+        LivePreviews {
+            own_voice: Some(says(
+                cleaned(&self.mic, &self.reference),
+                self.mic_words.clone(),
+            )),
+            test_hooks: hooks,
+            ..previews(says(self.reference.clone(), self.far.clone()))
+        }
+    }
+
+    /// The real models, the far end's decodes each waiting for `far_gate` first.
+    fn asr(&self, far_gate: Arc<AtomicBool>) -> LiveAsrFactory {
+        super::leak_asr_gated(
+            cleaned(&self.mic, &self.reference),
+            self.mic_words.clone(),
+            self.reference.clone(),
+            self.far.clone(),
+            None,
+            Some(far_gate),
         )
-        .collect();
-    mic_words.sort_by_key(|w| w.start);
-    let run = |previews: Option<LivePreviews>| {
-        let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, mic.clone()))
-            .reference(MonoBuffer::new(R16, reference.clone()))
+    }
+
+    /// A replay at ten times real time; the far end's decodes wait for `far_gate`, or, without
+    /// one, until the whole replay has been delivered. What was stored, the events and the outcome.
+    fn run(
+        &self,
+        previews: Option<LivePreviews>,
+        far_gate: Option<Arc<AtomicBool>>,
+        seed: u64,
+    ) -> PausedRun {
+        let replay = ReplayBuilder::new(ORIGIN, MonoBuffer::new(R16, self.mic.clone()))
+            .reference(MonoBuffer::new(R16, self.reference.clone()))
             .build()
             .unwrap();
         let paced = Paced::new(
-            source,
+            replay,
             Arc::new(FastClock(Instant::now(), 10)),
             true,
             Arc::new(PaceState::default()),
         );
+        let (source, handles) = super::queue_tests::end_when_released(paced);
+        handles.released.store(true, Ordering::SeqCst);
+        let gate = far_gate.unwrap_or(handles.delivered);
         let cfg = LiveConfig {
             pipeline: PipelineConfig {
                 drift_correction: false,
@@ -792,39 +869,46 @@ fn live_preview_own_voice_words_stay_until_the_held_mic_text_lands() {
         let dir = TempDir::new();
         let svc = services(&dir);
         let session = start_live(
-            paced,
+            source,
             svc.clone(),
             cfg,
-            Some(leak_asr(
-                cleaned(&mic, &reference),
-                mic_words.clone(),
-                reference.clone(),
-                far.clone(),
-                // Each far-end decode takes this long: at ten times real time, seconds of audio.
-                Some(Duration::from_millis(300)),
-            )),
-            Box::new(ChaCha8Rng::seed_from_u64(347)),
+            Some(self.asr(gate)),
+            Box::new(ChaCha8Rng::seed_from_u64(seed)),
         )
         .unwrap();
         let meeting = session.meeting();
         let (events, outcome) = collect(session);
         (by_kind(&svc, meeting), events, outcome)
+    }
+}
+
+/// T12.12d, during the meeting: in a call under Everyone a mic final waits in the live echo filter
+/// until the far end's decode has caught up with it, so the mic worker's decoded frontier passes
+/// words whose settled text has not landed. A shown mic word stays until that text lands.
+///
+/// Rendezvous, no timing: the far end decodes nothing until the mic's preview thread has acted on
+/// a look that found a shown word behind the mic's decoded frontier and ahead of what the session
+/// has landed (`TestHooks::held_word_seen`, the witness that a final was held while the frontier
+/// passed it). Only then can the held final land.
+///
+/// Negative control (checked by hand): with `PreviewWork::landed` returning the worker's frontier
+/// alone, the thread takes that word away before the far end may decode, and `words_left_early_on`
+/// finds it on the mic.
+#[test]
+fn live_preview_own_voice_words_stay_while_a_mic_final_is_held() {
+    let call = PausedCall::new();
+    let held_word = Arc::new(AtomicBool::new(false));
+    let hooks = TestHooks {
+        held_word_seen: Some(Arc::clone(&held_word)),
+        ..TestHooks::default()
     };
-    // The preview models say what the real ones say, as a real model mostly does.
-    let says = |audio: Vec<f32>, words: Vec<Word>| -> PreviewLoader {
-        Arc::new(move |_| {
-            Ok(
-                Box::new(crate::testutil::timeline(audio.clone(), words.clone()))
-                    as Box<dyn earshot_core::asr::Transcriber + Send>,
-            )
-        })
-    };
-    let config = LivePreviews {
-        own_voice: Some(says(cleaned(&mic, &reference), mic_words.clone())),
-        ..previews(says(reference.clone(), far.clone()))
-    };
-    let (with, events, outcome) = run(Some(config));
+    let (_, events, outcome) = call.run(
+        Some(call.previews(hooks)),
+        Some(Arc::clone(&held_word)),
+        347,
+    );
     assert!(!outcome.echo_locks.is_empty(), "the canceller locked");
+    assert!(held_word.load(Ordering::SeqCst), "no final was held");
     assert!(shown_on(&events, TrackId::Mic), "nothing shown on the mic");
     assert_eq!(
         words_left_early_on(&events, TrackId::Mic),
@@ -834,7 +918,34 @@ fn live_preview_own_voice_words_stay_until_the_held_mic_text_lands() {
         words_left_early_on(&events, TrackId::Reference),
         Vec::<Word>::new()
     );
-    // Through the end of the meeting too: no word leaves and then comes back as settled text.
+}
+
+/// T12.12d, at the end of the meeting: the far end decodes nothing until the whole replay has been
+/// delivered, so mic finals are still held when every worker has finished
+/// (`TestHooks::held_at_end`, the witness). They land before `LiveTranscriptFinished` and before
+/// the shown words leave; what is stored equals a run without previews.
+///
+/// Negative control (checked by hand): without `release_mic_finals(true)` in `finish_workers` the
+/// held finals land only at the pipeline's `Ended`, after `LiveTranscriptFinished` and after
+/// `finish_previews` cleared the mic's words: `assert_settled_before_finished` fails (and the
+/// test above passes). `words_back_after_leaving` reads the whole stream, so it also fails under
+/// that test's control.
+#[test]
+fn live_preview_own_voice_held_mic_text_lands_before_the_end() {
+    let call = PausedCall::new();
+    let held_at_end = Arc::new(AtomicBool::new(false));
+    let hooks = TestHooks {
+        held_at_end: Some(Arc::clone(&held_at_end)),
+        ..TestHooks::default()
+    };
+    let (with, events, outcome) = call.run(Some(call.previews(hooks)), None, 349);
+    assert!(!outcome.echo_locks.is_empty(), "the canceller locked");
+    assert!(
+        held_at_end.load(Ordering::SeqCst),
+        "nothing was held at the end"
+    );
+    assert!(shown_on(&events, TrackId::Mic), "nothing shown on the mic");
+    assert_settled_before_finished(&events);
     for track in [TrackId::Mic, TrackId::Reference] {
         assert_eq!(
             words_back_after_leaving(&events, track),
@@ -842,9 +953,61 @@ fn live_preview_own_voice_words_stay_until_the_held_mic_text_lands() {
             "{track:?}"
         );
     }
-    assert_settled_before_finished(&events);
-    let (without, ..) = run(None);
+    let (without, ..) = call.run(None, None, 349);
     assert_eq!(with, without);
+}
+
+/// T12.12d: the mic's shown words wait for its settled text, which in a call waits for the far
+/// end's decode; so when the far end falls behind, the mic's previews stop for falling behind too
+/// (the existing rule and limit, at the production value), and what the mic holds on screen stays
+/// bounded. The mic's own decodes never wait here: only the far end's do.
+///
+/// Negative control (checked by hand): with `check_previews` judging the mic by its own backlog
+/// alone, the mic's report has no `off`.
+#[test]
+fn live_preview_own_voice_falls_behind_with_the_far_end() {
+    let scene = scene_of(27);
+    let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    // The whole replay queues up behind the far end's first decode.
+    let (source, handles) = super::queue_tests::source_of(&scene);
+    let open = Arc::new(AtomicBool::new(false));
+    let config = LivePreviews {
+        fell_behind: LivePreviews::new(loader(&far, marker_words)).fell_behind,
+        own_voice: Some(loader(&own, marker_words)),
+        ..previews(loader(&far, marker_words))
+    };
+    let session = start_live(
+        source,
+        svc.clone(),
+        config_with(Some(config)),
+        Some(real_factory_gating(
+            Arc::clone(&open),
+            Duration::ZERO,
+            |track| track == TrackId::Reference,
+        )),
+        Box::new(ChaCha8Rng::seed_from_u64(353)),
+    )
+    .unwrap();
+    let limit = Instant::now() + GUARD;
+    while !handles.delivered.load(Ordering::SeqCst) {
+        assert!(Instant::now() < limit, "the replay never ended");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The session looks every pump: a wide margin for it to see the queue.
+    std::thread::sleep(Duration::from_millis(500));
+    open.store(true, Ordering::SeqCst);
+    handles.released.store(true, Ordering::SeqCst);
+    let (events, _) = collect(session);
+    assert_eq!(
+        report_for(&events, TrackId::Reference).off.as_deref(),
+        Some(FELL_BEHIND_REASON)
+    );
+    assert_eq!(
+        report_for(&events, TrackId::Mic).off.as_deref(),
+        Some(FELL_BEHIND_REASON)
+    );
 }
 
 /// Over the whole event stream, the end of the meeting included: preview words of `on` that left
@@ -1017,10 +1180,16 @@ fn live_preview_settled_words_leave_and_the_rest_stay() {
     words.hypothesis(abc.clone(), MeetingTime::ZERO);
     words.hypothesis(abc, MeetingTime::ZERO);
     assert_eq!(words.shown().len(), 3);
-    assert!(!words.settled(MeetingTime::ZERO), "nothing covered yet");
-    assert!(words.settled(MeetingTime::from_millis(700)));
+    assert!(
+        !words.settled(MeetingTime::ZERO, MeetingTime::ZERO),
+        "nothing covered yet"
+    );
+    assert!(words.settled(MeetingTime::from_millis(700), MeetingTime::from_millis(700)));
     assert_eq!(texts(words.shown()), vec!["c"]);
-    assert!(words.settled(MeetingTime::from_millis(1_500)));
+    assert!(words.settled(
+        MeetingTime::from_millis(1_500),
+        MeetingTime::from_millis(1_500)
+    ));
     assert!(words.shown().is_empty());
     // A later stretch that repeats those words is new speech.
     let again = vec![word("c", 2000), word("d", 2400)];
@@ -1031,6 +1200,38 @@ fn live_preview_settled_words_leave_and_the_rest_stay() {
         vec!["c", "d"],
         "not anchored on the old c"
     );
+}
+
+/// T12.12d: words a held final keeps on screen are not the start of the next stretch's agreement.
+/// Once the worker has decoded past every shown word, a stretch that opens with the last one's last
+/// word shows it, as it does when that text has landed (the test above), while the held words stay.
+///
+/// Negative control (checked by hand): without the history clear on the decoded frontier in
+/// `PreviewWords::settled`, the new stretch's `c` is taken for the old one and not shown.
+#[test]
+fn live_preview_a_held_stretch_does_not_anchor_the_next_one() {
+    let mut words = PreviewWords::default();
+    let abc = vec![word("a", 0), word("b", 400), word("c", 800)];
+    words.hypothesis(abc.clone(), MeetingTime::ZERO);
+    words.hypothesis(abc, MeetingTime::ZERO);
+    assert_eq!(words.shown().len(), 3);
+    // Decoded past them all; nothing has landed (a held mic final).
+    assert!(!words.settled(MeetingTime::ZERO, MeetingTime::from_millis(1_500)));
+    assert_eq!(texts(words.shown()), vec!["a", "b", "c"], "held words stay");
+    let again = vec![word("c", 2000), word("d", 2400)];
+    words.hypothesis(again.clone(), MeetingTime::from_millis(2000));
+    words.hypothesis(again, MeetingTime::from_millis(2000));
+    assert_eq!(
+        texts(words.shown()),
+        vec!["a", "b", "c", "c", "d"],
+        "not anchored on the held c"
+    );
+    // The held text lands: the old words leave, the new stretch's stay.
+    assert!(words.settled(
+        MeetingTime::from_millis(1_500),
+        MeetingTime::from_millis(1_500)
+    ));
+    assert_eq!(texts(words.shown()), vec!["c", "d"]);
 }
 
 /// Words the worker's frontier has passed during a decode are not shown.

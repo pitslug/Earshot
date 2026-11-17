@@ -1405,6 +1405,20 @@ fn leak_asr(
     far: Vec<Word>,
     reference_delay: Option<Duration>,
 ) -> LiveAsrFactory {
+    leak_asr_gated(mic_stream, mic_words, reference, far, reference_delay, None)
+}
+
+/// [`leak_asr`] whose far-end decodes each wait for `gate` first (when given; a delay of zero
+/// then).
+fn leak_asr_gated(
+    mic_stream: Vec<f32>,
+    mic_words: Vec<Word>,
+    reference: Vec<f32>,
+    far: Vec<Word>,
+    reference_delay: Option<Duration>,
+    gate: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> LiveAsrFactory {
+    let reference_delay = reference_delay.or(gate.as_ref().map(|_| Duration::ZERO));
     let mut slots = [Some((mic_stream, mic_words)), Some((reference, far))];
     Box::new(move |track, entity| {
         let Some((audio, words)) = slots[slot(track)].take() else {
@@ -1418,7 +1432,7 @@ fn leak_asr(
                 Some(delay) => Box::new(SlowTranscriber {
                     inner: fake,
                     delay,
-                    gate: None,
+                    gate: gate.clone(),
                     meet: None,
                 }),
                 None => Box::new(fake),

@@ -48,7 +48,8 @@
 //! evaluation loaders build one (docs/live-previews.md).
 //!
 //! **When it is off.** On battery; during a hold and its catch-up (T9.1l); for a track that falls
-//! behind; for a chunker session, which has partials; for a backend the loader refuses. Each is
+//! behind (the mic in a call also when the far end does, since its settled text waits for the far
+//! end's decode, T12.12d); for a chunker session, which has partials; for a backend the loader refuses. Each is
 //! reported in [`PreviewReport::off`], and none affects recording or stored transcripts. Previews
 //! that take too long pause and try again ([`PreviewReport::slow_pauses`]).
 //!
@@ -331,6 +332,12 @@ pub(crate) struct TestHooks {
     pub(crate) refuse_lowering: Option<String>,
     /// Set once the thread has sent [`FromPreview::Running`] (window previews).
     pub(crate) running_sent: Option<Arc<AtomicBool>>,
+    /// Set by a window preview thread once it has acted on a look that found a shown word the
+    /// worker had decoded past while its settled text had not landed (a held mic final, T12.12d).
+    pub(crate) held_word_seen: Option<Arc<AtomicBool>>,
+    /// Set by the session when, every worker finished, the echo filter still held a mic final
+    /// (T12.12d): the end of the meeting releases it.
+    pub(crate) held_at_end: Option<Arc<AtomicBool>>,
 }
 
 /// Lowers the preview thread's priority ([`LivePreviews::background`]).
@@ -450,8 +457,10 @@ pub struct PreviewReport {
 pub(super) struct PreviewWords {
     agreement: LocalAgreement,
     shown: Vec<Word>,
-    /// The frontier last seen.
+    /// The landed frontier last seen.
     frontier: MeetingTime,
+    /// The worker's decoded frontier last seen.
+    decoded: MeetingTime,
 }
 
 impl PreviewWords {
@@ -471,15 +480,26 @@ impl PreviewWords {
         added
     }
 
-    /// The real decode has covered everything before `frontier`: those words leave. True when any
-    /// did. Once nothing is left the next stretch starts afresh.
-    pub(super) fn settled(&mut self, frontier: MeetingTime) -> bool {
-        if frontier <= self.frontier {
+    /// Settled text has landed everything before `landed`: those words leave. True when any did.
+    ///
+    /// The next stretch starts afresh once the worker has decoded past every shown word
+    /// (`decoded`), whether or not their settled text has landed yet: words a held mic final
+    /// keeps on screen (module docs) are never the start of the next stretch's agreement, so a
+    /// stretch opening with the last one's last word still shows it (T12.12d).
+    pub(super) fn settled(&mut self, landed: MeetingTime, decoded: MeetingTime) -> bool {
+        let covered = |w: &Word, frontier: MeetingTime| w.start + COVERED_SLACK < frontier;
+        if decoded > self.decoded {
+            self.decoded = decoded;
+            if self.shown.iter().all(|w| covered(w, decoded)) {
+                self.agreement.clear_history();
+            }
+        }
+        if landed <= self.frontier {
             return false;
         }
-        self.frontier = frontier;
+        self.frontier = landed;
         let before = self.shown.len();
-        self.shown.retain(|w| w.start + COVERED_SLACK >= frontier);
+        self.shown.retain(|w| !covered(w, landed));
         if self.shown.is_empty() {
             self.agreement.clear_history();
         }
@@ -625,8 +645,21 @@ impl PreviewWork {
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
             let frontier = self.frontier.load(Ordering::SeqCst);
-            if words.settled(self.landed()) {
+            let decoded = MeetingTime::from_pipeline_frames(frontier);
+            #[cfg(test)]
+            let held_word = {
+                let landed = MeetingTime::from_pipeline_frames(self.landed.load(Ordering::SeqCst));
+                words
+                    .shown()
+                    .iter()
+                    .any(|w| w.start + COVERED_SLACK < decoded && w.start + COVERED_SLACK >= landed)
+            };
+            if words.settled(self.landed(), decoded) {
                 let _ = self.out.send(FromPreview::Words(words.shown().to_vec()));
+            }
+            #[cfg(test)]
+            if held_word && let Some(seen) = &self.previews.test_hooks.held_word_seen {
+                seen.store(true, Ordering::SeqCst);
             }
             if Instant::now() < due {
                 continue;
@@ -1170,6 +1203,17 @@ where
         }
     }
 
+    /// [`TestHooks::held_at_end`]: the echo filter still held a mic final once every worker had
+    /// finished.
+    #[cfg(test)]
+    pub(super) fn witness_held_at_end(&self) {
+        if let PreviewState::Running(p) = &self.previews[slot(TrackId::Mic)]
+            && let Some(seen) = &p.previews.test_hooks.held_at_end
+        {
+            seen.store(true, Ordering::SeqCst);
+        }
+    }
+
     /// Settled text of `track` now reaches `end`.
     pub(super) fn preview_settled(&mut self, track: TrackId, end: MeetingTime) {
         if let PreviewState::Running(p) = &mut self.previews[slot(track)] {
@@ -1296,11 +1340,21 @@ where
         for track in TRACKS {
             if let PreviewState::Running(p) = &self.previews[slot(track)] {
                 let limit = p.fell_behind;
-                let backlog = self
-                    .workers
-                    .iter()
-                    .find(|w| w.track() == track)
-                    .map(super::worker::LiveWorker::backlog);
+                let backlog_of = |of: TrackId| {
+                    self.workers
+                        .iter()
+                        .find(|w| w.track() == of)
+                        .map(super::worker::LiveWorker::backlog)
+                };
+                // The mic's settled text in a call also waits for the far end's decode (the echo
+                // hold), and its shown words stay until it lands (module docs): so the mic falls
+                // behind with the far end too, which bounds what it holds on screen (T12.12d).
+                let backlog = match (track, backlog_of(TrackId::Reference)) {
+                    (TrackId::Mic, Some(reference)) => {
+                        Some(backlog_of(track).unwrap_or(0).max(reference))
+                    }
+                    _ => backlog_of(track),
+                };
                 if let Some(backlog) = backlog.filter(|b| *b > limit) {
                     #[cfg(test)]
                     if let Some(seen) = &p.previews.test_hooks.fell_behind_seen {
