@@ -3539,9 +3539,30 @@ fn live_preview_each_track_is_judged_by_its_own_rule() {
 
 /// T12.33: the app's previews carry the loaders' own rule: the first for every choice, the
 /// user's own voice only under Everyone; with the setting off the rule says so on any backend.
+/// T12.75: judged on fixed machines (one with room for the user's own session, one just under
+/// `PREVIEW_BOTH_MIN_MEMORY`), never on this host, so the own-voice rule is told apart from the
+/// first.
 #[test]
 fn live_preview_the_apps_previews_carry_the_loaders_rule() {
+    use crate::backends::PREVIEW_BOTH_MIN_MEMORY;
     use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::Hardware;
+    fn with_memory(memory: u64) -> Hardware {
+        Hardware {
+            total_memory: Some(memory),
+            npus: vec![earshot_hardware::Npu {
+                name: "A test NPU".to_owned(),
+                driver_version: Some("1.0.0.0".to_owned()),
+            }],
+            ..Hardware::default()
+        }
+    }
+    fn roomy() -> Hardware {
+        with_memory(64 * GIB)
+    }
+    fn tight() -> Hardware {
+        with_memory(PREVIEW_BOTH_MIN_MEMORY - 1)
+    }
     let empty = TempDir::new();
     let models = crate::backends::ModelDir::new(&empty.0);
     let on = |kind| BackendInfo {
@@ -3549,58 +3570,66 @@ fn live_preview_the_apps_previews_carry_the_loaders_rule() {
         device: "a device".to_owned(),
         model: "a model".to_owned(),
     };
-    for choice in [
-        PreviewChoice::Off,
-        PreviewChoice::Automatic,
-        PreviewChoice::On,
-        PreviewChoice::Everyone,
-    ] {
-        let previews = crate::host::live_previews(&models, choice);
-        let rule = previews.rule.clone().expect("the first rule");
-        assert_eq!(
-            previews.own_voice_rule.is_some(),
-            choice == PreviewChoice::Everyone,
-            "{choice:?}"
-        );
-        assert_eq!(
-            previews.own_voice.is_some(),
-            previews.own_voice_rule.is_some(),
-            "{choice:?}"
-        );
-        for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
-            let said = rule(&on(kind)).map(|r| r.reason);
-            if choice == PreviewChoice::Off {
-                assert_eq!(said, Some(PreviewOffReason::TurnedOff), "{kind:?}");
-            } else {
-                assert_ne!(
-                    said,
-                    Some(PreviewOffReason::TurnedOff),
+    let machines: [(fn() -> Hardware, bool); 2] = [(roomy, true), (tight, false)];
+    for (machine, room_for_both) in machines {
+        for choice in [
+            PreviewChoice::Off,
+            PreviewChoice::Automatic,
+            PreviewChoice::On,
+            PreviewChoice::Everyone,
+        ] {
+            let previews = crate::host::live_previews_on(&models, choice, machine);
+            let rule = previews.rule.clone().expect("the first rule");
+            assert_eq!(
+                previews.own_voice_rule.is_some(),
+                choice == PreviewChoice::Everyone,
+                "{choice:?}"
+            );
+            assert_eq!(
+                previews.own_voice.is_some(),
+                previews.own_voice_rule.is_some(),
+                "{choice:?}"
+            );
+            for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+                let said = rule(&on(kind)).map(|r| r.reason);
+                if choice == PreviewChoice::Off {
+                    assert_eq!(said, Some(PreviewOffReason::TurnedOff), "{kind:?}");
+                } else {
+                    assert_ne!(
+                        said,
+                        Some(PreviewOffReason::TurnedOff),
+                        "{choice:?} {kind:?}"
+                    );
+                }
+                // The rule is the loader's: what one refuses, the other refuses in the same words.
+                assert_eq!(
+                    rule(&on(kind)).map(|r| r.text),
+                    crate::backends::previews_refused(kind, &machine(), choice),
                     "{choice:?} {kind:?}"
                 );
             }
-            // The rule is the loader's: what one refuses, the other refuses in the same words.
-            assert_eq!(
-                rule(&on(kind)).map(|r| r.text),
-                crate::backends::previews_refused(kind, &crate::hardware(), choice),
-                "{choice:?} {kind:?}"
-            );
-        }
-        // No preview runs beside a part that is not Parakeet's, whatever was chosen.
-        if choice != PreviewChoice::Off {
-            assert_eq!(
-                rule(&on(BackendKind::Vulkan)).map(|r| r.reason),
-                Some(PreviewOffReason::Model)
-            );
-        }
-        // T12.75: the user's own voice on the NPU follows the second session's rule there, as
-        // on the CPU and CUDA.
-        if let Some(own) = &previews.own_voice_rule {
-            for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+            // No preview runs beside a part that is not Parakeet's, whatever was chosen.
+            if choice != PreviewChoice::Off {
                 assert_eq!(
-                    own(&on(kind)).map(|r| r.text),
-                    crate::backends::previews_refused_second(kind, &crate::hardware(), choice),
-                    "{choice:?} {kind:?}"
+                    rule(&on(BackendKind::Vulkan)).map(|r| r.reason),
+                    Some(PreviewOffReason::Model)
                 );
+            }
+            // T12.75: the user's own voice follows the second session's rule on every backend,
+            // the NPU included: run where there is room for it, refused for memory where not,
+            // while the first session runs on both machines.
+            if let Some(own) = &previews.own_voice_rule {
+                for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+                    let said = own(&on(kind));
+                    assert_eq!(
+                        said.clone().map(|r| r.text),
+                        crate::backends::previews_refused_second(kind, &machine(), choice),
+                        "{choice:?} {kind:?}"
+                    );
+                    let want = (!room_for_both).then_some(PreviewOffReason::NotEnoughMemory);
+                    assert_eq!(said.map(|r| r.reason), want, "{kind:?} {room_for_both}");
+                    assert_eq!(rule(&on(kind)), None, "{kind:?} {room_for_both}");
+                }
             }
         }
     }

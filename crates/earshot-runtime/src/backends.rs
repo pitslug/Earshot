@@ -1406,8 +1406,12 @@ pub fn previews_refused(
 /// call, T9.14) on the CPU: the same as one session's limit, because the second shares the model's
 /// weights and took a meeting's peak from 5.81 to 6.08 GiB (measured 2026-11-08, docs/live-previews.md).
 /// It cost about half a core more on a 32-thread host; the slow-preview pause covers smaller ones.
-/// The same limit on the NPU (T12.75): there the two preview sessions added 1.26 GiB of working set
-/// to a meeting on the Surface (docs/live-previews.md, report `t1275-memory-qnn.json`).
+/// The same limit on the NPU (T12.75): on the Surface the two preview sessions added 1.26 GiB of
+/// working set in `live_lag --memory`'s stages (report `t1275-memory-qnn.json`), and an Everyone
+/// replay's peak working set rose about 1.48 GiB over previews off on the same audio, under the
+/// 1.5 GiB of T12.12c's amended point 5 (`t1275-everyone-bundled-qnn.json` against an older
+/// build's `qnn2-off-bundled.json`; docs/live-previews.md). A QNN session is never closed, so
+/// after an Everyone call on the NPU the extra session stays mapped until the app exits.
 pub const PREVIEW_BOTH_MIN_MEMORY: u64 = 12 * 1024 * 1024 * 1024;
 
 /// Where this computer runs the second preview session, for the user's own track in a call (T9.14),
@@ -1451,16 +1455,8 @@ pub fn second_preview_backend_or_refusal(
     if choice != PreviewChoice::Everyone {
         return refused(PreviewOffReason::NotAsked, "only for the other people");
     }
+    // Vulkan and the fake are refused here, by the first session's rule.
     let first = preview_backend_or_refusal(backend, hardware, choice)?;
-    if !matches!(
-        backend,
-        BackendKind::Cpu | BackendKind::Cuda | BackendKind::Qnn
-    ) {
-        return refused(
-            PreviewOffReason::Model,
-            "previews run on Parakeet on the CPU, CUDA or the NPU only",
-        );
-    }
     // T12.60: on the card beside a first session on the card; T12.75: on the NPU beside a first
     // session on the NPU (from the compiled model only, as the first); else on the CPU. The same
     // memory limit everywhere.
@@ -1508,7 +1504,18 @@ pub fn load_preview(
     backend: &BackendInfo,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> {
-    load_preview_with(backend, &crate::hardware(), choice, |on| {
+    load_preview_on(models, backend, &crate::hardware(), choice)
+}
+
+/// [`load_preview`] on `hardware`: the whole production path, the rule and the loader, with the
+/// machine given (a test seam; production passes [`crate::hardware`]).
+pub(crate) fn load_preview_on(
+    models: &ModelDir,
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> {
+    load_preview_with(backend, hardware, choice, |on| {
         load_preview_session(models, on)
     })
 }
@@ -1542,7 +1549,18 @@ pub fn load_preview_second(
     backend: &BackendInfo,
     choice: crate::preview_settings::PreviewChoice,
 ) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> {
-    load_preview_second_with(backend, &crate::hardware(), choice, |on| {
+    load_preview_second_on(models, backend, &crate::hardware(), choice)
+}
+
+/// [`load_preview_second`] on `hardware`: the whole production path, the rule and the loader, with
+/// the machine given (a test seam; production passes [`crate::hardware`]).
+pub(crate) fn load_preview_second_on(
+    models: &ModelDir,
+    backend: &BackendInfo,
+    hardware: &earshot_hardware::Hardware,
+    choice: crate::preview_settings::PreviewChoice,
+) -> Result<Box<dyn Transcriber + Send>, PreviewRefusal> {
+    load_preview_second_with(backend, hardware, choice, |on| {
         load_preview_session(models, on)
     })
 }
@@ -1853,6 +1871,8 @@ fn load_parakeet_with(
     background: bool,
     load_for: QnnLoadFor,
 ) -> Result<ParakeetTranscriber, AsrError> {
+    #[cfg(test)]
+    tests::PARAKEET_LOADS_SEEN.with(|seen| seen.borrow_mut().push((accel, load_for)));
     let config = SessionConfig {
         intra_threads: threads,
         background: background.then_some(earshot_onnx::ThreadStart(

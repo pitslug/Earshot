@@ -1780,7 +1780,8 @@ pub fn live_factory(
 /// too small for them, T12.3c), and never costs the meeting anything. With
 /// [`PreviewChoice::Everyone`](crate::preview_settings::PreviewChoice::Everyone) the user's own
 /// track in a call gets a second session of its own, where `backends::second_preview_backend`
-/// says (T9.14; with the first on CUDA, T12.60, else the CPU). Each loader's rule is also given as
+/// says (T9.14; on CUDA beside a first on CUDA, T12.60; on QNN, from the compiled model only, beside
+/// a first on QNN, T12.75; else the CPU). Each loader's rule is also given as
 /// [`LivePreviews::rule`](crate::live::LivePreviews), so the session knows what the computer
 /// refuses before it tells the user about a wait or the battery (T12.33).
 #[must_use]
@@ -1788,24 +1789,36 @@ pub fn live_previews(
     models: &ModelDir,
     choice: crate::preview_settings::PreviewChoice,
 ) -> crate::live::LivePreviews {
+    live_previews_on(models, choice, crate::hardware)
+}
+
+/// [`live_previews`] with the machine's facts read from `hardware` at each load and rule call
+/// (production passes [`crate::hardware`]; tests and `live_lag` pass a fixed machine, so the rule
+/// they check does not depend on the host).
+#[must_use]
+pub fn live_previews_on(
+    models: &ModelDir,
+    choice: crate::preview_settings::PreviewChoice,
+    hardware: fn() -> earshot_hardware::Hardware,
+) -> crate::live::LivePreviews {
     let first = models.clone();
     let mut previews = crate::live::LivePreviews::new(Arc::new(move |backend| {
-        crate::backends::load_preview(&first, backend, choice)
+        crate::backends::load_preview_on(&first, backend, &hardware(), choice)
     }));
     // The loaders' own rule, backend and model, asked before anything is said to the user
     // (T12.33).
     previews.rule = Some(Arc::new(move |backend| {
-        crate::backends::preview_rule(backend, &crate::hardware(), choice).err()
+        crate::backends::preview_rule(backend, &hardware(), choice).err()
     }));
     // Under the automatic choice nobody asked for them: what the rule refuses needs no word.
     previews.user_asked = choice != crate::preview_settings::PreviewChoice::Automatic;
     if choice == crate::preview_settings::PreviewChoice::Everyone {
         let second = models.clone();
         previews.own_voice = Some(Arc::new(move |backend| {
-            crate::backends::load_preview_second(&second, backend, choice)
+            crate::backends::load_preview_second_on(&second, backend, &hardware(), choice)
         }));
         previews.own_voice_rule = Some(Arc::new(move |backend| {
-            crate::backends::second_preview_rule(backend, &crate::hardware(), choice).err()
+            crate::backends::second_preview_rule(backend, &hardware(), choice).err()
         }));
     }
     previews

@@ -20,6 +20,13 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
 use super::*;
+
+thread_local! {
+    /// Every `load_parakeet_with` call on this thread, as (accelerator, whose NPU load): the seam
+    /// that shows a preview's load passes `QnnLoadFor::Preview` (T12.75 review).
+    pub(crate) static PARAKEET_LOADS_SEEN: RefCell<Vec<(Accelerator, QnnLoadFor)>> =
+        const { RefCell::new(Vec::new()) };
+}
 use crate::post::PostConfig;
 
 /// A loader that refuses the backends in `fail` (as `load_verified` does when the log and
@@ -2580,15 +2587,62 @@ fn backends_previews_on_the_npu_load_there_and_refuse_before_loading() {
             "{choice:?}: refused instead of loading: {why}"
         );
     }
-    // The second session through the production loader of `load_preview_second`, on the Surface's
-    // memory: it asks the NPU's compiled model (`QnnLoadFor::Preview`), which is not there.
-    let why = load_preview_second_with(&track, &surface, PreviewChoice::Everyone, |on| {
-        load_preview_session(&models, on)
-    })
-    .err()
-    .expect("an empty models folder");
-    assert!(!refused_instead(&why), "refused instead of loading: {why}");
-    assert_eq!(why.reason, PreviewOffReason::LoadFailed, "{why}");
+    // Both sessions through the production paths of `load_preview` and `load_preview_second`
+    // on the Surface's memory: each reaches the Parakeet load as a preview's NPU load
+    // (`QnnLoadFor::Preview`: the compiled model only, never recorded), which finds nothing here.
+    PARAKEET_LOADS_SEEN.with(|seen| seen.borrow_mut().clear());
+    let first = load_preview_on(&models, &track, &surface, PreviewChoice::Everyone)
+        .err()
+        .expect("an empty models folder");
+    let second = load_preview_second_on(&models, &track, &surface, PreviewChoice::Everyone)
+        .err()
+        .expect("an empty models folder");
+    for why in [first, second] {
+        assert!(!refused_instead(&why), "refused instead of loading: {why}");
+        assert_eq!(why.reason, PreviewOffReason::LoadFailed, "{why}");
+    }
+    assert_eq!(
+        PARAKEET_LOADS_SEEN.with(|seen| seen.borrow().clone()),
+        vec![
+            (Accelerator::Qnn, QnnLoadFor::Preview),
+            (Accelerator::Qnn, QnnLoadFor::Preview)
+        ]
+    );
+    // Under the second session's memory limit nothing reaches a load.
+    PARAKEET_LOADS_SEEN.with(|seen| seen.borrow_mut().clear());
+    let tight = npu_machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1));
+    let refused = load_preview_second_on(&models, &track, &tight, PreviewChoice::Everyone)
+        .err()
+        .expect("too little memory");
+    assert_eq!(refused.reason, PreviewOffReason::NotEnoughMemory);
+    assert!(PARAKEET_LOADS_SEEN.with(|seen| seen.borrow().is_empty()));
+}
+
+/// The negative control of the seam above: a track's own NPU load says `QnnLoadFor::Track`, so the
+/// recorder tells a preview's load from a track's.
+#[test]
+fn backends_a_tracks_npu_load_is_recorded_as_a_tracks() {
+    let empty = std::env::temp_dir().join(format!("earshot-track-npu-{}", std::process::id()));
+    let models = ModelDir::new(&empty);
+    let Ok(AsrModel::Parakeet(model)) = asr_model("parakeet-tdt-0.6b-v2") else {
+        panic!("a Parakeet model");
+    };
+    PARAKEET_LOADS_SEEN.with(|seen| seen.borrow_mut().clear());
+    assert!(
+        load_parakeet_with(
+            &models,
+            model,
+            Accelerator::Qnn,
+            Some(1),
+            false,
+            QnnLoadFor::Track
+        )
+        .is_err()
+    );
+    assert_eq!(
+        PARAKEET_LOADS_SEEN.with(|seen| seen.borrow().clone()),
+        vec![(Accelerator::Qnn, QnnLoadFor::Track)]
+    );
 }
 
 /// T12.12c: a Parakeet model whose NPU version is not installed runs its tracks on the processor
@@ -3225,12 +3279,20 @@ fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code(
         assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
         let src = backends_source();
         let evaluation = item_span(&src, concat!("pub fn load_preview_", "on_hardware("));
+        // T12.75 review: the `_on` seams pass on the hardware their callers give, which the scan
+        // below holds to this computer's in shipped code.
+        let on_seams = [
+            item_span(&src, concat!("pub(crate) fn load_preview_", "on(")),
+            item_span(&src, concat!("pub(crate) fn load_preview_", "second_on(")),
+        ];
         let mut calls = 0;
         for (at, line) in code_lines(&src) {
             if line.contains(name) && !line.contains("fn load_preview_") {
                 calls += 1;
                 assert!(
-                    line.contains("&crate::hardware()") || evaluation.contains(&at),
+                    line.contains("&crate::hardware()")
+                        || evaluation.contains(&at)
+                        || on_seams.iter().any(|seam| seam.contains(&at)),
                     "{name} with other hardware outside the evaluation loader: {line}"
                 );
             }
@@ -3240,6 +3302,60 @@ fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code(
             "{name}: {calls} calls found, the scan reads nothing"
         );
     }
+    // The `_on` seams (T12.75 review): in `backends.rs` called with this computer's hardware; in
+    // other shipped code only by `host::live_previews_on`, with what its caller gave, and that
+    // only by `host::live_previews`, with `crate::hardware`.
+    let host_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs");
+    let host = std::fs::read_to_string(&host_path).unwrap();
+    let live_previews_on = item_span(&host, concat!("pub fn live_previews_", "on("));
+    for name in [
+        concat!("load_preview_", "on("),
+        concat!("load_preview_", "second_on("),
+    ] {
+        let found: Vec<PathBuf> = shipped_files_naming(name)
+            .into_iter()
+            .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
+            .collect();
+        assert!(
+            found.len() == 1 && found[0].ends_with("src/host.rs"),
+            "{name}: {found:?}"
+        );
+        let mut calls = 0;
+        for (at, line) in code_lines(&host) {
+            if line.contains(name) {
+                calls += 1;
+                assert!(
+                    live_previews_on.contains(&at) && line.contains("&hardware()"),
+                    "{name} outside `live_previews_on`: {line}"
+                );
+            }
+        }
+        assert_eq!(calls, 1, "{name}");
+        let src = backends_source();
+        let mut calls = 0;
+        for (_, line) in code_lines(&src) {
+            if line.contains(name) && !line.contains("fn load_preview_") {
+                calls += 1;
+                assert!(line.contains("&crate::hardware()"), "{name}: {line}");
+            }
+        }
+        assert_eq!(calls, 1, "{name}");
+    }
+    let name = concat!("live_previews_", "on(");
+    let found: Vec<PathBuf> = shipped_files_naming(name)
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
+        .collect();
+    assert!(
+        found.len() == 1 && found[0].ends_with("src/host.rs"),
+        "{found:?}"
+    );
+    let calls: Vec<&str> = code_lines(&host)
+        .into_iter()
+        .map(|(_, line)| line)
+        .filter(|line| line.contains(name) && !line.contains("fn live_previews_"))
+        .collect();
+    assert_eq!(calls, ["live_previews_on(models, choice, crate::hardware)"]);
 }
 
 /// TODO 93: inside `backends.rs`, the evaluation-only loaders and their types are named only by
