@@ -1,9 +1,8 @@
 # Follow-ups
 Advisory review findings, one per line. Each line says what it waits on: `[owner]` a decision or a run only the owner can make, `[waits: <task> merge]` a file another host has claimed, `[open]` work nobody has picked up yet (a sweep task takes these; see AGENTS.md conventions). Research and hardware runs that need no decision live in PLAN.md, section "Parked".
 - [open] crates/earshot-runtime/src/shared_encoders.rs: the fallback, a broken encoder and a stalled encoder have run only on fakes, and a final pass sharing with the next meeting's tracks is unmeasured (T12.58).
-- [owner] docs/live-previews.md T12.60: Everyone on the card was never run with the card filled to the 7.5 GiB limit (peak 5.38 GiB against 5.39 to 5.43 GiB left free), and no card under 16 GB has run any of T12.59 or T12.60. One holder run on an idle desktop closes the first; the second needs a real 8 GB card.
+- [owner] docs/live-previews.md T12.60: no card under 16 GB has run any of T12.59 or T12.60 (the 7.5 GiB holder run passed on the desktop, 2026-11-17); this needs a real 8 GB card.
 - [open] acceptance/results/m2.json records `7bafff9-dirty`: re-run `cargo xtask accept m2` on a clean tree for a clean stamp, on an idle host.
-- [open] acceptance/results/bench-*.json: these figures carry a shared-host note and a `-dirty` commit: re-run `cargo xtask bench asr|diar|aec --backend cpu` and `asr --backend vulkan`, no `--note`, on an idle host for a baseline.
 - [open] apps/desktop/src-tauri/src/summary_settings.rs: the endpoint model name limit counts UTF-8 bytes while the agent CLI names now count characters (T12.36); aligning it changes what is accepted.
 - [owner] apps/desktop/src-tauri/src/plain_text.rs `post_warning_copy`: `PostWarning::EchoRecordUnreadable` (T12.56) shows no banner, but unlike the other unreadable-record warnings it changes the transcript (no echo cleaning at all); a `post-*` banner is the owner's call.
 - [open] crates/earshot-onnx/src/shared_encoder.rs: the awake clock (T12.62) is proven on fakes only; one real sleep with a final pass in flight on the desktop (Modern Standby on the Surface) confirms QueryUnbiasedInterruptTime stops there.
