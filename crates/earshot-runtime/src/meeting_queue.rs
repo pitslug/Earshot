@@ -21,6 +21,7 @@
 //! meetings before.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -47,15 +48,18 @@ pub const BESIDE_MIN_MEMORY: u64 = 14 * 1024 * 1024 * 1024;
 /// (T12.39). A summary written off this computer needs no pair; two work on the CPU never run
 /// together whatever is listed, and two on the graphics card only with room for both.
 ///
-/// Empty on x64: measured 2026-11-14 on the desktop (docs/live-previews.md), CUDA transcription
-/// beside the card's summary failed lag, summary time and memory, and CPU transcription beside it
-/// failed the memory margin only.
+/// On x64: CPU transcription beside the card's summary. Measured 2026-11-14 on the desktop
+/// (docs/live-previews.md): it failed only the private-memory margin, which the owner replaced on
+/// 2026-11-17 by the [`BESIDE_MIN_MEMORY`] floor; CUDA transcription beside the card's summary
+/// failed lag, summary time and the card margin, and stays off.
 #[cfg(target_arch = "x86_64")]
-pub const BESIDE_PAIRS: &[(Device, Device)] = &[];
+pub const BESIDE_PAIRS: &[(Device, Device)] = &[(Device::Cpu, Device::GraphicsCard)];
 
-/// As on x64: none until the Surface measures (docs/live-previews.md, T12.39).
+/// On ARM64: NPU transcription beside the CPU's summary. Measured 2026-11-14 on the Surface
+/// (docs/live-previews.md): words on screen +1.1 to 1.2 s and private memory +4.1 GiB, within the
+/// owner's margins of 2026-11-17 (+3 s on screen, the [`BESIDE_MIN_MEMORY`] floor).
 #[cfg(not(target_arch = "x86_64"))]
-pub const BESIDE_PAIRS: &[(Device, Device)] = &[];
+pub const BESIDE_PAIRS: &[(Device, Device)] = &[(Device::Npu, Device::Cpu)];
 
 /// A part of this computer that a meeting's work occupies (T12.39).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,6 +324,17 @@ impl QueueTicket {
             .all(|(_, o)| o.final_pass_done && may_run_beside(o.summary, needs, machine))
     }
 
+    /// Whether an older meeting whose final pass is over still holds a summary model on this
+    /// computer: a newer meeting decoding now runs beside it (T12.39's banner).
+    #[must_use]
+    pub fn beside_local_summary(&self) -> bool {
+        self.queue
+            .tickets()
+            .open
+            .range(..self.id)
+            .any(|(_, o)| o.final_pass_done && matches!(o.summary, SummaryHold::Local { .. }))
+    }
+
     /// Whether an older meeting still works.
     #[must_use]
     pub fn behind_older_work(&self) -> bool {
@@ -424,6 +439,10 @@ pub struct MeetingHold {
     /// The live work's needs once known, so the banner and the wait decide on the same answer;
     /// changed only when a load fell back to another device ([`Self::recheck_after_load`]).
     decided: Mutex<Option<LiveNeeds>>,
+    /// The live transcription was let through ([`HoldGates::wait_transcription`] or
+    /// [`Self::recheck_after_load`] said go): the banner reads this, never the rule again, so a
+    /// summary that falls back onto the transcript's device keeps the banner (T12.39).
+    let_through: AtomicBool,
 }
 
 impl MeetingHold {
@@ -435,6 +454,7 @@ impl MeetingHold {
             ticket,
             beside: None,
             decided: Mutex::new(None),
+            let_through: AtomicBool::new(false),
         }
     }
 
@@ -446,6 +466,7 @@ impl MeetingHold {
             ticket,
             beside: Some(beside),
             decided: Mutex::new(None),
+            let_through: AtomicBool::new(false),
         }
     }
 
@@ -496,7 +517,9 @@ impl MeetingHold {
             card_summary_fell_back: (b.card_summary_fell_back)(),
             ..b.machine.clone()
         };
-        self.ticket.wait_live_turn(&needs, &machine, cancel)
+        let went = self.ticket.wait_live_turn(&needs, &machine, cancel);
+        self.let_through.store(went, Ordering::SeqCst);
+        went
     }
 }
 
@@ -521,10 +544,20 @@ impl HoldGates for MeetingHold {
         if !(self.ticket.wait_final_passes(cancel) && wait_for_the_library_choice(cancel)) {
             return false;
         }
-        match self.needs() {
+        let went = match self.needs() {
             Some((needs, machine)) => self.ticket.wait_live_turn(&needs, &machine, cancel),
             None => self.ticket.wait_turn(cancel),
-        }
+        };
+        self.let_through.store(went, Ordering::SeqCst);
+        went
+    }
+
+    fn beside_summary(&self) -> bool {
+        // Only for a hold that may run beside (a plain hold waits for whole tickets), and only
+        // once the work was let through: never while it waits.
+        self.beside.is_some()
+            && self.let_through.load(Ordering::SeqCst)
+            && self.ticket.beside_local_summary()
     }
 
     fn reason(&self) -> Option<HoldReason> {

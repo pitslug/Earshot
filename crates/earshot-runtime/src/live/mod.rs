@@ -518,6 +518,10 @@ pub enum RuntimeEvent {
     /// ([`PreviewReport::track`]), after the live transcript finished, in a session configured
     /// with [`LiveConfig::previews`].
     LivePreviewReport(PreviewReport),
+    /// The live transcript runs (`true`) or no longer runs (`false`) beside an older meeting's
+    /// summary model on this computer, so its words may come more slowly (T12.39): sent only on a
+    /// change, `false` only after a `true`. Informational.
+    LiveBesideSummary(bool),
     /// Summarising during the meeting ([`LiveConfig::live_summaries`]) does not run (from
     /// the start) or stopped for the rest of the meeting; the summary after the meeting
     /// maps every window it did not. Informational.
@@ -1225,6 +1229,7 @@ where
         pending_summaries,
         worker_cap,
         transcript_state: None,
+        beside: None,
         capture_end: None,
         audio_files: Vec::new(),
         problems: Vec::new(),
@@ -1405,6 +1410,9 @@ struct Session<S> {
     worker_cap: u64,
     /// The live transcript's last reported state.
     transcript_state: Option<LiveTranscriptState>,
+    /// Whether the live transcript runs beside an older meeting's summary (T12.39); `None` for a
+    /// session without a hold.
+    beside: Option<hold::BesideWatch>,
     /// The pipeline's end, as soon as it is known.
     capture_end: Option<PipelineEnd>,
     /// The `AudioFile` rows written when the recording was saved.
@@ -1501,6 +1509,7 @@ where
             self.handle(events);
             self.handle_workers();
             self.check_hold();
+            self.check_beside();
             self.check_catch_up();
             self.check_previews();
             self.check_power();

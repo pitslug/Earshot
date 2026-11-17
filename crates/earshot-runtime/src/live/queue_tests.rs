@@ -29,6 +29,8 @@ pub(super) struct HandGates {
     speakers: AtomicBool,
     pub(super) transcription: AtomicBool,
     reason: Mutex<Option<HoldReason>>,
+    /// What [`HoldGates::beside_summary`] answers (T12.39).
+    beside: AtomicBool,
 }
 
 fn wait(open: &AtomicBool, cancel: &CancelToken) -> bool {
@@ -52,6 +54,9 @@ impl HoldGates for HandGates {
     }
     fn reason(&self) -> Option<HoldReason> {
         *self.reason.lock().unwrap()
+    }
+    fn beside_summary(&self) -> bool {
+        self.beside.load(Ordering::SeqCst)
     }
 }
 
@@ -621,6 +626,60 @@ fn meeting_queue_no_older_meeting_says_nothing_about_a_hold() {
         "{:?}",
         transcript_states(&events)
     );
+    // Nor about running beside a summary (T12.39).
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, RuntimeEvent::LiveBesideSummary(_))),
+        "a banner with no older summary"
+    );
+}
+
+/// T12.39: running beside an older meeting's summary is said once when it starts and once when it
+/// ends, and nothing more while it lasts.
+#[test]
+fn meeting_queue_running_beside_a_summary_is_said_when_it_starts_and_ends() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let scene = scene();
+    let gates = Arc::new(HandGates::default());
+    gates.speakers.store(true, Ordering::SeqCst);
+    gates.transcription.store(true, Ordering::SeqCst);
+    gates.beside.store(true, Ordering::SeqCst);
+    let (source, handles) = source_of(&scene);
+    let mut session = start_live(
+        source,
+        svc.clone(),
+        held_config(gates.clone()),
+        Some(factory_of(&scene, Arc::default())),
+        Box::new(ChaCha8Rng::seed_from_u64(232)),
+    )
+    .unwrap();
+    let events = session.take_events().unwrap();
+    until(&events, "the beside banner", |e| {
+        *e == RuntimeEvent::LiveBesideSummary(true)
+    });
+    // Two polls with nothing changed say nothing more.
+    std::thread::sleep(hold::BESIDE_POLL * 2 + Duration::from_millis(200));
+    assert!(
+        !events
+            .try_iter()
+            .any(|e| matches!(e, RuntimeEvent::LiveBesideSummary(_))),
+        "said again while nothing changed"
+    );
+    gates.beside.store(false, Ordering::SeqCst);
+    until(&events, "the banner taken back", |e| {
+        *e == RuntimeEvent::LiveBesideSummary(false)
+    });
+    handles.released.store(true, Ordering::SeqCst);
+    let rest: Vec<RuntimeEvent> = events.iter().collect();
+    session.wait().unwrap();
+    assert!(
+        !rest
+            .iter()
+            .any(|e| matches!(e, RuntimeEvent::LiveBesideSummary(_))),
+        "said again after it ended"
+    );
 }
 
 #[test]
@@ -720,6 +779,47 @@ fn meeting_queue_a_worker_past_its_cap_stops_the_live_transcript() {
         Some(&LiveTranscriptState::Stopped),
         "{:?}",
         transcript_states(&events)
+    );
+}
+
+/// T12.39 review: once the live transcript has stopped, the banner never comes (it is about words
+/// still to come), even if an older summary starts to count as beside it.
+#[test]
+fn meeting_queue_no_beside_banner_after_the_live_transcript_stopped() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let scene = scene();
+    let gates = held_gates();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut cfg = LiveConfig {
+        transcription: LiveTranscription::Chunker,
+        ..held_config(gates.clone())
+    };
+    cfg.pipeline.max_asr_backlog = Duration::from_secs(1);
+    let (source, handles) = source_of(&scene);
+    let mut session = start_live(
+        source,
+        svc.clone(),
+        cfg,
+        Some(factory_of(&scene, Arc::clone(&calls))),
+        Box::new(ChaCha8Rng::seed_from_u64(234)),
+    )
+    .unwrap();
+    let events = session.take_events().unwrap();
+    // Everything is queued past the worker's 1 s when its turn comes: the transcript stops.
+    wait_for(&handles.delivered);
+    gates.transcription.store(true, Ordering::SeqCst);
+    until(&events, "the stop", |e| {
+        *e == RuntimeEvent::LiveTranscript(LiveTranscriptState::Stopped)
+    });
+    gates.beside.store(true, Ordering::SeqCst);
+    std::thread::sleep(hold::BESIDE_POLL * 2 + Duration::from_millis(200));
+    handles.released.store(true, Ordering::SeqCst);
+    let rest: Vec<RuntimeEvent> = events.iter().collect();
+    session.wait().unwrap();
+    assert!(
+        !rest.contains(&RuntimeEvent::LiveBesideSummary(true)),
+        "a banner after the live transcript stopped"
     );
 }
 

@@ -217,6 +217,12 @@ pub const CHECK_NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU t
 pub const NPU_PREPARING: &str =
     "Earshot is preparing the NPU for this computer. Transcription starts shortly.";
 
+/// The banner while a meeting's live transcription runs beside the previous meeting's summary on
+/// this computer (T12.39, `RuntimeEvent::LiveBesideSummary`): fixed copy, cleared when that
+/// summary ends.
+pub const BESIDE_SUMMARY: &str =
+    "Transcription may be slower while the previous meeting's summary is written.";
+
 /// Whose provisional words a banner sentence is about (T12.33).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewScope {

@@ -300,10 +300,15 @@ fn meeting_queue_two_on_the_processor_and_live_summaries_beside_a_local_summary_
 
 #[test]
 fn meeting_queue_this_machine_switches_on_only_measured_pairs() {
-    // No pair of two work on the processor, and none on ARM64 until the Surface measures.
+    // No pair of two work on the processor; each architecture switches on exactly the pair that
+    // passed under the owner's margins of 2026-11-17 (docs/live-previews.md). CUDA or Vulkan
+    // transcription beside the card's summary failed and stays off.
     assert!(!BESIDE_PAIRS.contains(&(Device::Cpu, Device::Cpu)));
-    if cfg!(not(target_arch = "x86_64")) {
-        assert!(BESIDE_PAIRS.is_empty());
+    assert!(!BESIDE_PAIRS.contains(&(Device::GraphicsCard, Device::GraphicsCard)));
+    if cfg!(target_arch = "x86_64") {
+        assert_eq!(BESIDE_PAIRS, &[(Device::Cpu, Device::GraphicsCard)]);
+    } else {
+        assert_eq!(BESIDE_PAIRS, &[(Device::Npu, Device::Cpu)]);
     }
     assert_eq!(Machine::this_one().pairs, BESIDE_PAIRS.to_vec());
 }
@@ -499,6 +504,104 @@ fn meeting_queue_the_hold_says_previous_meeting_only_while_the_transcript_waits_
     assert!(hold.wait_transcription(&CancelToken::new()));
 }
 
+/// T12.39: "may be slower" holds exactly while the transcript runs and an older local summary is
+/// still at work: never while it waits, never beside a summary written off this computer, never
+/// for a plain hold or unknown needs, and no longer once that meeting's ticket ends.
+#[test]
+fn meeting_queue_beside_summary_holds_only_while_running_beside_a_local_summary() {
+    let pair = &[(Device::Npu, Device::Cpu)];
+    let beside = |q: &MeetingQueue, needs: &Arc<Mutex<Option<LiveNeeds>>>| {
+        MeetingHold::beside(
+            Arc::new(q.enter()),
+            Beside {
+                needs: needs_of(needs),
+                machine: machine(Some(15 * GIB), None, pair),
+                card_summary_fell_back: no_fallback,
+            },
+        )
+    };
+    let npu = Arc::new(Mutex::new(Some(live(Device::Npu))));
+
+    // A local summary on another device: false while its final pass runs (the transcript
+    // waits), true once the transcript may run, false once the ticket ends.
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::Cpu, FOUR_B));
+    let hold = beside(&q, &npu);
+    assert!(!hold.beside_summary(), "held for the final pass");
+    older.final_pass_done();
+    assert!(!hold.beside_summary(), "free, but not yet let through");
+    assert!(hold.wait_transcription(&CancelToken::new()));
+    assert!(hold.beside_summary());
+    assert_eq!(hold.reason(), None);
+    drop(older);
+    assert!(!hold.beside_summary());
+
+    // The same summary on the transcript's own device: it waits, so no "may be slower".
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::Cpu, FOUR_B));
+    older.final_pass_done();
+    let cpu = Arc::new(Mutex::new(Some(live(Device::Cpu))));
+    let hold = beside(&q, &cpu);
+    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
+    assert!(!hold.beside_summary());
+    drop(older);
+
+    // A summary written off this computer shares nothing.
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(SummaryHold::OffThisComputer);
+    older.final_pass_done();
+    assert!(!beside(&q, &npu).beside_summary());
+    drop(older);
+
+    // Unknown needs, and a plain hold, wait for whole tickets.
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::Cpu, FOUR_B));
+    older.final_pass_done();
+    assert!(!beside(&q, &Arc::new(Mutex::new(None))).beside_summary());
+    assert!(!MeetingHold::new(Arc::new(q.enter())).beside_summary());
+}
+
+static BESIDE_CARD_FELL_BACK: AtomicBool = AtomicBool::new(false);
+
+fn beside_card_fell_back() -> bool {
+    BESIDE_CARD_FELL_BACK.load(Ordering::SeqCst)
+}
+
+/// T12.39 review: a card summary that falls back onto the processor while a processor transcript
+/// runs beside it keeps the banner (the slowest case), because the banner reads that the work was
+/// let through, not the rule again; it goes when that meeting's ticket ends.
+#[test]
+fn meeting_queue_beside_banner_stays_when_the_card_summary_falls_back_to_the_processor() {
+    let q = MeetingQueue::new();
+    let older = q.enter();
+    older.set_summary(local(Device::GraphicsCard, NINE_B));
+    older.final_pass_done();
+    let hold = MeetingHold::beside(
+        Arc::new(q.enter()),
+        Beside {
+            needs: needs_of(&Arc::new(Mutex::new(Some(live(Device::Cpu))))),
+            machine: machine(
+                Some(64 * GIB),
+                Some(16),
+                &[(Device::Cpu, Device::GraphicsCard)],
+            ),
+            card_summary_fell_back: beside_card_fell_back,
+        },
+    );
+    assert!(hold.wait_transcription(&CancelToken::new()));
+    assert!(hold.beside_summary());
+    BESIDE_CARD_FELL_BACK.store(true, Ordering::SeqCst);
+    // The rule would now hold a new start (two on the processor)...
+    assert_eq!(hold.reason(), Some(HoldReason::PreviousMeeting));
+    // ...but this transcript already runs, beside a summary now on its own device.
+    assert!(hold.beside_summary());
+    drop(older);
+    assert!(!hold.beside_summary());
+}
 #[test]
 fn meeting_queue_needs_unknown_at_the_banner_are_decided_once_known_and_then_kept() {
     let q = MeetingQueue::new();

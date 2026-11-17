@@ -72,6 +72,22 @@ pub trait HoldGates: Send + Sync {
     fn wait_transcription(&self, cancel: &CancelToken) -> bool;
     /// What the session is waiting for now; `None`: nothing, it only has to load its models.
     fn reason(&self) -> Option<HoldReason>;
+    /// Whether live transcription may run now and an older meeting's summary model is still at
+    /// work on this computer beside it (T12.39), for a banner: it may be slower. Cheap; asked
+    /// at most every [`BESIDE_POLL`] on the session thread.
+    fn beside_summary(&self) -> bool {
+        false
+    }
+}
+
+/// How often a session asks [`HoldGates::beside_summary`].
+pub const BESIDE_POLL: Duration = Duration::from_secs(1);
+
+/// Says when a session's live transcript runs beside an older meeting's summary (T12.39).
+pub(super) struct BesideWatch {
+    gates: Arc<dyn HoldGates>,
+    shown: bool,
+    next: Instant,
 }
 
 /// Why a session's live transcription is held.
@@ -427,6 +443,15 @@ where
             return;
         };
         let reason = hold.hold.gates.reason();
+        // Kept past the hold: the older summary can outlast the hold thread.
+        self.beside = Some(BesideWatch {
+            gates: Arc::clone(&hold.hold.gates),
+            shown: false,
+            next: Instant::now(),
+        });
+        let Some(hold) = &mut self.hold else {
+            return;
+        };
         let Some(work) = hold.work.take() else {
             return;
         };
@@ -780,6 +805,27 @@ where
         }
         self.transcript_state = Some(state);
         self.emit(RuntimeEvent::LiveTranscript(state));
+    }
+
+    /// Says when the live transcript starts or stops running beside an older meeting's summary
+    /// (T12.39): asks the gates at most every [`BESIDE_POLL`], and never once the transcript has
+    /// stopped (the banner is about words that are still coming).
+    pub(super) fn check_beside(&mut self) {
+        let stopped = self.transcript_state == Some(LiveTranscriptState::Stopped);
+        let Some(watch) = &mut self.beside else {
+            return;
+        };
+        let now = Instant::now();
+        if now < watch.next {
+            return;
+        }
+        watch.next = now + BESIDE_POLL;
+        let on = !stopped && watch.gates.beside_summary();
+        if on == watch.shown {
+            return;
+        }
+        watch.shown = on;
+        self.emit(RuntimeEvent::LiveBesideSummary(on));
     }
 
     /// Says when a catch-up is over.

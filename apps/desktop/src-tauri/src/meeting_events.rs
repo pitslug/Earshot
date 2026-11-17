@@ -107,6 +107,8 @@ pub enum WarningKind {
     CallEnded,
     /// Provisional words are off or waiting (T12.33).
     ProvisionalWords,
+    /// The live transcript runs beside the previous meeting's summary and may be slower (T12.39).
+    BesideSummary,
 }
 
 /// A step of the work after the meeting.
@@ -542,6 +544,17 @@ impl EventMapper {
                 message: format!("{}.", sentence_start(reason.trim_end_matches('.'))),
             }],
             RuntimeEvent::Warning(w) => warning_event(w).into_iter().collect(),
+            RuntimeEvent::LiveBesideSummary(on) => vec![if *on {
+                MeetingEvent::Warning {
+                    key: BESIDE_SUMMARY_KEY.into(),
+                    kind: WarningKind::BesideSummary,
+                    message: crate::plain_text::BESIDE_SUMMARY.into(),
+                }
+            } else {
+                MeetingEvent::WarningCleared {
+                    key: BESIDE_SUMMARY_KEY.into(),
+                }
+            }],
             RuntimeEvent::LiveTranscript(state) => vec![MeetingEvent::Transcript {
                 state: match state {
                     LiveTranscriptState::Held(HoldReason::PreviousMeeting) => {
@@ -673,6 +686,9 @@ fn meeting_clock(ms: u64) -> String {
         format!("{m}:{s:02}")
     }
 }
+
+/// The banner key of [`RuntimeEvent::LiveBesideSummary`] (T12.39).
+pub const BESIDE_SUMMARY_KEY: &str = "beside-summary";
 
 /// The banner key of [`RuntimeWarning::NpuPreparing`] (T12.69).
 pub const NPU_PREPARING_KEY: &str = "npu-preparing";

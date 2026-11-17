@@ -2637,7 +2637,9 @@ export type WarningKind =
 /**  The recording stopped by itself because the call seemed to have ended. */
 "CallEnded" | 
 /**  Provisional words are off or waiting (T12.33). */
-"ProvisionalWords";
+"ProvisionalWords" | 
+/**  The live transcript runs beside the previous meeting's summary and may be slower (T12.39). */
+"BesideSummary";
 
 /**  A theme the window's title bar can be put on. */
 export type WindowTheme = 

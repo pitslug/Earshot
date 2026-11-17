@@ -396,6 +396,7 @@ function bannerIntent(b: Banner): MessageBarIntent {
     case "Backend":
     case "CallEnded":
     case "ProvisionalWords":
+    case "BesideSummary":
       return "info";
     case "Recording":
     case "Storage":

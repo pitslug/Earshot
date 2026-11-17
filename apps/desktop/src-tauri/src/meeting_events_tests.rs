@@ -683,6 +683,28 @@ fn meeting_events_speakers_off_is_one_banner() {
     );
 }
 
+/// T12.39: running beside the previous meeting's summary is one banner with fixed copy, taken
+/// back under the same key.
+#[test]
+fn meeting_events_beside_summary_is_one_banner_taken_back_when_it_ends() {
+    let mut m = EventMapper::new(CaptureMode::Call);
+    assert_eq!(
+        m.map(&RuntimeEvent::LiveBesideSummary(true), Instant::now()),
+        [MeetingEvent::Warning {
+            key: "beside-summary".into(),
+            kind: WarningKind::BesideSummary,
+            message: "Transcription may be slower while the previous meeting's summary is written."
+                .into(),
+        }]
+    );
+    assert_eq!(
+        m.map(&RuntimeEvent::LiveBesideSummary(false), Instant::now()),
+        [MeetingEvent::WarningCleared {
+            key: "beside-summary".into(),
+        }]
+    );
+}
+
 #[test]
 fn meeting_events_live_summaries_off_is_one_banner_with_the_runtime_reason() {
     use earshot_runtime::live_summaries::{ON_BATTERY_REASON, UNPLUGGED_REASON};

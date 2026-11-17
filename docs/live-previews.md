@@ -1102,3 +1102,20 @@ Machine load as the reports show it: `off` median 24% and 21%, `beside` median 2
 Stored words identical to `off` in both beside runs (both tracks), capture lag at most 0.14 s, no audio dropped, no preview turned off and no slow pause, no warnings.
 
 **(b) Another device (NPU transcription beside the 4B's CPU summary): fails** points 2 (reference on-screen median 3.48 and 3.58 s against 2.87 s: +1.11 and +1.21 s against +0.5 s) and 6 (private memory 6.84 GiB against 4.71 GiB: +4.13 GiB against +2 GiB) in both runs. It passes 1 (settled medians within +0.17 s, p95 within +0.08 s), 3 (catch-up 0.52 and 0.51 s against 2.41 s), 4 (identical words), and 5 (summary 1.04 and 1.07 times `alone`, all on the CPU, all stored). The note above about the summary child does not apply here: the app runs a CPU summary in its own process (`summary_child` is for summaries on the graphics card only), so the summary's memory would be the meeting process's in the app too. The desktop's other remark does still apply: `beside` also makes the older meeting through a second live session in the same process first, so the 4.13 GiB does not separate the summary's cost from the method's. The on-screen failure does not depend on that. **Left off:** the ARM64 `BESIDE_PAIRS` stays empty.
+
+### The owner's margins, set after measuring (2026-11-17)
+
+The owner judged the measured costs acceptable and changed two margins of the rule after seeing the results above (so this is a decision made after measuring, not a rule fixed before it): an extra 1 s on screen and 4 GiB of memory are not a problem; 3 s of extra delay is. No run was repeated: the numbers above are judged again as they stand.
+
+- **Point 2, on-screen lag:** the reference on-screen median at most `off`'s plus **3 s** (was 0.5 s). The other parts of point 2 (no preview turned off, at most 2 slow pauses per track) stay.
+- **Point 6, memory:** the private-memory margin is dropped; the machine must report at least `BESIDE_MIN_MEMORY` (14 GiB, unchanged), so an 8 GB machine still waits. The card margin (the card's peak at least 0.5 GiB under its total) stays.
+- Points 1, 3, 4 and 5 are unchanged.
+- **A banner while they run together:** a meeting whose live transcript runs beside an older meeting's summary on this computer says "Transcription may be slower while the previous meeting's summary is written." (banner key `beside-summary`), taken back when that summary ends (the meeting's ticket), and never shown after the live transcript has stopped. A summary written off this computer shows nothing, since it shares nothing. The banner follows what the older meeting's ticket records: a summary order whose steps include the local model counts as a local summary for its whole run, so with an order such as Claude Code then the local model the banner can show while Claude Code writes; the copy says "may", so this is accepted.
+
+Judged again:
+
+- **Surface, NPU transcription beside the 4B's CPU summary: passes** (on screen +1.11 and +1.21 s, within 3 s; 15.5 GiB reported). ARM64 `BESIDE_PAIRS` gains (NPU, CPU).
+- **Desktop, CPU transcription beside the card's summary: passes** (it failed point 6 only, +6.6 GiB; the desktop reports 61.6 GiB against the 14 GiB floor). x64 `BESIDE_PAIRS` gains (CPU, graphics card).
+- **Desktop, CUDA transcription beside the card's summary: still fails** points 1 (settled median +2.5 and +1.6 s against +1 s), 2 (on screen +4.63 and +3.78 s against +3 s), 3 (catch-up 2.70 and 2.54 s against 2.44 s), 5 (summaries 6 to 7 times slower against 1.25) and the card margin (run 1: 15.48 of 15.92 GiB; run 2 had 0.52 GiB free). It keeps waiting with the existing banner.
+
+Not yet checked on a real meeting: the Surface accept step (a second meeting during a local summary shows words at once, with the banner).

@@ -195,6 +195,7 @@ impl EventLog {
             // Provisional text is never logged, here or anywhere; the CLI runs no previews.
             RuntimeEvent::LivePreview { .. }
             | RuntimeEvent::LivePreviewState { .. }
+            | RuntimeEvent::LiveBesideSummary(_)
             | RuntimeEvent::LivePreviewReport(_) => {}
             RuntimeEvent::Transcript { .. }
             | RuntimeEvent::Levels(_)
