@@ -47,11 +47,16 @@ pub struct MeetingView {
     /// The final lines diarisation left without a speaker (T12.65, `crate::unknown_lines`):
     /// empty from [`MeetingView::load`], read by [`MeetingView::load_named`].
     pub unknown_lines: BTreeSet<EntityId>,
+    /// The summary rows that use a speaker's name the user has since changed (T12.82,
+    /// `crate::summary_names`): empty from [`MeetingView::load`], read by
+    /// [`MeetingView::load_named`].
+    pub names_changed: BTreeSet<EntityId>,
 }
 
 impl MeetingView {
     /// [`MeetingView::load`] with the lines left without a speaker
-    /// ([`MeetingView::unknown_lines`]), for anything that shows speaker names: summaries,
+    /// ([`MeetingView::unknown_lines`]) and the summaries that use a changed name
+    /// ([`MeetingView::names_changed`]), for anything that shows speaker names: summaries,
     /// exports and the meeting detail.
     ///
     /// # Errors
@@ -64,6 +69,7 @@ impl MeetingView {
             return Ok(None);
         };
         view.unknown_lines = crate::unknown_lines::read(store, meeting)?;
+        view.names_changed = crate::summary_names::read(store, meeting)?;
         Ok(Some(view))
     }
 
@@ -116,23 +122,43 @@ impl MeetingView {
             notes,
             summary,
             unknown_lines: BTreeSet::new(),
+            names_changed: BTreeSet::new(),
         }))
     }
 
-    /// Whether the current summary no longer matches the transcript, so the host offers to
-    /// summarise again (nothing is sent by itself): it cites a segment the transcript no
-    /// longer has (a re-transcription replaced it), or the user edited a segment's text after
-    /// the summary was written (T12.16: an edit later than the summary's creation; a summary
-    /// restored by an undo keeps its creation time, so an older one stays out of date).
-    /// `false` without a summary.
+    /// Whether the current summary is out of date, so the host offers to summarise again
+    /// (nothing is sent by itself): it no longer matches the transcript
+    /// ([`MeetingView::summary_transcript_changed`]) or it uses a speaker's name the user has
+    /// since changed ([`MeetingView::summary_names_changed`], known only to a view from
+    /// [`MeetingView::load_named`]). `false` without a summary.
     #[must_use]
     pub fn summary_out_of_date(&self) -> bool {
+        self.summary_transcript_changed() || self.summary_names_changed()
+    }
+
+    /// Whether the current summary no longer matches the transcript: it cites a segment the
+    /// transcript no longer has (a re-transcription replaced it), or the user edited a
+    /// segment's text after the summary was written (T12.16: an edit later than the summary's
+    /// creation; a summary restored by an undo keeps its creation time, so an older one stays
+    /// out of date). `false` without a summary.
+    #[must_use]
+    pub fn summary_transcript_changed(&self) -> bool {
         let Some(summary) = &self.summary else {
             return false;
         };
         let ids: BTreeSet<EntityId> = self.segments.iter().map(|s| s.id).collect();
         !cites_only(&summary.summary, &ids)
             || self.edited.values().any(|at| *at > summary.meta.created_at)
+    }
+
+    /// Whether the current summary uses a speaker's name as it was before the user changed it
+    /// (T12.82, `crate::summary_names`): its row is in [`MeetingView::names_changed`], so a
+    /// new summary is current again. `false` without a summary.
+    #[must_use]
+    pub fn summary_names_changed(&self) -> bool {
+        self.summary
+            .as_ref()
+            .is_some_and(|s| self.names_changed.contains(&s.id))
     }
 
     /// The name shown for `segment`: its speaker's display name after diarisation,

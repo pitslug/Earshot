@@ -192,6 +192,69 @@ fn sync_two_devices_converge_after_concurrent_edits() {
 }
 
 #[test]
+fn sync_a_name_the_summary_used_changed_elsewhere_marks_the_summary_here() {
+    use rand_core::SeedableRng;
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let named = |dev: &Device, m| {
+        crate::view::MeetingView::load_named(&dev.svc.store(), m)
+            .unwrap()
+            .unwrap()
+    };
+    let used = meeting(&a.svc, "Planning", 1);
+    let unused = meeting(&a.svc, "Review", 2);
+    for (m, tldr, seed) in [
+        (used, "Alice will send the plan.", 3),
+        (unused, "The plan was agreed.", 4),
+    ] {
+        let v = named(&a, m);
+        let mut s = summary_of("Planning");
+        s.tldr = tldr.into();
+        crate::summary::store_summary(
+            &a.svc,
+            &v,
+            "test-model".into(),
+            &s,
+            &mut rand_chacha::ChaCha8Rng::seed_from_u64(seed),
+        )
+        .unwrap();
+    }
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    assert!(!named(&b, used).summary_out_of_date());
+
+    // The name changes on the first computer; the second applies the row and judges it by
+    // the same rule against the name its own copy had.
+    for m in [used, unused] {
+        let alice = named(&a, m)
+            .speakers
+            .into_iter()
+            .find(|s| s.display_name == "Alice")
+            .unwrap();
+        a.clock.advance_ms(1_000);
+        crate::edit::rename_speaker(&a.svc, m, alice.id, "Alicia").unwrap();
+    }
+    assert!(named(&a, used).summary_names_changed());
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    let here = named(&b, used);
+    assert_eq!(
+        here.summary.as_ref().map(|s| s.id),
+        named(&a, used).summary.as_ref().map(|s| s.id)
+    );
+    assert!(
+        here.summary_names_changed(),
+        "the name the summary used changed"
+    );
+    assert!(!named(&b, unused).summary_out_of_date());
+    // Applying the same rows again marks nothing new and changes nothing.
+    let quiet = cb.tick().unwrap();
+    assert_eq!(quiet.written, 0, "{quiet:?}");
+    assert!(named(&b, used).summary_names_changed());
+}
+
+#[test]
 fn sync_a_tick_that_changed_rows_names_their_meetings_and_only_then() {
     let relay = relay();
     let (a, b) = pair(&relay);

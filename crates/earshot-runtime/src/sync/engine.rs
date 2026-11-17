@@ -705,19 +705,32 @@ impl SyncClient {
         }
         let leased: BTreeSet<EntityId> = self.services.leased_meetings();
         let is_leased = |m: EntityId| leased.contains(&m);
+        let clock = std::sync::Arc::clone(&self.services.clock);
+        let mut db = self.services.store();
+        // A speaker row's name before the page, so a name the current summary used is judged
+        // here as on the computer that changed it (T12.82, `crate::summary_names`).
+        let names_before = crate::summary_names::names_before(
+            &db,
+            page.iter().filter_map(|inc| match &inc.row {
+                Some(SyncedRow::Speaker(s)) => Some((s.meeting_id, s.id)),
+                _ => None,
+            }),
+        )?;
         // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in
         // the page's own transaction, so the list never differs from the rows it came from.
-        let rebuild = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {
-            crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep).map(|_| ())
+        let after = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {
+            crate::summary_names::names_changed_tx(tx, &names_before)?;
+            if kinds.dictionary {
+                crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep)?;
+            }
+            Ok(())
         };
         let rules = ApplyRules {
             kinds,
             leased: &is_leased,
             now_ms: self.services.clock.now_unix_ms(),
-            after: kinds.dictionary.then_some(&rebuild),
+            after: Some(&after),
         };
-        let clock = std::sync::Arc::clone(&self.services.clock);
-        let mut db = self.services.store();
         let (store, hlc) = db.parts();
         let applied = store.apply_remote(page, &rules, hlc, &*clock)?;
         if applied.biometrics_forgotten > 0 {

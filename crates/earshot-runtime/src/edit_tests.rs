@@ -1227,3 +1227,7 @@ mod speakers_tests;
 /// T12.15ec: suggestions beside words.
 #[path = "edit_words_tests.rs"]
 mod words_tests;
+
+/// T12.82: a naming change and the summary.
+#[path = "edit_names_tests.rs"]
+mod names_tests;

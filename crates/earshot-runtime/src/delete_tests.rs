@@ -38,6 +38,7 @@ fn production_key(record: MeetingRecord, meeting: EntityId, device: DeviceId) ->
         MeetingRecord::SummaryRun => crate::summary_order::run::record_key(meeting),
         MeetingRecord::UnknownLines => crate::unknown_lines::record_key(meeting),
         MeetingRecord::SummarySeen => crate::summary_seen::record_key(meeting),
+        MeetingRecord::SummaryNames => crate::summary_names::record_key(meeting),
     }
 }
 
