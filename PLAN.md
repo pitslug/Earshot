@@ -2418,7 +2418,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: T11.6
   - do: a "Remove" action on another device's row of the Sync page (confirm first): the relay revokes that device's token and drops its presence; its rows stay. Fixed copy through the shared tables; the relay endpoint authorised as removal of self is today.
   - accept: `cargo test -p earshot-runtime sync` and `cargo test -p earshot-desktop sync`
-- [~] T11.6b Runtime without the in-process engines (optional)
+- [x] T11.6b Runtime without the in-process engines (optional)
   - found (T11.5, 2026-11-15).
   - deps: T11.6
   - do: a default-on `earshot-runtime` feature gating `earshot-asr-whisper`, `earshot-onnx`, `earshot-llm-local` and `earshot-hardware`; the worker builds with it off, every Windows build is unchanged. Measure the image size before and after.
