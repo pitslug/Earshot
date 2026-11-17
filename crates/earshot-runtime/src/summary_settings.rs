@@ -69,7 +69,7 @@ pub const SUMMARY_CODEX_MODEL_KEY: &str = "settings/summary-codex-model";
 /// `local_state` key of the effort Claude Code is asked for (T12.18).
 pub const SUMMARY_CLAUDE_CODE_EFFORT_KEY: &str = "settings/summary-claude-code-effort";
 
-/// Longest model name accepted (bytes).
+/// Longest model name accepted, in characters (as the message says; T12.36 follow-up).
 pub const MAX_MODEL_NAME: usize = 200;
 /// Longest endpoint URL accepted (bytes).
 pub const MAX_URL: usize = 2048;
@@ -370,7 +370,7 @@ fn check_url(provider: EndpointProvider, url: &str) -> Result<(), String> {
 pub fn validate(settings: &SummarySettings) -> Result<SummarySettings, SummarySettingsError> {
     let url = settings.url.trim().to_owned();
     let model = settings.model.trim().to_owned();
-    if model.len() > MAX_MODEL_NAME || model.chars().any(char::is_control) {
+    if model.chars().count() > MAX_MODEL_NAME || model.chars().any(char::is_control) {
         return Err(SummarySettingsError::BadModel);
     }
     let claude_model = settings.claude_model.trim().to_owned();
@@ -421,7 +421,7 @@ pub fn summary_settings(
         out.provider = p;
     }
     if let Some(m) = read_setting(store, SUMMARY_ENDPOINT_MODEL_KEY, |t| {
-        if t.len() <= MAX_MODEL_NAME && !t.chars().any(char::is_control) {
+        if t.chars().count() <= MAX_MODEL_NAME && !t.chars().any(char::is_control) {
             Ok(t)
         } else {
             Err("a model name this version refuses".into())

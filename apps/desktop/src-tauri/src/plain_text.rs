@@ -171,6 +171,13 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
                 "The check for echo by voice could not run, so some of the other side may show \
                  as your words.",
             )),
+            // The owner (2026-11-17): unlike the other unreadable records this one changes the
+            // transcript (no echo cleaning at all), so it is said. One banner with the echo check's.
+            PostWarning::EchoRecordUnreadable => Some((
+                "post-echo",
+                "Earshot could not read its note of the echo in this meeting, so it removed none \
+                 of the other side from your words. Some of what they said may show as yours.",
+            )),
             PostWarning::SpeakerNamesNotCarried { .. } => Some((
                 "post-names",
                 "The names given in this meeting could not be kept. Name its voices again.",
@@ -185,7 +192,6 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             PostWarning::BackendChanged { .. }
             | PostWarning::StretchRecordUnreadable { .. }
             | PostWarning::SpeakerRecordUnreadable { .. }
-            | PostWarning::EchoRecordUnreadable
             | PostWarning::RepetitionDropped { .. }
             | PostWarning::VoiceWithoutWords { .. }
             | PostWarning::SpeakerUnknown { .. }
@@ -1194,10 +1200,29 @@ mod post_warning_tests {
                     track: TrackId::Mic,
                     reason: reason.into(),
                 },
-                PostWarning::EchoRecordUnreadable,
             ])
             .is_empty()
         );
+    }
+
+    /// The owner (2026-11-17): an unreadable echo record changes the transcript, so it is one
+    /// `post-echo` banner, shared with the echo check's and shown once when both happen.
+    #[test]
+    fn post_warnings_an_unreadable_echo_record_is_one_echo_banner() {
+        let copy = post_warning_copy(&[PostWarning::EchoRecordUnreadable]);
+        assert_eq!(copy.len(), 1);
+        assert_eq!(copy[0].0, "post-echo");
+        assert!(copy[0].1.contains("removed none of the other side"));
+        assert!(!copy[0].1.contains('\u{2014}'));
+        assert!(!copy[0].1.contains("  "));
+        assert!(!names_developer_tool(&copy[0].1));
+        let both = post_warning_copy(&[
+            PostWarning::EchoRecordUnreadable,
+            PostWarning::NoSpeakerEchoCheck {
+                reason: "no model".into(),
+            },
+        ]);
+        assert_eq!(both.len(), 1, "{both:?}");
     }
 }
 

@@ -270,7 +270,8 @@ function checkUrl(url: string, provider: SummarySettingsValue["provider"]): void
 function validate(s: SummarySettingsValue): SummarySettingsValue {
   const url = rustTrim(s.url);
   const model = rustTrim(s.model);
-  if (utf8Length(model) > 200 || /\p{Cc}/u.test(model)) {
+  // Counted in characters (Rust `chars().count()`), as the message says.
+  if ([...model].length > 200 || /\p{Cc}/u.test(model)) {
     fail("invalid_setting", "The model name must be at most 200 characters, without line breaks.");
   }
   const claude_model = rustTrim(s.claude_model);

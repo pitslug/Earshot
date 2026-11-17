@@ -171,6 +171,23 @@
    "error": "The model name must be at most 200 characters, without line breaks."
   },
   {
+   "name": "a model name of 150 two-byte letters, counted in characters",
+   "change": {
+    "model": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+   },
+   "error": null,
+   "stored": {
+    "model": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+   }
+  },
+  {
+   "name": "a model name of 201 two-byte letters",
+   "change": {
+    "model": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+   },
+   "error": "The model name must be at most 200 characters, without line breaks."
+  },
+  {
    "name": "a Claude Code alias, trimmed",
    "change": {
     "claude_model": " opus "
