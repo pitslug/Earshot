@@ -127,4 +127,10 @@ Each new speaker's turns (start and end times only) go into a file inside the ru
 
 ### Result (T12.73)
 
-Not run yet.
+**First run (2026-11-17, the Surface where the call was recorded, ARM64, CPU, at f6685a5): rule step 1 fails; T12.74 does not start and the question is parked.**
+
+- Track `c` (the call, 1451 s, 2209 embeddings): 5 speakers at the baseline and at the pick, no new speaker, no speech moved, kept speakers gaining 0.00 s.
+- Track `t1` (the only other meeting with a far-end recording on disk, 1900 s): 0 embeddings, so nothing to diarise.
+- The replayed baseline equalled the direct run (the tool fails otherwise).
+
+A likely reason, not measured: the call has 2209 embeddings, so only 1000 train the clustering, and the speech estimate counts training members only (see "How far this can be trusted"). A short-turn group then holds well under half its speech in the estimate, which the 8 s minimum may not reach. A version whose estimate counts every embedding would need T12.66's sweep re-run first under a new rule; that is a new task for the owner, not a change to this one.
