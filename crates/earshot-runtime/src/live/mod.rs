@@ -1138,7 +1138,7 @@ where
     }
     // Which backend runs the live pass, per track (device-local provenance).
     for (track, backend, _) in &live_backends {
-        let stored = crate::backends::record_pass_backend(
+        let stored = crate::pass_backend::record_pass_backend(
             &mut services.store(),
             meeting.id,
             TranscriptPass::Live,

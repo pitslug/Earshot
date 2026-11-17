@@ -23,8 +23,8 @@ use earshot_core::export::ExportOptions;
 use earshot_core::model::VaultPath;
 use earshot_store::{Store, VaultError, validate_vault};
 
+pub use crate::local::UnknownSetting;
 use crate::local::{DeviceRecord, setting_of};
-pub use crate::model_settings::UnknownSetting;
 use crate::{RuntimeError, Services};
 
 #[cfg(test)]

@@ -13,8 +13,10 @@ path = "src/main.rs"
 [dependencies]
 # Sync, summary offload and the summary path exist once, in the runtime (docs/sync.md section 10,
 # the T11.5 recommendation): the worker adds only its configuration, its vault files, the
-# own-network rule and its loop.
-earshot-runtime = { path = "../earshot-runtime" }
+# own-network rule and its loop. Without the runtime's in-process engines (T11.6b: no whisper.cpp,
+# ONNX Runtime or llama.cpp in the image): the worker summarises only through its own model's
+# endpoint.
+earshot-runtime = { path = "../earshot-runtime", default-features = false }
 earshot-core = { path = "../earshot-core" }
 earshot-store = { path = "../earshot-store" }
 # `Url` and `wipe_string` only: every request still goes through the runtime's clients.

@@ -169,6 +169,12 @@ jobs:
             rm -f "${d}"/libllama.so* "${d}"/libggml*.so*
           done
           cargo clippy --locked -p earshot-runtime --lib -- -D warnings
+      # The runtime as the worker builds it, without its in-process engines (T11.6b).
+      - name: Clippy earshot-runtime (lib, no engines)
+        id: clippy_runtime_no_engines
+        continue-on-error: true
+        working-directory: src
+        run: cargo clippy --locked -p earshot-runtime --no-default-features --lib -- -D warnings
 
       # The summary worker (T11.6): gating build, tests and clippy. llama-cpp-sys-2's build
       # script runs again for each (see the step above), so its links go first.
@@ -232,6 +238,7 @@ jobs:
           echo "test earshot-runtime (sync): ${{ steps.test_runtime_sync.outcome }}"
           echo "test earshot-runtime (rest, informational): ${{ steps.test_runtime_all.outcome }}"
           echo "clippy earshot-runtime (lib): ${{ steps.clippy_runtime.outcome }}"
+          echo "clippy earshot-runtime (lib, no engines): ${{ steps.clippy_runtime_no_engines.outcome }}"
           echo "build earshot-worker: ${{ steps.build_worker.outcome }}"
           echo "test earshot-worker: ${{ steps.test_worker.outcome }}"
           echo "clippy earshot-worker: ${{ steps.clippy_worker.outcome }}"
@@ -252,7 +259,7 @@ jobs:
             "${{ steps.build_relay.outcome }}" "${{ steps.test_relay.outcome }}" \
             "${{ steps.build_runtime.outcome }}" \
             "${{ steps.test_runtime_summary.outcome }}" "${{ steps.test_runtime_sync.outcome }}" \
-            "${{ steps.clippy_runtime.outcome }}" \
+            "${{ steps.clippy_runtime.outcome }}" "${{ steps.clippy_runtime_no_engines.outcome }}" \
             "${{ steps.build_worker.outcome }}" "${{ steps.test_worker.outcome }}" \
             "${{ steps.clippy_worker.outcome }}"; do
             if [ "${outcome}" != "success" ]; then failed=1; fi
@@ -282,3 +289,22 @@ jobs:
       - name: Check the worker image
         working-directory: src
         run: sh crates/earshot-worker/image-check.sh earshot-worker:check
+
+      # T11.6b, one-off: the image's size, and the size of the image its parent commit builds, for
+      # the record (the runtime without its in-process engines). The comparison means something
+      # only on the T11.6b commit itself or its merge commit, whose parent still has the engines;
+      # remove this step once that figure is in docs/sync.md. Informational: never gates, and
+      # bounded so a slow parent build cannot time the job out.
+      - name: Image size against the parent commit (informational)
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          set -eu
+          echo "this commit: $(docker image inspect -f '{{.Size}}' earshot-worker:check) bytes"
+          git init -q parent
+          cd parent
+          git fetch -q --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD^
+          echo "parent commit: $(git rev-parse --short HEAD)"
+          docker build -q -f crates/earshot-worker/Dockerfile -t earshot-worker:parent . > /dev/null
+          echo "parent commit: $(docker image inspect -f '{{.Size}}' earshot-worker:parent) bytes"

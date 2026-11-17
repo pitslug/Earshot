@@ -16,7 +16,25 @@ use earshot_core::identity::EntityId;
 use earshot_store::{Store, StoreError};
 
 use crate::RuntimeError;
-use crate::model_settings::UnknownSetting;
+
+/// A stored value this build does not know; the default is used instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSetting {
+    /// Its `local_state` key.
+    pub key: &'static str,
+    /// What is stored.
+    pub stored: String,
+}
+
+impl std::fmt::Display for UnknownSetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the stored setting {} ({:?}) is not known to this version; the default is used",
+            self.key, self.stored
+        )
+    }
+}
 
 /// Declares [`MeetingRecord`] with its key prefix and the position of the meeting id among
 /// the key's `/`-separated components after the prefix; `ALL` lists every variant.
@@ -148,6 +166,7 @@ pub(crate) fn meeting_of(key: &str) -> Option<EntityId> {
 /// A device-local record that belongs to the device, not to a meeting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceRecord {
+    #[cfg(feature = "engines")]
     /// `model-check`: the first-run model check's answer.
     ModelCheck,
     /// `settings/speaker-timing`: when live speaker work runs (T6.13d4).
@@ -155,14 +174,19 @@ pub(crate) enum DeviceRecord {
     /// `settings/live-summaries`: whether chunks are summarised during the meeting (T8.3j).
     LiveSummaries,
     /// `settings/transcription-model`: the chosen transcription model (T7.4e).
+    #[cfg(feature = "engines")]
     TranscriptionModel,
     /// `settings/transcription-part`: where transcription runs (T7.4e).
+    #[cfg(feature = "engines")]
     TranscriptionPart,
     /// `settings/summary-model`: the chosen local summary model (T7.4e).
+    #[cfg(feature = "engines")]
     SummaryModel,
     /// `settings/summary-part`: where summaries run (T7.4e).
+    #[cfg(feature = "engines")]
     SummaryPart,
     /// `settings/meeting-languages`: the meeting languages (T7.4e).
+    #[cfg(feature = "engines")]
     MeetingLanguages,
     /// `settings/summary-writer`: who writes the summary (T7.4g).
     SummaryWriter,
@@ -201,6 +225,7 @@ pub(crate) enum DeviceRecord {
     AudioCheck,
     /// `benchmark`: the latest benchmark result (T7.4c; timings, settings and backends, no
     /// content; [`crate::benchmark`]).
+    #[cfg(feature = "engines")]
     Benchmark,
     /// `settings/summary-style`: the user's summary style (T7.4b).
     SummaryStyle,
@@ -208,19 +233,26 @@ pub(crate) enum DeviceRecord {
     /// [`crate::first_run`]).
     FirstRun,
     /// `settings/cuda-summaries`: whether summaries run on CUDA (T8.4af).
+    #[cfg(feature = "engines")]
     CudaSummaries,
     /// `settings/cuda-transcription`: whether transcription runs on CUDA (T8.4af).
+    #[cfg(feature = "engines")]
     CudaTranscription,
     /// `settings/provisional-words`: whether a meeting shows provisional words (T9.1mb).
+    #[cfg(feature = "engines")]
     Previews,
     /// `settings/update-check`: whether Earshot checks for updates by itself: when it starts
     /// (T9.1b) and on its schedule (T12.22).
+    #[cfg(feature = "engines")]
     UpdateCheck,
     /// `settings/update-schedule`: how often automatic update checks run (T12.22).
+    #[cfg(feature = "engines")]
     UpdateSchedule,
     /// `update-last-check`: when the last update check finished (T12.22).
+    #[cfg(feature = "engines")]
     UpdateLastCheck,
     /// `update-notified`: the last version an update notification was shown for (T12.22).
+    #[cfg(feature = "engines")]
     UpdateNotified,
     /// `settings/vocabulary`: the user's own words for summaries (T12.15a).
     Vocabulary,
@@ -228,9 +260,11 @@ pub(crate) enum DeviceRecord {
     SummaryTemplate,
     /// `npu-compiled`: the latest NPU load of each kind that did not use the compiled model, path
     /// free (T12.12e; [`crate::npu_compiled::RefusalRecord`]).
+    #[cfg(feature = "engines")]
     NpuCompiled,
     /// `npu-note-shown`: the "no NPU version, runs on the processor" note last shown at a
     /// meeting or job start (T12.45; [`crate::host::npu_note_once`]).
+    #[cfg(feature = "engines")]
     NpuNoteShown,
     /// `settings/sync-server`: the sync server's address (T11.3).
     SyncServer,
@@ -320,13 +354,19 @@ impl DeviceRecord {
     pub(crate) fn key(self) -> LocalKey {
         LocalKey(
             match self {
+                #[cfg(feature = "engines")]
                 DeviceRecord::ModelCheck => "model-check",
                 DeviceRecord::SpeakerTiming => crate::speaker_timing::SPEAKER_TIMING_KEY,
                 DeviceRecord::LiveSummaries => crate::live_summaries::LIVE_SUMMARIES_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::TranscriptionModel => crate::model_settings::TRANSCRIPTION_MODEL_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::TranscriptionPart => crate::model_settings::TRANSCRIPTION_PART_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::SummaryModel => crate::model_settings::SUMMARY_MODEL_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::SummaryPart => crate::model_settings::SUMMARY_PART_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::MeetingLanguages => crate::model_settings::MEETING_LANGUAGES_KEY,
                 DeviceRecord::SummaryWriter => crate::summary_settings::SUMMARY_WRITER_KEY,
                 DeviceRecord::SummaryProvider => crate::summary_settings::SUMMARY_PROVIDER_KEY,
@@ -351,19 +391,29 @@ impl DeviceRecord {
                 DeviceRecord::CaptureMode => crate::audio_settings::CAPTURE_MODE_KEY,
                 DeviceRecord::MicSignal => crate::audio_settings::MIC_SIGNAL_KEY,
                 DeviceRecord::AudioCheck => crate::audio_check::AUDIO_CHECK_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::Benchmark => crate::benchmark::BENCHMARK_KEY,
                 DeviceRecord::SummaryStyle => crate::summary_style::SUMMARY_STYLE_KEY,
                 DeviceRecord::SummaryTemplate => crate::summary_style::SUMMARY_TEMPLATE_KEY,
                 DeviceRecord::FirstRun => crate::first_run::FIRST_RUN_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::CudaSummaries => crate::cuda_switch::CUDA_SUMMARIES_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::CudaTranscription => crate::cuda_switch::CUDA_TRANSCRIPTION_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::Previews => crate::preview_settings::PREVIEWS_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::UpdateCheck => crate::update::AUTO_CHECK_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::UpdateSchedule => crate::update::SCHEDULE_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::UpdateLastCheck => crate::update::LAST_CHECK_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::UpdateNotified => crate::update::NOTIFIED_KEY,
                 DeviceRecord::Vocabulary => crate::vocabulary::VOCABULARY_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::NpuCompiled => crate::npu_compiled::REFUSALS_KEY,
+                #[cfg(feature = "engines")]
                 DeviceRecord::NpuNoteShown => crate::host::NPU_NOTE_SHOWN_KEY,
                 DeviceRecord::SyncServer => crate::sync::SYNC_SERVER_KEY,
                 DeviceRecord::SyncOn => crate::sync::SYNC_ON_KEY,

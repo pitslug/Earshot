@@ -66,6 +66,7 @@
 //! ([`MeetingView`]).
 
 use std::fmt;
+#[cfg(feature = "engines")]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,9 +76,10 @@ use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
 use earshot_core::model::{MeetingRepo, Stamp, Summary, SummaryRequestRepo};
 use earshot_core::prompt::{
-    ContextBudget, MeetingInfo, PromptSegment, SummaryInput, SummaryStyle, TimeChunkError,
-    UserNote, Vocabulary, time_chunks,
+    ContextBudget, MeetingInfo, PromptSegment, SummaryInput, SummaryStyle, UserNote, Vocabulary,
 };
+#[cfg(feature = "engines")]
+use earshot_core::prompt::{TimeChunkError, time_chunks};
 use earshot_core::summary::SummaryV1;
 use earshot_llm::{
     ApiKey, ClaudeCli, ClaudeCodeClient, ClaudeCodeConfig, ClaudeCodeError, CodexCli, CodexClient,
@@ -86,15 +88,21 @@ use earshot_llm::{
 };
 
 use crate::claude_code::{HandoverCli, HandoverEntry};
+#[cfg(feature = "engines")]
 use earshot_llm_local::grammar::SummaryLimits;
+#[cfg(feature = "engines")]
 use earshot_llm_local::summarize::{
     Generate, SummaryFailure, SummaryOptions, map_last_chunk, summarize_chunks_with,
 };
+#[cfg(feature = "engines")]
 use earshot_llm_local::{Heartbeat, LlamaBackend, LoadOptions, LocalLlm};
 use earshot_net::{Allowlist, AuditLog, NetClient, NetConfig};
 use rand_core::Rng;
 
-use crate::live_summaries::{LiveReuse, MapChunk, StoredLiveSummaries};
+use crate::live_summaries::MapChunk;
+#[cfg(feature = "engines")]
+use crate::live_summaries::{LiveReuse, StoredLiveSummaries};
+#[cfg(feature = "engines")]
 use crate::summary_child::{ChildEnd, ChildJob, ChildSummary, ChildWork, GpuChild, Watch};
 use crate::view::{MeetingView, format_local};
 
@@ -103,6 +111,7 @@ use crate::view::{MeetingView, format_local};
 mod tests;
 use crate::{RuntimeError, Services, SharedClock};
 
+#[cfg(feature = "engines")]
 /// The name the user sees for what wrote a summary, from the model name stored with it
 /// (T12.43): "Claude (Claude Code)" for Claude Code and "Codex" for Codex, whatever model
 /// the CLI was given ([`crate::claude_code::stored_model_name`],
@@ -216,13 +225,16 @@ pub const GPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
 /// load is bounded on the CPU; a slow CPU run is never cut.
 pub const CPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
 
+#[cfg(feature = "engines")]
 /// How long a cancelled run may stay silent before it is left behind, so a stop does not wait
 /// for the whole stall limit.
 const STALL_CANCEL_GRACE: Duration = Duration::from_secs(30);
 
+#[cfg(feature = "engines")]
 /// How often a watched run is looked at.
 const STALL_POLL: Duration = Duration::from_millis(100);
 
+#[cfg(feature = "engines")]
 /// A GPU stalled in this app session: a stuck call cannot be interrupted and holds the GPU, so
 /// every later summary of the session runs on the CPU and says so (T8.4ab).
 static GPU_STALLED: AtomicBool = AtomicBool::new(false);
@@ -239,17 +251,21 @@ pub fn card_summary_fell_back() -> bool {
     CARD_SUMMARY_FELL_BACK.load(Ordering::Acquire)
 }
 
+#[cfg(feature = "engines")]
 fn note_card_fallback() {
     CARD_SUMMARY_FELL_BACK.store(true, Ordering::Release);
 }
 
+#[cfg(feature = "engines")]
 /// The text of [`LocalSummaryError::GpuChildStalled`].
 const CHILD_STALLED: &str = "the GPU's summary process stopped responding and was stopped";
 
+#[cfg(feature = "engines")]
 /// The folder of llama.cpp's DLLs this process runs from: [`earshot_llm_local::loaded_folder`], a
 /// test's own in tests.
 type LoadedFolder = &'static (dyn Fn() -> Option<PathBuf> + Send + Sync);
 
+#[cfg(feature = "engines")]
 /// A local summary model ([`SummaryService::local`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalSummaryConfig {
@@ -294,6 +310,7 @@ pub struct LocalSummaryConfig {
     pub models: Option<crate::backends::ModelDir>,
 }
 
+#[cfg(feature = "engines")]
 impl LocalSummaryConfig {
     /// `model_path` on the CPU with the T6.20 defaults ([`LOCAL_CONTEXT_TOKENS`],
     /// [`LOCAL_MAX_OUTPUT_TOKENS`], [`LOCAL_CHUNK_SECONDS`]), `earshot-llm-local`'s
@@ -320,6 +337,7 @@ impl LocalSummaryConfig {
     }
 }
 
+#[cfg(feature = "engines")]
 /// Why a local summary failed ([`RuntimeError::LocalSummary`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalSummaryError {
@@ -365,6 +383,7 @@ pub enum LocalSummaryError {
     Run(SummaryFailure),
 }
 
+#[cfg(feature = "engines")]
 impl LocalSummaryError {
     /// Whether the run was cancelled.
     #[must_use]
@@ -373,6 +392,7 @@ impl LocalSummaryError {
     }
 }
 
+#[cfg(feature = "engines")]
 impl fmt::Display for LocalSummaryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -397,8 +417,10 @@ impl fmt::Display for LocalSummaryError {
     }
 }
 
+#[cfg(feature = "engines")]
 impl std::error::Error for LocalSummaryError {}
 
+#[cfg(feature = "engines")]
 /// What a local summary did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalRunReport {
@@ -427,6 +449,7 @@ pub enum SummaryRunReport {
     /// Codex (T7.4gc): runs (`requests`) and repairs.
     Codex(SummaryReport),
     /// The local model.
+    #[cfg(feature = "engines")]
     Local(LocalRunReport),
 }
 
@@ -443,6 +466,7 @@ pub struct SummaryOutcome {
     pub title_set: bool,
 }
 
+#[cfg(feature = "engines")]
 /// A loaded local model and where it runs.
 pub(crate) struct LoadedModel {
     /// Counts the model's progress.
@@ -452,15 +476,18 @@ pub(crate) struct LoadedModel {
     pub(crate) load_time: Duration,
 }
 
+#[cfg(feature = "engines")]
 /// Loads the local model on the summary thread (llama.cpp in production, a fake in tests).
 pub(crate) trait LoadLocal: Send + Sync {
     fn load(&self, config: &LocalSummaryConfig) -> Result<LoadedModel, RuntimeError>;
 }
 
+#[cfg(feature = "engines")]
 /// llama.cpp in production. `LocalLlm::load` serialises loads itself (each reads its own
 /// window of the process-wide load log).
 pub(crate) struct LlamaLoader;
 
+#[cfg(feature = "engines")]
 impl LoadLocal for LlamaLoader {
     fn load(&self, config: &LocalSummaryConfig) -> Result<LoadedModel, RuntimeError> {
         crate::cpu::require_native_builds()?;
@@ -499,6 +526,7 @@ impl LoadLocal for LlamaLoader {
     }
 }
 
+#[cfg(feature = "engines")]
 /// The GPU of a load that must not have used it: `device` when the load is on a GPU and
 /// `refuse` holds it.
 fn refused_gpu<'a>(
@@ -521,6 +549,7 @@ enum Backend {
         /// meeting kept on this computer.
         own_model: bool,
     },
+    #[cfg(feature = "engines")]
     Local {
         config: LocalSummaryConfig,
         loader: Arc<dyn LoadLocal>,
@@ -603,6 +632,7 @@ impl fmt::Debug for SummaryService {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (kind, model) = match &self.backend {
             Backend::Remote { model, .. } => ("remote", model),
+            #[cfg(feature = "engines")]
             Backend::Local { config, .. } => ("local", &config.model_id),
         };
         f.debug_struct("SummaryService")
@@ -655,6 +685,8 @@ impl SummaryService {
     ///
     /// # Errors
     /// As [`SummaryService::new`].
+    // Without the engines the remote backend is the only one, so the `if let` cannot fail.
+    #[cfg_attr(not(feature = "engines"), allow(irrefutable_let_patterns))]
     pub fn own_model_endpoint(
         config: &SummaryConfig,
         clock: SharedClock,
@@ -754,10 +786,12 @@ impl SummaryService {
     /// # Errors
     /// [`RuntimeError::LocalSummary`] with [`LocalSummaryError::Chunks`] for a zero
     /// [`LocalSummaryConfig::chunk_seconds`].
+    #[cfg(feature = "engines")]
     pub fn local(config: &LocalSummaryConfig) -> Result<Self, RuntimeError> {
         Self::local_with(config, Box::new(LlamaLoader))
     }
 
+    #[cfg(feature = "engines")]
     fn local_with(
         config: &LocalSummaryConfig,
         loader: Box<dyn LoadLocal>,
@@ -765,6 +799,7 @@ impl SummaryService {
         Self::local_flagged(config, loader, &GPU_STALLED)
     }
 
+    #[cfg(feature = "engines")]
     pub(crate) fn local_flagged(
         config: &LocalSummaryConfig,
         loader: Box<dyn LoadLocal>,
@@ -773,6 +808,7 @@ impl SummaryService {
         Self::local_on_folder(config, loader, stalled, &earshot_llm_local::loaded_folder)
     }
 
+    #[cfg(feature = "engines")]
     pub(crate) fn local_on_folder(
         config: &LocalSummaryConfig,
         loader: Box<dyn LoadLocal>,
@@ -803,6 +839,7 @@ impl SummaryService {
     pub fn model(&self) -> &str {
         match &self.backend {
             Backend::Remote { model, .. } => model,
+            #[cfg(feature = "engines")]
             Backend::Local { config, .. } => &config.model_id,
         }
     }
@@ -812,9 +849,11 @@ impl SummaryService {
     /// [`crate::live_summaries::live_summary_threads`]); `None` for a remote service (a
     /// live session never makes a connection).
     #[must_use]
+    #[cfg_attr(not(feature = "engines"), allow(unused_variables))]
     pub fn live_mapper(&self, threads: i32) -> Option<Arc<dyn MapChunk>> {
         match &self.backend {
             Backend::Remote { .. } => None,
+            #[cfg(feature = "engines")]
             Backend::Local {
                 config,
                 loader,
@@ -868,6 +907,7 @@ impl SummaryService {
                 c @ (LlmClient::ClaudeCode(_) | LlmClient::Codex(_)) => Some(c),
                 _ => None,
             },
+            #[cfg(feature = "engines")]
             Backend::Local { .. } => None,
         }
     }
@@ -877,6 +917,7 @@ impl SummaryService {
     pub fn agent_cli(&self) -> Option<HandoverCli> {
         match &self.backend {
             Backend::Remote { cli, .. } => *cli,
+            #[cfg(feature = "engines")]
             Backend::Local { .. } => None,
         }
     }
@@ -972,6 +1013,16 @@ impl SummaryService {
         self.summarize_inner(services, meeting, Some(request), None, rng, cancel)
     }
 
+    /// Whether this service may write a meeting kept on this computer: the local model, or this
+    /// device's own model endpoint ([`SummaryService::own_model_endpoint`]).
+    fn may_write_kept_local(&self) -> bool {
+        match &self.backend {
+            Backend::Remote { own_model, .. } => *own_model,
+            #[cfg(feature = "engines")]
+            Backend::Local { .. } => true,
+        }
+    }
+
     fn summarize_inner<R: Rng + ?Sized>(
         &self,
         services: &Services,
@@ -983,15 +1034,9 @@ impl SummaryService {
     ) -> Result<SummaryOutcome, RuntimeError> {
         // A meeting kept on this computer (T12.13) is summarised only by a local model: any
         // other service is refused before the transcript is read (`crate::keep_local`).
-        if !matches!(
-            self.backend,
-            Backend::Local { .. }
-                | Backend::Remote {
-                    own_model: true,
-                    ..
-                }
-        ) && crate::keep_local::summary_privacy(&services.store(), meeting)
-            == crate::keep_local::SummaryPrivacy::KeptLocal
+        if !self.may_write_kept_local()
+            && crate::keep_local::summary_privacy(&services.store(), meeting)
+                == crate::keep_local::SummaryPrivacy::KeptLocal
         {
             return Err(RuntimeError::SummaryKeptLocal(meeting));
         }
@@ -1029,6 +1074,7 @@ impl SummaryService {
                 };
                 (summary, report, model.clone())
             }
+            #[cfg(feature = "engines")]
             Backend::Local {
                 config,
                 loader,
@@ -1096,6 +1142,7 @@ fn load_input(
     ))
 }
 
+#[cfg(feature = "engines")]
 /// The partials a live session recorded for the meeting of `view`, with the live segments
 /// they cite and the segments of `view` (the transcript being summarised); `None` without
 /// a record.
@@ -1121,6 +1168,7 @@ fn live_record(services: &Services, view: &MeetingView) -> Result<Option<LivePar
     }))
 }
 
+#[cfg(feature = "engines")]
 /// [`live_record`]'s answer.
 struct LiveParts {
     record: StoredLiveSummaries,
@@ -1128,6 +1176,7 @@ struct LiveParts {
     fin: Vec<earshot_core::summary::TimedSegment>,
 }
 
+#[cfg(feature = "engines")]
 /// The run options of `config`.
 pub(crate) fn options_of(config: &LocalSummaryConfig, cancel: &CancelToken) -> SummaryOptions {
     SummaryOptions {
@@ -1138,6 +1187,7 @@ pub(crate) fn options_of(config: &LocalSummaryConfig, cancel: &CancelToken) -> S
     }
 }
 
+#[cfg(feature = "engines")]
 /// Summarises `input` with the local model on a thread of its own (module docs), reusing
 /// the re-cited partials of `live`. The model is dropped on that thread before it returns.
 fn run_local(
@@ -1257,6 +1307,7 @@ fn run_local(
     ))
 }
 
+#[cfg(feature = "engines")]
 /// The child that runs `config`'s GPU summary: none for a CPU summary, without a registered
 /// program, or after a child that would not die (it may still hold the card).
 fn usable_child<'a>(config: &'a LocalSummaryConfig, stalled: &AtomicBool) -> Option<&'a GpuChild> {
@@ -1266,6 +1317,7 @@ fn usable_child<'a>(config: &'a LocalSummaryConfig, stalled: &AtomicBool) -> Opt
         .filter(|_| config.gpu && !stalled.load(Ordering::Acquire))
 }
 
+#[cfg(feature = "engines")]
 /// How a child's try ended, for the caller.
 enum InChild {
     /// The summary.
@@ -1274,6 +1326,7 @@ enum InChild {
     GaveUp(LocalSummaryError),
 }
 
+#[cfg(feature = "engines")]
 /// What a stalled child means: only one that will not die keeps the card off for the session.
 pub(crate) fn after_child_stall(gone: bool, stalled: &AtomicBool) -> LocalSummaryError {
     if gone {
@@ -1284,6 +1337,7 @@ pub(crate) fn after_child_stall(gone: bool, stalled: &AtomicBool) -> LocalSummar
     }
 }
 
+#[cfg(feature = "engines")]
 /// Who runs a try in a child.
 struct ChildTry<'a> {
     child: &'a GpuChild,
@@ -1294,6 +1348,7 @@ struct ChildTry<'a> {
     background: bool,
 }
 
+#[cfg(feature = "engines")]
 /// One try in a child ([`crate::summary_child`]). A missing model file and a failed run or a
 /// cancel are the caller's errors; anything else about the card is [`InChild::GaveUp`].
 fn run_in_child(
@@ -1355,6 +1410,7 @@ fn run_in_child(
     }
 }
 
+#[cfg(feature = "engines")]
 /// What one try at a local summary needs, owned: a stalled try's thread outlives the call.
 struct LocalJob {
     config: LocalSummaryConfig,
@@ -1365,6 +1421,7 @@ struct LocalJob {
     done: Vec<Option<SummaryV1>>,
 }
 
+#[cfg(feature = "engines")]
 /// A finished run: the run, where it ran, the load time and any refusal.
 type Finished = (
     earshot_llm_local::summarize::SummaryRun,
@@ -1373,6 +1430,7 @@ type Finished = (
     Option<Box<LocalSummaryError>>,
 );
 
+#[cfg(feature = "engines")]
 /// How a try ended.
 enum Attempt {
     /// The thread returned.
@@ -1381,6 +1439,7 @@ enum Attempt {
     Stalled,
 }
 
+#[cfg(feature = "engines")]
 /// What the thread tells the watcher.
 enum Progress {
     /// The model is loaded on `backend`.
@@ -1389,11 +1448,13 @@ enum Progress {
     Finished(Box<Result<Finished, RuntimeError>>),
 }
 
+#[cfg(feature = "engines")]
 /// Whether a watched run that has been silent for `silent` has stalled.
 fn has_stalled(silent: Duration, limit: Duration, cancelled: bool) -> bool {
     silent >= limit || (cancelled && silent >= STALL_CANCEL_GRACE)
 }
 
+#[cfg(feature = "engines")]
 /// What a try watches: whether it is a GPU try that can fall back (watched to the end), and
 /// the limit on its load (every try's load is watched).
 fn watch_of(config: &LocalSummaryConfig) -> (bool, Duration) {
@@ -1406,6 +1467,7 @@ fn watch_of(config: &LocalSummaryConfig) -> (bool, Duration) {
     (gpu_watched, load)
 }
 
+#[cfg(feature = "engines")]
 /// The limit once the model loaded on `backend`: only a watched GPU try still on a GPU keeps
 /// one (`run_limit`); a CPU run, refused and retried or a CPU try, is never cut.
 fn limit_after_load(
@@ -1416,6 +1478,7 @@ fn limit_after_load(
     (gpu_watched && backend != LlamaBackend::Cpu).then_some(run_limit)
 }
 
+#[cfg(feature = "engines")]
 /// One try on a thread of its own. A GPU try that can fall back is watched: with no progress
 /// for its limit the thread is left behind (`Attempt::Stalled`) with its token cancelled, so
 /// it stops and frees the model if the call ever returns, and its answer goes nowhere. Nothing
@@ -1506,6 +1569,7 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
     }
 }
 
+#[cfg(feature = "engines")]
 /// The local model as a live session's map worker ([`SummaryService::live_mapper`]): each
 /// window loads the model on the worker's thread, maps it and frees it, so the model's
 /// memory is held only while a window is mapped (`docs/live-summaries.md`).
@@ -1516,6 +1580,7 @@ struct LocalMapper {
     folder: LoadedFolder,
 }
 
+#[cfg(feature = "engines")]
 impl MapChunk for LocalMapper {
     fn model_id(&self) -> &str {
         &self.config.model_id
@@ -1569,6 +1634,7 @@ impl MapChunk for LocalMapper {
     }
 }
 
+#[cfg(feature = "engines")]
 /// Loads the model of `config`; a refused GPU load (llama.cpp's own refusal, never a
 /// missing file) is retried once on the CPU when [`LocalSummaryConfig::cpu_fallback`],
 /// returning the refusal with the model. llama.cpp's errors do not tell a GPU refusal

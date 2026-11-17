@@ -63,21 +63,24 @@ use earshot_core::audio::MonoBuffer;
 use earshot_core::capture::TrackId;
 use earshot_core::diar::{DiarizationConfig, Diarizer, SpeakerEmbedder, SpeakerSegmenter};
 use earshot_core::identity::EntityId;
-use earshot_core::model::TranscriptPass;
 use earshot_core::pipeline::LiveAsr;
 use earshot_onnx::embed::CamppEmbedder;
 use earshot_onnx::parakeet::{ParakeetCtc, ParakeetTdt};
 use earshot_onnx::segment::PyannoteSegmenter;
 use earshot_onnx::silero::SileroVad;
 use earshot_onnx::{Provider, SessionBackend, SessionConfig, file_sha256};
-use earshot_store::{DataDir, Store};
+use earshot_store::DataDir;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
 
 use crate::live::{LiveAsrFactory, LiveSpeakers, PreviewOffReason, PreviewRefusal, TrackAsr};
-use crate::local::{LocalKey, MeetingRecord};
 use crate::post::{PostConfig, PostProcessor};
 use crate::{BoxRng, RuntimeError, SharedClock};
+
+// The pass-backend records live in `crate::pass_backend` (T11.6b); their old paths stay here.
+#[cfg(test)]
+pub(crate) use crate::pass_backend::pass_key;
+pub use crate::pass_backend::{pass_backend, pass_backend_record, record_pass_backend};
 
 #[cfg(test)]
 #[path = "backends_tests.rs"]
@@ -2826,68 +2829,6 @@ pub fn post_processor<L: WhisperLoader + ?Sized>(
     })
 }
 
-pub(crate) fn pass_key(
-    meeting: EntityId,
-    pass: TranscriptPass,
-    track: Option<TrackId>,
-) -> LocalKey {
-    let pass = match pass {
-        TranscriptPass::Live => "live",
-        TranscriptPass::Final => "final",
-    };
-    let track = match track {
-        Some(TrackId::Mic) => "mic",
-        Some(TrackId::Reference) => "reference",
-        None => "all",
-    };
-    MeetingRecord::PassBackend.key(&[pass], meeting, &[track])
-}
-
-/// Records which backend ran a transcript pass of `meeting` (`track` for one track,
-/// `None` for all), in the device-local state: reports must say which backend ran.
-///
-/// # Errors
-/// Store errors.
-pub fn record_pass_backend(
-    store: &mut Store,
-    meeting: EntityId,
-    pass: TranscriptPass,
-    track: Option<TrackId>,
-    backend: &BackendInfo,
-) -> Result<(), RuntimeError> {
-    let value = serde_json::to_vec(backend)
-        .map_err(|_| RuntimeError::Internal("backend info does not serialise"))?;
-    crate::local::set(store, &pass_key(meeting, pass, track), &value)?;
-    Ok(())
-}
-
-/// The backend recorded by [`record_pass_backend`], if any; a value this build cannot read is
-/// `None`, as if nothing was recorded ([`pass_backend_record`] says which, T12.56).
-///
-/// # Errors
-/// Store errors.
-pub fn pass_backend(
-    store: &Store,
-    meeting: EntityId,
-    pass: TranscriptPass,
-    track: Option<TrackId>,
-) -> Result<Option<BackendInfo>, RuntimeError> {
-    Ok(pass_backend_record(store, meeting, pass, track)?.value())
-}
-
-/// The record behind [`pass_backend`]: absent, read, or stored but unreadable (a pass ran even
-/// when its backend cannot be read).
-///
-/// # Errors
-/// Store errors.
-pub fn pass_backend_record(
-    store: &Store,
-    meeting: EntityId,
-    pass: TranscriptPass,
-    track: Option<TrackId>,
-) -> Result<crate::StoredRecord<BackendInfo>, RuntimeError> {
-    crate::local::json_record(store, &pass_key(meeting, pass, track))
-}
 /// Starts a live session on the default microphone (`mic_role`) and, in a call, the
 /// loopback source of `mode` (Windows). In the room the meeting has one (mic) track. The
 /// clock domain is QPC.

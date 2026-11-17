@@ -283,6 +283,7 @@ pub struct LiveReuse {
     pub not_used: Option<String>,
 }
 
+#[cfg(feature = "engines")]
 /// `rows` (segments of the meeting of `view`, any pass) as [`recite`] reads them: tracks
 /// numbered by their position among the meeting's tracks, speakers as `view` names them
 /// ("Me" / "Them" for a segment without a speaker).

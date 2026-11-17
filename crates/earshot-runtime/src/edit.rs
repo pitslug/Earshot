@@ -56,15 +56,20 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use earshot_core::asr::{CancelToken, MeetingTime, TranscribeOptions, Transcriber};
+use earshot_core::asr::MeetingTime;
+#[cfg(feature = "engines")]
+use earshot_core::asr::{CancelToken, TranscribeOptions, Transcriber};
 use earshot_core::audio::f32_to_i16;
 use earshot_core::capture::TrackId;
-use earshot_core::diar::{EmbeddingModelId, SpeakerEmbedder, SpeakerRole, SpeakerSegmenter};
+use earshot_core::diar::{EmbeddingModelId, SpeakerRole};
+#[cfg(feature = "engines")]
+use earshot_core::diar::{SpeakerEmbedder, SpeakerSegmenter};
 use earshot_core::identity::{Clock, EntityId};
 use earshot_core::model::{
     AudioFileRepo, Meeting, MeetingRepo, SegmentRow, Speaker, Stamp, Summary, Track,
     TranscriptPass, live_segments,
 };
+#[cfg(feature = "engines")]
 use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
 use earshot_core::summary::SummaryV1;
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
@@ -75,7 +80,9 @@ use earshot_core::voiceprint::{
 use earshot_store::{StoreTx, first_free_speaker_name};
 use rand_core::Rng;
 
+#[cfg(feature = "engines")]
 use crate::backends::{Accelerator, EvidenceLoader, ModelDir, post_processor};
+#[cfg(feature = "engines")]
 use crate::host::{HostPost, HostStep, ONNX_ACCELERATOR, PostLoad, final_pass};
 use crate::identities::{IdentityRecord, StoredIdentities};
 use crate::post::PostConfig;
@@ -2134,6 +2141,7 @@ pub fn undo_summary(services: &Services, meeting: EntityId) -> Result<EntityId, 
 }
 
 /// How [`retranscribe`] runs.
+#[cfg(feature = "engines")]
 pub struct Retranscribe<'a> {
     /// Where the models are.
     pub models: &'a ModelDir,
@@ -2146,6 +2154,7 @@ pub struct Retranscribe<'a> {
 }
 
 /// What [`retranscribe`] did.
+#[cfg(feature = "engines")]
 #[derive(Debug)]
 pub struct Retranscribed {
     /// Tracks whose recording is gone (audio retention or by hand); not processed.
@@ -2170,6 +2179,7 @@ pub struct Retranscribed {
 /// # Errors
 /// [`EditError::MeetingNotFound`]; [`RuntimeError::MeetingBusy`] (retryable) while the
 /// meeting is recorded, processed or deleted; model and final-pass errors.
+#[cfg(feature = "engines")]
 pub fn retranscribe(
     services: &Services,
     meeting: EntityId,
@@ -2203,6 +2213,7 @@ pub fn retranscribe(
 ///
 /// # Errors
 /// As [`retranscribe`].
+#[cfg(feature = "engines")]
 pub fn retranscribe_with<T, S, E>(
     services: &Services,
     meeting: EntityId,

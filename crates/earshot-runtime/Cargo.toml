@@ -6,25 +6,44 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
+default = ["engines"]
+# The in-process engines (T11.6b): whisper.cpp, ONNX Runtime, llama.cpp and the hardware facts,
+# with every module that needs them (the backends, the host glue, CUDA and the NPU, the model
+# catalogue, check, downloads and updates, the local summary model) and the crates only those
+# modules use. Every build but the summary worker keeps it (the worker summarises only through an
+# endpoint: `earshot-worker` depends on this crate with `default-features = false`).
+engines = [
+    "dep:earshot-asr-whisper",
+    "dep:earshot-onnx",
+    "dep:earshot-llm-local",
+    "dep:earshot-hardware",
+    "dep:earshot-update",
+    "dep:earshot-proc",
+    "dep:claxon",
+    "dep:toml",
+    "dep:bzip2",
+    "dep:flate2",
+    "dep:tar",
+]
 # CUDA for whisper.cpp, the ONNX Runtime CUDA provider and llama.cpp (local summaries)
 # (CUDA 13.x, cuDNN 9 and `cargo xtask fetch-models --set cuda` at run time). The default
 # build is CPU only.
-cuda = ["earshot-asr-whisper/cuda", "earshot-onnx/cuda", "earshot-llm-local/cuda"]
+cuda = ["engines", "earshot-asr-whisper/cuda", "earshot-onnx/cuda", "earshot-llm-local/cuda"]
 # ONNX Runtime's CUDA provider and nothing else (T8.4ad, docs/cuda-install.md): what the shipped
 # x64 app uses. It adds no CUDA code and no import to the exe: Parakeet runs on CUDA only after
 # `cuda::use_for_transcription`, from the folder of NVIDIA's and ONNX Runtime's DLLs. whisper.cpp
 # and llama.cpp are not built for CUDA by it.
-onnx-cuda = ["earshot-onnx/cuda"]
+onnx-cuda = ["engines", "earshot-onnx/cuda"]
 # whisper.cpp on Vulkan (needs the Vulkan SDK; T2.6): after CUDA in the backend order when a
 # Vulkan device exists (T6.10d). ONNX Runtime models have no Vulkan provider.
-vulkan = ["earshot-asr-whisper/vulkan"]
+vulkan = ["engines", "earshot-asr-whisper/vulkan"]
 # `vulkan` plus llama.cpp on Vulkan for local summaries (T8.4aa, D23): what the shipped x64 app
 # uses. Its own feature so an ARM64 `vulkan` build stays without it: summaries stay on the CPU
 # there. Needs Ninja and the Visual Studio x64 environment, which `cargo xtask build` sets.
 vulkan-summaries = ["vulkan", "earshot-llm-local/vulkan"]
 # The Snapdragon NPU through Qualcomm's QNN plugin for ONNX Runtime (T8.3; Parakeet only;
 # `cargo xtask fetch-models --set qnn` at run time). First in the order only on ARM64.
-qnn = ["earshot-onnx/qnn"]
+qnn = ["engines", "earshot-onnx/qnn"]
 # `qnn` as the shipped ARM64 app has it (T8.4f): the QNN libraries only from beside the exe
 # (T8.4e), never from the models folder (`backends::QNN_INSTALL_ONLY`). The CLI and development
 # builds keep the models folder.
@@ -32,17 +51,17 @@ qnn-installed = ["qnn"]
 
 [dependencies]
 # The model check's embedded test clip is FLAC (same pin as earshot-store).
-claxon = "=0.4.3"
+claxon = { version = "=0.4.3", optional = true }
 earshot-core = { path = "../earshot-core" }
 # Production backends (T6.4d): whisper.cpp for ASR, ONNX Runtime (loaded at run time) for
 # Silero VAD, pyannote segmentation and CAM++ embeddings.
-earshot-asr-whisper = { path = "../earshot-asr-whisper" }
-earshot-onnx = { path = "../earshot-onnx" }
+earshot-asr-whisper = { path = "../earshot-asr-whisper", optional = true }
+earshot-onnx = { path = "../earshot-onnx", optional = true }
 # Hardware facts for the Models page (T7.4d): processor, display adapters, NPUs, memory.
-earshot-hardware = { path = "../earshot-hardware" }
+earshot-hardware = { path = "../earshot-hardware", optional = true }
 earshot-store = { path = "../earshot-store" }
 # Verifying an in-app update (T9.1b).
-earshot-update = { path = "../earshot-update" }
+earshot-update = { path = "../earshot-update", optional = true }
 # Sync (T11.3): sealing and opening rows, the relay's wire types. No HTTP of its own: the
 # client sends through earshot-net.
 earshot-sync = { path = "../earshot-sync" }
@@ -53,9 +72,9 @@ earshot-net = { path = "../earshot-net" }
 # Local summaries (T6.21a): llama.cpp in process, no network. Its DLLs (llama.dll, ggml*.dll)
 # are found on PATH under `cargo test`/`cargo run` (earshot-llm-local's build script); a
 # shipped exe carries them next to it (T6.21b).
-earshot-llm-local = { path = "../earshot-llm-local" }
+earshot-llm-local = { path = "../earshot-llm-local", optional = true }
 # GPU summaries in a child process (T9.3): the workspace's one kill-on-close job object.
-earshot-proc = { path = "../earshot-proc" }
+earshot-proc = { path = "../earshot-proc", optional = true }
 # A current-thread runtime per summary service drives the async LLM client (time driver
 # required). Same features as earshot-llm-replay already brings into the workspace.
 tokio = { version = "1.53.3", default-features = false, features = ["rt", "time"] }
@@ -73,12 +92,12 @@ serde_json = "1.0.154"
 # `redirect_hosts`; the `model_eval` and `m2_prod` examples read fixtures/librispeech/subset.toml
 # and acceptance/aec_scenarios.toml (same version and features as xtask, so no feature
 # widening).
-toml = "1"
+toml = { version = "1", optional = true }
 # Archive-backed downloads the app extracts (T9.1f: ONNX Runtime is a zip, segmentation a
 # tar.bz2). Same versions and features as xtask, so no feature widening; none speaks HTTP.
-bzip2 = "0.6"
-flate2 = "1"
-tar = "0.4"
+bzip2 = { version = "0.6", optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Live capture (WASAPI mic + loopback).
@@ -91,12 +110,14 @@ workspace = true
 # scene construction, scoring) run with the crate's tests.
 [[example]]
 name = "diar_eval"
+required-features = ["engines"]
 test = true
 
 # ASR model evaluation (docs/asr-models.md); its unit tests pin the offline gap evidence of the
 # gate12 corpus (`gaps.rs`, T12.51), among them a measured outcome on simulated double talk.
 [[example]]
 name = "model_eval"
+required-features = ["engines"]
 test = true
 
 [dev-dependencies]
@@ -115,46 +136,54 @@ earshot-sync-server = { path = "../earshot-sync-server" }
 # `cargo xtask accept m2`; its unit tests run with the crate's tests.
 [[example]]
 name = "m2_prod"
+required-features = ["engines"]
 test = true
 
 # Shorter speech stretches for Parakeet (T12.24, evaluation only; docs/live-previews.md); its
 # unit tests pin the cut and doubled-word counts.
 [[example]]
 name = "stretch_eval"
+required-features = ["engines"]
 test = true
 
 # The word-boundary report (T6.9a); its unit tests pin the rule and the scoring.
 [[example]]
 name = "word_changes"
+required-features = ["engines"]
 test = true
 
 # The clustering threshold sweep with AMI dev meetings (T12.9, measurement only); its unit tests
 # pin the scenes, the measures and the rule of docs/far-speakers/ami-dev-calibration.md.
 [[example]]
 name = "cluster_sweep"
+required-features = ["engines"]
 test = true
 
 # T12.67: voiceprint matches on AMI dev meeting audio (docs/voiceprint-meetings.md).
 [[example]]
 name = "vp_meetings"
+required-features = ["engines"]
 test = true
 
 # `cargo xtask bench` (T8.1): RTF, live latency and peak memory; its unit tests run with the
 # crate's tests.
 [[example]]
 name = "bench"
+required-features = ["engines"]
 test = true
 
 # How long words take from speech to the screen (T9.1m), a real-time replay of public audio; its
 # unit tests run with the crate's tests.
 [[example]]
 name = "live_lag"
+required-features = ["engines"]
 test = true
 
 # Summary inputs from a read-only copy of the owner's store (T12.25a, evaluation only, run by
 # `cargo xtask sum-eval --store-db`); its unit tests use invented meetings in a temporary store.
 [[example]]
 name = "store_inputs"
+required-features = ["engines"]
 test = true
 
 # T12.71: voiceprint names on a read-only copy of the owner's store under the shipped setting
@@ -162,10 +191,79 @@ test = true
 # store.
 [[example]]
 name = "vp_readout"
+required-features = ["engines"]
 test = true
 
 # Your words in the transcript (T12.15b, a spike, evaluation only; docs/vocabulary.md); its unit
 # tests pin the lists, boosting graph, correction pass and scoring.
 [[example]]
 name = "vocab_eval"
+required-features = ["engines"]
 test = true
+
+# Integration tests that need the in-process engines (T11.6b): skipped, not failed, in a build
+# without them.
+[[test]]
+name = "catalogue_clean_install"
+required-features = ["engines"]
+
+[[test]]
+name = "cuda_load_order"
+required-features = ["engines"]
+
+[[test]]
+name = "cuda_onnx_gate"
+required-features = ["engines"]
+
+[[test]]
+name = "cuda_transcription"
+required-features = ["engines"]
+
+[[test]]
+name = "llama_hold"
+required-features = ["engines"]
+
+[[test]]
+name = "meeting_queue_cancel"
+required-features = ["engines"]
+
+[[test]]
+name = "meeting_queue_cuda"
+required-features = ["engines"]
+
+[[test]]
+name = "meeting_queue_gate"
+required-features = ["engines"]
+
+[[test]]
+name = "npu_compiled_note"
+required-features = ["engines"]
+
+[[test]]
+name = "qnn_fallback"
+required-features = ["engines"]
+
+[[test]]
+name = "summary_child_registered"
+required-features = ["engines"]
+
+# Examples found by name that need the in-process engines (T11.6b).
+[[example]]
+name = "far_speakers"
+required-features = ["engines"]
+
+[[example]]
+name = "gate12_diag"
+required-features = ["engines"]
+
+[[example]]
+name = "post_bench"
+required-features = ["engines"]
+
+[[example]]
+name = "skip_gaps"
+required-features = ["engines"]
+
+[[example]]
+name = "span_levels"
+required-features = ["engines"]
