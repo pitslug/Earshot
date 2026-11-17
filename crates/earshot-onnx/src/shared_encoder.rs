@@ -4,8 +4,8 @@
 //! The session is run only by its own thread (named [`THREAD_NAME`]). A borrower sends owned
 //! inputs and waits for owned outputs, answered in the order asked, so no borrower's thread (a
 //! below-normal preview thread included) ever runs or holds the encoder, and ONNX Runtime's `Run`
-//! is never called twice at once on it (ort 2.0.0-rc.14's `Session::run` takes `&mut self`
-//! because concurrent runs crashed with CUDA, `src/session/mod.rs`). The thread is a plain std
+//! is never called twice at once on it (ort 2.0.0-rc.15's `Session::run` takes `&mut self`,
+//! `src/session/run.rs`, because concurrent runs crashed with CUDA: docs/cuda-shared-session.md). The thread is a plain std
 //! thread: on Windows a new thread starts at normal priority whatever the priority of the thread
 //! that created it, so a preview asking first cannot lower it. No `unsafe`.
 //!

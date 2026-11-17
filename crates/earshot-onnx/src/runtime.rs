@@ -41,7 +41,7 @@ pub const CUDA_EP: &str = "CUDAExecutionProvider";
 pub const QNN_EP: &str = "QNNExecutionProvider";
 
 /// ONNX Runtime version these adapters are built and pinned against (models manifest
-/// `onnxruntime-win-x64`, ort 2.0.0-rc.14 C API 31).
+/// `onnxruntime-win-x64`, ort 2.0.0-rc.15 C API 31).
 pub const ORT_VERSION: &str = "1.31.0";
 /// The official CPU build of ONNX Runtime for Windows x64, relative to the models directory
 /// (manifest id `onnxruntime-win-x64`, set `ci`).
@@ -532,13 +532,6 @@ static RUNTIME: OnceLock<Loaded> = OnceLock::new();
 /// Serialises [`init`], and holds the library ort has bound (ort keeps the first library it loads
 /// for the process and ignores any later path, so a second library must be refused here).
 static ORT_BOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
-/// `ort::init_from` failed after a clean probe, so ort's library slot is unusable ([`init`]).
-static ORT_SLOT_BROKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// What every [`init`] answers once the slot is broken.
-const SLOT_BROKEN_MESSAGE: &str = "an earlier load failed; ONNX Runtime needs a restart";
-/// The oldest ONNX Runtime minor version [`ORT_VERSION`] accepts (ort's `MINOR_VERSION`, api-31).
-const ORT_MINOR: u32 = 31;
 
 /// Lower-case hex SHA-256 of a file, read in 1 MiB blocks: the shipped crates' one hasher for
 /// the plain "hash this file" case (T12.52; the runtime's model, download and NPU checks call
@@ -571,12 +564,8 @@ fn one_runtime(requested: &Path, loaded: &Path) -> OnnxError {
     ))
 }
 
-/// Why [`init`] stops before touching `canonical`, given the slot's state and the library bound to
-/// it. A broken slot comes first: nothing is loaded then, whatever the binding says.
-fn refused_before_load(broken: bool, bound: Option<&Path>, canonical: &Path) -> Option<OnnxError> {
-    if broken {
-        return Some(OnnxError::Library(SLOT_BROKEN_MESSAGE.to_owned()));
-    }
+/// Why [`init`] stops before touching `canonical`, given the library ort has bound.
+fn refused_before_load(bound: Option<&Path>, canonical: &Path) -> Option<OnnxError> {
     bound
         .filter(|held| *held != canonical)
         .map(|held| one_runtime(canonical, held))
@@ -613,8 +602,7 @@ pub fn init(library: &Path, expected_sha256: &str) -> Result<&'static Environmen
             Err(one_runtime(&canonical, &l.library))
         };
     }
-    let broken = ORT_SLOT_BROKEN.load(std::sync::atomic::Ordering::SeqCst);
-    if let Some(refused) = refused_before_load(broken, bound.as_deref(), &canonical) {
+    if let Some(refused) = refused_before_load(bound.as_deref(), &canonical) {
         return Err(refused);
     }
     let actual = file_sha256(&canonical)
@@ -626,22 +614,13 @@ pub fn init(library: &Path, expected_sha256: &str) -> Result<&'static Environmen
             canonical.display()
         )));
     }
-    // ort 2.0.0-rc.14's `OnceLock` (`util/once_lock_std.rs`) marks its library slot as set even when
-    // the load fails, and every later ort call then reads uninitialised memory. So `init_from` runs
-    // only once ort's own checks have passed on a throwaway load, and a refusal here leaves the
-    // process free to load another library.
-    if ort::util::probe(&canonical).is_none_or(|minor| minor < ORT_MINOR) {
-        return Err(OnnxError::Library(format!(
-            "{} cannot be loaded or is older than ONNX Runtime {ORT_VERSION}",
-            canonical.display()
-        )));
-    }
-    // From here a failure (the file changed since the probe) can never be retried: see above.
+    // ort 2.0.0-rc.15's `OnceLock` (`util/once_lock.rs`) puts its library slot back to unset when
+    // the load or its version check fails, so a refusal here leaves the process free to load
+    // another library (`tests/init_retry.rs`). rc.14's did not, and needed a probe first: re-check
+    // this on any ort upgrade (docs/cuda-install.md).
+    let builder = ort::init_from(&canonical).map_err(|e| OnnxError::Library(e.to_string()))?;
+    // ort holds this library for the process from here, whatever happens to the environment.
     *bound = Some(canonical.clone());
-    let builder = ort::init_from(&canonical).map_err(|e| {
-        ORT_SLOT_BROKEN.store(true, std::sync::atomic::Ordering::SeqCst);
-        OnnxError::Library(e.to_string())
-    })?;
     let env = builder
         .with_name("earshot")
         .with_telemetry(false)
@@ -898,8 +877,8 @@ impl OnnxSession {
                 .with_intra_op_spinning(false)
                 .map_err(runtime_err)?;
         }
-        // ort 2.0.0-rc.14 gives every new session ONNX Runtime's automatic device selection
-        // with the "max efficiency" policy (prefer an NPU). Once the QNN plugin is registered
+        // ort 2.0.0-rc.15 (as rc.14) gives every new session ONNX Runtime's automatic device
+        // selection with the "max efficiency" policy (prefer an NPU). Once the QNN plugin is registered
         // that would silently move a CPU session to QNN, so every session names its devices:
         // the CPU EP's own device for the CPU, the plugin's device for QNN (CUDA is appended
         // explicitly below, which replaces the policy).
@@ -1112,23 +1091,25 @@ mod tests {
     }
 
     #[test]
-    fn onnx_init_after_a_broken_slot_never_says_another_library_is_loaded() {
+    fn onnx_init_refuses_only_a_second_library() {
         let (first, second) = (Path::new("first.dll"), Path::new("second.dll"));
         let text = |e: Option<OnnxError>| e.map(|e| e.to_string());
         assert!(
-            text(refused_before_load(true, Some(first), second))
-                .is_some_and(|t| t.contains("needs a restart") && !t.contains("already loaded"))
-        );
-        assert!(
-            text(refused_before_load(true, None, first)).is_some_and(|t| t.contains("restart"))
-        );
-        // Sound slot: the one-runtime rule, and the same library again goes on.
-        assert!(
-            text(refused_before_load(false, Some(first), second))
+            text(refused_before_load(Some(first), second))
                 .is_some_and(|t| t.contains("already loaded"))
         );
-        assert!(refused_before_load(false, Some(first), first).is_none());
-        assert!(refused_before_load(false, None, first).is_none());
+        assert!(refused_before_load(Some(first), first).is_none());
+        assert!(refused_before_load(None, first).is_none());
+    }
+
+    #[test]
+    fn onnx_pinned_runtime_matches_orts_api_floor() {
+        // `init` leaves the version check to `ort::init_from`, which refuses a library whose
+        // minor version is below ort's `MINOR_VERSION` (api-31: ONNX Runtime 1.31). This pins only
+        // that floor against the pinned runtime; the refusal itself is untested, because no
+        // older ONNX Runtime is fetched (docs/cuda-install.md).
+        assert_eq!(ort::MINOR_VERSION, 31);
+        assert!(ORT_VERSION.starts_with("1.31."), "{ORT_VERSION}");
     }
 
     #[test]

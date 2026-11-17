@@ -201,7 +201,7 @@ licence = "Apache-2.0"
 attribution = "CAM++ speaker verification model (3D-Speaker, Alibaba DAMO Academy / Tongyi Lab), ONNX export by the k2-fsa sherpa-onnx project"
 
 # ONNX Runtime 1.31.0, Microsoft's official release build (microsoft/onnxruntime, tag v1.31.0),
-# loaded at run time by earshot-onnx (ort 2.0.0-rc.14 `load-dynamic`, C API 31). Licence: MIT.
+# loaded at run time by earshot-onnx (ort 2.0.0-rc.15 `load-dynamic`, C API 31). Licence: MIT.
 # The CPU build is what tests and CI use; the GPU build (CUDA 13.x runtime + cuDNN 9.x, both
 # installed separately, never fetched) is used only with `earshot-onnx --features cuda`.
 
