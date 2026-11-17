@@ -2191,7 +2191,10 @@ export type SummaryHelperView = {
 	name: string | null,
 	/**  The first eight hex digits of its id. */
 	short_id: string,
-	/**  The kind of writer it uses (fixed copy, [`writer_label`]); `None` when it has none. */
+	/**
+	 *  The kind of writer it uses (fixed copy, [`computer_writer_label`]: a summary worker's
+	 *  own local model names where it runs); `None` when it has none.
+	 */
 	writer: string | null,
 	/**  Whether it writes summaries for the others now. */
 	offers: boolean,
@@ -2371,7 +2374,7 @@ export type SyncDeviceView = {
 	offers_summaries: boolean,
 	/**
 	 *  The kind of writer it uses, as the page names it (fixed copy,
-	 *  [`crate::offload::writer_label`]); `None` when it does not offer summaries.
+	 *  [`crate::offload::computer_writer_label`]); `None` when it does not offer summaries.
 	 */
 	writer: string | null,
 	/**

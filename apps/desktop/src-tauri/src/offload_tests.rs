@@ -17,7 +17,7 @@ use earshot_core::model::{
 use earshot_core::prompt::Template;
 use earshot_runtime::host::{HostPost, SkipReason, SummaryResult};
 use earshot_runtime::offload::{HereReason, OffloadChoice, Unavailable, WriterKind};
-use earshot_runtime::sync::{MemoryVault, SyncClient, SyncTiming, SyncVault};
+use earshot_runtime::sync::{MemoryVault, ModelPlace, SyncClient, SyncTiming, SyncVault};
 use earshot_sync_server::{Config, LocalRelay, Relay};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -62,6 +62,30 @@ fn offload_copy_matches_the_shared_table() {
     assert_eq!(writers.len(), WriterKind::ALL.len());
     for k in WriterKind::ALL {
         assert_eq!(writers[k.word()].as_str(), Some(writer_label(k)), "{k:?}");
+    }
+    // T11.6a: a summary worker's own local model by where it runs, keyed by the presence word.
+    let places = t["local_model_places"].as_object().unwrap();
+    assert_eq!(places.len(), ModelPlace::ALL.len());
+    for p in ModelPlace::ALL {
+        assert_eq!(
+            places[&p.word().replace('-', "_")].as_str(),
+            Some(local_model_place_label(p)),
+            "{p:?}"
+        );
+        assert_eq!(
+            computer_writer_label(WriterKind::Local, Some(p)),
+            local_model_place_label(p)
+        );
+        // A place never labels another writer kind.
+        for k in WriterKind::ALL
+            .into_iter()
+            .filter(|k| *k != WriterKind::Local)
+        {
+            assert_eq!(computer_writer_label(k, Some(p)), writer_label(k), "{k:?}");
+        }
+    }
+    for k in WriterKind::ALL {
+        assert_eq!(computer_writer_label(k, None), writer_label(k), "{k:?}");
     }
     let unavailable = t["unavailable"].as_object().unwrap();
     assert_eq!(unavailable.len(), EVERY_UNAVAILABLE.len());
@@ -376,6 +400,64 @@ fn offload_helpers_list_offering_computers_and_keep_the_choice() {
     assert!(!off.sync_ready);
     assert_eq!(off.helpers.len(), 1);
     assert!(off.helpers[0].chosen && off.helpers[0].name.is_none());
+}
+
+/// T11.6a: a summary worker whose presence says where its own local model runs is listed with
+/// that place on the Summaries page, the Sync page and the order's step label; the app's own
+/// presence never carries one, and a remote endpoint is never labelled with it.
+#[test]
+fn offload_a_worker_is_listed_with_where_its_local_model_runs() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    earshot_runtime::sync::set_offer_summaries(&b.svc, true).unwrap();
+    earshot_runtime::sync::set_device_name(&b.svc, "Invented rack").unwrap();
+    let local = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let now = Arc::clone(&local);
+    let worker = SyncClient::for_address(
+        b.svc.clone(),
+        Arc::clone(&b.vault) as Arc<dyn SyncVault>,
+        &relay.relay.url(),
+    )
+    .unwrap()
+    .as_summary_worker(Arc::new(move || {
+        Some(if now.load(std::sync::atomic::Ordering::SeqCst) {
+            WriterKind::Local
+        } else {
+            WriterKind::OpenaiCompatible
+        })
+    }))
+    .with_model_place(Some(ModelPlace::GraphicsCard));
+    worker.send_presence(false).unwrap();
+    let view = helpers_view(&a.svc, &a.host).unwrap();
+    assert_eq!(view.helpers.len(), 1, "{view:?}");
+    assert_eq!(
+        view.helpers[0].writer.as_deref(),
+        Some("local model, graphics card")
+    );
+    let devices = crate::sync_settings::devices(&a.svc, &a.host).unwrap();
+    let rack = devices.iter().find(|d| !d.this_device).unwrap();
+    assert_eq!(rack.writer.as_deref(), Some("local model, graphics card"));
+    // The order's step label reads what this process heard.
+    let cx = crate::summary_order::StepContext::read(&a.svc);
+    let step = earshot_runtime::summary_order::OrderStep::Computer(b.id());
+    assert_eq!(
+        crate::summary_order::step_label(step, &cx),
+        "On Invented rack (local model, graphics card)"
+    );
+    // Its endpoint becomes remote: the place goes with it.
+    local.store(false, std::sync::atomic::Ordering::SeqCst);
+    worker.send_presence(false).unwrap();
+    let view = helpers_view(&a.svc, &a.host).unwrap();
+    assert_eq!(view.helpers[0].writer.as_deref(), Some("own server"));
+    let cx = crate::summary_order::StepContext::read(&a.svc);
+    assert_eq!(
+        crate::summary_order::step_label(step, &cx),
+        "On Invented rack (own server)"
+    );
+    // The app's presence (a computer, not a worker) carries no place: "local model" alone.
+    b.client().send_presence(false).unwrap();
+    let view = helpers_view(&a.svc, &a.host).unwrap();
+    assert_eq!(view.helpers[0].writer.as_deref(), Some("local model"));
 }
 
 #[test]

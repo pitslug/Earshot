@@ -371,7 +371,7 @@ pub struct SyncDeviceView {
     /// Whether it writes summaries for the other computers (T11.3db).
     pub offers_summaries: bool,
     /// The kind of writer it uses, as the page names it (fixed copy,
-    /// [`crate::offload::writer_label`]); `None` when it does not offer summaries.
+    /// [`crate::offload::computer_writer_label`]); `None` when it does not offer summaries.
     pub writer: Option<String>,
     /// Its whole id (hyphenated UUID, as the summary helper list gives it): what
     /// [`remove_other_sync_device`] names. Not a secret (the server lists it to every device of
@@ -393,6 +393,17 @@ pub fn devices(services: &Services, host: &SyncHost) -> Result<Vec<SyncDeviceVie
     Ok(earshot_runtime::sync::vault_devices(services, host.vault())
         .map_err(sync_error)?
         .into_iter()
+        .inspect(|d| {
+            // The Summaries page's step label reads the same cache (T11.6a review).
+            if !d.this_device {
+                crate::offload::remember_presence(
+                    d.device,
+                    d.name.clone(),
+                    d.writer_kind,
+                    d.model_place,
+                );
+            }
+        })
         .map(|d| SyncDeviceView {
             this_device: d.this_device,
             name: d.name,
@@ -401,7 +412,7 @@ pub fn devices(services: &Services, host: &SyncHost) -> Result<Vec<SyncDeviceVie
             offers_summaries: d.offers_summaries,
             writer: d
                 .writer_kind
-                .map(|k| crate::offload::writer_label(k).to_owned()),
+                .map(|k| crate::offload::computer_writer_label(k, d.model_place).to_owned()),
             id: d.device.to_string(),
             short_id: d.short_id,
             joined_unix_s: d.joined_unix_s,

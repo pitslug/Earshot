@@ -13,6 +13,7 @@
 //! | `EARSHOT_WORKER_LLM_CONTEXT` | `16384` | The endpoint's context window in tokens (the compose file starts llama.cpp with the same) |
 //! | `EARSHOT_WORKER_LLM_TIMEOUT_S` | `1800` | The longest one summary request may take |
 //! | `EARSHOT_WORKER_NAME` | `Earshot server` | The name the other devices show |
+//! | `EARSHOT_WORKER_MODEL_PLACE` | (none) | Where the model server runs, from the compose `.env` (a label set beside the profile): `processor` (`cpu`) or `graphics-card` (`gpu`), empty or unset for none; presence names it beside "local model" while the endpoint is the worker's own model (T11.6a). Any other value refuses to start |
 //! | `EARSHOT_WORKER_KEY_FILE` | `<data>/vault/key` | The vault key file (a Docker secret's path may be given) |
 //! | `EARSHOT_WORKER_TOKEN_FILE` | `<data>/vault/token` | The device token file (likewise) |
 
@@ -20,6 +21,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use earshot_net::Url;
+
+use earshot_runtime::sync::ModelPlace;
 
 use crate::endpoint::{OwnModel, Subnet, service_name};
 
@@ -45,6 +48,9 @@ pub struct Config {
     pub llm_timeout: Duration,
     /// The name the other devices show.
     pub name: String,
+    /// Where the model server runs (the `.env` line beside the compose profile, T11.6a); `None`
+    /// when not set, and presence then names no place.
+    pub model_place: Option<ModelPlace>,
     /// The vault key file.
     pub key_file: PathBuf,
     /// The device token file.
@@ -129,6 +135,12 @@ impl Config {
             &get("EARSHOT_WORKER_NAME").unwrap_or_else(|| "Earshot server".into()),
         )
         .ok_or(ConfigError("EARSHOT_WORKER_NAME"))?;
+        let model_place = match get("EARSHOT_WORKER_MODEL_PLACE") {
+            Some(word) => {
+                Some(ModelPlace::parse(&word).ok_or(ConfigError("EARSHOT_WORKER_MODEL_PLACE"))?)
+            }
+            None => None,
+        };
         Ok(Self {
             key_file: get("EARSHOT_WORKER_KEY_FILE")
                 .map_or_else(|| data.join("vault").join("key"), PathBuf::from),
@@ -143,6 +155,7 @@ impl Config {
             llm_context,
             llm_timeout: Duration::from_secs(timeout),
             name,
+            model_place,
         })
     }
 
@@ -210,6 +223,7 @@ mod tests {
         assert_eq!(c.llm_context, 16_384);
         assert_eq!(c.llm_timeout, Duration::from_secs(1800));
         assert_eq!(c.name, "Earshot server");
+        assert_eq!(c.model_place, None);
         assert_eq!(c.key_file, PathBuf::from("/data").join("vault").join("key"));
         assert_eq!(
             c.token_file,
@@ -244,6 +258,9 @@ mod tests {
             ("EARSHOT_WORKER_LLM_SERVICE", "llama.lan"),
             ("EARSHOT_WORKER_LLM_SERVICE", "localhost"),
             ("EARSHOT_WORKER_NAME", "\u{7}"),
+            ("EARSHOT_WORKER_MODEL_PLACE", "gpu"),
+            ("EARSHOT_WORKER_MODEL_PLACE", "graphics card"),
+            ("EARSHOT_WORKER_MODEL_PLACE", "Processor"),
         ] {
             let e = of(&[
                 (name, value),
@@ -253,6 +270,47 @@ mod tests {
             assert_eq!(e, ConfigError(name));
             assert!(!e.to_string().contains(value), "{e}");
         }
+    }
+
+    /// T11.6a: each place word is read; the variable left out names no place.
+    #[test]
+    fn config_model_place_words_are_read() {
+        let subnet = ("EARSHOT_WORKER_MODEL_SUBNET", "172.31.250.0/24");
+        for (word, place) in [
+            ("processor", ModelPlace::Processor),
+            ("graphics-card", ModelPlace::GraphicsCard),
+            (" graphics-card ", ModelPlace::GraphicsCard),
+        ] {
+            let c = of(&[subnet, ("EARSHOT_WORKER_MODEL_PLACE", word)]).unwrap();
+            assert_eq!(c.model_place, Some(place), "{word}");
+        }
+        let c = of(&[subnet, ("EARSHOT_WORKER_MODEL_PLACE", "  ")]).unwrap();
+        assert_eq!(c.model_place, None);
+    }
+
+    /// The compose file passes the place from `.env` through to the one worker service, empty
+    /// when `.env` leaves it out (which `of` reads as no place), and documents both words.
+    #[test]
+    fn config_compose_passes_the_model_place_from_env() {
+        let compose = include_str!("../docker-compose.yml").replace("\r\n", "\n");
+        assert!(
+            compose
+                .contains("\n      EARSHOT_WORKER_MODEL_PLACE: ${EARSHOT_WORKER_MODEL_PLACE:-}\n"),
+            "the worker service does not pass EARSHOT_WORKER_MODEL_PLACE"
+        );
+        assert_eq!(compose.matches("\n  earshot-worker:\n").count(), 1);
+        let documented = format!(
+            "#      EARSHOT_WORKER_MODEL_PLACE=<{} with --profile cpu, {} with --profile gpu>\n",
+            ModelPlace::Processor.word(),
+            ModelPlace::GraphicsCard.word()
+        );
+        assert!(
+            compose.contains(&documented),
+            "the .env line is not documented"
+        );
+        let subnet = ("EARSHOT_WORKER_MODEL_SUBNET", "172.31.250.0/24");
+        let c = of(&[subnet, ("EARSHOT_WORKER_MODEL_PLACE", "")]).unwrap();
+        assert_eq!(c.model_place, None);
     }
 
     #[test]

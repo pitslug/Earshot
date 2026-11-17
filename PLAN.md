@@ -2406,11 +2406,12 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: T11.6
   - do: with no key or token, `run` logs a fixed "waiting to join" once, re-checks the vault files every few seconds and starts once they are there; the health check reports unhealthy "not joined" meanwhile; `docker exec -it earshot-worker earshot-worker join` in the running container is the documented join (compose file comments, docs/sync.md "Running the worker"). The code still comes only from stdin; a stop while waiting exits cleanly and sends no presence.
   - accept: `cargo test -p earshot-worker`
-- [~] T11.6a The worker's presence names processor or graphics card
+- [x] T11.6a The worker's presence names processor or graphics card
   - found (T11.6, 2026-11-15).
   - deps: T11.6
   - do: docs/sync.md section 10 promises "On <server> (local model, processor)" or "graphics card"; presence carries only the writer kind today. Add an optional presence field read from the worker's compose profile, and the copy in `fixtures/ui/offload_copy_cases.json` (both suites); presence stays one padded size.
   - accept: `cargo test -p earshot-worker` and `cargo test -p earshot-desktop offload`
+  - result (2026-11-17): optional `model_place` in presence, sent only by a worker whose writer is its own local model. The place comes from an optional `.env` line (`EARSHOT_WORKER_MODEL_PLACE`), not from the profile itself: compose cannot set a variable per profile without a second service, which would have needed every running worker brought down by hand (the owner chose the `.env` line). An app's presence bytes are unchanged.
 - [x] T11.6c Remove another device from the Sync page
   - found (T11.6, 2026-11-15): a worker (or computer) stranded by a failed join, or one the owner no longer has, stays listed offline; the only recovery today is wiping its volume and joining again.
   - deps: T11.6

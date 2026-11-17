@@ -44,8 +44,8 @@ use crate::services::Services;
 pub use earshot_sync::VaultKey;
 pub use engine::{Peer, SyncClient, TickReport, WorkerWriter};
 pub use presence::{
-    Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ONLINE_WITHIN_S, PRESENCE_EVERY, Presence,
-    clean_name, computer_name, online,
+    Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ModelPlace, ONLINE_WITHIN_S, PRESENCE_EVERY,
+    Presence, clean_name, computer_name, online,
 };
 pub use setup::{
     PairingOffer, join_with_code, offer_pairing_code, remove_other_device, remove_this_device,
@@ -650,6 +650,9 @@ pub struct SyncDevice {
     /// The kind of writer it would use, when it offers summaries and this build knows the
     /// kind (from its presence; summary offload names it so the user knows where text goes).
     pub writer_kind: Option<crate::offload::WriterKind>,
+    /// Where its own local model runs, when it is a summary worker whose writer kind is its
+    /// local model and it said (from its presence, T11.6a); `None` otherwise.
+    pub model_place: Option<ModelPlace>,
     /// The first eight hex digits of its id: enough to tell two devices apart on the page.
     pub short_id: String,
     /// When it joined (Unix seconds, the server's clock).
@@ -693,6 +696,7 @@ pub fn vault_devices(
                     .filter(|p| p.offers_summaries)
                     .and_then(|p| p.writer_kind.as_deref())
                     .and_then(crate::offload::WriterKind::parse),
+                model_place: presence.and_then(model_place_of),
                 short_id: d
                     .device_id
                     .0
@@ -707,6 +711,15 @@ pub fn vault_devices(
         .collect();
     devices.sort_by_key(|d| (!d.this_device, d.joined_unix_s));
     Ok(devices)
+}
+
+/// Where a device's own local model runs, from its presence: only a summary worker's, only
+/// while it offers summaries with its local model, and only a word this build knows.
+fn model_place_of(p: &Presence) -> Option<ModelPlace> {
+    let local = p.writer_kind.as_deref() == Some(crate::offload::WriterKind::Local.word());
+    (p.kind == KIND_SERVER && p.offers_summaries && local)
+        .then(|| p.model_place.as_deref().and_then(ModelPlace::parse))
+        .flatten()
 }
 
 /// The stored status (the default when none is stored or it cannot be read).

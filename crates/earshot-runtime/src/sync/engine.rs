@@ -96,6 +96,9 @@ pub struct SyncClient {
     /// A summary worker's presence ([`SyncClient::as_summary_worker`]): kind `server` and the
     /// writer it names, asked at every send; `None` for the app.
     worker: Option<WorkerWriter>,
+    /// Where a summary worker's own local model runs ([`SyncClient::with_model_place`],
+    /// T11.6a); sent only by a worker whose writer kind is `local` now.
+    model_place: Option<super::presence::ModelPlace>,
 }
 
 impl std::fmt::Debug for SyncClient {
@@ -203,6 +206,7 @@ impl SyncClient {
             stop: Arc::new(AtomicBool::new(false)),
             retried_all: AtomicBool::new(false),
             worker: None,
+            model_place: None,
         })
     }
 
@@ -231,6 +235,16 @@ impl SyncClient {
     #[must_use]
     pub fn as_summary_worker(mut self, writer: WorkerWriter) -> Self {
         self.worker = Some(writer);
+        self
+    }
+
+    /// A summary worker's presence also says where its own local model runs (T11.6a, the
+    /// compose profile it was started with): sent only while this client is a summary worker
+    /// ([`Self::as_summary_worker`]) and the writer kind it names at that send is `local`, so
+    /// "processor" or "graphics card" never labels a remote endpoint. `None` sends nothing.
+    #[must_use]
+    pub const fn with_model_place(mut self, place: Option<super::presence::ModelPlace>) -> Self {
+        self.model_place = place;
         self
     }
 
@@ -301,6 +315,9 @@ impl SyncClient {
             (settings, writer)
         };
         let recording = !self.services.recording_meetings().is_empty();
+        let model_place = self
+            .model_place
+            .filter(|_| self.worker.is_some() && writer == Some(crate::offload::WriterKind::Local));
         let presence = super::presence::presence_now(
             if self.worker.is_some() {
                 super::presence::KIND_SERVER
@@ -310,6 +327,7 @@ impl SyncClient {
             settings.device_name,
             settings.offers_summaries,
             writer,
+            model_place,
             recording,
             gone,
         );

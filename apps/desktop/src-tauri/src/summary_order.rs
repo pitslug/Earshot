@@ -231,6 +231,9 @@ pub struct Named {
     pub name: Option<String>,
     /// Its writer kind, from its presence.
     pub writer: Option<WriterKind>,
+    /// Where its own local model runs, for a summary worker whose writer is its local model
+    /// (from its presence, T11.6a).
+    pub place: Option<earshot_runtime::sync::ModelPlace>,
 }
 
 /// What a step's copy needs: the endpoint's provider and host, and the computers' names.
@@ -278,6 +281,10 @@ impl StepContext {
     fn writer_kind(&self, device: DeviceId) -> Option<WriterKind> {
         self.names.get(&device).and_then(|n| n.writer)
     }
+
+    fn model_place(&self, device: DeviceId) -> Option<earshot_runtime::sync::ModelPlace> {
+        self.names.get(&device).and_then(|n| n.place)
+    }
 }
 
 fn texts_of(texts: &StepTexts, step: OrderStep, cx: &StepContext) -> String {
@@ -297,7 +304,10 @@ fn texts_of(texts: &StepTexts, step: OrderStep, cx: &StepContext) -> String {
                 &texts.computer,
                 &[
                     ("device", &cx.device(d)),
-                    ("writer", crate::offload::writer_label(k)),
+                    (
+                        "writer",
+                        crate::offload::computer_writer_label(k, cx.model_place(d)),
+                    ),
                 ],
             ),
             None => fill(&texts.computer_no_writer, &[("device", &cx.device(d))]),

@@ -35,6 +35,39 @@ pub const KIND_APP: &str = "app";
 /// [`Presence::kind`] of a summary worker (`earshot-worker`, T11.6).
 pub const KIND_SERVER: &str = "server";
 
+/// Where a summary worker's own local model runs (T11.6a): the compose profile the worker was
+/// started with, sent in its presence ([`Presence::model_place`]) only while its writer kind is
+/// its own local model, so the other devices can say "local model, processor" or "local model,
+/// graphics card".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ModelPlace {
+    /// The model server runs on the host's processor (compose profile `cpu`).
+    Processor,
+    /// The model server runs on an NVIDIA graphics card (compose profile `gpu`).
+    GraphicsCard,
+}
+
+impl ModelPlace {
+    /// Every place.
+    pub const ALL: [Self; 2] = [Self::Processor, Self::GraphicsCard];
+
+    /// The fixed word presence carries (and the worker's `EARSHOT_WORKER_MODEL_PLACE` takes).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Processor => "processor",
+            Self::GraphicsCard => "graphics-card",
+        }
+    }
+
+    /// The place `word` names; `None` for any other text (a newer Earshot's word reads as no
+    /// place).
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.word() == word)
+    }
+}
+
 /// The presence blob's plaintext.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
@@ -52,6 +85,13 @@ pub struct Presence {
     /// The kind of writer it would use ([`crate::offload::WriterKind::word`]), sent only while
     /// it offers summaries; `None` otherwise or for "no summary".
     pub writer_kind: Option<String>,
+    /// Where a summary worker's own local model runs ([`ModelPlace::word`], T11.6a), sent only
+    /// by a worker whose writer kind is `local`; `None` otherwise. Left out of the JSON when
+    /// `None`, so an app's blob is the same bytes as before this field existed; readers ignore
+    /// fields they do not know (no `deny_unknown_fields`), so an older Earshot reads a worker's
+    /// blob that carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_place: Option<String>,
     /// Whether it is recording a meeting now.
     pub recording: bool,
     /// Whether it said it is going away (sync turned off, or removed).
@@ -186,6 +226,7 @@ pub(crate) fn presence_now(
     name: String,
     offers_summaries: bool,
     writer_kind: Option<crate::offload::WriterKind>,
+    model_place: Option<ModelPlace>,
     recording: bool,
     gone: bool,
 ) -> Presence {
@@ -196,6 +237,7 @@ pub(crate) fn presence_now(
         kind: kind.to_owned(),
         offers_summaries,
         writer_kind: writer_kind.map(|k| k.word().to_owned()),
+        model_place: model_place.map(|p| p.word().to_owned()),
         recording,
         gone,
         pad: String::new(),

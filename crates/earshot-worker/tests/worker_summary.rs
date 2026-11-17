@@ -194,6 +194,7 @@ fn worker_config(dir: &Path, relay: &str, llm: &Url) -> Config {
         llm_context: 16_384,
         llm_timeout: Duration::from_secs(60),
         name: "Invented server".into(),
+        model_place: Some(earshot_runtime::sync::ModelPlace::Processor),
     }
 }
 
@@ -310,6 +311,8 @@ fn worker_writes_the_summary_a_simulated_device_asks_for() {
     assert_eq!(p.kind, KIND_SERVER);
     assert_eq!(p.name, "Invented server");
     assert_eq!(p.writer_kind.as_deref(), Some("openai_compatible"));
+    // A remote endpoint is never labelled with the profile's place (T11.6a).
+    assert_eq!(p.model_place, None);
     assert!(!p.recording);
 
     // A meeting asked of the worker is written by it and comes back as an ordinary summary.
@@ -371,6 +374,29 @@ fn worker_writes_the_summary_a_simulated_device_asks_for() {
                     .is_some_and(|x| x.writer_kind.as_deref() == Some("local"))
         })
     });
+    // With its own model it says where that model runs, the profile's word (T11.6a), and the
+    // asker's list of computers carries it.
+    let p = ca
+        .peers()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.device == worker_id)
+        .and_then(|p| p.presence)
+        .unwrap();
+    assert_eq!(p.model_place.as_deref(), Some("processor"));
+    let listed = earshot_runtime::sync::vault_devices(
+        &asker.svc,
+        Arc::clone(&asker.vault) as Arc<dyn SyncVault>,
+    )
+    .unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .find(|d| d.device == worker_id)
+            .unwrap()
+            .model_place,
+        Some(earshot_runtime::sync::ModelPlace::Processor)
+    );
     let again = earshot_runtime::offload::ask(&asker.svc, kept, worker_id)
         .unwrap()
         .unwrap();

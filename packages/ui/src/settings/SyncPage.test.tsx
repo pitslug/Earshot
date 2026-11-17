@@ -280,6 +280,30 @@ describe("the Sync page", () => {
     await waitFor(() => expect(list).toHaveFocus());
   });
 
+  it("lists a summary worker with where its local model runs (T11.6a)", async () => {
+    const devices: SyncDeviceView[] = [
+      { ...device("3f2a9c1e", true), name: "Desk" },
+      {
+        ...device("a1b2c3d4", false),
+        name: "Invented rack",
+        online: true,
+        offers_summaries: true,
+        writer: offload.local_model_places.graphics_card,
+      },
+      {
+        ...device("b2c3d4e5", false),
+        name: "Invented shelf",
+        online: true,
+        offers_summaries: true,
+        writer: offload.local_model_places.processor,
+      },
+    ];
+    await setup({ setUp: true, devices });
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getByText("Writes summaries (local model, graphics card)")).toBeInTheDocument();
+    expect(within(list).getByText("Writes summaries (local model, processor)")).toBeInTheDocument();
+  });
+
   it("names a computer whose name holds replacement patterns as it is", async () => {
     const odd = "Desk $& $1 $$ $` co";
     const devices: SyncDeviceView[] = [

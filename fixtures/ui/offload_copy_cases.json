@@ -1,11 +1,15 @@
 {
-  "_comment": "Summary offload copy (T11.3db, docs/sync.md section 10). writers: the label of each writer kind presence carries. unavailable: the banner when the chosen computer was not asked and this computer stored the summary, by reason. not_asked: the same reasons claiming nothing about a summary, for a summary step that stored none here and a refused re-summarise On <device>. {device} (always at the start of a sentence) is the chosen computer's name. written_here: the first warning of the re-summary this computer runs after asking, sent before it runs, by reason; {device} as above. waiting: the meeting's line while a request is open. already_waiting: re-summarise On <device> while the meeting waits for another computer. unnamed: {device} at the start of a sentence for a computer whose name is not known; unnamed_inline: the same inside a sentence (waiting). Pinned to the desktop's offload copy by its tests and read by the UI mock. Shipped with the app: public copy only.",
+  "_comment": "Summary offload copy (T11.3db, docs/sync.md section 10). writers: the label of each writer kind presence carries. local_model_places: the label in place of writers.local for a summary worker whose presence says where its own local model runs (T11.6a), by the presence word with - as _. unavailable: the banner when the chosen computer was not asked and this computer stored the summary, by reason. not_asked: the same reasons claiming nothing about a summary, for a summary step that stored none here and a refused re-summarise On <device>. {device} (always at the start of a sentence) is the chosen computer's name. written_here: the first warning of the re-summary this computer runs after asking, sent before it runs, by reason; {device} as above. waiting: the meeting's line while a request is open. already_waiting: re-summarise On <device> while the meeting waits for another computer. unnamed: {device} at the start of a sentence for a computer whose name is not known; unnamed_inline: the same inside a sentence (waiting). Pinned to the desktop's offload copy by its tests and read by the UI mock. Shipped with the app: public copy only.",
   "writers": {
     "local": "local model",
     "anthropic": "Claude with an API key",
     "openai_compatible": "own server",
     "claude_code": "Claude Code",
     "codex": "Codex"
+  },
+  "local_model_places": {
+    "processor": "local model, processor",
+    "graphics_card": "local model, graphics card"
   },
   "unavailable": {
     "sync_off": "Sync is off, so this computer wrote the summary.",

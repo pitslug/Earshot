@@ -358,7 +358,8 @@ impl Worker {
 
     /// The sync client for the configured relay, presenting as a summary worker. The writer
     /// kind is where the endpoint is at each presence send (located again every time), so a
-    /// model container that starts after the worker is named correctly from its next beat.
+    /// model container that starts after the worker is named correctly from its next beat. The
+    /// place its model runs (the compose profile, T11.6a) goes with a `local` writer kind only.
     ///
     /// # Errors
     /// [`WorkerError::Sync`] with [`SyncProblem::Address`] for a refused relay address.
@@ -367,7 +368,8 @@ impl Worker {
         let (locate, url) = (Arc::clone(&self.locate), self.config.llm_url.clone());
         Ok(
             SyncClient::for_address(self.services.clone(), vault, self.config.relay()?)?
-                .as_summary_worker(Arc::new(move || Some(writer_kind(&locate(&url))))),
+                .as_summary_worker(Arc::new(move || Some(writer_kind(&locate(&url)))))
+                .with_model_place(self.config.model_place),
         )
     }
 
@@ -513,6 +515,7 @@ mod tests {
             llm_context: 16_384,
             llm_timeout: Duration::from_secs(60),
             name: "Invented server".into(),
+            model_place: None,
             key_file: dir.0.join("vault/key"),
             token_file: dir.0.join("vault/token"),
         };
@@ -632,6 +635,7 @@ mod tests {
             llm_context: 16_384,
             llm_timeout: Duration::from_secs(60),
             name: "Invented server".into(),
+            model_place: None,
             key_file: dir.join("vault/key"),
             token_file: dir.join("vault/token"),
         }

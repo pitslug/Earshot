@@ -1250,7 +1250,8 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
             } else {
                 WriterKind::OpenaiCompatible
             })
-        }));
+        }))
+        .with_model_place(Some(ModelPlace::GraphicsCard));
     worker.send_presence(false).unwrap();
     a.client().send_presence(false).unwrap();
     let peers = a.client().peers().unwrap();
@@ -1261,6 +1262,8 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
     let p = theirs.presence.as_ref().unwrap();
     assert_eq!(p.kind, KIND_SERVER);
     assert_eq!(p.writer_kind.as_deref(), Some("local"));
+    // T11.6a: with its own local model it says where that model runs.
+    assert_eq!(p.model_place.as_deref(), Some("graphics-card"));
     assert!(
         theirs.online && p.offers_summaries && !p.recording,
         "{theirs:?}"
@@ -1270,12 +1273,16 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
         .find(|p| p.device == a.svc.store().device())
         .unwrap();
     assert_eq!(mine.presence.as_ref().unwrap().kind, KIND_APP);
+    assert_eq!(mine.presence.as_ref().unwrap().model_place, None);
     // The Sync page lists it by its name, online.
     let listed = vault_devices(&a.svc, a.vault()).unwrap();
     let other = listed.iter().find(|d| !d.this_device).unwrap();
     assert_eq!(other.name.as_deref(), Some("Invented server"));
     assert!(other.online && other.offers_summaries);
     assert_eq!(other.writer_kind, Some(WriterKind::Local));
+    assert_eq!(other.model_place, Some(ModelPlace::GraphicsCard));
+    let me = listed.iter().find(|d| d.this_device).unwrap();
+    assert_eq!(me.model_place, None);
     // The model moves (its container was not up yet, or is gone): the next presence says so.
     local.store(false, std::sync::atomic::Ordering::SeqCst);
     worker.send_presence(false).unwrap();
@@ -1288,6 +1295,13 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
         theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
         Some("openai_compatible")
     );
+    // A remote endpoint is never labelled with the profile's processor or graphics card.
+    assert_eq!(theirs.presence.as_ref().unwrap().model_place, None);
+    let listed = vault_devices(&a.svc, a.vault()).unwrap();
+    assert_eq!(
+        listed.iter().find(|d| !d.this_device).unwrap().model_place,
+        None
+    );
     local.store(true, std::sync::atomic::Ordering::SeqCst);
     worker.send_presence(false).unwrap();
     let peers = a.client().peers().unwrap();
@@ -1299,6 +1313,10 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
         theirs.presence.as_ref().unwrap().writer_kind.as_deref(),
         Some("local")
     );
+    assert_eq!(
+        theirs.presence.as_ref().unwrap().model_place.as_deref(),
+        Some("graphics-card")
+    );
     // Not offering: no writer is named, whatever it was given.
     set_offer_summaries(&b.svc, false).unwrap();
     worker.send_presence(false).unwrap();
@@ -1308,6 +1326,7 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
         .find(|p| p.device == b.svc.store().device())
         .unwrap();
     assert_eq!(theirs.presence.as_ref().unwrap().writer_kind, None);
+    assert_eq!(theirs.presence.as_ref().unwrap().model_place, None);
     // A gone blob does not ask the locator (it may look a name up) and names no writer.
     let before = asked.load(std::sync::atomic::Ordering::SeqCst);
     set_offer_summaries(&b.svc, true).unwrap();
@@ -1320,7 +1339,7 @@ fn presence_a_summary_worker_says_server_and_its_own_writer() {
         .unwrap();
     let p = theirs.presence.as_ref().unwrap();
     assert!(
-        p.gone && p.writer_kind.is_none() && p.kind == KIND_SERVER,
+        p.gone && p.writer_kind.is_none() && p.model_place.is_none() && p.kind == KIND_SERVER,
         "{p:?}"
     );
     // A refused address is refused as a stored one would be.
@@ -1474,38 +1493,135 @@ fn presence_back_beats_after_the_first_tick_not_the_next_interval() {
 
 #[test]
 fn presence_blobs_are_one_size_whatever_they_say() {
+    use crate::offload::WriterKind;
     let key = earshot_sync::VaultKey::generate().unwrap();
     let keys = key.keys();
     let device = earshot_core::identity::DeviceId::from_bytes([7; 16]);
     let widest = "\u{1F600}".repeat(MAX_DEVICE_NAME);
     let mut sizes = std::collections::BTreeSet::new();
-    let longest = crate::offload::WriterKind::OpenaiCompatible;
-    for (name, recording, gone, writer) in [
-        ("A", false, false, None),
-        ("A", true, false, Some(crate::offload::WriterKind::Local)),
+    let longest = WriterKind::OpenaiCompatible;
+    let longest_place = ModelPlace::ALL
+        .into_iter()
+        .max_by_key(|p| p.word().len())
+        .unwrap();
+    for (kind, name, recording, gone, writer, place) in [
+        (presence::KIND_APP, "A", false, false, None, None),
         (
+            presence::KIND_APP,
+            "A",
+            true,
+            false,
+            Some(WriterKind::Local),
+            None,
+        ),
+        (
+            presence::KIND_APP,
             "A much longer computer name here",
             true,
             true,
             Some(longest),
+            None,
         ),
-        (widest.as_str(), false, false, Some(longest)),
-    ] {
-        let p = presence::presence_now(
+        (
             presence::KIND_APP,
-            name.to_owned(),
+            widest.as_str(),
+            false,
+            false,
+            Some(longest),
+            None,
+        ),
+        // T11.6a: the longest blob there can be, a worker's with every field at its longest
+        // (the place is sent only with `local`, but the size rule must hold for any blob).
+        (
+            presence::KIND_SERVER,
+            widest.as_str(),
             true,
-            writer,
-            recording,
-            gone,
-        );
+            true,
+            Some(longest),
+            Some(longest_place),
+        ),
+        (
+            presence::KIND_SERVER,
+            "Invented server",
+            false,
+            false,
+            Some(WriterKind::Local),
+            Some(ModelPlace::Processor),
+        ),
+    ] {
+        let p = presence::presence_now(kind, name.to_owned(), true, writer, place, recording, gone);
         let blob = presence::blob_of(&p, &keys, device).unwrap();
         sizes.insert(blob.len());
         let back = presence::open_blob(&keys, device, &blob).unwrap();
         assert_eq!((back.recording, back.gone), (recording, gone));
         assert_eq!(back.name, clean_name(name).unwrap());
+        assert_eq!(back.model_place.as_deref(), place.map(ModelPlace::word));
     }
     assert_eq!(sizes.len(), 1, "every blob is one size: {sizes:?}");
+}
+
+/// T11.6a: an app's presence holds no `model_place` key at all (the same bytes as before the
+/// field existed), and a reader built before the field existed reads a worker's blob that has
+/// one: presence has no `deny_unknown_fields`.
+#[test]
+fn presence_model_place_is_left_out_for_the_app_and_ignored_by_older_readers() {
+    use crate::offload::WriterKind;
+    // The presence struct as it was before T11.6a (no `model_place`).
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Older {
+        v: u32,
+        name: String,
+        app_version: String,
+        kind: String,
+        offers_summaries: bool,
+        writer_kind: Option<String>,
+        recording: bool,
+        #[serde(default)]
+        gone: bool,
+        #[serde(default)]
+        pad: String,
+    }
+    let app = presence::presence_now(
+        presence::KIND_APP,
+        "Invented desk".to_owned(),
+        true,
+        Some(WriterKind::Local),
+        None,
+        false,
+        false,
+    );
+    let json = serde_json::to_string(&app).unwrap();
+    assert_eq!(
+        json,
+        format!(
+            r#"{{"v":1,"name":"Invented desk","app_version":"{}","kind":"app","offers_summaries":true,"writer_kind":"local","recording":false,"gone":false,"pad":""}}"#,
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+    let worker = presence::presence_now(
+        presence::KIND_SERVER,
+        "Invented server".to_owned(),
+        true,
+        Some(WriterKind::Local),
+        Some(ModelPlace::GraphicsCard),
+        false,
+        false,
+    );
+    let json = serde_json::to_vec(&worker).unwrap();
+    assert!(String::from_utf8_lossy(&json).contains(r#""model_place":"graphics-card""#));
+    let older: Older = serde_json::from_slice(&json).unwrap();
+    assert_eq!(
+        (older.kind.as_str(), older.writer_kind.as_deref()),
+        (presence::KIND_SERVER, Some("local"))
+    );
+    // Every word round-trips; anything else is no place.
+    for p in ModelPlace::ALL {
+        assert_eq!(ModelPlace::parse(p.word()), Some(p));
+    }
+    for other in ["", "gpu", "cpu", "Processor", "graphics card", "npu"] {
+        assert_eq!(ModelPlace::parse(other), None, "{other}");
+    }
 }
 
 #[test]

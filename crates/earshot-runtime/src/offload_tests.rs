@@ -163,6 +163,7 @@ fn presence(name: &str, offers: bool, writer: Option<WriterKind>, recording: boo
         kind: "app".into(),
         offers_summaries: offers,
         writer_kind: writer.map(|w| w.word().to_owned()),
+        model_place: None,
         recording,
         gone: false,
         pad: String::new(),

@@ -29,6 +29,7 @@ use earshot_runtime::offload::{
     Continuation, ContinueAnswer, HelperWriter, HereReason, OffloadChoice, OffloadHost,
     Unavailable, WriteHere, WriterKind, reason,
 };
+use earshot_runtime::sync::ModelPlace;
 use serde::Serialize;
 use specta::Type;
 
@@ -48,6 +49,27 @@ pub const fn writer_label(kind: WriterKind) -> &'static str {
         WriterKind::OpenaiCompatible => "own server",
         WriterKind::ClaudeCode => "Claude Code",
         WriterKind::Codex => "Codex",
+    }
+}
+
+/// What the page calls a summary worker's own local model by where it runs (the table's
+/// `local_model_places`, T11.6a).
+#[must_use]
+pub const fn local_model_place_label(place: ModelPlace) -> &'static str {
+    match place {
+        ModelPlace::Processor => "local model, processor",
+        ModelPlace::GraphicsCard => "local model, graphics card",
+    }
+}
+
+/// The label of another computer's writer: its writer kind ([`writer_label`]), or for a summary
+/// worker's own local model with a known place, that place ([`local_model_place_label`]).
+/// The place is used only with [`WriterKind::Local`].
+#[must_use]
+pub const fn computer_writer_label(kind: WriterKind, place: Option<ModelPlace>) -> &'static str {
+    match (kind, place) {
+        (WriterKind::Local, Some(p)) => local_model_place_label(p),
+        _ => writer_label(kind),
     }
 }
 
@@ -212,7 +234,8 @@ pub struct SummaryHelperView {
     pub name: Option<String>,
     /// The first eight hex digits of its id.
     pub short_id: String,
-    /// The kind of writer it uses (fixed copy, [`writer_label`]); `None` when it has none.
+    /// The kind of writer it uses (fixed copy, [`computer_writer_label`]: a summary worker's
+    /// own local model names where it runs); `None` when it has none.
     pub writer: Option<String>,
     /// Whether it writes summaries for the others now.
     pub offers: bool,
@@ -263,13 +286,40 @@ pub(crate) fn remember_computer(
     let mut all = COMPUTERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let known = all.entry(device).or_default();
+    remember_in(all.entry(device).or_default(), name, writer);
+}
+
+fn remember_in(
+    known: &mut crate::summary_order::Named,
+    name: Option<String>,
+    writer: Option<WriterKind>,
+) {
     if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
         known.name = Some(n);
     }
-    if writer.is_some() {
-        known.writer = writer;
+    if let Some(w) = writer {
+        // A place is known only with the writer it came with (T11.6a).
+        if known.writer != Some(w) {
+            known.place = None;
+        }
+        known.writer = Some(w);
     }
+}
+
+/// Remembers what `device`'s presence said, read from the vault's device list: its name, writer
+/// kind and where its own local model runs, which replaces any place heard before (T11.6a).
+pub(crate) fn remember_presence(
+    device: DeviceId,
+    name: Option<String>,
+    writer: Option<WriterKind>,
+    place: Option<ModelPlace>,
+) {
+    let mut all = COMPUTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let known = all.entry(device).or_default();
+    remember_in(known, name, writer);
+    known.place = place.filter(|_| known.writer == Some(WriterKind::Local));
 }
 
 /// What this process has heard of the user's other computers.
@@ -335,7 +385,7 @@ pub fn helpers_view(services: &Services, host: &SyncHost) -> Result<SummaryHelpe
         }
     };
     for d in devices.iter().filter(|d| !d.this_device) {
-        remember_computer(d.device, d.name.clone(), d.writer_kind);
+        remember_presence(d.device, d.name.clone(), d.writer_kind, d.model_place);
     }
     let helpers = devices
         .into_iter()
@@ -345,7 +395,9 @@ pub fn helpers_view(services: &Services, host: &SyncHost) -> Result<SummaryHelpe
             available: d.online && d.offers_summaries && !d.recording && d.writer_kind.is_some(),
             name: d.name,
             short_id: d.short_id,
-            writer: d.writer_kind.map(|k| writer_label(k).to_owned()),
+            writer: d
+                .writer_kind
+                .map(|k| computer_writer_label(k, d.model_place).to_owned()),
             offers: d.offers_summaries,
             online: d.online,
             recording: d.recording,

@@ -12,6 +12,12 @@
 #
 #      EARSHOT_WORKER_RELAY=https://<your relay's address, as your devices use it>
 #      EARSHOT_VERSION=<the Earshot version, or leave it out for latest>
+#      EARSHOT_WORKER_MODEL_PLACE=<processor with --profile cpu, graphics-card with --profile gpu>
+#
+#    The last line is optional: your other devices then show the worker as "local model,
+#    processor" or "local model, graphics card". Left out, they show "local model" only. Any
+#    other word (cpu or gpu included) stops the worker at start. Otherwise the line is only a
+#    label, so change it when you change the profile.
 #
 # 3. Start it with the model on the processor or on an NVIDIA graphics card:
 #
@@ -63,6 +69,8 @@ services:
       EARSHOT_WORKER_MODEL_SUBNET: 172.31.250.0/24
       EARSHOT_WORKER_LLM_CONTEXT: "16384"
       EARSHOT_WORKER_NAME: ${EARSHOT_WORKER_NAME:-Earshot server}
+      # Step 2's label: processor or graphics-card; empty names no place.
+      EARSHOT_WORKER_MODEL_PLACE: ${EARSHOT_WORKER_MODEL_PLACE:-}
       # EARSHOT_WORKER_KEY_FILE: /run/secrets/earshot_vault_key
       # EARSHOT_WORKER_TOKEN_FILE: /run/secrets/earshot_vault_token
     volumes:

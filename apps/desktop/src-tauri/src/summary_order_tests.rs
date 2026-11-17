@@ -16,7 +16,7 @@ use earshot_core::prompt::Template;
 use earshot_runtime::host::{SkipReason, SummaryResult};
 use earshot_runtime::summary_order::run::{RunStepView, RunView, StepResult, SummaryRun};
 use earshot_runtime::summary_settings::EndpointProvider;
-use earshot_runtime::sync::{MemoryVault, SyncVault};
+use earshot_runtime::sync::{MemoryVault, ModelPlace, SyncVault};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
@@ -45,6 +45,7 @@ fn cx() -> StepContext {
             Named {
                 name: Some("Invented desk".into()),
                 writer: Some(WriterKind::Local),
+                place: None,
             },
         )]
         .into_iter()
@@ -164,13 +165,52 @@ fn summary_order_steps_are_labelled_with_where_the_transcript_goes() {
             Named {
                 name: Some("Desk $& co".into()),
                 writer: None,
+                place: None,
             },
         )]
         .into_iter()
         .collect(),
-        ..cx
+        ..cx.clone()
     };
     assert_eq!(step_label(OrderStep::Computer(DESK), &odd), "On Desk $& co");
+    // T11.6a: a summary worker's own local model is labelled with where it runs, in the label
+    // and the line under it; a place never labels another writer kind.
+    let rack = |writer, place| StepContext {
+        names: [(
+            DESK,
+            Named {
+                name: Some("Invented rack".into()),
+                writer: Some(writer),
+                place: Some(place),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..cx.clone()
+    };
+    let on_card = rack(WriterKind::Local, ModelPlace::GraphicsCard);
+    assert_eq!(
+        step_label(OrderStep::Computer(DESK), &on_card),
+        "On Invented rack (local model, graphics card)"
+    );
+    assert_eq!(
+        destination(OrderStep::Computer(DESK), &on_card),
+        "Goes to Invented rack, which writes it with its local model, graphics card"
+    );
+    assert_eq!(
+        step_label(
+            OrderStep::Computer(DESK),
+            &rack(WriterKind::Local, ModelPlace::Processor)
+        ),
+        "On Invented rack (local model, processor)"
+    );
+    assert_eq!(
+        step_label(
+            OrderStep::Computer(DESK),
+            &rack(WriterKind::OpenaiCompatible, ModelPlace::Processor)
+        ),
+        "On Invented rack (own server)"
+    );
 }
 
 #[test]
