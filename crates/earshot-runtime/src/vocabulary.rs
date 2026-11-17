@@ -40,7 +40,7 @@ use earshot_store::{Store, StoreError, StoreTx};
 use crate::RuntimeError;
 use crate::edit::DynStamp;
 use crate::local::DeviceRecord;
-pub use crate::model_settings::UnknownSetting;
+pub use crate::local::UnknownSetting;
 use crate::services::{Services, os_seeded_rng};
 
 #[cfg(test)]

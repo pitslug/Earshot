@@ -10,10 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// cannot report it to anyone; [`pool_failed`] reads it).
 static POOL_FAILED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "engines")]
 /// [`POOL_FAILED`] for the previews' pool threads, apart: a preview never costs speaker work
 /// (`live::preview` docs), nor the reverse.
 static PREVIEW_POOL_FAILED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "engines")]
 /// [`lower_pool_thread`] for a preview session's pool threads.
 pub(crate) fn lower_preview_pool_thread() {
     if lower_current_thread().is_err() {
@@ -21,6 +23,7 @@ pub(crate) fn lower_preview_pool_thread() {
     }
 }
 
+#[cfg(feature = "engines")]
 /// Whether any preview pool thread failed to lower its priority (sticky for the process).
 pub(crate) fn preview_pool_failed() -> bool {
     PREVIEW_POOL_FAILED.load(Ordering::SeqCst)
@@ -41,6 +44,7 @@ pub(crate) fn lower_current_thread() -> Result<(), String> {
     }
 }
 
+#[cfg(feature = "engines")]
 /// The start function of background ONNX Runtime pool threads
 /// ([`earshot_onnx::SessionConfig::background`]): lowers the thread's priority and
 /// records a failure for [`pool_failed`].

@@ -177,24 +177,8 @@ impl ModelSettings {
     }
 }
 
-/// A stored value this build does not know; the default is used instead.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnknownSetting {
-    /// Its `local_state` key.
-    pub key: &'static str,
-    /// What is stored.
-    pub stored: String,
-}
-
-impl fmt::Display for UnknownSetting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the stored setting {} ({:?}) is not known to this version; the default is used",
-            self.key, self.stored
-        )
-    }
-}
+/// A stored value this build does not know (defined in `local`, beside the setting readers).
+pub use crate::local::UnknownSetting;
 
 /// Why a setting was refused (nothing was stored).
 #[derive(Debug)]

@@ -26,8 +26,8 @@ use earshot_core::prompt::{StyleError, StylePreset, SummaryStyle};
 use earshot_store::Store;
 
 use crate::RuntimeError;
+pub use crate::local::UnknownSetting;
 use crate::local::{DeviceRecord, setting_of};
-pub use crate::model_settings::UnknownSetting;
 
 #[cfg(test)]
 #[path = "summary_style_tests.rs"]

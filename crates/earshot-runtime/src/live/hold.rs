@@ -655,7 +655,7 @@ where
                 self.stretch_records.push((track, record));
             }
             self.workers.push(worker);
-            let stored = crate::backends::record_pass_backend(
+            let stored = crate::pass_backend::record_pass_backend(
                 &mut self.services.store(),
                 self.meeting_id,
                 TranscriptPass::Live,

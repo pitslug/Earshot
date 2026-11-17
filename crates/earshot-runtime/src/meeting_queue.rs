@@ -21,16 +21,20 @@
 //! meetings before.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "engines")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use earshot_core::asr::CancelToken;
+#[cfg(feature = "engines")]
 use earshot_hardware::Hardware;
 
+#[cfg(feature = "engines")]
 use crate::backends::Accelerator;
-use crate::host::PreparedSummary;
+#[cfg(feature = "engines")]
 use crate::live::{HoldGates, HoldReason};
+use crate::summary_step::PreparedSummary;
 
 /// How often a wait looks at its cancel token and the CUDA start.
 const WAIT_POLL: Duration = Duration::from_millis(50);
@@ -72,6 +76,7 @@ pub enum Device {
     Npu,
 }
 
+#[cfg(feature = "engines")]
 impl Device {
     /// Where work of backend `kind` ran (`None`: not a device of this computer, a test fake).
     #[must_use]
@@ -109,6 +114,7 @@ pub enum SummaryHold {
 impl SummaryHold {
     /// What `summary` (the meeting's prepared summary, the one its summary step runs) will hold:
     /// a local model on the graphics card when it asks for it, else on the processor.
+    #[cfg(feature = "engines")]
     #[must_use]
     pub fn of(summary: Option<&PreparedSummary>) -> Self {
         match summary.and_then(|s| s.local.as_ref()) {
@@ -122,6 +128,15 @@ impl SummaryHold {
                 size: choice.model.size,
             },
         }
+    }
+
+    /// What `summary` will hold in a build without the in-process engines (T11.6b): nothing on
+    /// this computer, because no local summary model runs in such a build.
+    #[cfg(not(feature = "engines"))]
+    #[must_use]
+    pub fn of(summary: Option<&PreparedSummary>) -> Self {
+        let _ = summary;
+        Self::OffThisComputer
     }
 }
 
@@ -137,6 +152,7 @@ pub struct LiveNeeds {
 }
 
 /// The facts of this computer the rule reads.
+#[cfg(feature = "engines")]
 #[derive(Debug, Clone)]
 pub struct Machine {
     /// Its hardware: reported physical memory and the graphics card's.
@@ -148,6 +164,7 @@ pub struct Machine {
     pub card_summary_fell_back: bool,
 }
 
+#[cfg(feature = "engines")]
 impl Machine {
     /// This computer, with its kind's switched-on pairs.
     #[must_use]
@@ -168,6 +185,7 @@ impl Machine {
 /// live summaries (one summary model at a time).
 ///
 /// [`fits_graphics_card`]: crate::model_settings::fits_graphics_card
+#[cfg(feature = "engines")]
 #[must_use]
 pub fn may_run_beside(summary: SummaryHold, needs: &LiveNeeds, machine: &Machine) -> bool {
     let (device, size) = match summary {
@@ -309,6 +327,7 @@ impl QueueTicket {
     /// Waits until live work needing `needs` may start on `machine`: every older final pass over,
     /// and every older ticket ended or holding a summary it may run beside ([`may_run_beside`]);
     /// `false` when `cancel` came first.
+    #[cfg(feature = "engines")]
     pub fn wait_live_turn(
         &self,
         needs: &LiveNeeds,
@@ -318,6 +337,7 @@ impl QueueTicket {
         self.wait_until(cancel, |t, id| Self::live_free(t, id, needs, machine))
     }
 
+    #[cfg(feature = "engines")]
     fn live_free(t: &Tickets, id: u64, needs: &LiveNeeds, machine: &Machine) -> bool {
         t.open
             .range(..id)
@@ -365,6 +385,7 @@ impl QueueTicket {
 
     /// Whether live work needing `needs` would wait for an older meeting now
     /// ([`Self::wait_live_turn`]).
+    #[cfg(feature = "engines")]
     #[must_use]
     pub fn live_held(&self, needs: &LiveNeeds, machine: &Machine) -> bool {
         !Self::live_free(&self.queue.tickets(), self.id, needs, machine)
@@ -396,9 +417,11 @@ impl Drop for QueueTicket {
 
 /// What a meeting's live work needs, once known: `None` while it cannot be told without waiting
 /// (the CUDA start has not decided) or could not be read, which waits as before T12.39.
+#[cfg(feature = "engines")]
 pub type NeedsFn = Box<dyn Fn() -> Option<LiveNeeds> + Send + Sync>;
 
 /// What lets a [`MeetingHold`] start live decoding beside an older summary (T12.39).
+#[cfg(feature = "engines")]
 pub struct Beside {
     /// What the meeting's live work needs. Cheap, never loads a model: [`HoldGates::reason`] calls
     /// it on the session thread.
@@ -411,6 +434,7 @@ pub struct Beside {
     pub card_summary_fell_back: fn() -> bool,
 }
 
+#[cfg(feature = "engines")]
 impl Beside {
     /// This computer, for a meeting whose live work needs what `needs` says.
     #[must_use]
@@ -423,6 +447,7 @@ impl Beside {
     }
 }
 
+#[cfg(feature = "engines")]
 impl std::fmt::Debug for Beside {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Beside")
@@ -432,6 +457,7 @@ impl std::fmt::Debug for Beside {
 }
 
 /// The gates of a meeting in the app: its turn in the queue and the CUDA start's decision.
+#[cfg(feature = "engines")]
 #[derive(Debug)]
 pub struct MeetingHold {
     ticket: Arc<QueueTicket>,
@@ -445,6 +471,7 @@ pub struct MeetingHold {
     let_through: AtomicBool,
 }
 
+#[cfg(feature = "engines")]
 impl MeetingHold {
     /// The gates of the meeting holding `ticket`: live decoding waits for every older ticket to
     /// end.
@@ -527,10 +554,12 @@ impl MeetingHold {
 /// the order without waiting and never loads the wrong one; `false` when `cancel` came first. It
 /// waits at ONNX Runtime's own gate ([`crate::cuda::wait_for_onnx_unless`]), woken when the choice
 /// is made, never in a sleep loop of its own.
+#[cfg(feature = "engines")]
 fn wait_for_the_library_choice(cancel: &CancelToken) -> bool {
     crate::cuda::wait_for_onnx_unless(cancel) && !cancel.is_cancelled()
 }
 
+#[cfg(feature = "engines")]
 impl HoldGates for MeetingHold {
     fn wait_speakers(&self, cancel: &CancelToken) -> bool {
         self.ticket.wait_final_passes(cancel) && wait_for_the_library_choice(cancel)

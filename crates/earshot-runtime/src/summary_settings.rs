@@ -44,8 +44,8 @@ use earshot_store::Store;
 
 use crate::RuntimeError;
 use crate::live_summaries::{LIVE_SUMMARIES_KEY, StoredSwitch, live_summaries_setting};
+pub use crate::local::UnknownSetting;
 use crate::local::{DeviceRecord, read_setting};
-pub use crate::model_settings::UnknownSetting;
 use crate::summary::{SummaryConfig, summary_allowlist};
 pub use earshot_llm::claude_code::Effort;
 pub use earshot_llm::{ANTHROPIC_DEFAULT_URL, ApiKey};

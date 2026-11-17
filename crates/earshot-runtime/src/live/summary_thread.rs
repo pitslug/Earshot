@@ -94,6 +94,14 @@ fn priority_reason(why: &str) -> String {
     format!("summarising during the meeting could not run below normal priority: {why}")
 }
 
+/// Waits until llama.cpp's DLLs are chosen (`earshot_llm_local::gate`). A build without the
+/// in-process engines (T11.6b) has no llama.cpp and so nothing to wait for; it has no live
+/// mapper either (only a local summary service makes one).
+fn wait_for_llama() {
+    #[cfg(feature = "engines")]
+    earshot_llm_local::wait_for_llama();
+}
+
 impl SummaryThread {
     /// Starts the thread.
     pub(crate) fn spawn(summaries: &LiveSummaries) -> Result<Self, RuntimeError> {
@@ -117,7 +125,7 @@ impl SummaryThread {
                     &out,
                     &left,
                     background,
-                    &earshot_llm_local::wait_for_llama,
+                    &wait_for_llama,
                 );
                 let _ = done_tx.send(());
             })

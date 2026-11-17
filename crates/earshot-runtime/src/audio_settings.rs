@@ -26,8 +26,8 @@ use std::fmt;
 use earshot_store::Store;
 
 use crate::RuntimeError;
+pub use crate::local::UnknownSetting;
 use crate::local::{DeviceRecord, read_setting};
-pub use crate::model_settings::UnknownSetting;
 
 #[cfg(test)]
 #[path = "audio_settings_tests.rs"]

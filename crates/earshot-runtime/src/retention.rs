@@ -33,8 +33,8 @@ use earshot_core::model::{AudioFile, AudioFileRepo, TranscriptPass, live_segment
 use earshot_store::{ORPHAN_GRACE_MS, RetentionClock, RetentionPolicy, Store, StoreError, StoreTx};
 
 use crate::RuntimeError;
+use crate::local::UnknownSetting;
 use crate::local::{DeviceRecord, LocalKey, MeetingRecord};
-use crate::model_settings::UnknownSetting;
 use crate::services::Services;
 
 /// The `local_state` key of the setting.

@@ -2003,7 +2003,7 @@ where
         let mut outcome = outcome;
         let stored = record_echo_report(&mut db, meeting, TranscriptPass::Final, &outcome.echo)
             .and_then(|()| {
-                crate::backends::record_pass_backend(
+                crate::pass_backend::record_pass_backend(
                     &mut db,
                     meeting,
                     TranscriptPass::Final,

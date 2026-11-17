@@ -11,6 +11,17 @@
 //! Later parts of T6.4 add the post-meeting jobs (final pass, diarisation, voiceprints),
 //! the summary (through `earshot-llm` / `earshot-net` only) and the on-demand Obsidian
 //! export. Nothing here exports to a vault on its own.
+//!
+//! # The in-process engines (feature `engines`, on by default)
+//!
+//! whisper.cpp (`earshot-asr-whisper`), ONNX Runtime (`earshot-onnx`), llama.cpp
+//! (`earshot-llm-local`) and the hardware facts (`earshot-hardware`) are behind the default
+//! feature `engines` (T11.6b), with every module that needs them: the backends and model loaders,
+//! the host glue ([`host`] when on), the CUDA and NPU parts, the model catalogue and check,
+//! downloads and updates, and the local summary model. The summary worker builds without it:
+//! sync, summary offload, the order of summary writers and summaries through an endpoint
+//! ([`summary_step`], [`summary::SummaryService`]) need none of them. Every other build keeps the
+//! default.
 
 use std::fmt;
 
@@ -25,22 +36,30 @@ use earshot_llm::LlmError;
 /// that choose their copy by kind.
 pub use earshot_net::{DenyReason, NetError, UrlError};
 /// The ONNX Runtime error inside [`RuntimeError::Onnx`].
+#[cfg(feature = "engines")]
 pub use earshot_onnx::OnnxError;
 use earshot_store::StoreError;
 
+#[cfg(feature = "engines")]
 pub mod archive;
 pub mod audio_check;
 pub mod audio_settings;
+#[cfg(feature = "engines")]
 pub mod backends;
+#[cfg(feature = "engines")]
 pub mod benchmark;
 pub mod call_end;
+#[cfg(feature = "engines")]
 pub mod catalogue;
 pub mod claude_code;
 pub mod codex;
 pub mod cpu;
+#[cfg(feature = "engines")]
 pub mod cuda;
+#[cfg(feature = "engines")]
 pub mod cuda_switch;
 pub mod delete;
+#[cfg(feature = "engines")]
 pub mod download;
 pub mod echo;
 pub mod edit;
@@ -48,43 +67,56 @@ pub mod export;
 pub mod export_settings;
 pub mod first_run;
 pub mod folders;
+#[cfg(feature = "engines")]
 pub mod host;
-
 pub mod identities;
 pub mod keep_local;
 pub mod live;
 pub mod live_summaries;
 mod local;
 pub mod meeting_queue;
+#[cfg(feature = "engines")]
 pub mod model_bench;
+#[cfg(feature = "engines")]
 pub mod model_check;
+#[cfg(feature = "engines")]
 pub mod model_settings;
+#[cfg(feature = "engines")]
 pub mod my_voice;
+#[cfg(feature = "engines")]
 pub mod npu_compiled;
 pub mod offload;
+pub mod pass_backend;
 pub mod post;
 pub mod power;
+#[cfg(feature = "engines")]
 pub mod preview_settings;
 mod priority;
+#[cfg(feature = "engines")]
 pub mod recommend;
 pub mod recover;
 pub mod replay;
 pub mod retention;
 pub mod search;
 pub mod services;
+#[cfg(feature = "engines")]
 pub mod shared_encoders;
 pub mod speaker_timing;
 pub mod speakers;
 pub mod stretches;
 pub mod summary;
+#[cfg(feature = "engines")]
 pub mod summary_child;
 pub mod summary_edits;
+#[cfg(feature = "engines")]
 pub mod summary_model;
 pub mod summary_order;
 pub mod summary_settings;
+pub mod summary_step;
 pub mod summary_style;
 pub mod sync;
 pub mod unknown_lines;
+#[cfg(feature = "engines")]
 pub mod update;
 pub mod view;
 pub mod vocabulary;
@@ -94,11 +126,13 @@ pub mod word_choices;
 mod testutil;
 
 /// The hardware facts' types (T7.4d), for hosts that show them.
+#[cfg(feature = "engines")]
 pub use earshot_hardware;
 pub use local::StoredRecord;
 pub use post::Calibration;
 
 /// This machine's hardware facts: `earshot_hardware::read()`, the one source of them.
+#[cfg(feature = "engines")]
 #[must_use]
 pub fn hardware() -> earshot_hardware::Hardware {
     earshot_hardware::read()
@@ -144,6 +178,7 @@ pub enum RuntimeError {
     /// A local summary failed: the model did not load, the transcript could not be
     /// chunked, or the run failed, was still invalid after its repairs or was cancelled
     /// ([`summary::LocalSummaryError`]).
+    #[cfg(feature = "engines")]
     LocalSummary(summary::LocalSummaryError),
     /// The network client could not be built.
     Net(NetError),
@@ -181,6 +216,7 @@ pub enum RuntimeError {
     /// The requested backend is not available in this build.
     Unavailable(&'static str),
     /// ONNX Runtime or one of its models failed.
+    #[cfg(feature = "engines")]
     Onnx(earshot_onnx::OnnxError),
     /// Audio capture could not start.
     Capture(String),
@@ -218,6 +254,7 @@ impl RuntimeError {
             Self::Llm(earshot_llm::LlmError::ClaudeCode(e)) => e.is_retryable(),
             Self::Llm(earshot_llm::LlmError::Codex(e)) => e.is_retryable(),
             // A child that died or stalled says nothing about the next try.
+            #[cfg(feature = "engines")]
             Self::LocalSummary(
                 summary::LocalSummaryError::GpuChildDied { .. }
                 | summary::LocalSummaryError::GpuChildStalled,
@@ -246,6 +283,7 @@ impl fmt::Display for RuntimeError {
                 model.as_str()
             ),
             Self::Llm(e) => write!(f, "summary: {e}"),
+            #[cfg(feature = "engines")]
             Self::LocalSummary(e) => write!(f, "local summary: {e}"),
             Self::Net(e) => write!(f, "network: {e}"),
             Self::Endpoint(e) => write!(f, "summary endpoint: {e}"),
@@ -289,6 +327,7 @@ impl fmt::Display for RuntimeError {
                 Ok(())
             }
             Self::Unavailable(m) => write!(f, "unavailable: {m}"),
+            #[cfg(feature = "engines")]
             Self::Onnx(e) => write!(f, "onnx runtime: {e}"),
             Self::Capture(m) => write!(f, "capture: {m}"),
             Self::CaptureStart { detail, .. } => write!(f, "capture: {detail}"),

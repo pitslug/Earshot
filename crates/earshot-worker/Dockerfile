@@ -2,9 +2,10 @@
 #
 #   docker build -f crates/earshot-worker/Dockerfile -t earshot-worker .
 #
-# Two stages, base images pinned by digest: the pinned Rust toolchain builds the worker (the
-# runtime brings whisper.cpp, linked in, and llama.cpp, as shared libraries), and a slim Debian
-# runs it as a user without a login, with its database and vault files on the /data volume.
+# Two stages, base images pinned by digest: the pinned Rust toolchain builds the worker (with the
+# runtime's in-process engines left out, T11.6b: no whisper.cpp, ONNX Runtime or llama.cpp), and a
+# slim Debian runs it as a user without a login, with its database and vault files on the /data
+# volume.
 # The build reads the built binary with `ldd` and copies exactly the shared libraries it needs
 # that the slim image does not carry; the run stage checks with `ldd` that nothing is missing.
 # Nothing secret is in any layer: the vault key and token are written by `join` at run time.
@@ -13,21 +14,15 @@ FROM rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e
 # The repository's rust-toolchain.toml also lists Windows targets; this variable makes rustup
 # use the image's toolchain (the same version) and ignore that file.
 ENV RUSTUP_TOOLCHAIN=1.99.1
-# .cargo/config.toml sets these to MSVC flags for Windows release builds of whisper.cpp and
-# llama.cpp; a real environment variable takes precedence, so give gcc its own.
-ENV CMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" CMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG"
-# CMake and a C++ compiler build whisper.cpp and llama.cpp; libclang generates their bindings.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake g++ make clang libclang-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Without the engines nothing runs CMake, a C++ compiler or bindgen: the only native code left is
+# C (SQLite, bundled by rusqlite, and ring), which the image's own gcc builds.
 WORKDIR /src
 # Cargo needs every member's manifest to read the workspace; only the worker is built.
 COPY . .
 RUN cargo build --release --locked -p earshot-worker \
     && cp target/release/earshot-worker /earshot-worker
-# The binary's shared libraries, resolved with llama.cpp's own beside it: every one ldd names,
-# except glibc's (the slim image of the same Debian release carries those). A library ldd cannot
-# find fails the build.
+# The binary's shared libraries: every one ldd names, except glibc's (the slim image of the same
+# Debian release carries those). A library ldd cannot find fails the build.
 RUN set -eu; \
     export LD_LIBRARY_PATH="/src/target/release"; \
     ldd /earshot-worker | tee /ldd-build.txt; \

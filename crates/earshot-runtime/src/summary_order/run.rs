@@ -37,10 +37,10 @@ use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 use super::{OrderStep, SummaryOrder, WriterStep};
-use crate::host::{PreparedSummary, SkipReason, SummaryResult};
 use crate::keep_local::SummaryPrivacy;
 use crate::local::{LocalKey, MeetingRecord};
 use crate::offload::{HelperWriter, OffloadChoice, Unavailable, WriterKind, reason};
+use crate::summary_step::{PreparedSummary, SkipReason, SummaryResult};
 use crate::{RuntimeError, Services};
 
 /// The run record's format version.
@@ -372,6 +372,7 @@ pub fn skip_word(reason: &SkipReason) -> Option<OutcomeWord> {
 pub fn failure_word(step: WriterStep, error: &RuntimeError) -> Option<OutcomeWord> {
     use earshot_llm::LlmError;
     match (step, error) {
+        #[cfg(feature = "engines")]
         (WriterStep::Local, RuntimeError::LocalSummary(e)) => local_word(e),
         (WriterStep::Local, RuntimeError::ModelMissing { .. }) => Some(OutcomeWord::NotInstalled),
         (WriterStep::Endpoint, RuntimeError::ApiKey(_)) => Some(OutcomeWord::NoApiKey),
@@ -406,6 +407,7 @@ pub fn failure_word(step: WriterStep, error: &RuntimeError) -> Option<OutcomeWor
 
 /// The local model's failures: every one moves on (each after its own CPU retry) except a
 /// cancellation.
+#[cfg(feature = "engines")]
 fn local_word(e: &crate::summary::LocalSummaryError) -> Option<OutcomeWord> {
     use crate::summary::LocalSummaryError as L;
     use earshot_llm_local::summarize::SummaryFailure as F;
@@ -910,7 +912,7 @@ fn run_steps(
                         end.cursor = i + 1;
                         end.waiting_on = None;
                         let service = &prepared.service;
-                        let result = crate::host::run_summary_in_run(
+                        let result = crate::summary_step::run_summary_in_run(
                             services,
                             meeting,
                             service,
@@ -926,7 +928,7 @@ fn run_steps(
                         match result {
                             SummaryResult::Stored { .. } => {
                                 out.claude_effort_unread =
-                                    crate::host::claude_effort_unread(service, &result);
+                                    crate::summary_step::claude_effort_unread(service, &result);
                                 out.summary = result;
                                 return out.with_steps(&end);
                             }
