@@ -2406,7 +2406,7 @@ Parked until a user with such hardware needs it (the owner, 2026-11-13). Ids kee
   - deps: T11.6
   - do: with no key or token, `run` logs a fixed "waiting to join" once, re-checks the vault files every few seconds and starts once they are there; the health check reports unhealthy "not joined" meanwhile; `docker exec -it earshot-worker earshot-worker join` in the running container is the documented join (compose file comments, docs/sync.md "Running the worker"). The code still comes only from stdin; a stop while waiting exits cleanly and sends no presence.
   - accept: `cargo test -p earshot-worker`
-- [ ] T11.6a The worker's presence names processor or graphics card
+- [~] T11.6a The worker's presence names processor or graphics card
   - found (T11.6, 2026-11-15).
   - deps: T11.6
   - do: docs/sync.md section 10 promises "On <server> (local model, processor)" or "graphics card"; presence carries only the writer kind today. Add an optional presence field read from the worker's compose profile, and the copy in `fixtures/ui/offload_copy_cases.json` (both suites); presence stays one padded size.
