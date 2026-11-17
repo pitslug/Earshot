@@ -1,6 +1,6 @@
 # Voice samples: taking one meeting's voice back out of a voiceprint (T12.77b)
 
-Status: draft design v2, 2026-11-18, not built. v1 was blocked by a spec review (the stored sum kept as a synced, last-writer-wins, repaired value could bring a removed voice back); v2 makes the samples the only record of new enrolments. Waits on a second spec review and the owner's answers to section 11.
+Status: draft design v2, 2026-11-18, not built. v1 was blocked by a spec review (the stored sum kept as a synced, last-writer-wins, repaired value could bring a removed voice back); v2 makes the samples the only record of new enrolments. Second spec review done (section 12); the owner answered section 11 on 2026-11-18. The section 12 design fixes go in before code.
 
 ## 1. The problem and the decision
 
@@ -96,25 +96,26 @@ Migration 9 in `crates/earshot-store/src/schema.rs`: `CREATE TABLE voiceprint_sa
 - Sync: "Not" racing an enrolment in both push orders and both clock orders (the removed voice never comes back, the enrolment stays); a sample tombstone final against its live copy; a print tombstone final against a later live print; a late sample or print of a person tombstoned here erased and flushed; a just-updated device with held samples gives base plus samples, never double; each malformed pulled sample held as `Format`; a concurrent enrolment into an emptied print counts; an older build holds the entity as `Format`.
 - Runtime: `save_voice` then `not_this_person`, relink away or `mark_me` takes the sample back; the pre-0.4.0 case returns `TakenBack(0)`; a re-run that carries the entry still takes back, one that does not reports nothing; `merge_speakers` merges sample lists; each enrol path records its origin; meeting deletion leaves samples untouched.
 
-## 11. Still the owner's to decide
+## 11. The owner's decisions (2026-11-18)
 
-1. **Older builds in one vault.** They match on the base only, so a print created in 0.4.0 is unscorable there. Require every computer on 0.4.0 before voiceprints sync, or accept it?
-2. **Re-saving a voice after a re-run.** It reads `AlreadyEnrolled` while the old sample lives. Replace the old sample instead?
-3. **"Not" with no identity record.** On a computer without the meeting's identity record (a synced meeting; centroids are device-local) "Not" stays refused. Take back by `(meeting, speaker)` there?
-4. **Retention.** Keep samples for the life of the print, or compact old ones into the base (they could no longer be taken back)?
-5. **Copy.** Wording for "nothing saved from this meeting can be taken back".
+1. **Older builds in one vault: forced update.** The version that starts sending samples raises the vault format, so older builds and older workers stop syncing with `UpdateNeeded` until updated (the existing path). This also settles N1 below: no older build ever holds a sample.
+2. **Re-saving a voice after a re-run: replace.** Save takes back that meeting's earlier sample for the voice and stores the new one; one sample per voice per meeting, never counted twice.
+3. **"Not" with no identity record: take back by `(meeting_id, speaker_id)`.** Removal is keyed on the sample's own meeting and speaker, so it works on any computer. A sample keeps its meeting's id after the meeting is deleted (an id, no content): accepted.
+4. **Retention: for the life of the print.** No compaction. Removing the person removes every sample.
+5. **Copy** for a voice saved before samples existed: "Unlinked. This voice was saved before Earshot <version>, so it stays part of <name>'s saved voice. To start their voice over, remove them on the People page." (`<version>` is the release that ships samples.)
+6. **Re-runs and orphans: keep.** Only the user's own edits (Not, relink away, mark as me, merge) take a sample back, on the computer where the edit is made. A final pass (on any computer) that drops or renumbers the speaker leaves the sample counting; an orphaned sample keeps counting until the user removes it or the person.
 
 ## 12. Second spec review (2026-11-18): what is left before code
 
-v2 closes the first review's convergence failures (no removed voice comes back, nothing counted twice, removal independent of clock order). Still open:
+v2 closes the first review's convergence failures (no removed voice comes back, nothing counted twice, removal independent of clock order). Left before code:
 
-- **Blocking, the owner's decision (N1).** An older build holds an undecodable row before it checks the opt-in switches, so every computer still on 0.3.x and every `earshot-worker` not yet updated would keep voice samples in `sync_pending` beside the vault key, even with voiceprint sync off; the worker exists to keep voice data off the server. Either raise the vault format when samples start flowing (older builds get `UpdateNeeded`, the existing path) or accept that residue explicitly.
+- **N1, decided 2026-11-18 (section 11.1): raise the vault format.** An older build holds an undecodable row before it checks the opt-in switches, so every computer still on 0.3.x and every `earshot-worker` not yet updated would keep voice samples in `sync_pending` beside the vault key, even with voiceprint sync off; the worker exists to keep voice data off the server. Either raise the vault format when samples start flowing (older builds get `UpdateNeeded`, the existing path) or accept that residue explicitly.
 - **To fix in the design before code:**
   - Keep `enroll` taking a slice with one speech check on the total (one sample per embedding, in order), so the calibration test and `accept m3`'s `vp.*` protocol stay unchanged; `vp_readout` needs rewriting.
-  - State the invariant instead of listing call sites: while its meeting is live, a meeting-origin sample points at a live speaker row linked into its identity, and any write that ends that takes the sample back in the same transaction. That covers `merge_speakers`, `link_in` away and `mark_me` (except a row already resolving to the user); whether the final pass and speaker rows relinked on another computer are held to it is the owner's call (cost: real enrolments erased by a re-transcribe elsewhere).
-  - Key removal one way only: on the sample's `(meeting_id, speaker_id)` (works on any computer, keeps a link after deletion) or on the device-local list (no residue, one computer only). The owner's call.
+  - State the invariant instead of listing call sites: while its meeting is live, a meeting-origin sample points at a live speaker row linked into its identity, and any write that ends that takes the sample back in the same transaction. That covers `merge_speakers`, `link_in` away and `mark_me` (except a row already resolving to the user); the final pass and speaker rows changed on another computer are not held to it (decided, section 11.6), so the invariant covers only the user's own edits.
+  - Key removal one way only: on the sample's `(meeting_id, speaker_id)` (decided, section 11.3).
   - Readers missed: `my_voice::my_voice` (speech total), `Voiceprint::centroid` and `score` (make private, pin with a scan test); an empty or held print must not raise `PostWarning::SkippedVoiceprints`.
   - Validation: writers build samples through the same checked constructor; give `MAX_EMBEDDING_DIM` (JSON under `MAX_PLAINTEXT`) and `MAX_SAMPLE_SPEECH_MS` (at most `i64::MAX`, clamped at write) values; accept any tombstone and store zeros; skip a sample whose `person_id` differs from its print's; saturate rather than disable on overflow.
   - Relink and `mark_me` erasures report their count, have copy, flush and an on-disk test each; a pre-0.4.0 entry with `enrolled == true` still answers `AlreadyEnrolled`.
   - Drop compaction (section 11 question 4): it would add to `voiceprint.sum`, which section 3 forbids.
-- **Added to the owner's questions:** samples keeping a deleted meeting's id on every synced computer (section 7 decided it; it is a privacy call), and orphaned samples (keep counting, or erase when their speaker row goes).
+- **Decided with section 11:** samples keep a deleted meeting's id on every synced computer (accepted, 11.3), and orphaned samples keep counting (11.6).

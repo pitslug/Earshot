@@ -1,6 +1,6 @@
 # Earshot on Android: draft spec (v2, M10)
 
-Status: draft, 2026-11-17. Nothing here is built. Building waits for the desktop and Surface hand tests of 0.3.11 (the owner). Decisions still open are marked **Open** with a recommended default; a refreshed M10 task list follows at the end and replaces PLAN.md's M10 entries only once the owner agrees (scope and task order are the owner's, AGENTS.md 6.2).
+Status: draft, 2026-11-17. Nothing here is built. Building waits for the desktop and Surface hand tests of 0.3.11 (the owner). Decisions A1 to A5 were agreed by the owner on 2026-11-18 as recommended; a refreshed M10 task list follows at the end and replaces PLAN.md's M10 entries only once the owner agrees (scope and task order are the owner's, AGENTS.md 6.2).
 
 ## 1. What changed since M10 was planned (October)
 
@@ -15,11 +15,11 @@ What carries over unchanged: the in-person pipeline (mic only, no echo canceller
 
 ## 2. The phone's role
 
-**Open (decision A1): standalone, recorder with sync, or both.** Recommended: both, with sync optional. Without sync the phone is a complete recorder and transcriber, and summaries follow the order of writers with whatever this phone can reach; with sync its meetings go to the other computers and its summary goes to the first writer in the order that answers (the desktop, the Unraid worker), as on the Surface.
+**Decided (A1, 2026-11-18): both, with sync optional.** Without sync the phone is a complete recorder and transcriber, and summaries follow the order of writers with whatever this phone can reach; with sync its meetings go to the other computers and its summary goes to the first writer in the order that answers (the desktop, the Unraid worker), as on the Surface.
 
-**Open (decision A2): in-person meetings only.** Recommended: yes. Android restricts recording another app's call audio [Likely; to confirm in the spike], so v2 records the room through the phone's microphone and nothing else. Calls stay a desktop and Surface job.
+**Decided (A2, 2026-11-18): in-person meetings only.** Android restricts recording another app's call audio [Likely; to confirm in the spike], so v2 records the room through the phone's microphone and nothing else. Calls stay a desktop and Surface job.
 
-**Open (decision A3): Wear OS in the first Android release or after.** Recommended: after (T10.7 stays last). The watch adds a second app, its own pairing and a link-traffic check, for a remote control.
+**Decided (A3, 2026-11-18): Wear OS after the first Android release (T10.7 stays last).** The watch adds a second app, its own pairing and a link-traffic check, for a remote control.
 
 ## 3. Architecture
 
@@ -75,12 +75,12 @@ Rule written before measuring, as for every evaluation here. Compared on the Pix
 - **An hour's session:** no drop, no stall, memory flat.
 - **Battery and heat:** percentage per hour and the thermal status reported by Android, against Parakeet.
 - **Privacy:** section 4.3.
-- **Pass rule (proposed, to fix with the owner before running):** advanced mode ships if its WER is no worse than Parakeet's plus 2 points on AMI SDM, the hour runs clean, it uses less battery than Parakeet, and the privacy check is clean. Otherwise Parakeet on the CPU is the phone's transcriber and advanced mode is revisited when the API leaves alpha.
+- **Pass rule (agreed by the owner, A5, 2026-11-18):** advanced mode ships if its WER is no worse than Parakeet's plus 2 points on AMI SDM, the hour runs clean, it uses less battery than Parakeet, and the privacy check is clean. Otherwise Parakeet on the CPU is the phone's transcriber and advanced mode is revisited when the API leaves alpha.
 
 ## 5. Summaries
 
 - The order of summary writers (T12.63) works unchanged on the phone. Default for a phone with sync: the desktop or the Unraid worker first. Without sync, or with neither reachable: Claude through an API key or the user's endpoint if they set one, else no summary until a writer is reachable (a kept-local meeting is summarised only on the phone or by the user's own model).
-- **Open (decision A4): on-device summaries with Gemini Nano (T10.4a).** Recommended: after the first Android release, as a spike, because the offload covers most cases and the transcription spike already exercises AICore.
+- **Decided (A4, 2026-11-18): on-device summaries with Gemini Nano (T10.4a) come after the first Android release, as a spike,** because the offload covers most cases and the transcription spike already exercises AICore.
 
 ## 6. Capture, battery and heat
 
@@ -104,9 +104,9 @@ Rule written before measuring, as for every evaluation here. Compared on the Pix
 12. **T10.7 Wear OS companion**: after, per A3.
 13. **GATE-06 Pixel field test**, **GATE-07 v2 sign-off** (unchanged).
 
-## 8. Open decisions
+## 8. Decisions (agreed 2026-11-18)
 
-| | Decision | Recommended |
+| | Decision | Agreed |
 |---|---|---|
 | A1 | Standalone, recorder with sync, or both | Both, sync optional |
 | A2 | In-person only | Yes |
