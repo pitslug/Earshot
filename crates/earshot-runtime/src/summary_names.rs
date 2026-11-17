@@ -2,7 +2,8 @@
 //!
 //! A summary is written right after a meeting, before voices are named, so it says "Speaker 2
 //! will..." about a voice the user then names. Linking a voice, renaming it here or renaming
-//! its person, "Not <name>", "This is me", "This isn't me" and removing a person each change a
+//! its person (the user's own name too, `crate::my_voice::set_my_name`), "Not <name>", "This
+//! is me", "This isn't me" and removing a person each change a
 //! speaker row's name. Such a change records the old name against the meeting's current
 //! summary only when that summary uses it: a whole word, case folded with
 //! [`crate::search::fold_case`], in any text the meeting search reads in a summary
