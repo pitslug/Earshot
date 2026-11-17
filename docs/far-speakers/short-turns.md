@@ -101,3 +101,30 @@ What this does not show:
 - Ten talkers and one seed per scene: a weak signal (see "How far this can be trusted").
 
 Per the rule, the next step is a production task for the owner to agree: the per-model setting with its source, a re-run of `cargo xtask accept m3` and `accept m6`, and, before it ships, a look at the private recording that raised the question.
+
+## The owner's calls (T12.73)
+
+Written and committed before the first run on the owner's data. Evaluation only: nothing shipped changes.
+
+**Data.** A copy of the owner's `earshot.db`, made into `fixtures/private/real-meetings/<run>/` (git-ignored) by the `store_parts/copy.rs` rule and opened read-only; the recordings are read in place as files and never written. The call that raised the question is named only in a private settings file outside the repo (`%USERPROFILE%\.earshot-private\t1273.toml`, key `call_title`); the tool refuses unless exactly one live meeting has that title. The other tracks are the reference (far-end) track of every other live meeting whose reference recording is still on disk. Track labels are `c` for the call and `t1`, `t2`, ... for the others, in start order; no id, title or name is printed.
+
+**Pipeline.** As in "The pipeline" above: the production final-pass diarisation on the CPU of each stored reference track, model outputs recorded once and replayed, the replayed baseline equal to the direct run. Two settings only: the baseline and T12.66's pick (f 0.60, d 0.80, m 8 s, plain). Nothing is chosen on this data.
+
+**Measures**, per track:
+- speakers found at the baseline and at the pick;
+- new speakers, each with its speech in seconds;
+- speech moved from each baseline speaker to a new one;
+- kept speakers gaining, which must be 0 (the tool fails otherwise).
+
+Each new speaker's turns (start and end times only) go into a file inside the run folder, so the owner can listen to them; nothing else of a turn is written.
+
+**Rule.**
+1. **The call:** at least one new speaker appears on track `c`, and the owner, listening to its turns (all of them, or the first 10 when there are more), says most of its speech is the talker who spoke only in short turns.
+2. **The other tracks:** no new speaker appears, or the owner, listening the same way, says each new speaker is a real voice today's clustering missed.
+3. Both hold: T12.74 may start once the owner agrees. Otherwise T12.74 does not start, the result is recorded here and the question is parked.
+
+**Limits.** One call is the case that raised the question, so a pass says the pick fixes the case seen, not that it generalises. The owner's judgement by ear is the only truth on these tracks. The other tracks are only those whose recordings retention has kept.
+
+### Result (T12.73)
+
+Not run yet.
