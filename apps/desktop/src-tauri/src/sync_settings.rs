@@ -114,14 +114,18 @@ pub struct SyncHost {
     changes: Mutex<Option<ChangeListener>>,
 }
 
-/// What sync brought to this computer (T12.81): the meetings a tick changed here, by id only
-/// (never a title, a line or a summary), so the window reads them again. Sent only after a tick
-/// that changed rows; `meetings` is empty when only people, folders or Dictionary words changed,
-/// which the meeting list still reads again.
+/// What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
+/// tick and the offload step after it) changed here, by id only (never a title, a line or a
+/// summary), so the window reads them again. Sent only after a pass that changed something;
+/// `meetings` is empty when only people, folders or Dictionary words changed, which the meeting
+/// list still reads again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type, tauri_specta::Event)]
 pub struct SyncEvent {
     /// Meeting ids.
     pub meetings: Vec<String>,
+    /// A person changed (a rename, a merge, a "Me" repair): names in every meeting resolve
+    /// through persons, so the open meeting is read again even when it is not named.
+    pub people: bool,
 }
 
 /// The window's event for what a tick changed: ids only.
@@ -129,6 +133,7 @@ pub struct SyncEvent {
 pub fn sync_event(changes: &SyncChanges) -> SyncEvent {
     SyncEvent {
         meetings: changes.meetings.iter().map(ToString::to_string).collect(),
+        people: changes.people,
     }
 }
 

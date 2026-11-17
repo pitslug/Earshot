@@ -65,6 +65,8 @@ pub struct TickReport {
     /// The meetings whose rows this tick wrote or deleted here (ids only;
     /// [`earshot_store::Applied::meetings`] plus the meetings deleted here).
     pub meetings: BTreeSet<EntityId>,
+    /// Whether a person row was written here or "Me" people merged.
+    pub people: bool,
 }
 
 impl TickReport {
@@ -75,18 +77,56 @@ impl TickReport {
     }
 }
 
-/// What a tick changed here, as the window hears it (T12.81): the ids of the meetings it touched,
-/// never anything they hold. Empty when only rows outside any meeting changed (people, folders,
-/// Dictionary words), which still changes what the meeting list shows.
+/// What one pass of the sync thread changed here, as the window hears it (T12.81): its tick and
+/// the offload step after it. The ids of the meetings it touched, never anything they hold.
+/// `meetings` is empty when only rows outside any meeting changed (people, folders, Dictionary
+/// words), which still changes what the meeting list shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncChanges {
-    /// The meetings whose rows were written or deleted here, in id order.
+    /// The meetings whose rows were written or deleted here, or whose waiting for another
+    /// computer the offload step changed (withdrawn, handed back, ended), in id order.
     pub meetings: Vec<EntityId>,
+    /// A person changed (a rename, a merge, a "Me" repair): names in every meeting resolve
+    /// through persons, so an open meeting is read again whether or not it is named.
+    pub people: bool,
 }
 
-/// Told after every tick that changed rows here ([`SyncClient::with_changes`]), on the sync
-/// thread, with no store lock held. It must not block: a host forwards the ids and returns.
+impl SyncChanges {
+    /// What a tick and the offload step after it changed, merged; `None` when neither changed
+    /// anything here (a tick that only pushed, or pulled nothing newer, and a step that wrote
+    /// nothing as an asker).
+    #[must_use]
+    pub fn after(
+        tick: Option<&TickReport>,
+        step: Option<&crate::offload::StepReport>,
+    ) -> Option<Self> {
+        let ticked = tick.is_some_and(TickReport::changed);
+        let stepped = step.is_some_and(|s| !s.meetings.is_empty());
+        if !ticked && !stepped {
+            return None;
+        }
+        let mut meetings: BTreeSet<EntityId> = BTreeSet::new();
+        if let Some(t) = tick {
+            meetings.extend(t.meetings.iter().copied());
+        }
+        if let Some(s) = step {
+            meetings.extend(s.meetings.iter().copied());
+        }
+        Some(Self {
+            meetings: meetings.into_iter().collect(),
+            people: tick.is_some_and(|t| t.people),
+        })
+    }
+}
+
+/// Told once per pass of the sync thread that changed anything here
+/// ([`SyncClient::with_changes`], [`SyncChanges::after`]), on the sync thread, with no store lock
+/// held. It must not block: a host forwards the ids and returns. A panic in it is caught and
+/// never ends sync ([`SyncClient::tell_changes`]).
 pub type ChangeListener = Arc<dyn Fn(&SyncChanges) + Send + Sync>;
+
+/// What is printed when a change listener panics: fixed words, nothing it was told.
+pub const LISTENER_PANICKED: &str = "earshot-sync: the change listener panicked";
 
 /// Another device's presence, as this device reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,14 +315,26 @@ impl SyncClient {
         self
     }
 
-    /// After every tick that changed rows here (written, a meeting deleted, a repair), whatever
-    /// the tick's outcome, `listener` hears the ids of the meetings it touched (T12.81): the app
-    /// tells its window, which reads them again. A tick that only pushed, or pulled nothing
-    /// newer, says nothing.
+    /// After every pass of the sync thread that changed anything here (its tick, whatever the
+    /// tick's outcome, and the offload step after it), `listener` hears the ids of the meetings
+    /// it touched, once per pass (T12.81): the app tells its window, which reads them again.
     #[must_use]
     pub fn with_changes(mut self, listener: ChangeListener) -> Self {
         self.changes = Some(listener);
         self
+    }
+
+    /// Tells the listener ([`Self::with_changes`]) what a pass changed. A panic in it is caught
+    /// and printed as [`LISTENER_PANICKED`]; returns whether it was told without one.
+    pub fn tell_changes(&self, changes: &SyncChanges) -> bool {
+        let Some(listener) = &self.changes else {
+            return true;
+        };
+        let told = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(changes)));
+        if told.is_err() {
+            eprintln!("{LISTENER_PANICKED}");
+        }
+        told.is_ok()
     }
 
     /// Every request this client made, one entry per hop.
@@ -413,6 +465,13 @@ impl SyncClient {
     /// # Errors
     /// The first [`SyncProblem`]; what was pushed or applied before it stays done.
     pub fn tick(&self) -> Result<TickReport, SyncProblem> {
+        let (report, outcome) = self.tick_reporting();
+        outcome.map(|()| report)
+    }
+
+    /// [`Self::tick`], keeping what it did even when it ends on a problem (rows applied before
+    /// the problem stay applied, and the window must hear of them).
+    pub fn tick_reporting(&self) -> (TickReport, Result<(), SyncProblem>) {
         let mut report = TickReport::default();
         let outcome = self.tick_into(&mut report);
         {
@@ -430,15 +489,7 @@ impl SyncClient {
             }
             let _ = set_sync_status(&mut db, &status);
         }
-        // With the store lock free: what a failed tick applied before its problem is told too.
-        if report.changed()
-            && let Some(listener) = &self.changes
-        {
-            listener(&SyncChanges {
-                meetings: report.meetings.iter().copied().collect(),
-            });
-        }
-        outcome.map(|()| report)
+        (report, outcome)
     }
 
     fn tick_into(&self, report: &mut TickReport) -> Result<(), SyncProblem> {
@@ -679,6 +730,7 @@ impl SyncClient {
         report.repaired +=
             applied.mes_merged + applied.summaries_replaced + applied.withdrawals_kept;
         report.meetings.extend(applied.meetings);
+        report.people |= applied.people;
         Ok(())
     }
 

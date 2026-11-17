@@ -888,7 +888,8 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             Some(s) => earshot_runtime::summary_edits::is_edited(&db, meeting, s.id)?,
             None => false,
         };
-        let waiting_for = earshot_runtime::offload::waiting_for(&db, db.device(), meeting)?;
+        // A summary that arrived before the request's own row ends the waiting (T12.81).
+        let waiting_for = earshot_runtime::offload::waiting_shown(&db, db.device(), meeting)?;
         let run_view = earshot_runtime::summary_order::run::run_view(&db, meeting)?;
         (
             persons,
@@ -1024,24 +1025,13 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         word_list: words.list,
         dictionary,
         // The device's name as this process heard it (its presence, or when it was asked);
-        // "your other computer" until then. A run that reads as ended holds a summary written
-        // after the request (`run_view`): it arrived, even before the request's own row did.
-        waiting_for: waiting_for
-            .filter(|_| {
-                !matches!(
-                    run_view,
-                    earshot_runtime::summary_order::run::RunView::Ended(_)
-                )
-            })
-            .map(|device| {
-                let name = crate::offload::known_computers()
-                    .get(&device)
-                    .and_then(|n| n.name.clone());
-                crate::offload::waiting_banner(
-                    name.as_deref(),
-                    crate::offload::if_no_answer(&run_view),
-                )
-            }),
+        // "your other computer" until then.
+        waiting_for: waiting_for.map(|device| {
+            let name = crate::offload::known_computers()
+                .get(&device)
+                .and_then(|n| n.name.clone());
+            crate::offload::waiting_banner(name.as_deref(), crate::offload::if_no_answer(&run_view))
+        }),
         // A run not ended while the meeting's work or a job still holds it is not interrupted.
         summary_run: crate::summary_order::run_note(
             &run_view,

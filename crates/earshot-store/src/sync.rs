@@ -303,6 +303,9 @@ pub struct Applied {
     /// rules replaced: ids only, so the window can read again what changed (T12.81). A row
     /// held, ignored or skipped names nothing.
     pub meetings: std::collections::BTreeSet<EntityId>,
+    /// Whether a person row was written here or "Me" people merged: names shown in any meeting
+    /// resolve through persons, so the window reads the open meeting again (T12.81).
+    pub people: bool,
 }
 
 impl Applied {
@@ -445,6 +448,7 @@ fn converge<C: Clock + ?Sized>(
             merged.meta.touch(hlc, clock);
             crate::repo::put_person(&tx.conn, &merged)?;
             out.mes_merged += 1;
+            out.people = true;
         }
     }
     let crowded: Vec<[u8; 16]> = {
@@ -847,6 +851,7 @@ impl Store {
                 if let Some(m) = row.meeting() {
                     out.meetings.insert(m);
                 }
+                out.people |= matches!(row, SyncedRow::Person(_));
                 if let SyncedRow::Person(p) = row
                     && p.meta.deleted
                     && person_was_live

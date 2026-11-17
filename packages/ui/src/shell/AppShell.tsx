@@ -387,6 +387,9 @@ export function AppShell({
   const [reload, setReload] = useState(0);
   // Per meeting, how many sync ticks changed it (T12.81): its open page reads it again.
   const [synced, setSynced] = useState<Record<string, number>>({});
+  // How many sync passes changed a person (T12.81): names in every meeting resolve through
+  // persons, so the open page reads itself again whatever meeting was named.
+  const [peopleSynced, setPeopleSynced] = useState(0);
   const [nameVoices, setNameVoices] = useState(0);
   // The meeting the delete dialog asks about, and why a delete was refused.
   // With what deleting it means now (T12.38), asked before the dialog opens.
@@ -506,6 +509,7 @@ export function AppShell({
       .onSyncEvent((e) => {
         if (!live) return;
         refresh();
+        if (e.people) setPeopleSynced((n) => n + 1);
         if (e.meetings.length === 0) return;
         setSynced((all) => {
           const next = { ...all };
@@ -1308,7 +1312,7 @@ export function AppShell({
             selected={selected}
             ended={ended}
             refresh={detailRefresh}
-            synced={selected !== null ? (synced[selected.id] ?? 0) : 0}
+            synced={(selected !== null ? (synced[selected.id] ?? 0) : 0) + peopleSynced}
             summaryStored={summaryStored}
             onNewMeeting={newMeeting}
             nameVoices={nameVoices}
@@ -1617,7 +1621,7 @@ function Detail({
   selected: MeetingListItem | null;
   ended: EndedMeeting | null;
   refresh: number;
-  /** Changes when sync changed the selected meeting (T12.81). */
+  /** Changes when sync changed the selected meeting or any person (T12.81). */
   synced: number;
   summaryStored: number;
   onNewMeeting: () => void;

@@ -195,50 +195,114 @@ fn sync_two_devices_converge_after_concurrent_edits() {
 fn sync_a_tick_that_changed_rows_names_their_meetings_and_only_then() {
     let relay = relay();
     let (a, b) = pair(&relay);
-    let heard: Arc<std::sync::Mutex<Vec<super::SyncChanges>>> = Arc::default();
-    let sink = Arc::clone(&heard);
-    let ca = a.client();
-    let cb = b
-        .client()
-        .with_changes(Arc::new(move |c: &super::SyncChanges| {
-            sink.lock().unwrap().push(c.clone());
-        }));
-    let calls = || heard.lock().unwrap().clone();
+    let (ca, cb) = (a.client(), b.client());
+    let changes = |r: &TickReport| SyncChanges::after(Some(r), None);
 
     // Rows of its own pushed, nothing pulled: nothing changed here, nothing is said.
     let own = meeting(&b.svc, "Pushed only", 6);
-    cb.tick().unwrap();
-    assert!(calls().is_empty(), "{:?}", calls());
+    let r = cb.tick().unwrap();
+    assert_eq!(changes(&r), None, "{r:?}");
 
-    // Rows pulled and written: one call naming their meeting, by id only.
+    // Rows pulled and written: their meeting, by id only.
     let m = meeting(&a.svc, "From the other computer", 7);
     ca.tick().unwrap();
     let r = cb.tick().unwrap();
     assert!(r.written > 0, "{r:?}");
-    assert_eq!(
-        calls(),
-        vec![super::SyncChanges { meetings: vec![m] }],
-        "the other device's meeting, and not this device's own ({own:?})"
-    );
+    let c = changes(&r).expect("rows were written");
+    assert_eq!(c.meetings, vec![m], "not this device's own ({own:?})");
 
     // A quiet tick says nothing.
-    cb.tick().unwrap();
-    assert_eq!(calls().len(), 1);
+    assert_eq!(changes(&cb.tick().unwrap()), None);
 
     // A rename there names the meeting again; a deletion there names it too.
     a.clock.advance_ms(1_000);
     a.rename(m, "Renamed there");
     ca.tick().unwrap();
-    cb.tick().unwrap();
-    assert_eq!(calls().len(), 2);
-    assert_eq!(calls()[1].meetings, vec![m]);
+    assert_eq!(changes(&cb.tick().unwrap()).unwrap().meetings, vec![m]);
     a.clock.advance_ms(1_000);
     a.svc.delete_meeting(m).unwrap();
     ca.tick().unwrap();
     let r = cb.tick().unwrap();
     assert_eq!(r.deleted_meetings, 1, "{r:?}");
-    assert_eq!(calls().len(), 3);
-    assert_eq!(calls()[2].meetings, vec![m]);
+    assert_eq!(changes(&r).unwrap().meetings, vec![m]);
+}
+
+#[test]
+fn sync_changes_merge_the_tick_and_the_offload_step_once() {
+    use earshot_core::identity::EntityId;
+    let (m1, m2) = (EntityId::from_bytes([1; 16]), EntityId::from_bytes([2; 16]));
+    let quiet = TickReport::default();
+    let step_none = crate::offload::StepReport::default();
+    assert_eq!(SyncChanges::after(Some(&quiet), Some(&step_none)), None);
+    assert_eq!(SyncChanges::after(None, None), None);
+    // A step that withdrew or handed back a request of this device names its meeting alone.
+    let mut step = crate::offload::StepReport::default();
+    step.meetings.insert(m2);
+    assert_eq!(
+        SyncChanges::after(Some(&quiet), Some(&step)),
+        Some(SyncChanges {
+            meetings: vec![m2],
+            people: false
+        })
+    );
+    // Both: one set, in id order.
+    let mut tick = TickReport {
+        written: 2,
+        ..TickReport::default()
+    };
+    tick.meetings.extend([m2, m1]);
+    assert_eq!(
+        SyncChanges::after(Some(&tick), Some(&step)),
+        Some(SyncChanges {
+            meetings: vec![m1, m2],
+            people: false
+        })
+    );
+    // A person changed: no meeting named, people said.
+    let person = TickReport {
+        written: 1,
+        people: true,
+        ..TickReport::default()
+    };
+    assert_eq!(
+        SyncChanges::after(Some(&person), None),
+        Some(SyncChanges {
+            meetings: vec![],
+            people: true
+        })
+    );
+}
+
+#[test]
+fn sync_a_panicking_change_listener_never_ends_sync() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let client = b.client().with_changes(Arc::new(move |_: &SyncChanges| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        panic!("an invented listener failure");
+    }));
+    assert!(!client.tell_changes(&SyncChanges::default()));
+    let timing = SyncTiming {
+        tick: Duration::from_millis(100),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_secs(3600),
+    };
+    let thread = SyncThread::start(client, timing).unwrap();
+    let ca = a.client();
+    // Two changes, each heard (and panicked on) by the thread, which keeps syncing.
+    for (n, title) in [(1_usize, "First"), (2, "Second")] {
+        let m = meeting(&a.svc, title, 40 + n as u64);
+        ca.tick().unwrap();
+        wait_for("the thread pulled the meeting", || b.title(m).is_some());
+        wait_for("the listener was told", || {
+            calls.load(std::sync::atomic::Ordering::SeqCst) > n
+        });
+        assert!(!thread.ended(), "a listener panic ended sync");
+    }
+    assert_eq!(sync_status(&b.svc.store()).unwrap().problem, None);
+    thread.stop();
 }
 
 #[test]

@@ -42,7 +42,9 @@ use crate::services::Services;
 
 /// The vault key type, for hosts that store it ([`SyncVault`]).
 pub use earshot_sync::VaultKey;
-pub use engine::{ChangeListener, Peer, SyncChanges, SyncClient, TickReport, WorkerWriter};
+pub use engine::{
+    ChangeListener, LISTENER_PANICKED, Peer, SyncChanges, SyncClient, TickReport, WorkerWriter,
+};
 pub use presence::{
     Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ModelPlace, ONLINE_WITHIN_S, PRESENCE_EVERY,
     Presence, clean_name, computer_name, online,

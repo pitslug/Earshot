@@ -806,4 +806,12 @@ fn store_sync_applied_names_only_the_meetings_whose_rows_were_written() {
     );
     assert_eq!(applied.held, held(1, HoldReason::Busy));
     assert!(applied.meetings.is_empty(), "{applied:?}");
+    assert!(!applied.people);
+    // A person written here names no meeting but says people changed.
+    let p = e.apply(
+        &[incoming(5, SyncedRow::Person(person(9, false, later)))],
+        &rules(false),
+    );
+    assert_eq!(p.written, 1);
+    assert!(p.meetings.is_empty() && p.people, "{p:?}");
 }

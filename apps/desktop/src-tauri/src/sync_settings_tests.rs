@@ -415,12 +415,25 @@ fn sync_host_starts_only_when_on_and_set_up() {
 #[test]
 fn sync_event_carries_meeting_ids_only() {
     let id = earshot_core::identity::EntityId::from_bytes([7; 16]);
-    let e = sync_event(&SyncChanges { meetings: vec![id] });
+    let e = sync_event(&SyncChanges {
+        meetings: vec![id],
+        people: false,
+    });
     let json = serde_json::to_value(&e).unwrap();
-    assert_eq!(json, serde_json::json!({ "meetings": [id.to_string()] }));
+    assert_eq!(
+        json,
+        serde_json::json!({ "meetings": [id.to_string()], "people": false })
+    );
     // A change outside any meeting (people, folders) still says something, naming none.
-    let none = serde_json::to_value(sync_event(&SyncChanges::default())).unwrap();
-    assert_eq!(none, serde_json::json!({ "meetings": [] }));
+    let people = serde_json::to_value(sync_event(&SyncChanges {
+        meetings: vec![],
+        people: true,
+    }))
+    .unwrap();
+    assert_eq!(
+        people,
+        serde_json::json!({ "meetings": [], "people": true })
+    );
 }
 
 /// A meeting with a title, made on `svc`'s device.
@@ -465,7 +478,7 @@ fn sync_host_tells_the_window_which_meetings_a_tick_changed() {
     let title = "An invented planning meeting";
     let m = titled_meeting(&a.svc, title);
     a.host.nudge();
-    let want = serde_json::json!({ "meetings": [m.to_string()] }).to_string();
+    let want = serde_json::json!({ "meetings": [m.to_string()], "people": false }).to_string();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if heard.lock().unwrap().contains(&want) {
@@ -483,7 +496,8 @@ fn sync_host_tells_the_window_which_meetings_a_tick_changed() {
     for e in heard.lock().unwrap().iter() {
         assert!(!e.contains(title), "{e}");
         let v: serde_json::Value = serde_json::from_str(e).unwrap();
-        assert_eq!(v.as_object().unwrap().len(), 1, "{e}");
+        let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["meetings", "people"], "{e}");
     }
     a.host.stop_and_wait();
     b.host.stop_and_wait();

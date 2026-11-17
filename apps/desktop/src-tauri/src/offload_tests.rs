@@ -262,6 +262,8 @@ fn offload_waiting_banner_says_what_happens_if_the_computer_does_not_answer() {
     );
     // No run waits: a request from before the order, whose hand-back writes here.
     assert_eq!(if_no_answer(&RunView::None), IfNoAnswer::WritesHere);
+    // A record that cannot be read promises nothing.
+    assert_eq!(if_no_answer(&RunView::Unreadable), IfNoAnswer::Nothing);
 }
 
 /// The banner says this computer wrote the summary only when one was stored; for a summary

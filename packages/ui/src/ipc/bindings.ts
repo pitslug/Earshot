@@ -2416,14 +2416,20 @@ export type SyncDeviceView = {
 };
 
 /**
- *  What sync brought to this computer (T12.81): the meetings a tick changed here, by id only
- *  (never a title, a line or a summary), so the window reads them again. Sent only after a tick
- *  that changed rows; `meetings` is empty when only people, folders or Dictionary words changed,
- *  which the meeting list still reads again.
+ *  What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
+ *  tick and the offload step after it) changed here, by id only (never a title, a line or a
+ *  summary), so the window reads them again. Sent only after a pass that changed something;
+ *  `meetings` is empty when only people, folders or Dictionary words changed, which the meeting
+ *  list still reads again.
  */
 export type SyncEvent = {
 	/**  Meeting ids. */
 	meetings: string[],
+	/**
+	 *  A person changed (a rename, a merge, a "Me" repair): names in every meeting resolve
+	 *  through persons, so the open meeting is read again even when it is not named.
+	 */
+	people: boolean,
 };
 
 /**  Another computer was removed (T11.6c). */

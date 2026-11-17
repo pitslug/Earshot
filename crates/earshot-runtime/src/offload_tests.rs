@@ -679,6 +679,8 @@ fn offload_an_unclaimed_request_is_withdrawn_after_90_seconds_and_written_here()
     // Presence is not needed for an unclaimed request: the relay may be unreachable.
     let r = a.step(None, &asker);
     assert_eq!((r.withdrawn, r.written_here), (1, 1), "{r:?}");
+    // The window hears of it (T12.81): the withdrawal and hand-back name the meeting.
+    assert_eq!(r.meetings.iter().copied().collect::<Vec<_>>(), vec![m]);
     assert_eq!(
         asker.here(),
         vec![WriteHere {

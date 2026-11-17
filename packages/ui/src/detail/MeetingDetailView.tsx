@@ -55,6 +55,7 @@ import {
   type TranscriptRow,
   type JobEvent,
   type JobKind,
+  IpcFailure,
   ORDER_COPY,
   type StepChoice,
   type LinkChoice,
@@ -568,7 +569,9 @@ export function MeetingDetailView({
   const audio = useRef<HTMLAudioElement | null>(null);
   const audioUrl = useRef<string | null>(null);
 
-  const reload = useCallback(async () => {
+  // `afterSync`: read again because sync changed the meeting (T12.81). A meeting deleted on
+  // another computer then goes quietly: no load error, and the list (read again) moves on.
+  const reload = useCallback(async (afterSync = false) => {
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
       setDetail(d);
@@ -583,6 +586,10 @@ export function MeetingDetailView({
       setPersons(p);
       setLoadError(null);
     } catch (e) {
+      if (afterSync && e instanceof IpcFailure && e.error.kind === "meeting_not_found") {
+        changedRef.current();
+        return;
+      }
       setLoadError(failureText(e));
     }
   }, [ipc, id]);
@@ -617,7 +624,7 @@ export function MeetingDetailView({
   useEffect(() => {
     if (seenSynced.current === synced) return;
     seenSynced.current = synced;
-    void reload();
+    void reload(true);
   }, [synced, reload]);
   const seenSummary = useRef(showSummary);
   useEffect(() => {

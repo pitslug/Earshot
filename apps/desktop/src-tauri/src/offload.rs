@@ -244,8 +244,10 @@ pub fn if_no_answer(view: &earshot_runtime::summary_order::run::RunView) -> IfNo
             Some(OrderStep::Computer(_)) => IfNoAnswer::NextComputer,
             None => IfNoAnswer::Nothing,
         },
+        // A record that cannot be read promises nothing.
+        RunView::Unreadable => IfNoAnswer::Nothing,
         // No run waits on it: a request asked before the order, whose hand-back writes here.
-        _ => IfNoAnswer::WritesHere,
+        RunView::None | RunView::Ended(_) | RunView::Unfinished(_) => IfNoAnswer::WritesHere,
     }
 }
 

@@ -33,10 +33,17 @@ pub const T0: u64 = 1_792_294_800_000;
 
 /// Services over a fresh store in `dir`, on a manual clock at [`T0`].
 pub fn services(dir: &TempDir) -> Services {
+    services_with_clock(dir).0
+}
+
+/// [`services`], and its clock, for tests that move time.
+pub fn services_with_clock(dir: &TempDir) -> (Services, Arc<ManualClock>) {
     let data = DataDir::new(dir.0.join("data"));
     data.create().unwrap();
     let store = data.open_store().unwrap();
-    Services::new(store, data, Arc::new(ManualClock::new(T0))).unwrap()
+    let clock = Arc::new(ManualClock::new(T0));
+    let svc = Services::new(store, data, Arc::clone(&clock) as _).unwrap();
+    (svc, clock)
 }
 
 /// A data folder in `dir` whose database a newer Earshot saved: a fresh store, closed, with

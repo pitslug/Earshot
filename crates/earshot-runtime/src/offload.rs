@@ -654,6 +654,27 @@ pub fn waiting_for(
     Ok(open_request(store, me, meeting)?.map(|r| r.target_device))
 }
 
+/// [`waiting_for`] as the meeting's page shows it (T12.81): `None` also once the meeting holds a
+/// live summary created after the open request, which arrived before the request's own row did
+/// (the helper writes both in one transaction; sync may bring them in different pages).
+///
+/// # Errors
+/// Store errors.
+pub fn waiting_shown(
+    store: &earshot_store::Store,
+    me: DeviceId,
+    meeting: EntityId,
+) -> Result<Option<DeviceId>, RuntimeError> {
+    let Some(r) = open_request(store, me, meeting)? else {
+        return Ok(None);
+    };
+    let answered = store
+        .summaries(meeting)?
+        .iter()
+        .any(|s| !s.meta.deleted && s.meta.created_at > r.meta.created_at);
+    Ok((!answered).then_some(r.target_device))
+}
+
 /// Whether `request`'s last write came from the device allowed to write its state: the asker
 /// for requested and withdrawn, the target for claimed, done and declined. A row written by any
 /// other device is ignored, whatever it says.
@@ -808,7 +829,8 @@ pub trait OffloadHost: Send + Sync {
     fn write_for(&self, request: SummaryRequest);
 }
 
-/// What one [`Offload::step`] did. Counts only.
+/// What one [`Offload::step`] did: counts, and the meetings whose requests or run records this
+/// device wrote as their asker (ids only, T12.81).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StepReport {
     /// Requests this device claimed.
@@ -824,6 +846,9 @@ pub struct StepReport {
     /// Meetings the host refused to start writing here (a job of the meeting runs, it is in
     /// use): the next step hands them again.
     pub refused_here: usize,
+    /// The meetings whose waiting changed here as their asker: a request withdrawn, a run handed
+    /// back or ended after the computer's summary (T12.81), so the window reads them again.
+    pub meetings: BTreeSet<EntityId>,
 }
 
 /// The offload state of one running process: which requests were already handed to the host,
@@ -1097,6 +1122,7 @@ impl Offload {
                     return Ok(());
                 }
                 report.withdrawn += 1;
+                report.meetings.insert(r.meeting_id);
                 HereReason::Withdrawn
             }
             RequestState::Requested => {
@@ -1113,6 +1139,7 @@ impl Offload {
                     return Ok(());
                 }
                 report.withdrawn += 1;
+                report.meetings.insert(r.meeting_id);
                 HereReason::NotClaimed
             }
             RequestState::Claimed => {
@@ -1146,6 +1173,7 @@ impl Offload {
                     return Ok(());
                 }
                 report.withdrawn += 1;
+                report.meetings.insert(r.meeting_id);
                 HereReason::HelperStale
             }
             RequestState::Declined | RequestState::Withdrawn if s.summarised_since => {
@@ -1165,6 +1193,7 @@ impl Offload {
                 // The computer stored the summary: a run waiting on it ends with that computer
                 // as its writer.
                 crate::summary_order::run::end_after_done(services, r.meeting_id, r.id)?;
+                report.meetings.insert(r.meeting_id);
                 self.settle(r.id);
                 return Ok(());
             }
@@ -1180,7 +1209,9 @@ impl Offload {
                 OutcomeWord::NoReply
             }
         };
-        let continuation = match hand_back(services, r.meeting_id, r.id, word)? {
+        let handed_back = hand_back(services, r.meeting_id, r.id, word)?;
+        report.meetings.insert(r.meeting_id);
+        let continuation = match handed_back {
             HandBack::Settle => {
                 self.settle(r.id);
                 return Ok(());

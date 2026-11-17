@@ -258,6 +258,7 @@ pub const STOPPED_HANDBACK_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// replacement never waits for it; turning sync off asked the stop before this began, and the
 /// host retires that thread on a thread of its own.
 fn hand_back_until_started(
+    client: &SyncClient,
     services: &Services,
     offload: &(Arc<Offload>, Arc<dyn OffloadHost>),
     signal: &(Mutex<Signal>, Condvar),
@@ -268,12 +269,16 @@ fn hand_back_until_started(
     let (state, host) = offload;
     let deadline = Instant::now() + limit;
     loop {
-        let refused = catch_unwind(AssertUnwindSafe(|| {
+        let step = catch_unwind(AssertUnwindSafe(|| {
             state.step_sync_stopped(services, &**host)
         }))
         .ok()
-        .and_then(Result::ok)
-        .is_some_and(|r| r.refused_here > 0);
+        .and_then(Result::ok);
+        // What it withdrew and handed back reaches the window (T12.81).
+        if let Some(changes) = super::SyncChanges::after(None, step.as_ref()) {
+            client.tell_changes(&changes);
+        }
+        let refused = step.is_some_and(|r| r.refused_here > 0);
         let now = Instant::now();
         if !refused || now >= deadline {
             return;
@@ -342,6 +347,7 @@ fn run(
                 // handed back now rather than left waiting (T11.6c).
                 if say_gone && let Some(pair) = offload {
                     hand_back_until_started(
+                        client,
                         &services,
                         pair,
                         signal,
@@ -400,14 +406,24 @@ fn run(
         if Instant::now() < next {
             continue;
         }
-        let ticked = catch_unwind(AssertUnwindSafe(|| client.tick()));
+        let reported = catch_unwind(AssertUnwindSafe(|| client.tick_reporting()));
+        let (tick_report, ticked) = match reported {
+            Ok((report, outcome)) => (Some(report), Ok(outcome)),
+            Err(panic) => (None, Err(panic)),
+        };
+        let mut step_report = None;
         if let Some(pair) = offload {
             // A store failure or a panic here is the next step's to retry; it never ends sync.
             // A problem that stops sync gets a last step that withdraws and writes here what
             // this device asked (T11.6c), repeated while the host refuses one: no later step
             // runs until the user acts.
             if matches!(&ticked, Ok(Err(p)) if p.stops()) {
+                // The tick's own changes first; the hand-back tells its own.
+                if let Some(changes) = super::SyncChanges::after(tick_report.as_ref(), None) {
+                    client.tell_changes(&changes);
+                }
                 hand_back_until_started(
+                    client,
                     &services,
                     pair,
                     signal,
@@ -415,12 +431,21 @@ fn run(
                     STOPPED_HANDBACK_LIMIT,
                     true,
                 );
-            } else {
-                let (state, host) = pair;
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    state.step(&services, &mut || client.peers().ok(), &**host)
-                }));
+                return;
             }
+            let (state, host) = pair;
+            step_report = catch_unwind(AssertUnwindSafe(|| {
+                state.step(&services, &mut || client.peers().ok(), &**host)
+            }))
+            .ok()
+            .and_then(Result::ok);
+        }
+        // Once per pass, after the step (T12.81): what the tick applied and what the step wrote
+        // as an asker reach the window together, so a page never reads a request that settled
+        // before the run record the step writes for it.
+        if let Some(changes) = super::SyncChanges::after(tick_report.as_ref(), step_report.as_ref())
+        {
+            client.tell_changes(&changes);
         }
         match ticked {
             Ok(Ok(_)) => {

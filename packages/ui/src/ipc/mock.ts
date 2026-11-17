@@ -886,7 +886,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
             waitingFor.delete(row.id);
             details.delete(row.id);
             row.new_summary = true;
-            for (const l of [...syncListeners]) l({ meetings: [row.id] });
+            for (const l of [...syncListeners]) l({ meetings: [row.id], people: false });
           }, MOCK_OFFLOAD_ANSWER_MS);
         }
         emit({ type: "Summary", meeting: row.id, result });
