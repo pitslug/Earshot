@@ -1,9 +1,9 @@
 {
   "milestone": "m2",
   "requested_backend": null,
-  "timestamp": "2026-11-14T23:47:42Z",
+  "timestamp": "2026-11-17T07:17:21Z",
   "host": "x86_64-pc-windows-msvc",
-  "commit": "18515ea-dirty",
+  "commit": "d72909d",
   "backends": [
     "cpu",
     "cuda"
