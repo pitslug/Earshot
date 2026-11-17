@@ -23,6 +23,22 @@ pub const STEPS: &[(&str, &[&str])] = &[
             "warnings",
         ],
     ),
+    // The summary worker's build (T11.6b): the runtime without its `engines`. Workspace builds
+    // unify features and always have them on, so nothing else here compiles what the worker
+    // ships; an ungated module naming a gated one fails here, not at the next image build.
+    (
+        "clippy-worker",
+        &[
+            "clippy",
+            "-p",
+            "earshot-runtime",
+            "--no-default-features",
+            "--lib",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    ),
     // `--no-fail-fast`: one run names every failing test binary, so a late failure does not
     // hide another behind a second full run. The step still fails.
     ("test", &["test", "--workspace", "--no-fail-fast"]),
@@ -101,7 +117,7 @@ pub fn arm64_host_env(
 pub fn step_command(root: &Path, name: &str, args: &[&str]) -> Command {
     let mut cmd = cargo_command();
     cmd.args(args).current_dir(root);
-    if name == "clippy" {
+    if name.starts_with("clippy") {
         cmd.env("CLIPPY_CONF_DIR", root);
     }
     cmd
@@ -216,6 +232,7 @@ mod tests {
                 "ui",
                 "fmt",
                 "clippy",
+                "clippy-worker",
                 "test",
                 "purity",
                 "net",
@@ -252,11 +269,15 @@ mod tests {
     #[test]
     fn steps_are_fmt_clippy_test_in_order() {
         let names: Vec<&str> = STEPS.iter().map(|s| s.0).collect();
-        assert_eq!(names, ["fmt", "clippy", "test"]);
+        assert_eq!(names, ["fmt", "clippy", "clippy-worker", "test"]);
         assert!(STEPS[0].1.ends_with(&["--check"]));
         assert!(STEPS[1].1.ends_with(&["-D", "warnings"]));
         assert!(STEPS[1].1.contains(&"--all-targets"));
-        assert!(STEPS[2].1.contains(&"--workspace"));
+        // T11.6b: the worker's configuration, the runtime without engines.
+        assert!(STEPS[2].1.contains(&"--no-default-features"));
+        assert!(STEPS[2].1.contains(&"earshot-runtime"));
+        assert!(STEPS[2].1.ends_with(&["-D", "warnings"]));
+        assert!(STEPS[3].1.contains(&"--workspace"));
     }
 
     /// `ci` runs `cargo test --workspace`, which builds xtask with the workspace's unified

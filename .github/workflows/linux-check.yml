@@ -290,10 +290,14 @@ jobs:
         working-directory: src
         run: sh crates/earshot-worker/image-check.sh earshot-worker:check
 
-      # T11.6b: the image's size, and the size of the image its parent commit builds, for the
-      # record (the runtime without its in-process engines). Informational: never gates.
+      # T11.6b, one-off: the image's size, and the size of the image its parent commit builds, for
+      # the record (the runtime without its in-process engines). The comparison means something
+      # only on the T11.6b commit itself or its merge commit, whose parent still has the engines;
+      # remove this step once that figure is in docs/sync.md. Informational: never gates, and
+      # bounded so a slow parent build cannot time the job out.
       - name: Image size against the parent commit (informational)
         continue-on-error: true
+        timeout-minutes: 40
         run: |
           set -eu
           echo "this commit: $(docker image inspect -f '{{.Size}}' earshot-worker:check) bytes"
