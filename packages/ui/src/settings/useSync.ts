@@ -37,8 +37,10 @@ export interface SyncPageState {
   codeError: string | null;
   /** The computers, once asked (null before the first ask). */
   devices: Load<SyncDeviceView[]> | null;
-  setUpFirst: () => Promise<void>;
-  joinWithCode: () => Promise<void>;
+  /** Resolves true when this computer is now set up (a refusal shows under its form). */
+  setUpFirst: () => Promise<boolean>;
+  /** Resolves true when this computer joined (a refusal shows under its form). */
+  joinWithCode: () => Promise<boolean>;
   setOn: (on: boolean) => Promise<void>;
   setVoiceprints: (on: boolean) => Promise<void>;
   setDictionary: (on: boolean) => Promise<void>;
@@ -99,14 +101,20 @@ export function useSync(timer: Timer): SyncPageState {
   const shown = (view: SyncView) => setLoad({ status: "loaded", view });
 
   // Runs a set up or join; the secret field is cleared whatever happens.
-  const attempt = async (form: SyncForm, put: (form: SyncForm) => void, work: () => Promise<SyncView>) => {
+  const attempt = async (
+    form: SyncForm,
+    put: (form: SyncForm) => void,
+    work: () => Promise<SyncView>,
+  ): Promise<boolean> => {
     setBusy(true);
     try {
       const view = await work();
       put({ ...EMPTY_FORM, address: form.address });
       shown(view);
+      return view.set_up;
     } catch (e) {
       put({ address: form.address, secret: "", error: errorText(e) });
+      return false;
     } finally {
       setBusy(false);
     }

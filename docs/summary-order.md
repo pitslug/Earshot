@@ -118,7 +118,7 @@ A computer or worker writing another computer's request runs **exactly one write
 
 ## 6. First run
 
-The wizard's Summaries step keeps one choice; Next stores a one-step order (or `none`). The list with more than one writer is only on the Summaries page.
+The wizard's Summaries step is the Summaries page's list of writers (T12.79): ticks, moves and No summary save at once, as on the page, and what is typed in a writer's form saves with Next. One difference: "On this computer" can be ticked before a summary model is downloaded, because the Download step that follows fetches the model whenever this computer is anywhere in the order.
 
 ## 7. Privacy
 

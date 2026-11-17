@@ -184,4 +184,34 @@ mod tests {
         let u = Url::parse("http://[0:0:0:0:0:0:0:1]").unwrap();
         assert_eq!(host_key(&u.host().unwrap()), "::1");
     }
+
+    /// `fixtures/net/local_host_cases.txt`, which the UI's `ipc/localHost.test.ts` also reads: the
+    /// UI's copy of this rule warns while an endpoint address is typed (T12.79 review).
+    #[test]
+    fn local_host_cases_match_the_ui_table() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .map(|d| d.join("fixtures/net/local_host_cases.txt"))
+            .find(|p| p.is_file())
+            .expect("fixtures/net/local_host_cases.txt above the crate");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut count = 0;
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let [url, local] = parts[..] else {
+                panic!("bad case in {}: {line}", path.display());
+            };
+            let local = match local {
+                "true" => true,
+                "false" => false,
+                _ => panic!("bad case in {}: {line}", path.display()),
+            };
+            assert_eq!(is_local_url(&Url::parse(url).unwrap()), local, "{url}");
+            count += 1;
+        }
+        assert!(count > 10, "too few cases in {}", path.display());
+    }
 }

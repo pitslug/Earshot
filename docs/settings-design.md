@@ -48,12 +48,13 @@ Across the pages:
 3. One obvious path, with detail one click away rather than on the page.
 4. Nothing that needs a button press loses its promise: no download, sound or recording starts by itself.
 
-## First run: four short steps
+## First run: five short steps
 
-1. **Summaries.** On this computer (preselected), Claude, ChatGPT, or no summary. Own endpoint goes under "Other". Each option keeps its line saying what is sent where, in the same words as today.
-2. **Download.** Meeting languages first, then one line and one button: "Earshot needs X GB for this computer", covering helpers, the recommended transcription model and a summary model only if step 1 chose this computer. "Choose different models" opens the full list. Downloads carry on in the background, as they do today.
-3. **About me.** Your name, then the voice sample with a clear Skip. The sample needs the speech helpers, which is why this step follows Download: while they are still downloading it says so and enables itself when they arrive, and it never starts a download or a recording by itself.
-4. **Optional extras.** Obsidian and the audio check as two rows, each opening when pressed. Then Finish.
+1. **Summaries.** The Summaries page's list of writers (T12.79, was one choice by radio): On this computer ticked by default, Claude, ChatGPT, your own server and your other computers, at most three in the order Earshot asks them, or No summary. Each writer keeps its line saying what is sent where, in the same words as the page.
+2. **Sync.** "Do you use Earshot on another computer?": Join with a pairing code, Set up sync for the first time, or Not now (the default, which reads and sends nothing). The first two show the Sync page's own form; Next (or the form's button) joins or sets up, and a refusal keeps the step with the Sync page's copy.
+3. **Download.** Meeting languages first, then one line and one button: "Earshot needs X GB for this computer", covering helpers, the recommended transcription model and a summary model only if step 1 put this computer in the order. "Choose different models" opens the full list. Downloads carry on in the background, as they do today.
+4. **About me.** Your name, then the voice sample with a clear Skip. The sample needs the speech helpers, which is why this step follows Download: while they are still downloading it says so and enables itself when they arrive, and it never starts a download or a recording by itself.
+5. **Optional extras.** Obsidian and the audio check as two rows, each opening when pressed. Then Finish.
 
 Also:
 

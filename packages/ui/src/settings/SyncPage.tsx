@@ -261,31 +261,52 @@ function JoinForm({
   );
 }
 
+/** The props of the two forms of a computer that is not set up. `onSubmit` replaces the form's
+ * own call (the first-run wizard's Next makes it, T12.79). */
+interface SetUpFormProps {
+  state: SyncPageState;
+  onSubmit?: () => void;
+}
+
+/** "Set up the first computer": the server's address and its setup secret. */
+export function SetUpFirstForm({ state, onSubmit }: SetUpFormProps) {
+  return (
+    <JoinForm
+      title="Set up the first computer"
+      secretLabel="Setup secret"
+      secretType="password"
+      button="Set up"
+      form={state.setup}
+      onChange={state.setSetup}
+      onSubmit={onSubmit ?? (() => void state.setUpFirst())}
+      busy={state.busy}
+    />
+  );
+}
+
+/** "Join with a pairing code": the server's address and a code shown on another computer. */
+export function JoinWithCodeForm({ state, onSubmit }: SetUpFormProps) {
+  return (
+    <JoinForm
+      title="Join with a pairing code"
+      secretLabel="Pairing code"
+      secretType="text"
+      button="Join"
+      form={state.join}
+      onChange={state.setJoin}
+      onSubmit={onSubmit ?? (() => void state.joinWithCode())}
+      busy={state.busy}
+    />
+  );
+}
+
 function NotSetUp({ state }: { state: SyncPageState }) {
   const styles = useStyles();
   return (
     <>
       <Body1 className={styles.text}>{SYNC_INTRO}</Body1>
-      <JoinForm
-        title="Set up the first computer"
-        secretLabel="Setup secret"
-        secretType="password"
-        button="Set up"
-        form={state.setup}
-        onChange={state.setSetup}
-        onSubmit={() => void state.setUpFirst()}
-        busy={state.busy}
-      />
-      <JoinForm
-        title="Join with a pairing code"
-        secretLabel="Pairing code"
-        secretType="text"
-        button="Join"
-        form={state.join}
-        onChange={state.setJoin}
-        onSubmit={() => void state.joinWithCode()}
-        busy={state.busy}
-      />
+      <SetUpFirstForm state={state} />
+      <JoinWithCodeForm state={state} />
     </>
   );
 }

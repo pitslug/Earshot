@@ -1,0 +1,33 @@
+# Whether an endpoint address is this computer or the local network (earshot-net
+# `url_policy::is_local_url`), mirrored by the UI's `ipc/localHost.ts` (T12.79 review). Both suites
+# read this file: `cargo test -p earshot-net local_host_cases` and the UI's `localHost.test.ts`.
+# A rule change edits both copies and this table in one commit.
+# Format: one case per line, `<url> <true|false>`; `#` starts a comment line.
+http://localhost:8080/v1 true
+http://LOCALHOST/v1 true
+http://127.0.0.1:8080/v1 true
+http://127.255.255.254/ true
+http://10.0.0.5/ true
+http://172.16.0.1/ true
+http://172.31.255.255/ true
+http://172.32.0.1/ false
+http://172.15.255.255/ false
+http://192.168.1.20:8080/v1 true
+http://192.169.0.1/ false
+http://[::1]:8080/ true
+http://[fc00::1]/ true
+http://[fdab:cd::1]/ true
+http://[fe80::1]/ false
+http://[::ffff:192.168.1.1]/ true
+http://[::ffff:8.8.8.8]/ false
+https://api.anthropic.com/ false
+https://my-server.local/ false
+https://8.8.8.8/ false
+http://2130706433/ true
+http://[fc::1]/ false
+http://localhost./ false
+http://app.localhost/ false
+http://127.0.0.1@example.com/ false
+http://user@192.168.1.5/ true
+http://[::ffff:127.0.0.1]/ true
+http://0.0.0.0/ false

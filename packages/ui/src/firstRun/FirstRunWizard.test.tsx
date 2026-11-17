@@ -2,14 +2,25 @@ import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
+import syncCopy from "../../../../fixtures/ui/sync_copy_cases.json";
+import {
+  type Ipc,
+  MOCK_SYNC_CODE,
+  MOCK_SYNC_SECRET,
+  type MockIpcData,
+  ORDER_COPY,
+  createMockIpc,
+  fillCopy,
+  mockDeviceId,
+} from "../ipc";
 import { CHECK_TOTAL_MS } from "../ipc/mockAudioCheck";
 import { MODEL_STEP_MS } from "../ipc/mockModels";
 import { VOICE_SAMPLE_MS } from "../ipc/mockSettings";
 import { CHECK_WARNING } from "../settings/AudioCheckSection";
 import { SETUP_EXPLAINED } from "../settings/GeneralPage";
 import { EXPORT_EXPLAINED } from "../settings/ObsidianSection";
-import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY } from "../settings/SummariesPage";
+import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY, remoteWarning } from "../settings/SummariesPage";
+import { SYNC_INTRO } from "../settings/SyncPage";
 import { formatSize } from "../settings/copy";
 import { openSettings, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
@@ -26,6 +37,13 @@ import {
   RUNNING_NOTE,
   SAVE_REFUSED_NOTE,
   STEPS,
+  SYNC_JOIN,
+  SYNC_JOINED,
+  SYNC_LATER,
+  SYNC_LATER_NOTE,
+  SYNC_QUESTION,
+  SYNC_SET_UP,
+  SYNC_STILL_READING,
   stillDownloading,
 } from "./FirstRunWizard";
 
@@ -53,10 +71,30 @@ const stepHeading = (title: string) => screen.findByRole("heading", { level: 1, 
 const button = (name: string | RegExp) => screen.getByRole("button", { name });
 const HOME = { name: "Record your first meeting" };
 
+/** The Summaries step's list of writers: the Summaries page's own (T12.68). */
+const PAGE = ORDER_COPY.page;
+const LOCAL_LABEL = ORDER_COPY.steps.local;
+const CLAUDE_LABEL = ORDER_COPY.steps.claude_code;
+const CODEX_LABEL = ORDER_COPY.steps.codex;
+const tick = (writer: string) => screen.getByRole("checkbox", { name: fillCopy(PAGE.use, { writer }) });
+const up = (writer: string) => screen.queryByRole("button", { name: fillCopy(PAGE.move_up, { writer }) });
+const stored = async (ipc: Ipc) => (await ipc.summaryOrder()).steps.map((s) => s.step);
+
+/** The steps by name, for `toStep` and `STEPS[..]`. */
+const SYNC = STEPS.findIndex((s) => s.title === "Sync");
+const DOWNLOAD = STEPS.findIndex((s) => s.title === "Download");
+const ABOUT_ME = STEPS.findIndex((s) => s.title === "About me");
+const EXTRAS = STEPS.findIndex((s) => s.title === "Optional extras");
+
 async function toStep(s: Setup, index: number) {
-  await stepHeading(STEPS[0].title);
+  await toStepFrom(s, 0, index);
+}
+
+/** Next from step `from` (shown) to step `to`. */
+async function toStepFrom(s: Setup, from: number, to: number) {
+  await stepHeading(STEPS[from].title);
   // The steps' own parts read on mount; Next before they finish would save nothing anyway.
-  for (let i = 0; i < index; i++) {
+  for (let i = from; i < to; i++) {
     await s.user.click(button("Next"));
     await stepHeading(STEPS[i + 1].title);
   }
@@ -76,9 +114,9 @@ async function totalOf(ipc: Ipc, names: string[]) {
 describe("First run wizard", () => {
   it("has its steps in the agreed order and opens on the first, ahead of the meetings", async () => {
     setup();
-    expect(STEPS.map((s) => s.title)).toEqual(["Summaries", "Download", "About me", "Optional extras"]);
+    expect(STEPS.map((s) => s.title)).toEqual(["Summaries", "Sync", "Download", "About me", "Optional extras"]);
     await stepHeading("Summaries");
-    expect(screen.getByRole("progressbar", { name: "Step 1 of 4" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: `Step 1 of ${STEPS.length}` })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Meetings and settings" })).toBeNull();
     const steps = within(screen.getByRole("list"));
     for (const step of STEPS) expect(steps.getByText(step.title)).toBeInTheDocument();
@@ -101,7 +139,7 @@ describe("First run wizard", () => {
     const s = setup({ firstRun: { show: true, onCall } });
     for (const [i, step] of STEPS.entries()) {
       await stepHeading(step.title);
-      expect(screen.getByRole("progressbar", { name: `Step ${i + 1} of 4` })).toBeInTheDocument();
+      expect(screen.getByRole("progressbar", { name: `Step ${i + 1} of ${STEPS.length}` })).toBeInTheDocument();
       await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1 })));
       expect(screen.queryByRole("button", { name: "Skip this step" })).toBeNull();
       await s.user.click(button(i === STEPS.length - 1 ? "Finish" : "Next"));
@@ -171,7 +209,7 @@ describe("First run wizard", () => {
       vi.spyOn(s.ipc, "startAudioCheck"),
       vi.spyOn(s.ipc, "startVoiceSample"),
     ];
-    await toStep(s, 3);
+    await toStep(s, EXTRAS);
     await s.user.click(button("Open Audio check"));
     await screen.findByText(CHECK_WARNING);
     advance(s.timer, VOICE_SAMPLE_MS);
@@ -192,124 +230,193 @@ describe("First run wizard", () => {
   });
 
   describe("Summaries", () => {
-    it("preselects this computer and offers Claude Code, Codex and none, each saying what is sent", async () => {
-      const s = setup();
-      await screen.findByRole("radiogroup", { name: "Who writes the summary" });
-      expect(screen.getByRole("radio", { name: /^On this computer/ })).toBeChecked();
-      // The radios' values are the order's step keys since T12.63b (they were the old writer
-      // words); the choices and their order are unchanged.
-      expect(screen.getAllByRole("radio").map((r) => r.getAttribute("value"))).toEqual([
-        "Local",
-        "ClaudeCode",
-        "Codex",
-        "NoSummary",
-      ]);
-      expect(screen.getByText("Nothing leaves this computer.")).toBeInTheDocument();
+    it("is the Summaries page's list of writers, this computer ticked, each saying what is sent", async () => {
+      setup();
+      await screen.findByRole("list", { name: PAGE.list });
+      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+      expect(tick(LOCAL_LABEL)).toBeChecked();
+      expect(tick(CLAUDE_LABEL)).not.toBeChecked();
+      expect(tick(CODEX_LABEL)).not.toBeChecked();
+      // The one-writer radios are gone: the only radios are Write summaries and No summary.
+      expect(screen.getAllByRole("radio").map((r) => r.getAttribute("value"))).toEqual(["Write", "NoSummary"]);
+      expect(screen.queryByRole("radio", { name: /^On this computer/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Other" })).toBeNull();
       expect(screen.getByText(CLAUDE_CODE_PRIVACY)).toBeInTheDocument();
       expect(screen.getByText(CODEX_PRIVACY)).toBeInTheDocument();
-      await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
-      await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("NoSummary"));
+      expect(screen.getByText(PAGE.kept_local)).toBeInTheDocument();
     });
 
-    it("stores a one-step order, or none, whatever order was there before (T12.63b)", async () => {
-      const desk = { kind: "Computer" as const, device: "0f3a91c2-0000-7000-8000-000000000000" };
-      const s = setup({ summaryOrder: [desk, { kind: "Local" }, { kind: "ClaudeCode" }] });
-      await s.user.click(await screen.findByRole("radio", { name: /^OpenAI \(through Codex\)/ }));
+    it("ticks and orders writers, each saved at once, and Next goes on", async () => {
+      const s = setup();
+      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+      await s.user.click(tick(CLAUDE_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }]));
+      await s.user.click(tick(CODEX_LABEL));
       await waitFor(async () =>
-        expect((await s.ipc.summaryOrder()).steps.map((x) => x.step)).toEqual([{ kind: "Codex" }]),
+        expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }, { kind: "Codex" }]),
       );
-      // Steps 2 and 3 are only on the Summaries page.
-      expect(screen.queryByRole("group", { name: "If it can't" })).toBeNull();
+      await waitFor(() => expect(up(CODEX_LABEL)).toBeEnabled());
+      await s.user.click(up(CODEX_LABEL)!);
+      await waitFor(async () =>
+        expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }, { kind: "ClaudeCode" }]),
+      );
+      await s.user.click(tick(LOCAL_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "ClaudeCode" }]));
+      // The old writer setting follows the first writer.
+      expect((await s.ipc.summarySettings()).value.writer).toBe("Codex");
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[SYNC].title);
+    });
+
+    it("keeps an order of several writers, from another computer too", async () => {
+      const desk = { kind: "Computer" as const, device: mockDeviceId("e4a17d30") };
+      const s = setup({ sync: { setUp: true }, summaryOrder: [desk, { kind: "Local" }, { kind: "ClaudeCode" }] });
+      await waitFor(() => expect(tick(LOCAL_LABEL)).toBeEnabled());
+      expect(tick(LOCAL_LABEL)).toBeChecked();
+      expect(tick(CLAUDE_LABEL)).toBeChecked();
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[SYNC].title);
+      expect(await stored(s.ipc)).toEqual([desk, { kind: "Local" }, { kind: "ClaudeCode" }]);
+    });
+
+    it("No summary stores no order", async () => {
+      const s = setup();
+      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
       await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
       await waitFor(async () => expect((await s.ipc.summaryOrder()).none).toBe(true));
+      expect((await s.ipc.summarySettings()).value.writer).toBe("NoSummary");
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[SYNC].title);
     });
 
-    it("keeps your own endpoint under Other, with its words", async () => {
+    it("lets this computer be ticked before its model is downloaded, which the Download step fetches", async () => {
+      const s = setup(CLEAN);
+      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+      expect(screen.queryByText(PAGE.not_downloaded)).toBeNull();
+      await s.user.click(tick(CLAUDE_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }]));
+      await s.user.click(tick(LOCAL_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "ClaudeCode" }]));
+      await waitFor(() => expect(tick(LOCAL_LABEL)).toBeEnabled());
+      await s.user.click(tick(LOCAL_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "ClaudeCode" }, { kind: "Local" }]));
+      // The summary model is chosen on the Download step, not here.
+      expect(screen.queryByRole("group", { name: "Which model writes the summary" })).toBeNull();
+    });
+
+    it("Next saves a typed endpoint and ticks it, with no Save button", async () => {
       const s = setup();
-      const group = await screen.findByRole("radiogroup", { name: "Who writes the summary" });
-      expect(screen.queryByRole("radio", { name: /^Your own server/ })).toBeNull();
-      // Other is a button, so it sits just after the group, not among its radios.
-      expect(within(group).queryByRole("button", { name: "Other" })).toBeNull();
-      await s.user.click(screen.getByRole("button", { name: "Other", expanded: false }));
-      expect(await screen.findByRole("radio", { name: /^Your own server/ })).not.toBeChecked();
-      expect(screen.getByText(/are sent to the address you enter, and only there/)).toBeInTheDocument();
-    });
-
-    it("shows a stored endpoint with nothing pressed", async () => {
-      setup({
-        summaries: { settings: { writer: "OwnEndpoint", url: "http://127.0.0.1:8080/v1", model: "local" } },
-      });
-      expect(await screen.findByRole("radio", { name: /^Your own server/ })).toBeChecked();
-    });
-
-    it("Next saves a typed endpoint, with no Save button", async () => {
-      const s = setup();
-      await s.user.click(await screen.findByRole("button", { name: "Other" }));
-      await s.user.click(await screen.findByRole("radio", { name: /^Your own server/ }));
       const form = within(await screen.findByRole("group", { name: "Your own server" }));
       expect(form.queryByRole("button", { name: /endpoint/ })).toBeNull();
       await s.user.type(form.getByRole("textbox", { name: /^Address/ }), "http://127.0.0.1:8080/v1");
       await s.user.type(form.getByRole("textbox", { name: /^Model/ }), "local");
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[1].title);
+      await stepHeading(STEPS[SYNC].title);
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Endpoint" }]);
       expect((await s.ipc.summarySettings()).value).toMatchObject({
-        writer: "OwnEndpoint",
         url: "http://127.0.0.1:8080/v1",
         model: "local",
       });
     });
 
-    it("a refused endpoint stays on the step and says why, and another choice gets past it", async () => {
+    it("a refused endpoint stays on the step and says why, and emptying the form gets past it", async () => {
       const s = setup();
-      await s.user.click(await screen.findByRole("button", { name: "Other" }));
-      await s.user.click(await screen.findByRole("radio", { name: /^Your own server/ }));
-      await screen.findByRole("group", { name: "Your own server" });
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      const address = form.getByRole("textbox", { name: /^Address/ });
+      await s.user.type(address, "http://127.0.0.1:8080/v1");
       await s.user.click(button("Next"));
-      expect(await screen.findByText("Enter the endpoint's address.")).toBeInTheDocument();
+      expect(await screen.findByText("Enter the model name the endpoint expects.")).toBeInTheDocument();
       expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
       await stepHeading(STEPS[0].title);
-      await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
-      await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("NoSummary"));
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
+      await s.user.clear(address);
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[1].title);
+      await stepHeading(STEPS[SYNC].title);
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
+    });
+
+    it("choosing Anthropic alone fills in its address but holds nothing, and switching back undoes it", async () => {
+      const s = setup();
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      const address = form.getByRole("textbox", { name: /^Address/ });
+      const anthropicUrl = (await s.ipc.summarySettings()).anthropic_url;
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      expect(address).toHaveValue(anthropicUrl);
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "OpenAiCompatible");
+      expect(address).toHaveValue("");
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      expect(address).toHaveValue(anthropicUrl);
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[SYNC].title);
+      expect(screen.queryByText(SAVE_REFUSED_NOTE)).toBeNull();
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
+      expect((await s.ipc.summarySettings()).value).toMatchObject({ url: "", model: "" });
+    });
+
+    it("a typed API key with only Anthropic's own address asks for the model, and saves no key", async () => {
+      const s = setup();
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      await s.user.type(await screen.findByLabelText(/^API key/), "test-key");
+      await s.user.click(button("Next"));
+      expect(await screen.findByText("Enter the model name the endpoint expects.")).toBeInTheDocument();
+      expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
+      await stepHeading(STEPS[0].title);
+      expect(await s.ipc.hasApiKey()).toBe(false);
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
+    });
+
+    it("names where the transcript would go as soon as an address that is not local is typed", async () => {
+      const s = setup();
+      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      const address = form.getByRole("textbox", { name: /^Address/ });
+      await s.user.type(address, "http://192.168.1.20:8080/v1");
+      expect(screen.queryByText(remoteWarning("192.168.1.20"))).toBeNull();
+      await s.user.clear(address);
+      await s.user.type(address, "https://llm.example.com/v1");
+      expect(await screen.findByText(remoteWarning("llm.example.com"))).toBeInTheDocument();
+      // Nothing is stored until Next.
+      expect((await s.ipc.summarySettings()).value.url).toBe("");
+      await s.user.clear(address);
+      await waitFor(() => expect(screen.queryByText(remoteWarning("llm.example.com"))).toBeNull());
     });
 
     it("Next saves a typed API key with the endpoint", async () => {
       const s = setup();
-      await s.user.click(await screen.findByRole("button", { name: "Other" }));
-      await s.user.click(await screen.findByRole("radio", { name: /^Your own server/ }));
       const form = within(await screen.findByRole("group", { name: "Your own server" }));
       await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
       await s.user.type(form.getByRole("textbox", { name: /^Model/ }), "a-model");
       await s.user.type(await screen.findByLabelText(/^API key/), "test-key");
       expect(form.queryByRole("button", { name: "Save key" })).toBeNull();
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[1].title);
+      await stepHeading(STEPS[SYNC].title);
       expect(await s.ipc.hasApiKey()).toBe(true);
     });
 
     it("Next saves a typed Claude Code model, with no Save button", async () => {
       const s = setup();
-      await s.user.click(await screen.findByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
+      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+      await s.user.click(tick(CLAUDE_LABEL));
       const card = within(await screen.findByRole("group", { name: "Claude through Claude Code" }));
       expect(card.queryByRole("button", { name: "Save model" })).toBeNull();
       await s.user.selectOptions(card.getByRole("combobox", { name: "Model" }), "Other");
       expect(card.queryByRole("button", { name: "Save model" })).toBeNull();
       await s.user.type(card.getByRole("textbox", { name: /^Model name/ }), "opus-custom");
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[1].title);
-      expect((await s.ipc.summarySettings()).value).toMatchObject({ writer: "ClaudeCode", claude_model: "opus-custom" });
+      await stepHeading(STEPS[SYNC].title);
+      expect((await s.ipc.summarySettings()).value).toMatchObject({ claude_model: "opus-custom" });
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }]);
     });
 
     it("applies a listed Claude Code model and effort at once, as the Summaries page does", async () => {
       const s = setup();
-      await s.user.click(await screen.findByRole("radio", { name: /^Claude \(through Claude Code\)/ }));
+      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+      await s.user.click(tick(CLAUDE_LABEL));
       const card = within(await screen.findByRole("group", { name: "Claude through Claude Code" }));
       await s.user.selectOptions(card.getByRole("combobox", { name: "Model" }), "Haiku");
       await s.user.selectOptions(card.getByRole("combobox", { name: "Effort" }), "Medium");
       await waitFor(async () =>
         expect((await s.ipc.summarySettings()).value).toMatchObject({
-          writer: "ClaudeCode",
           claude_model: "haiku",
           claude_effort: "Medium",
         }),
@@ -318,12 +425,183 @@ describe("First run wizard", () => {
     });
   });
 
+  describe("Sync", () => {
+    const SYNC_CALLS = [
+      "syncView",
+      "syncDevices",
+      "setUpSync",
+      "joinSync",
+      "offerSyncCode",
+      "setSyncOn",
+    ] as const;
+    const syncSpies = (ipc: Ipc) => SYNC_CALLS.map((name) => vi.spyOn(ipc, name));
+    const choice = (name: string) => screen.getByRole("radio", { name });
+
+    it("asks about another computer with Not now chosen, and Not now asks the app nothing", async () => {
+      const s = setup();
+      const spies = syncSpies(s.ipc);
+      await toStep(s, SYNC);
+      const group = screen.getByRole("radiogroup", { name: SYNC_QUESTION });
+      expect(within(group).getAllByRole("radio").map((r) => r.getAttribute("value"))).toEqual([
+        "join",
+        "setup",
+        "later",
+      ]);
+      expect(choice(SYNC_LATER)).toBeChecked();
+      expect(screen.getByText(SYNC_INTRO)).toBeInTheDocument();
+      // It cannot know whether this computer already syncs, so it says only what Not now does.
+      expect(screen.getByText(SYNC_LATER_NOTE)).toBeInTheDocument();
+      expect(SYNC_LATER_NOTE).not.toMatch(/sent/i);
+      expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
+      expect(screen.queryByRole("form", { name: "Set up the first computer" })).toBeNull();
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      expect((await s.ipc.syncView()).set_up).toBe(false);
+    });
+
+    it("a choice taken back to Not now sends nothing", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_JOIN));
+      const form = within(await screen.findByRole("form", { name: "Join with a pairing code" }));
+      await s.user.type(form.getByRole("textbox", { name: "Server address" }), "https://sync.example.com");
+      const join = vi.spyOn(s.ipc, "joinSync");
+      await s.user.click(choice(SYNC_LATER));
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect(join).not.toHaveBeenCalled();
+    });
+
+    it("joins with a pairing code on its own button and moves on, and says so on the way back", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_JOIN));
+      const form = within(await screen.findByRole("form", { name: "Join with a pairing code" }));
+      const join = vi.spyOn(s.ipc, "joinSync");
+      await s.user.type(form.getByRole("textbox", { name: "Server address" }), "https://sync.example.com");
+      await s.user.type(form.getByRole("textbox", { name: "Pairing code" }), MOCK_SYNC_CODE);
+      await s.user.click(form.getByRole("button", { name: "Join" }));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect(join).toHaveBeenCalledTimes(1);
+      expect(join).toHaveBeenCalledWith("https://sync.example.com", MOCK_SYNC_CODE);
+      expect((await s.ipc.syncView()).set_up).toBe(true);
+      await s.user.click(button("Back"));
+      await stepHeading(STEPS[SYNC].title);
+      expect(await screen.findByText(SYNC_JOINED)).toBeInTheDocument();
+      expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
+      // Not now after a join still says this computer syncs.
+      await s.user.click(choice(SYNC_LATER));
+      expect(screen.getByText(SYNC_JOINED)).toBeInTheDocument();
+      expect(screen.queryByText(SYNC_LATER_NOTE)).toBeNull();
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect(join).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds the choices while a join is on its way", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_JOIN));
+      const form = within(await screen.findByRole("form", { name: "Join with a pairing code" }));
+      const real = s.ipc.joinSync.bind(s.ipc);
+      let answer = () => {};
+      const answered = new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      vi.spyOn(s.ipc, "joinSync").mockImplementation(async (address, code) => {
+        await answered;
+        return real(address, code);
+      });
+      await s.user.type(form.getByRole("textbox", { name: "Server address" }), "https://sync.example.com");
+      await s.user.type(form.getByRole("textbox", { name: "Pairing code" }), MOCK_SYNC_CODE);
+      await s.user.click(button("Next"));
+      await waitFor(() => expect(choice(SYNC_LATER)).toBeDisabled());
+      expect(choice(SYNC_JOIN)).toBeDisabled();
+      expect(choice(SYNC_SET_UP)).toBeDisabled();
+      await act(async () => answer());
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect((await s.ipc.syncView()).set_up).toBe(true);
+    });
+
+    it("says why Next waits while the sync settings are still being read", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      const read = vi.spyOn(s.ipc, "syncView").mockImplementation(() => new Promise(() => {}));
+      const join = vi.spyOn(s.ipc, "joinSync");
+      await s.user.click(choice(SYNC_JOIN));
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      await s.user.click(button("Next"));
+      expect(await screen.findByText(SYNC_STILL_READING)).toBeInTheDocument();
+      await stepHeading(STEPS[SYNC].title);
+      expect(join).not.toHaveBeenCalled();
+      // Not now still gets past it.
+      await s.user.click(choice(SYNC_LATER));
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+    });
+
+    it("a failed join stays on the step with the Sync page's copy, and Next tries again", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_JOIN));
+      const form = within(await screen.findByRole("form", { name: "Join with a pairing code" }));
+      await s.user.type(form.getByRole("textbox", { name: "Server address" }), "https://sync.example.com");
+      await s.user.type(form.getByRole("textbox", { name: "Pairing code" }), "not a code");
+      await s.user.click(button("Next"));
+      expect(await screen.findByText(syncCopy.command_problems.bad_code)).toBeInTheDocument();
+      expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
+      await stepHeading(STEPS[SYNC].title);
+      // The reason stays once the choices are free again.
+      await waitFor(() => expect(choice(SYNC_LATER)).toBeEnabled());
+      expect(screen.getByText(syncCopy.command_problems.bad_code)).toBeInTheDocument();
+      expect(choice(SYNC_JOIN)).toBeChecked();
+      // The code is cleared after every try; the address stays.
+      expect(form.getByRole("textbox", { name: "Pairing code" })).toHaveValue("");
+      await s.user.type(form.getByRole("textbox", { name: "Pairing code" }), MOCK_SYNC_CODE);
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect((await s.ipc.syncView()).set_up).toBe(true);
+    });
+
+    it("sets up the first computer with the setup secret on Next", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_SET_UP));
+      const form = within(await screen.findByRole("form", { name: "Set up the first computer" }));
+      const setUp = vi.spyOn(s.ipc, "setUpSync");
+      await s.user.type(form.getByRole("textbox", { name: "Server address" }), "https://sync.example.com");
+      await s.user.type(form.getByLabelText("Setup secret"), "wrong");
+      await s.user.click(button("Next"));
+      expect(await screen.findByText(syncCopy.command_problems.bad_secret)).toBeInTheDocument();
+      await stepHeading(STEPS[SYNC].title);
+      await s.user.type(form.getByLabelText("Setup secret"), MOCK_SYNC_SECRET);
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect(setUp).toHaveBeenCalledTimes(2);
+      expect((await s.ipc.syncView()).set_up).toBe(true);
+    });
+
+    it("Skip setup sends nothing typed", async () => {
+      const s = setup();
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_JOIN));
+      const form = within(await screen.findByRole("form", { name: "Join with a pairing code" }));
+      await s.user.type(form.getByRole("textbox", { name: "Server address" }), "https://sync.example.com");
+      await s.user.type(form.getByRole("textbox", { name: "Pairing code" }), MOCK_SYNC_CODE);
+      const join = vi.spyOn(s.ipc, "joinSync");
+      await s.user.click(button("Skip setup"));
+      await screen.findByRole("heading", HOME);
+      expect(join).not.toHaveBeenCalled();
+    });
+  });
+
   describe("Download", () => {
     const THIS_COMPUTER = ["speech-helpers", "parakeet-tdt-0.6b-v2", "qwen3.5-4b-q4_k_m"];
 
     it("asks for the languages first, then states the total for this computer on one button", async () => {
       const s = setup(CLEAN);
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       const languages = await screen.findByRole("combobox", { name: "Meeting languages" });
       const line = await screen.findByText(
         `Earshot needs ${await totalOf(s.ipc, THIS_COMPUTER)} for this computer: Speech helpers, Parakeet 0.6B v2 and Qwen 3.5 4B.`,
@@ -339,24 +617,44 @@ describe("First run wizard", () => {
       expect(screen.queryByRole("button", { name: "Never" })).toBeNull();
     });
 
+    it("goes by who writes first when the order cannot be read after the Summaries step", async () => {
+      const s = setup(CLEAN);
+      await waitFor(() => expect(tick(CODEX_LABEL)).toBeEnabled());
+      await s.user.click(tick(CODEX_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }]));
+      await waitFor(() => expect(up(CODEX_LABEL)).toBeEnabled());
+      await s.user.click(up(CODEX_LABEL)!);
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "Local" }]));
+      // This computer is second, so the order would count its model; unread, only the first counts.
+      vi.spyOn(s.ipc, "summaryOrder").mockRejectedValueOnce(new Error("unreadable"));
+      await toStepFrom(s, 0, DOWNLOAD);
+      const total = await totalOf(s.ipc, ["speech-helpers", "parakeet-tdt-0.6b-v2"]);
+      await screen.findByText(`Earshot needs ${total} for this computer: Speech helpers and Parakeet 0.6B v2.`);
+    });
+
     it("leaves the summary model out unless the Summaries step chose this computer", async () => {
       const s = setup(CLEAN);
-      await s.user.click(await screen.findByRole("radio", { name: /^OpenAI \(through Codex\)/ }));
+      await waitFor(() => expect(tick(CODEX_LABEL)).toBeEnabled());
+      await s.user.click(tick(CODEX_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }]));
+      await s.user.click(tick(LOCAL_LABEL));
       await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("Codex"));
-      await s.user.click(button("Next"));
-      await stepHeading(STEPS[1].title);
+      await toStepFrom(s, 0, DOWNLOAD);
       const total = await totalOf(s.ipc, ["speech-helpers", "parakeet-tdt-0.6b-v2"]);
       await screen.findByText(`Earshot needs ${total} for this computer: Speech helpers and Parakeet 0.6B v2.`);
       await s.user.click(button("Back"));
-      await s.user.click(await screen.findByRole("radio", { name: /^On this computer/ }));
-      await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer"));
-      await s.user.click(button("Next"));
+      await stepHeading(STEPS[SYNC].title);
+      await s.user.click(button("Back"));
+      await waitFor(() => expect(tick(LOCAL_LABEL)).toBeEnabled());
+      await s.user.click(tick(LOCAL_LABEL));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "Local" }]));
+      await toStepFrom(s, 0, DOWNLOAD);
       await screen.findByText(new RegExp(`^Earshot needs ${await totalOf(s.ipc, THIS_COMPUTER)} .* Qwen 3\\.5 4B\\.$`));
     });
 
     it("follows the languages to another model", async () => {
       const s = setup({ ...CLEAN, machine: "desktop" });
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await s.user.click(await screen.findByRole("combobox", { name: "Meeting languages" }));
       await s.user.click(await screen.findByRole("menuitemcheckbox", { name: "German" }));
       await screen.findByText(/for this computer: Speech helpers, Parakeet 0\.6B v3 and Qwen 3\.5 9B\.$/);
@@ -366,7 +664,7 @@ describe("First run wizard", () => {
       const s = setup(CLEAN);
       const models = s.ipc.models.bind(s.ipc);
       vi.spyOn(s.ipc, "models").mockImplementation(async () => ({ ...(await models()), recommended: null }));
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await screen.findByText(NO_MODEL_FOR_LANGUAGES);
       await screen.findByText(/for this computer: Speech helpers and Qwen 3\.5 4B\.$/);
     });
@@ -374,20 +672,20 @@ describe("First run wizard", () => {
     it("offers the NPU versions in the full list on an ARM64 computer, and fetches one", async () => {
       const s = setup(CLEAN);
       const start = vi.spyOn(s.ipc, "startDownload");
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await s.user.click(await screen.findByRole("button", { name: "Choose different models" }));
       const npu = await screen.findByRole("region", { name: "NPU versions" });
       await s.user.click(within(npu).getByRole("button", { name: /^Download Parakeet 0\.6B v2 \(NPU version\)/ }));
       await waitFor(() => expect(start.mock.calls.map(([m]) => m)).toEqual(["parakeet-tdt-0.6b-v2-npu"]));
       // The next steps say it is still downloading, as they do for the other models.
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[2].title);
+      await stepHeading(STEPS[ABOUT_ME].title);
       expect(await screen.findByText(stillDownloading(["Parakeet 0.6B v2 (NPU version)"]))).toBeInTheDocument();
     });
 
     it("has no NPU versions on a computer without them", async () => {
       const s = setup({ ...CLEAN, machine: "desktop" });
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await s.user.click(await screen.findByRole("button", { name: "Choose different models" }));
       await screen.findByRole("region", { name: "What every meeting needs" });
       expect(screen.queryByRole("region", { name: "NPU versions" })).toBeNull();
@@ -395,7 +693,7 @@ describe("First run wizard", () => {
 
     it("follows a model chosen from the full list", async () => {
       const s = setup(CLEAN);
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await s.user.click(await screen.findByRole("button", { name: "Choose different models" }));
       await s.user.click(await screen.findByRole("radio", { name: /^Parakeet 110M/ }));
       await screen.findByText(/for this computer: Speech helpers, Parakeet 110M and Qwen 3\.5 4B\.$/);
@@ -405,7 +703,7 @@ describe("First run wizard", () => {
       const s = setup(CLEAN);
       const start = vi.spyOn(s.ipc, "startDownload");
       const cancel = vi.spyOn(s.ipc, "cancelDownload");
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await screen.findByText(/^Earshot needs/);
       expect(start).not.toHaveBeenCalled();
       await s.user.click(button("Download"));
@@ -414,7 +712,7 @@ describe("First run wizard", () => {
       expect(screen.getByText(new RegExp(DOWNLOADS_CARRY_ON))).toBeInTheDocument();
       await waitFor(() => expect(screen.queryByRole("button", { name: "Download" })).toBeNull());
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[2].title);
+      await stepHeading(STEPS[ABOUT_ME].title);
       expect(
         await screen.findByText(stillDownloading(["Speech helpers", "Parakeet 0.6B v2", "Qwen 3.5 4B"])),
       ).toBeInTheDocument();
@@ -431,7 +729,7 @@ describe("First run wizard", () => {
 
     it("has no button when this computer has everything", async () => {
       const s = setup({ machine: "desktop" });
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await screen.findByText(NOTHING_TO_DOWNLOAD);
       expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
       expect(button("Choose different models")).toBeEnabled();
@@ -439,7 +737,7 @@ describe("First run wizard", () => {
 
     it("counts only what is missing", async () => {
       const s = setup({ cleanInstall: true });
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await screen.findByText(
         `Earshot needs ${await totalOf(s.ipc, ["speech-helpers"])} for this computer: Speech helpers.`,
       );
@@ -448,7 +746,7 @@ describe("First run wizard", () => {
     it("shows why a download was refused", async () => {
       const s = setup(CLEAN);
       vi.spyOn(s.ipc, "startDownload").mockRejectedValueOnce(new Error("The disk is full."));
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await screen.findByText(/^Earshot needs/);
       await s.user.click(button("Download"));
       expect(await screen.findByText("The disk is full.")).toBeInTheDocument();
@@ -458,36 +756,36 @@ describe("First run wizard", () => {
   describe("About me", () => {
     it("Next saves your name, with no Save button", async () => {
       const s = setup();
-      await toStep(s, 2);
+      await toStep(s, ABOUT_ME);
       await s.user.type(await screen.findByRole("textbox", { name: /^Your name/ }), "Casey");
       expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[3].title);
+      await stepHeading(STEPS[EXTRAS].title);
       expect((await s.ipc.speakers()).voice.name).toBe("Casey");
     });
 
     it("a refused name stays on the step and says why", async () => {
       const s = setup();
-      await toStep(s, 2);
+      await toStep(s, ABOUT_ME);
       const name = await screen.findByRole("textbox", { name: /^Your name/ });
       await s.user.click(name);
       await s.user.paste("x".repeat(101));
       await s.user.click(button("Next"));
       expect(await screen.findByText("That name is too long.")).toBeInTheDocument();
       expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
-      await stepHeading(STEPS[2].title);
+      await stepHeading(STEPS[ABOUT_ME].title);
       await s.user.clear(name);
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[3].title);
+      await stepHeading(STEPS[EXTRAS].title);
     });
 
     it("the voice sample has its own Skip, which saves the name and goes on", async () => {
       const s = setup();
       const startVoice = vi.spyOn(s.ipc, "startVoiceSample");
-      await toStep(s, 2);
+      await toStep(s, ABOUT_ME);
       await s.user.type(await screen.findByRole("textbox", { name: /^Your name/ }), "Casey");
       await s.user.click(button("Skip the voice sample"));
-      await stepHeading(STEPS[3].title);
+      await stepHeading(STEPS[EXTRAS].title);
       expect((await s.ipc.speakers()).voice.name).toBe("Casey");
       expect(startVoice).not.toHaveBeenCalled();
     });
@@ -497,7 +795,7 @@ describe("First run wizard", () => {
         settings: { voiceStartError: { kind: "busy", message: "A meeting is running.", retryable: true } },
       });
       const startVoice = vi.spyOn(s.ipc, "startVoiceSample");
-      await toStep(s, 2);
+      await toStep(s, ABOUT_ME);
       await s.user.click(await screen.findByRole("button", { name: "Record my voice" }));
       const dialog = await screen.findByRole("alertdialog", { name: "Save a voiceprint of your voice?" });
       expect(startVoice).not.toHaveBeenCalled();
@@ -510,7 +808,7 @@ describe("First run wizard", () => {
 
     it("holds the buttons while the sample runs", async () => {
       const s = setup();
-      await toStep(s, 2);
+      await toStep(s, ABOUT_ME);
       await s.user.click(await screen.findByRole("button", { name: "Record my voice" }));
       const dialog = await screen.findByRole("alertdialog");
       await s.user.click(within(dialog).getByRole("button", { name: "Record and save" }));
@@ -526,7 +824,7 @@ describe("First run wizard", () => {
       const s = setup(CLEAN);
       const start = vi.spyOn(s.ipc, "startDownload");
       const startVoice = vi.spyOn(s.ipc, "startVoiceSample");
-      await toStep(s, 2);
+      await toStep(s, ABOUT_ME);
       expect(await screen.findByRole("button", { name: "Record my voice" })).toBeDisabled();
       expect(screen.getByText(HELPERS_MISSING)).toBeInTheDocument();
       expect(button("Skip the voice sample")).toBeEnabled();
@@ -537,11 +835,11 @@ describe("First run wizard", () => {
     it("the record button turns on by itself when the helpers arrive, and records nothing", async () => {
       const s = setup(CLEAN);
       const startVoice = vi.spyOn(s.ipc, "startVoiceSample");
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await s.user.click(await screen.findByRole("button", { name: "Download" }));
       await waitFor(() => expect(screen.queryByRole("button", { name: "Download" })).toBeNull());
       await s.user.click(button("Next"));
-      await stepHeading(STEPS[2].title);
+      await stepHeading(STEPS[ABOUT_ME].title);
       expect(await screen.findByRole("button", { name: "Record my voice" })).toBeDisabled();
       expect(screen.getByText(HELPERS_ARRIVING)).toBeInTheDocument();
       advance(s.timer, MODEL_STEP_MS * 10);
@@ -555,7 +853,7 @@ describe("First run wizard", () => {
   describe("Optional extras", () => {
     it("is two rows that open when pressed, and then Finish", async () => {
       const s = setup();
-      await toStep(s, 3);
+      await toStep(s, EXTRAS);
       expect(screen.getByText(OBSIDIAN_ROW)).toBeInTheDocument();
       expect(screen.getByText(AUDIO_CHECK_ROW)).toBeInTheDocument();
       expect(screen.queryByText(EXPORT_EXPLAINED)).toBeNull();
@@ -571,7 +869,7 @@ describe("First run wizard", () => {
 
     it("Finish saves the Obsidian vault and folder, with no Save button", async () => {
       const s = setup({ settings: { pickedVault: "C:\\Notes" } });
-      await toStep(s, 3);
+      await toStep(s, EXTRAS);
       await s.user.click(button("Open Obsidian"));
       await s.user.click(await screen.findByRole("button", { name: "Choose folder..." }));
       expect(await screen.findByDisplayValue("C:\\Notes")).toBeInTheDocument();
@@ -586,24 +884,24 @@ describe("First run wizard", () => {
 
     it("a refused vault stays on the step and says why", async () => {
       const s = setup();
-      await toStep(s, 3);
+      await toStep(s, EXTRAS);
       await s.user.click(button("Open Obsidian"));
       await s.user.type(await screen.findByRole("textbox", { name: /^Vault folder/ }), "not a path");
       await s.user.click(button("Finish"));
       expect(await screen.findByText(/The vault must be a full folder path/)).toBeInTheDocument();
       expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
-      await stepHeading(STEPS[3].title);
+      await stepHeading(STEPS[EXTRAS].title);
       expect((await s.ipc.firstRunState()).show).toBe(true);
     });
 
     it("Skip setup and Back leave typed text unsaved", async () => {
       const s = setup({ settings: { pickedVault: "C:\\Notes" } });
-      await toStep(s, 3);
+      await toStep(s, EXTRAS);
       await s.user.click(button("Open Obsidian"));
       await s.user.click(await screen.findByRole("button", { name: "Choose folder..." }));
       await screen.findByDisplayValue("C:\\Notes");
       await s.user.click(button("Back"));
-      await stepHeading(STEPS[2].title);
+      await stepHeading(STEPS[ABOUT_ME].title);
       expect((await s.ipc.obsidianSettings()).value.vault).toBe("");
       await s.user.click(button("Next"));
       await s.user.click(await screen.findByRole("button", { name: "Open Obsidian" }));
@@ -617,7 +915,7 @@ describe("First run wizard", () => {
     it("plays nothing until its button, and holds the buttons while the check runs", async () => {
       const s = setup();
       const startCheck = vi.spyOn(s.ipc, "startAudioCheck");
-      await toStep(s, 3);
+      await toStep(s, EXTRAS);
       await s.user.click(button("Open Audio check"));
       await screen.findByText(CHECK_WARNING);
       expect(startCheck).not.toHaveBeenCalled();
@@ -634,7 +932,7 @@ describe("First run wizard", () => {
       const s = setup({
         audioCheck: { startError: { kind: "busy", message: "The model check is running.", retryable: true } },
       });
-      await toStep(s, 3);
+      await toStep(s, EXTRAS);
       await s.user.click(button("Open Audio check"));
       await s.user.click(await screen.findByRole("button", { name: "Run audio check" }));
       await screen.findByText("The model check is running.");
@@ -645,7 +943,7 @@ describe("First run wizard", () => {
   describe("with no transcription model", () => {
     it("Skip setup says meetings need one and stops nothing, until dismissed", async () => {
       const s = setup(CLEAN);
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await screen.findByText(/^Earshot needs/);
       await s.user.click(button("Skip setup"));
       await screen.findByRole("heading", HOME);
@@ -658,7 +956,7 @@ describe("First run wizard", () => {
 
     it("Finish says the same", async () => {
       const s = setup(CLEAN);
-      await toStep(s, 3);
+      await toStep(s, EXTRAS);
       await s.user.click(button("Finish"));
       await screen.findByRole("heading", HOME);
       expect(screen.getByText(NO_MODEL_NOTE)).toBeInTheDocument();
@@ -668,7 +966,7 @@ describe("First run wizard", () => {
       const s = setup({ ...CLEAN, firstRun: { show: false } });
       await openSettings(s.user, "General");
       await s.user.click(await screen.findByRole("button", { name: "Open the setup guide" }));
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await s.user.click(button("Skip setup"));
       await screen.findByRole("heading", { level: 1, name: "General" });
       expect(screen.getByText(NO_MODEL_NOTE)).toBeInTheDocument();
@@ -676,7 +974,7 @@ describe("First run wizard", () => {
 
     it("says nothing while one is downloading, or when one is here", async () => {
       const s = setup(CLEAN);
-      await toStep(s, 1);
+      await toStep(s, DOWNLOAD);
       await s.user.click(await screen.findByRole("button", { name: "Download" }));
       await waitFor(() => expect(screen.queryByRole("button", { name: "Download" })).toBeNull());
       await s.user.click(button("Skip setup"));
@@ -684,7 +982,7 @@ describe("First run wizard", () => {
       expect(screen.queryByText(NO_MODEL_NOTE)).toBeNull();
       cleanup();
       const t = setup();
-      await toStep(t, 3);
+      await toStep(t, EXTRAS);
       await t.user.click(button("Finish"));
       await screen.findByRole("heading", HOME);
       expect(screen.queryByText(NO_MODEL_NOTE)).toBeNull();
@@ -705,6 +1003,13 @@ describe("First run wizard", () => {
       RUNNING_NOTE,
       SAVE_REFUSED_NOTE,
       SETUP_EXPLAINED,
+      SYNC_JOIN,
+      SYNC_JOINED,
+      SYNC_LATER,
+      SYNC_LATER_NOTE,
+      SYNC_QUESTION,
+      SYNC_SET_UP,
+      SYNC_STILL_READING,
       ...STEPS.flatMap((s) => [s.title, s.intro]),
     ];
     for (const w of words) expect(w).not.toContain("\u2014");

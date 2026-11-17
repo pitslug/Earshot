@@ -43,6 +43,7 @@ import {
   sameStep,
   stepKey,
 } from "../ipc";
+import { endpointHost } from "../ipc/localHost";
 import { ModelsNotLoaded, SummaryModelChoices } from "./ModelSections";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
@@ -55,36 +56,11 @@ const useStyles = makeStyles({
   heading: {
     margin: 0,
   },
-  choices: {
-    display: "grid",
-    gap: tokens.spacingVerticalS,
-  },
-  card: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalXXS,
-    padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalM}`,
-    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke1}`,
-    borderRadius: tokens.borderRadiusMedium,
-    backgroundColor: tokens.colorNeutralBackground1,
-  },
-  selected: {
-    border: `${tokens.strokeWidthThin} solid ${tokens.colorBrandStroke1}`,
-    boxShadow: `inset 0 0 0 ${tokens.strokeWidthThin} ${tokens.colorBrandStroke1}`,
-  },
   title: {
     display: "inline-flex",
     flexWrap: "wrap",
     alignItems: "baseline",
     gap: tokens.spacingHorizontalS,
-  },
-  why: {
-    color: tokens.colorNeutralForeground2,
-    paddingLeft: "32px",
-  },
-  destination: {
-    color: tokens.colorNeutralForeground3,
-    paddingLeft: "32px",
   },
   // The writers (T12.68): one bordered list, a row per writer. No width caps: the names and
   // where each writer sends the transcript wrap with the page.
@@ -164,9 +140,6 @@ const useStyles = makeStyles({
     alignItems: "center",
     gap: tokens.spacingHorizontalS,
   },
-  other: {
-    justifySelf: "start",
-  },
 });
 
 /** The model field's placeholder per provider (never a stored default). */
@@ -204,43 +177,7 @@ export function remoteWarning(host: string): string {
   return `The meeting's transcript, title, speaker names and notes are sent to ${host}. Nothing else leaves this computer.`;
 }
 
-/** One choice of step 1: a writer card with what it is and where the transcript goes. */
-function Choice({
-  value,
-  label,
-  detail,
-  why,
-  destination,
-  selected,
-}: {
-  /** A step's key (`stepKey`), or `NoSummary`. */
-  value: string;
-  label: string;
-  detail?: string;
-  why?: string;
-  /** Where the transcript goes (the order's copy). */
-  destination?: string;
-  selected: boolean;
-}) {
-  const styles = useStyles();
-  return (
-    <div className={mergeClasses(styles.card, selected && styles.selected)} data-step={value}>
-      <Radio
-        value={value}
-        label={
-          <span className={styles.title}>
-            <Body1Strong>{label}</Body1Strong>
-            {detail !== undefined && <Caption1 className={styles.muted}>{detail}</Caption1>}
-          </span>
-        }
-      />
-      {why !== undefined && <Caption1 className={styles.why}>{why}</Caption1>}
-      {destination !== undefined && <Caption1 className={styles.destination}>{destination}</Caption1>}
-    </div>
-  );
-}
-
-/** The value of "No summary" among step 1's choices. */
+/** The value of "No summary" on the Summaries page. */
 const NO_SUMMARY = "NoSummary";
 
 /** The value of "Write summaries" on the Summaries page. */
@@ -275,21 +212,41 @@ function EndpointForm({
   const [url, setUrl] = useState(stored.url);
   const [model, setModel] = useState(stored.model);
   const [key, setKey] = useState("");
+  // The address is Anthropic's, filled in by choosing Anthropic over an empty address.
+  const [prefilled, setPrefilled] = useState(false);
   const providerId = useId();
   // A stored change (a save) resets the drafts to what was stored.
   useEffect(() => {
     setProvider(stored.provider);
     setUrl(stored.url);
     setModel(stored.model);
+    setPrefilled(false);
   }, [stored.provider, stored.url, stored.model]);
 
   const anthropic = provider === "Anthropic";
   const saves = inUse || saveOnly;
   const changed = !saves || provider !== stored.provider || url !== stored.url || model !== stored.model;
-  const showWarning = inUse && settings.endpoint_host !== null && !settings.endpoint_local;
   const wizard = saveOnNext !== undefined;
+  // Next saves the fields only when they differ from what is stored: an endpoint form nobody
+  // typed in (shown under the list whether or not the endpoint is set up) never holds Next.
+  // Choosing Anthropic alone fills in its address; with nothing else typed (no model, no API key)
+  // that is not an edit. A typed key makes it one, so Next asks for the model.
+  const onlyPrefill =
+    prefilled && url === settings.anthropic_url && model.trim() === "" && key.trim() === "" && stored.url === "";
+  const edited = !onlyPrefill && (provider !== stored.provider || url !== stored.url || model !== stored.model);
+  // Where the transcript would go: in the wizard the address being typed, as soon as it is one
+  // (T12.79 review), else what is stored and in use.
+  const typed = wizard && edited ? endpointHost(url) : null;
+  const warnHost =
+    typed !== null
+      ? typed.local
+        ? null
+        : typed.host
+      : inUse && settings.endpoint_host !== null && !settings.endpoint_local
+        ? settings.endpoint_host
+        : null;
   useSaveOnNext(saveOnNext, async () => {
-    if (changed && (locked || !(await onUse({ provider, url, model })))) return false;
+    if (edited && (locked || !(await onUse({ provider, url, model })))) return false;
     if (!anthropic || key.trim() === "") return true;
     const saved = await state.saveKey(key);
     if (saved) setKey("");
@@ -307,7 +264,14 @@ function EndpointForm({
             onChange={(_, d) => {
               const p = d.value as ProviderChoice;
               setProvider(p);
-              if (p === "Anthropic" && url.trim() === "") setUrl(settings.anthropic_url);
+              if (p === "Anthropic" && url.trim() === "") {
+                setUrl(settings.anthropic_url);
+                setPrefilled(true);
+              } else if (p !== "Anthropic" && prefilled && url === settings.anthropic_url) {
+                // Switching back undoes the address Anthropic filled in.
+                setUrl("");
+                setPrefilled(false);
+              }
             }}
           >
             {(["OpenAiCompatible", "Anthropic"] as const).map((p) => (
@@ -325,7 +289,14 @@ function EndpointForm({
               : "The server's API address without /chat/completions, for example http://127.0.0.1:8080/v1 for a server on this computer. Plain http only to this computer or the local network."
           }
         >
-          <Input value={url} onChange={(_, d) => setUrl(d.value)} spellCheck={false} />
+          <Input
+            value={url}
+            onChange={(_, d) => {
+              setUrl(d.value);
+              setPrefilled(false);
+            }}
+            spellCheck={false}
+          />
         </Field>
         <Field label="Model" hint="The model name the endpoint expects.">
           <Input
@@ -348,9 +319,9 @@ function EndpointForm({
           {saves && !changed && <Caption1 className={styles.muted}>Saved.</Caption1>}
         </div>
       )}
-      {showWarning && (
+      {warnHost !== null && (
         <MessageBar intent="warning">
-          <MessageBarBody>{remoteWarning(settings.endpoint_host ?? "")}</MessageBarBody>
+          <MessageBarBody>{remoteWarning(warnHost)}</MessageBarBody>
         </MessageBar>
       )}
       {anthropic && (
@@ -760,150 +731,6 @@ function WriterForms({
   );
 }
 
-/** "Who writes the summary" in the first-run wizard: one writer among this computer, Claude
- * Code, Codex and "No summary", with your own endpoint last, behind "Other". A choice applies at
- * once; an endpoint without its address waits for its form's button. */
-function WriterSection({
-  state,
-  settings,
-  keySaved,
-  saveOnNext,
-}: {
-  state: SummariesPageState;
-  settings: SummarySettingsView;
-  keySaved: boolean | null;
-  saveOnNext?: SaveOnNext;
-}) {
-  const styles = useStyles();
-  const writerLabel = useId();
-  // Whether the endpoint waits for its form.
-  const [pending, setPending] = useState(false);
-  const [otherOpen, setOtherOpen] = useState(false);
-  const value = settings.value;
-  const order = state.order;
-  // Nothing is offered before the order is read: a choice then would replace an order nobody
-  // has seen (the old writer setting holds only its first writer step).
-  const locked = order === null;
-  const stored: StepChoice[] = order !== null ? order.steps.map((s) => s.step) : [];
-  const offered: StepView[] = order?.offered ?? [];
-  const viewOf = (step: StepChoice) => offered.find((o) => sameStep(o.step, step));
-  const hasEndpoint = value.url !== "" && value.model !== "";
-  const shown = locked ? "" : pending ? "Endpoint" : stored.length > 0 ? stepKey(stored[0]) : NO_SUMMARY;
-  const models = state.models;
-  const local =
-    models === null
-      ? undefined
-      : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
-
-  const choose = (key: string) => {
-    if (locked) return;
-    const step = key === NO_SUMMARY || key === "" ? null : (offered.find((o) => stepKey(o.step) === key)?.step ?? null);
-    if (step !== null && step.kind === "Endpoint" && !hasEndpoint) {
-      // No endpoint yet: show the form; the step is stored once it is saved.
-      setPending(true);
-      return;
-    }
-    setPending(false);
-    void state.saveOrder(step === null ? [] : [step]);
-  };
-  const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
-    if (locked) return false;
-    const ok = await state.saveOrder([{ kind: "Endpoint" }], change);
-    if (ok) setPending(false);
-    return ok;
-  };
-  const dest = (step: StepChoice) => viewOf(step)?.destination;
-  // What is stored always shows.
-  const endpointOpen = otherOpen || shown === "Endpoint";
-
-  return (
-    <Section title="Who writes the summary">
-      <span id={writerLabel} hidden>
-        Who writes the summary
-      </span>
-      {state.orderError !== null && (
-        <MessageBar intent="error">
-          <MessageBarBody>
-            <MessageBarTitle>{ORDER_COPY.page.not_read}</MessageBarTitle>
-            {state.orderError}
-          </MessageBarBody>
-        </MessageBar>
-      )}
-      {locked && state.orderError === null && <Spinner size="tiny" label={ORDER_COPY.page.reading} />}
-      <RadioGroup
-        aria-labelledby={writerLabel}
-        value={shown}
-        disabled={state.busy || locked}
-        onChange={(_, d) => choose(d.value)}
-        className={styles.choices}
-      >
-        <Choice
-          value="Local"
-          label="On this computer"
-          detail={local}
-          why="Nothing leaves this computer."
-          destination={dest({ kind: "Local" })}
-          selected={shown === "Local"}
-        />
-        <Choice
-          value="ClaudeCode"
-          label="Claude (through Claude Code)"
-          detail="Uses your Claude sign-in"
-          why={CLAUDE_CODE_PRIVACY}
-          destination={dest({ kind: "ClaudeCode" })}
-          selected={shown === "ClaudeCode"}
-        />
-        <Choice
-          value="Codex"
-          label="OpenAI (through Codex)"
-          detail="Uses your ChatGPT sign-in"
-          why={CODEX_PRIVACY}
-          destination={dest({ kind: "Codex" })}
-          selected={shown === "Codex"}
-        />
-        <Choice
-          value={NO_SUMMARY}
-          label={ORDER_COPY.page.no_summary}
-          why={ORDER_COPY.page.no_summary_why}
-          selected={shown === NO_SUMMARY}
-        />
-        {endpointOpen && (
-          <Choice
-            value="Endpoint"
-            label="Your own server"
-            detail={hasEndpoint ? viewOf({ kind: "Endpoint" })?.label : undefined}
-            why="An OpenAI-compatible server or Claude. The meeting's transcript, title, speaker names and notes are sent to the address you enter, and only there."
-            destination={hasEndpoint ? dest({ kind: "Endpoint" }) : undefined}
-            selected={shown === "Endpoint"}
-          />
-        )}
-      </RadioGroup>
-      {shown !== "Endpoint" && (
-        <Button
-          appearance="subtle"
-          className={styles.other}
-          aria-expanded={otherOpen}
-          onClick={() => setOtherOpen((open) => !open)}
-        >
-          Other
-        </Button>
-      )}
-      {order !== null && order.notes.length > 0 && <UnknownSettings unknown={order.notes} />}
-      <WriterForms
-        state={state}
-        settings={settings}
-        keySaved={keySaved}
-        stored={stored}
-        locked={locked}
-        endpointShown={stored.some((s) => s.kind === "Endpoint") || pending}
-        localShown={stored.some((s) => s.kind === "Local")}
-        useEndpoint={useEndpoint}
-        saveOnNext={saveOnNext}
-      />
-    </Section>
-  );
-}
-
 /** The writers the list always holds, in its order (the user's other computers follow). */
 const WRITERS: StepChoice[] = [{ kind: "Local" }, { kind: "Endpoint" }, { kind: "ClaudeCode" }, { kind: "Codex" }];
 
@@ -1058,12 +885,19 @@ function OrderSection({
   settings,
   keySaved,
   localModels,
+  modelComesLater = false,
+  saveOnNext,
 }: {
   state: SummariesPageState;
   settings: SummarySettingsView;
   keySaved: boolean | null;
   /** The model state Settings holds: with it, the summary models show under the list. */
   localModels?: ModelsPageState;
+  /** This computer can be ticked with no summary model installed: the first-run wizard's
+   * Download step fetches it (T12.79). */
+  modelComesLater?: boolean;
+  /** The first-run wizard: the forms save what was typed with its Next (no Save buttons). */
+  saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
   const writerLabel = useId();
@@ -1090,9 +924,9 @@ function OrderSection({
   const models = loaded?.models ?? state.models;
   // No summary model on this computer (unknown while the models are not read: then nothing is
   // said).
-  const noLocalModel = models !== null && !models.summary.some((m) => m.installed === "Yes");
+  const noLocalModel = !modelComesLater && models !== null && !models.summary.some((m) => m.installed === "Yes");
   const local =
-    models === null || noLocalModel
+    models === null || !models.summary.some((m) => m.installed === "Yes")
       ? undefined
       : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
   const kindOf = (step: StepChoice): string | undefined => {
@@ -1276,6 +1110,7 @@ function OrderSection({
           localShown={stored.some((s) => s.kind === "Local") || noLocalModel}
           useEndpoint={useEndpoint}
           localModels={localModels}
+          saveOnNext={saveOnNext}
         />
       )}
     </Section>
@@ -1301,8 +1136,11 @@ function SummariesNotices({ state, settings }: { state: SummariesPageState; sett
   );
 }
 
-/** Who writes the summary, on its own, for the first-run wizard: its Next saves what is typed. */
-export function SummaryWriterChoices({ saveOnNext }: { saveOnNext: SaveOnNext }) {
+/** Who writes the summary, on its own, for the first-run wizard (T12.79): the Summaries page's
+ * list of writers, its ticks and moves saved at once as on the page, and what is typed in a
+ * writer's form saved with the wizard's Next. This computer can be ticked before its model is
+ * downloaded, because the wizard's Download step fetches it. */
+export function SummaryOrderChoices({ saveOnNext }: { saveOnNext: SaveOnNext }) {
   const page = usePageStyles();
   const state = useSummaries();
   const { load } = state;
@@ -1310,7 +1148,13 @@ export function SummaryWriterChoices({ saveOnNext }: { saveOnNext: SaveOnNext })
   return (
     <div className={page.page}>
       <SummariesNotices state={state} settings={load.settings} />
-      <WriterSection state={state} settings={load.settings} keySaved={load.keySaved} saveOnNext={saveOnNext} />
+      <OrderSection
+        state={state}
+        settings={load.settings}
+        keySaved={load.keySaved}
+        modelComesLater
+        saveOnNext={saveOnNext}
+      />
     </div>
   );
 }
