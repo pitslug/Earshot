@@ -672,6 +672,23 @@ describe("Speakers panel person field keys (T12.80 re-review)", () => {
     expect(within(speakerRow("Speaker 2")).getByText("New person: casey")).toBeInTheDocument();
   });
 
+  it("still chooses the highlighted option on Enter after ArrowLeft moved the text cursor", async () => {
+    // Fluent hides `aria-activedescendant` on ArrowLeft/ArrowRight for screen readers; in 9.17.8
+    // that hide is a no-op, and if an upgrade makes it real this pins that Enter still chooses.
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "r");
+    await user.keyboard("{ArrowDown}");
+    expect(field).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "Priya Shah (4 meetings)" }).id,
+    );
+    await user.keyboard("{ArrowLeft}{Enter}");
+    expect(field).toHaveValue("Priya Shah");
+    expect(within(speakerRow("Speaker 2")).getByText("Links to Priya Shah (4 meetings)")).toBeInTheDocument();
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+  });
+
   it("does what the hint says on Enter after Escape closed the list", async () => {
     const { user, calls } = await setup();
     const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
