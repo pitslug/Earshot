@@ -2261,6 +2261,12 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: (1) the Summaries step uses the Summaries page's writer list (`OrderSection`: tick boxes, move up and down, at most three, each writer's privacy disclosure and setup form), saved through the same calls on Next (`saveOnNext`), replacing the one-writer radios and the AGENTS.md rule that kept them. (2) a Sync step after Summaries: "Do you use Earshot on another computer?" with Join with a pairing code (the Sync page's join part), Set up a new vault, or Not now (the default; nothing is sent); nothing runs on mount; a join or setup that fails keeps the step with the Sync page's copy. (3) tests through the production parts, and the wizard in the Vite preview (`?firstRun=1`) in light and dark.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo test -p earshot-desktop --bin earshot first_run`
 
+- [ ] T12.80 Choose a saved person as you type a voice's name
+  - found (the owner, 2026-11-17, 0.3.11): typing an existing person's whole name on a voice that needs a name showed no "Links to <name>"; the hint needs the exact whole name and stays silent when two live persons share it (`personNamed`). The owner asks for a dropdown that filters saved people as you type.
+  - deps: T12.77
+  - do: (1) first find why the hint did not show (a test with two live persons of one name, a merged person, a name with inner spaces or other case, a person list not reloaded after a save), and pin the cause with a test. (2) the name field of a voice that needs a name, and the Link control of a named voice, become one Fluent combobox (freeform): typing filters live persons by any part of the name, case and accents ignored (`search::fold_case` rules mirrored or served by Rust); choosing a person links to that person; Enter on a name no one has offers "New person: <name>"; persons with the same name are listed apart with how many meetings each is in; the user is listed disabled with the existing own-name hint. Save keeps its one-step meaning (link and remember the voice). Keyboard and screen reader use as Fluent's combobox gives it; tests by role.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo test -p earshot-desktop --bin earshot detail`
+
 ### Parked (the owner, 2026-11-14)
 
 Research and hardware runs moved out of TODO.md: no decision is needed now. Each comes back as a task when the hardware, a recording or a better approach exists.
