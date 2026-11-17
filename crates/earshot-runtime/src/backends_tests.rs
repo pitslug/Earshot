@@ -3267,16 +3267,14 @@ fn backends_nemotron_preview_load_is_used_by_no_shipped_code() {
 /// with other hardware would skip the rule for this computer.
 #[test]
 fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code() {
+    // Bare names, matched as whole identifiers (T12.75 review): an alias (`use .. as x`) or a
+    // function value (`let f = ..;`) names the seam without calling it, and fails here too.
     for name in [
-        concat!("load_preview_", "with("),
-        concat!("load_preview_", "second_with("),
+        concat!("load_preview_", "with"),
+        concat!("load_preview_", "second_with"),
     ] {
-        // `live/preview_tests.rs` is compiled only under `#[cfg(test)]` (see the nemotron scan).
-        let found: Vec<PathBuf> = shipped_files_naming(name)
-            .into_iter()
-            .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
-            .collect();
-        assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
+        let found = shipped_files_naming_ident(name);
+        assert!(found.is_empty(), "shipped code names {name}: {found:?}");
         let src = backends_source();
         let evaluation = item_span(&src, concat!("pub fn load_preview_", "on_hardware("));
         // T12.75 review: the `_on` seams pass on the hardware their callers give, which the scan
@@ -3286,16 +3284,18 @@ fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code(
             item_span(&src, concat!("pub(crate) fn load_preview_", "second_on(")),
         ];
         let mut calls = 0;
-        for (at, line) in code_lines(&src) {
-            if line.contains(name) && !line.contains("fn load_preview_") {
-                calls += 1;
-                assert!(
-                    line.contains("&crate::hardware()")
-                        || evaluation.contains(&at)
-                        || on_seams.iter().any(|seam| seam.contains(&at)),
-                    "{name} with other hardware outside the evaluation loader: {line}"
-                );
+        for (at, line) in ident_lines(&src, name) {
+            if line.contains(&format!("fn {name}")) {
+                continue;
             }
+            calls += 1;
+            assert!(
+                line.contains(&format!("{name}("))
+                    && (line.contains("&crate::hardware()")
+                        || evaluation.contains(&at)
+                        || on_seams.iter().any(|seam| seam.contains(&at))),
+                "{name} with other hardware outside the evaluation loader: {line}"
+            );
         }
         assert!(
             calls >= 2,
@@ -3305,57 +3305,141 @@ fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code(
     // The `_on` seams (T12.75 review): in `backends.rs` called with this computer's hardware; in
     // other shipped code only by `host::live_previews_on`, with what its caller gave, and that
     // only by `host::live_previews`, with `crate::hardware`.
-    let host_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs");
-    let host = std::fs::read_to_string(&host_path).unwrap();
-    let live_previews_on = item_span(&host, concat!("pub fn live_previews_", "on("));
+    let host =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs")).unwrap();
+    assert_eq!(seam_uses_outside_the_rule(&host), Vec::<String>::new());
     for name in [
-        concat!("load_preview_", "on("),
-        concat!("load_preview_", "second_on("),
+        concat!("load_preview_", "on"),
+        concat!("load_preview_", "second_on"),
+        concat!("live_previews_", "on"),
     ] {
-        let found: Vec<PathBuf> = shipped_files_naming(name)
-            .into_iter()
-            .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
-            .collect();
+        let found = shipped_files_naming_ident(name);
         assert!(
             found.len() == 1 && found[0].ends_with("src/host.rs"),
             "{name}: {found:?}"
         );
-        let mut calls = 0;
-        for (at, line) in code_lines(&host) {
-            if line.contains(name) {
-                calls += 1;
-                assert!(
-                    live_previews_on.contains(&at) && line.contains("&hardware()"),
-                    "{name} outside `live_previews_on`: {line}"
-                );
-            }
-        }
-        assert_eq!(calls, 1, "{name}");
-        let src = backends_source();
-        let mut calls = 0;
-        for (_, line) in code_lines(&src) {
-            if line.contains(name) && !line.contains("fn load_preview_") {
-                calls += 1;
-                assert!(line.contains("&crate::hardware()"), "{name}: {line}");
-            }
-        }
-        assert_eq!(calls, 1, "{name}");
     }
-    let name = concat!("live_previews_", "on(");
-    let found: Vec<PathBuf> = shipped_files_naming(name)
-        .into_iter()
-        .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
-        .collect();
-    assert!(
-        found.len() == 1 && found[0].ends_with("src/host.rs"),
-        "{found:?}"
+    let src = backends_source();
+    for name in [
+        concat!("load_preview_", "on"),
+        concat!("load_preview_", "second_on"),
+    ] {
+        let uses: Vec<&str> = ident_lines(&src, name)
+            .into_iter()
+            .map(|(_, line)| line)
+            .filter(|line| !line.contains(&format!("fn {name}(")))
+            .collect();
+        assert_eq!(uses.len(), 1, "{name}: {uses:?}");
+        assert!(
+            uses[0].contains(&format!("{name}(")) && uses[0].contains("&crate::hardware()"),
+            "{name}: {uses:?}"
+        );
+    }
+    assert!(ident_lines(&src, concat!("live_previews_", "on")).is_empty());
+}
+
+/// The negative control of the seam guard (T12.75 review): an alias, a function value or a call
+/// with other hardware in `host.rs` is found; a longer name that only starts like a seam is not.
+#[test]
+fn backends_preview_seam_guard_finds_aliases_values_and_other_hardware() {
+    let host =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs")).unwrap();
+    for extra in [
+        concat!("use crate::host::live_previews_", "on as previews;"),
+        concat!("    let f = crate::host::live_previews_", "on;"),
+        concat!("    let f = crate::backends::load_preview_", "on;"),
+        concat!("use crate::backends::load_preview_", "second_on as second;"),
+        concat!(
+            "    let p = live_previews_",
+            "on(models, choice, || Hardware::default());"
+        ),
+    ] {
+        let found = seam_uses_outside_the_rule(&format!("{host}\n{extra}\n"));
+        assert!(!found.is_empty(), "missed: {extra}");
+    }
+    // A longer identifier is another name, not a use of the seam.
+    let longer = concat!("    let x = load_preview_", "on_hardware;");
+    assert_eq!(
+        seam_uses_outside_the_rule(&format!("{host}\n{longer}\n")),
+        Vec::<String>::new()
     );
-    let calls: Vec<&str> = code_lines(&host)
+    assert!(names_ident(
+        concat!("x(load_preview_", "on)"),
+        concat!("load_preview_", "on")
+    ));
+    assert!(!names_ident(
+        concat!("load_preview_", "on_hardware("),
+        concat!("load_preview_", "on")
+    ));
+}
+
+/// What in a `host.rs` source uses a preview hardware seam outside the rule: `load_preview_on`
+/// and `load_preview_second_on` each called once, inside `live_previews_on`, with `&hardware()`;
+/// `live_previews_on` used only as `live_previews_on(models, choice, crate::hardware)`. A use is
+/// any code line naming the identifier, so aliases and function values count.
+fn seam_uses_outside_the_rule(host: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    let span = item_span(host, concat!("pub fn live_previews_", "on("));
+    for name in [
+        concat!("load_preview_", "on"),
+        concat!("load_preview_", "second_on"),
+    ] {
+        let uses = ident_lines(host, name);
+        if uses.len() != 1 {
+            bad.push(format!("{name}: {} uses", uses.len()));
+        }
+        for (at, line) in uses {
+            if !(span.contains(&at)
+                && line.contains(&format!("{name}("))
+                && line.contains("&hardware()"))
+            {
+                bad.push(line.to_owned());
+            }
+        }
+    }
+    let name = concat!("live_previews_", "on");
+    let declaration = format!("pub fn {name}(");
+    let mut calls = 0;
+    for (_, line) in ident_lines(host, name) {
+        if line.starts_with(&declaration) {
+            continue;
+        }
+        calls += 1;
+        if line != concat!("live_previews_", "on(models, choice, crate::hardware)") {
+            bad.push(line.to_owned());
+        }
+    }
+    if calls != 1 {
+        bad.push(format!("{name}: {calls} uses"));
+    }
+    bad
+}
+
+/// Whether `text` names `name` as a whole identifier (no identifier character on either side).
+fn names_ident(text: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && !text[at + name.len()..].chars().next().is_some_and(ident)
+    })
+}
+
+/// The code lines of `src` (comments left out) naming `name` as a whole identifier.
+fn ident_lines<'a>(src: &'a str, name: &str) -> Vec<(usize, &'a str)> {
+    code_lines(src)
         .into_iter()
-        .map(|(_, line)| line)
-        .filter(|line| line.contains(name) && !line.contains("fn live_previews_"))
-        .collect();
-    assert_eq!(calls, ["live_previews_on(models, choice, crate::hardware)"]);
+        .filter(|(_, line)| names_ident(line, name))
+        .collect()
+}
+
+/// [`shipped_files_naming`] for `name` as a whole identifier, leaving out only the runtime's own
+/// `live/preview_tests.rs`, which is compiled only under `#[cfg(test)]` (see the nemotron scan).
+fn shipped_files_naming_ident(name: &str) -> Vec<PathBuf> {
+    shipped_files_naming(name)
+        .into_iter()
+        .filter(|p| !p.ends_with("crates/earshot-runtime/src/live/preview_tests.rs"))
+        .filter(|p| names_ident(&std::fs::read_to_string(p).unwrap_or_default(), name))
+        .collect()
 }
 
 /// TODO 93: inside `backends.rs`, the evaluation-only loaders and their types are named only by
