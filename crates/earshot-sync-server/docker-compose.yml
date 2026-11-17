@@ -6,7 +6,7 @@
 # or give the secret as a Docker secret file and set EARSHOT_SYNC_SETUP_SECRET_FILE to its
 # path (/run/secrets/<name>) instead; never both.
 #
-# then `docker compose up -d`. Updating from a compose file before 0.3.12, whose service was
+# then `docker compose up -d`. Updating from a compose file before 0.4.0, whose service was
 # `earshot-sync` and image `earshot-sync-server`: use `docker compose up -d --remove-orphans`, which
 # replaces the old container and keeps its data (the volume's name has not changed). Put it behind your reverse proxy for TLS; the relay speaks
 # plain HTTP on port 8787 and holds only sealed data. Behind the proxy every caller shares
@@ -23,7 +23,7 @@ services:
     ports:
       - "8787:8787"
 
-# The data volume keeps its name from before 0.3.12 (when the image was earshot-sync-server):
+# The data volume keeps its name from before 0.4.0 (when the image was earshot-sync-server):
 # a new name would start the relay with an empty database and every device would pair again.
 volumes:
   earshot-sync-data:

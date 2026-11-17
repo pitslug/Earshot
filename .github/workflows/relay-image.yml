@@ -55,9 +55,9 @@ jobs:
           echo "VERSION=${tag}" >> "${GITHUB_ENV}"
           echo "LATEST=${latest}" >> "${GITHUB_ENV}"
           echo "RELAY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-server" >> "${GITHUB_ENV}"
-          # The relay's name until 0.3.12 (the owner, 2026-11-17: "the sync is implied"). The same
-          # image is also pushed under it for 0.3.12 only, so a compose file still naming it gets
-          # this release and the note to switch; remove this line and its push after 0.3.12.
+          # The relay's name until 0.4.0 (the owner, 2026-11-17: "the sync is implied"). The same
+          # image is also pushed under it for 0.4.0 only, so a compose file still naming it gets
+          # this release and the note to switch; remove this line and its push after 0.4.0.
           echo "RELAY_OLD=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-sync-server" >> "${GITHUB_ENV}"
           echo "WORKER=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/earshot-worker" >> "${GITHUB_ENV}"
 
