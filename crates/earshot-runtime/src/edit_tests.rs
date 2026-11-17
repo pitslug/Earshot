@@ -989,6 +989,85 @@ fn edit_list_persons_counts_a_merged_persons_voiceprint() {
     assert!(listed[0].has_voiceprint);
 }
 
+#[test]
+fn edit_list_persons_counts_each_persons_meetings_once() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let a = meeting(&svc, "One", 60);
+    let b = meeting(&svc, "Two", 61);
+    let c = meeting(&svc, "Three", 62);
+    let person = new_person(&svc, "Alice", false, 63);
+    let merged = new_person(&svc, "Alicia", false, 64);
+    let nobody = new_person(&svc, "Carol", false, 65);
+    for (m, p) in [(a, person), (b, person), (c, merged)] {
+        let id = speaker(&svc, m, "Alice").id;
+        link_speaker(&svc, m, id, &PersonChoice::Existing(p)).unwrap();
+    }
+    // A second voice of the same person in one meeting: the meeting counts once.
+    let again = add_speaker(
+        &svc,
+        a,
+        TrackId::Reference,
+        "Alice two",
+        "hello there",
+        9_000,
+        66,
+    );
+    link_speaker(&svc, a, again, &PersonChoice::Existing(person)).unwrap();
+    // The person merged into them counts for them, also in a meeting both are in.
+    let both = add_speaker(&svc, b, TrackId::Reference, "Alicia", "hi all", 9_000, 67);
+    link_speaker(&svc, b, both, &PersonChoice::Existing(merged)).unwrap();
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        merge_persons(store, merged, person, hlc, &*clock).unwrap();
+    }
+    // A deleted meeting does not count.
+    let deleted = meeting(&svc, "Gone", 68);
+    let gone = speaker(&svc, deleted, "Alice").id;
+    link_speaker(&svc, deleted, gone, &PersonChoice::Existing(person)).unwrap();
+    delete(&svc, deleted);
+
+    let listed = list_persons(&svc).unwrap();
+    let count = |id: EntityId| listed.iter().find(|p| p.id == id).unwrap().meetings;
+    assert_eq!(count(person), 3);
+    assert_eq!(count(nobody), 0);
+    assert!(!listed.iter().any(|p| p.id == merged));
+}
+
+/// `fixtures/ui/person_filter_cases.json`, which the UI's `personFilter.test.ts` reads too.
+#[test]
+fn edit_person_filter_matches_the_shared_cases() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/ui/person_filter_cases.json");
+    let cases: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let keys = cases["keys"].as_array().unwrap();
+    assert!(keys.len() >= 8);
+    for case in keys {
+        let name = case["name"].as_str().unwrap();
+        assert_eq!(
+            person_name_key(name),
+            case["key"].as_str().unwrap(),
+            "key of {name:?}"
+        );
+    }
+    let matches = cases["matches"].as_array().unwrap();
+    assert!(matches.len() >= 8);
+    for case in matches {
+        let (name, query) = (
+            case["name"].as_str().unwrap(),
+            case["query"].as_str().unwrap(),
+        );
+        assert_eq!(
+            person_name_matches(name, query),
+            case["matches"].as_bool().unwrap(),
+            "{name:?} for {query:?}"
+        );
+    }
+}
+
 fn summary_citing(tldr: &str, segment: EntityId) -> SummaryV1 {
     SummaryV1 {
         title: "Release planning".into(),

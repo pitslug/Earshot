@@ -41,6 +41,7 @@ describe("mock suggested words (T12.15e)", () => {
       name,
       has_voiceprint: false,
       is_me,
+      meetings: 0,
     });
     expect(
       wordListOf(

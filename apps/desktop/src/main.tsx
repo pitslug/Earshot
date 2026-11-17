@@ -41,7 +41,7 @@ async function previewIpc(): Promise<Ipc> {
     inRoom: query.get("inRoom") === "recognised" ? "recognised" : query.get("inRoom") === "1",
     unknownLine: query.get("unknownSpeaker") === "1" ? 5 : undefined,
     ...(query.get("selfNamed") === "1"
-      ? { persons: [...samplePersons(), { id: "9e000000-0000-7000-8000-000000000009", name: "Casey", has_voiceprint: true, is_me: false }] }
+      ? { persons: [...samplePersons(), { id: "9e000000-0000-7000-8000-000000000009", name: "Casey", has_voiceprint: true, is_me: false, meetings: 1 }] }
       : {}),
     callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
     newerData: query.get("newerData") === "1",

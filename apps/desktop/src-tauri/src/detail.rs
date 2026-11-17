@@ -323,7 +323,7 @@ pub struct HandoverItem {
     pub outcome: String,
 }
 
-/// A person in the "Link to person" list.
+/// A saved person the Speakers panel offers for a voice.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct PersonItem {
     /// Person id (hyphenated UUID).
@@ -334,6 +334,8 @@ pub struct PersonItem {
     pub has_voiceprint: bool,
     /// The user.
     pub is_me: bool,
+    /// How many meetings they are in (T12.80: persons with one name are told apart by it).
+    pub meetings: u32,
 }
 
 impl PersonItem {
@@ -343,6 +345,7 @@ impl PersonItem {
             name: p.name.clone(),
             has_voiceprint: p.has_voiceprint,
             is_me: p.is_me,
+            meetings: p.meetings,
         }
     }
 }

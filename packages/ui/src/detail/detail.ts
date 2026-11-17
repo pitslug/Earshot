@@ -130,14 +130,6 @@ export function linkablePersons(card: SpeakerCard, persons: PersonItem[]): Perso
   return persons.filter((p) => (card.kind === "Me" ? p.is_me : !p.is_me));
 }
 
-/** The person a typed name means: an existing (non-user) person with exactly that name, else
- * none (a new person). */
-export function personNamed(name: string, persons: PersonItem[]): PersonItem | null {
-  const n = name.trim().toLowerCase();
-  const found = persons.filter((p) => !p.is_me && p.name.trim().toLowerCase() === n);
-  return found.length === 1 ? found[0] : null;
-}
-
 /** Plain copy for a failed call. */
 export function failureText(e: unknown): string {
   if (e instanceof IpcFailure) {

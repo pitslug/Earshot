@@ -1629,10 +1629,32 @@ pub struct PersonInfo {
     pub has_voiceprint: bool,
     /// The user of this installation.
     pub is_me: bool,
+    /// How many live meetings have a live speaker row linked to them (or to someone merged
+    /// into them), each meeting once (T12.80: tells persons with one name apart).
+    pub meetings: u32,
 }
 
-/// Every live person (deleted and merged-away persons are left out; their voiceprints count
-/// for the person they were merged into), by name (ASCII case ignored), then id.
+/// A name as the Speakers panel's person filter compares it (T12.80): case folded and each
+/// Latin letter with a diacritic folded to its base letters, as folder names sort
+/// ([`crate::folders::name_order`]), with white space trimmed and every run of it one space.
+/// The UI mirrors it (`packages/ui/src/detail/personFilter.ts`, its letter table generated
+/// from core's `fold_diacritic`); `fixtures/ui/person_filter_cases.json` pins both.
+#[must_use]
+pub fn person_name_key(name: &str) -> String {
+    let (base, _) = crate::folders::name_order(name);
+    base.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether the person filter lists a person called `name` for the typed `query`: any part
+/// of the name, compared by [`person_name_key`]. An empty query lists everyone.
+#[must_use]
+pub fn person_name_matches(name: &str, query: &str) -> bool {
+    person_name_key(name).contains(&person_name_key(query))
+}
+
+/// Every live person (deleted and merged-away persons are left out; their voiceprints and
+/// meetings count for the person they were merged into), by name (ASCII case ignored), then
+/// id.
 ///
 /// # Errors
 /// Store errors.
@@ -1646,12 +1668,23 @@ pub fn list_persons(services: &Services) -> Result<Vec<PersonInfo>, RuntimeError
 /// Store errors.
 pub fn list_persons_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>, RuntimeError> {
     let mut out = Vec::new();
+    let mut meetings_of: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
+    for (person, meeting) in repo.person_meetings()? {
+        meetings_of.entry(person).or_default().push(meeting);
+    }
     for p in repo.persons().map_err(voiceprint_err)? {
         if !p.is_live() {
             continue;
         }
+        let identity = identity_of(repo, p.id).map_err(voiceprint_err)?;
+        let meetings: BTreeSet<EntityId> = identity
+            .iter()
+            .filter_map(|id| meetings_of.get(id))
+            .flatten()
+            .copied()
+            .collect();
         let mut has_voiceprint = false;
-        for id in identity_of(repo, p.id).map_err(voiceprint_err)? {
+        for id in identity {
             if repo
                 .voiceprints_of(id)
                 .map_err(voiceprint_err)?
@@ -1667,6 +1700,7 @@ pub fn list_persons_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>, R
             name: p.display_name,
             has_voiceprint,
             is_me: p.is_me,
+            meetings: u32::try_from(meetings.len()).unwrap_or(u32::MAX),
         });
     }
     out.sort_by(|a, b| {

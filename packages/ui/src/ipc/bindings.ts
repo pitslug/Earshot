@@ -1717,7 +1717,7 @@ export type PartChoice =
 /**  The processor. */
 "Processor";
 
-/**  A person in the "Link to person" list. */
+/**  A saved person the Speakers panel offers for a voice. */
 export type PersonItem = {
 	/**  Person id (hyphenated UUID). */
 	id: string,
@@ -1727,6 +1727,8 @@ export type PersonItem = {
 	has_voiceprint: boolean,
 	/**  The user. */
 	is_me: boolean,
+	/**  How many meetings they are in (T12.80: persons with one name are told apart by it). */
+	meetings: number,
 };
 
 /**  The person a speaker is linked to. */

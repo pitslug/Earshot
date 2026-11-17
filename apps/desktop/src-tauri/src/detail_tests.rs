@@ -1725,3 +1725,63 @@ fn detail_lists_claude_code_and_codex_handovers_and_reads_meetings_without_them(
             .is_empty()
     );
 }
+
+#[test]
+fn detail_persons_say_how_many_meetings_each_is_in() {
+    let dir = TempDir::new("detail");
+    let svc = services(&dir);
+    call_meeting(&svc, 90);
+    let other = person_with(&svc, "Priya Shah", false, false, 91);
+    let listed = persons(&svc).unwrap();
+    let priyas: Vec<(&str, u32)> = listed
+        .iter()
+        .filter(|p| p.name == "Priya Shah")
+        .map(|p| (p.id.as_str(), p.meetings))
+        .collect();
+    assert_eq!(priyas.len(), 2, "two persons with one name, both listed");
+    let other = other.to_string();
+    assert!(priyas.contains(&(other.as_str(), 0)));
+    assert!(priyas.iter().any(|(id, n)| *id != other && *n == 1));
+    // The count reaches the window as a number.
+    let json = serde_json::to_value(&listed[0]).unwrap();
+    assert!(json["meetings"].is_u64(), "{json}");
+}
+
+fn ui_base_letters_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../packages/ui/src/detail/baseLetters.ts")
+}
+
+/// The person filter's letter table for the UI (T12.80), generated from core's
+/// `fold_diacritic`, which `earshot_runtime::edit::person_name_key` folds with.
+fn ui_base_letters() -> String {
+    let table: std::collections::BTreeMap<String, &str> = (char::MIN..=char::MAX)
+        .filter_map(|c| {
+            earshot_core::metrics::normalize::fold_diacritic(c).map(|b| (c.to_string(), b))
+        })
+        .collect();
+    format!(
+        "// Generated from `earshot_core::metrics::normalize::fold_diacritic` by\n\
+         // `EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings`; do not edit.\n\n\
+         /** Each lower-case Latin letter with a diacritic and its base letters: the person\n \
+         * filter's fold (`earshot_runtime::edit::person_name_key`). */\n\
+         export const BASE_LETTERS: Readonly<Record<string, string>> = {};\n",
+        serde_json::to_string_pretty(&table).unwrap()
+    )
+}
+
+#[test]
+fn detail_person_filter_letters_bindings_are_up_to_date() {
+    let path = ui_base_letters_path();
+    let fresh = ui_base_letters();
+    if std::env::var_os("EARSHOT_UPDATE_BINDINGS").is_some_and(|v| v == "1") {
+        std::fs::write(&path, &fresh).unwrap();
+        return;
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        committed.replace("\r\n", "\n") == fresh,
+        "packages/ui/src/detail/baseLetters.ts is out of date: run \
+         EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings"
+    );
+}

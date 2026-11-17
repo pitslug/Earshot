@@ -401,6 +401,16 @@ impl Store {
         crate::repo::any_meeting(&self.conn)
     }
 
+    /// Every (person, meeting) pair where a live speaker row of a live meeting is linked to
+    /// the person, each pair once, from one query (T12.80). Merges are not followed: the
+    /// caller joins a person's identity.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn person_meetings(&self) -> Result<Vec<(EntityId, EntityId)>, RepoError> {
+        crate::repo::person_meetings(&self.conn)
+    }
+
     /// Sets a device-local value (never synced). `device_id` is reserved
     /// ([`Store::device_id`] owns it).
     ///
