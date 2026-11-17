@@ -197,9 +197,11 @@ export function mergeOfferText(person: PersonItem): string {
 }
 
 /** What "Not <name>" does (T12.77), for its tooltip. Until T12.77b, a voice saved for the
- * person stays in their saved voice, so the tooltip says so. */
-export function notThisPersonHint(name: string): string {
-  return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it. Forget voice removes everything saved for ${name}.`;
+ * person stays in their saved voice, so the tooltip says so; `forgetShown`: the row shows
+ * Forget voice (the person has a saved voice), which deletes that saved voice only. */
+export function notThisPersonHint(name: string, forgetShown: boolean): string {
+  const forget = forgetShown ? ` Forget voice deletes ${name}'s saved voice.` : "";
+  return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it.${forget}`;
 }
 
 /** Why the Speakers panel's edits wait while the meeting finishes. */
@@ -594,7 +596,10 @@ function NamedRow(props: RowProps) {
         )}
         <LinkPopover card={card} persons={persons} onLink={onLink} locked={locked} />
         {card.can_not_this_person && card.person !== null && editing === null && (
-          <Tooltip content={notThisPersonHint(card.person.name)} relationship="description">
+          <Tooltip
+            content={notThisPersonHint(card.person.name, card.person.has_voiceprint)}
+            relationship="description"
+          >
             <Button
               size="small"
               appearance="subtle"

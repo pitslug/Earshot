@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { POST_STEP_MS, RECOGNISED_ME_COPY, SAMPLE_SPEAKERS, sampleDetail, samplePersons } from "../ipc";
 import { ITEM, setup, panel, speakerRow, openNamed } from "../test/meetingDetail";
+import { notThisPersonHint } from "./SpeakersPanel";
 
 describe("MeetingDetailView", () => {
   it("offers This is me only in the room, and it and its undo follow through the transcript", async () => {
@@ -256,7 +257,12 @@ describe("MeetingDetailView", () => {
     expect(within(speakerRow("Me")).queryByRole("button", { name: /^Not / })).toBeNull();
     const not = within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" });
     expect(not).toHaveAccessibleDescription(
-      "Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it Priya Shah, because Priya Shah's saved voice may hold it. Forget voice removes everything saved for Priya Shah.",
+      "Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it Priya Shah, because Priya Shah's saved voice may hold it. Forget voice deletes Priya Shah's saved voice.",
+    );
+    // Forget voice is named only where the row shows it (a saved voice).
+    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Forget voice" })).toBeInTheDocument();
+    expect(notThisPersonHint("Ana Diaz", false)).toBe(
+      "Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it Ana Diaz, because Ana Diaz's saved voice may hold it.",
     );
     await user.click(not);
     expect(calls).toContainEqual(["notThisPerson", ITEM.id, SAMPLE_SPEAKERS.priya]);

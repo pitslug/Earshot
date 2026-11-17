@@ -1999,21 +1999,36 @@ pub fn unignore_speaker(
     })
 }
 
-/// Whether [`not_this_person`] would accept `row` with these `identities`: what the Speakers
-/// panel offers, by the refusals' own rule. `linked_to_user` says whether the row's person
-/// resolves to the user ([`resolve_person`], [`resolved_person`]): a row linked to a person
-/// later merged into the user ([`merge_into_me`]) is the user's and is refused
-/// ([`EditError::UserRow`]), so it is not offered.
-#[must_use]
-pub fn can_not_this_person(
+/// Whether `row` is the user's: the meeting's "Me" row, or a row whose person resolves to the
+/// user ([`resolve_person`]; a person merged into the user by [`merge_into_me`] counts). The
+/// one rule [`not_this_person`] refuses by and [`can_not_this_person`] offers by.
+fn is_users_row<R: VoiceprintRepo + ?Sized>(repo: &R, row: &Speaker) -> Result<bool, RuntimeError> {
+    if row.role == SpeakerRole::Me {
+        return Ok(true);
+    }
+    let Some(linked) = row.person_id else {
+        return Ok(false);
+    };
+    Ok(resolve_person(repo, linked)
+        .map_err(voiceprint_err)?
+        .is_some_and(|p| p.is_me))
+}
+
+/// Whether [`not_this_person`] would accept `row` with these `identities`, reading persons
+/// from `repo` (a store the caller has locked): what the Speakers panel offers, by the
+/// refusals' own rules. The user's rows (`is_users_row`, which follows merges) are not
+/// offered.
+///
+/// # Errors
+/// Store errors.
+pub fn can_not_this_person<R: VoiceprintRepo + ?Sized>(
+    repo: &R,
     row: &Speaker,
     identities: &[crate::identities::SpeakerIdentity],
-    linked_to_user: bool,
-) -> bool {
-    row.role != SpeakerRole::Me
-        && row.person_id.is_some()
-        && !linked_to_user
+) -> Result<bool, RuntimeError> {
+    Ok(row.person_id.is_some()
         && identities.iter().any(|i| i.speaker == row.id)
+        && !is_users_row(repo, row)?)
 }
 
 /// "Not <name>" (T12.77): voice `speaker` of `meeting` was named, or recognised by a
@@ -2042,16 +2057,10 @@ pub fn not_this_person(
     let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let mut row = live_speaker(&*tx, meeting, speaker)?;
-        if row.role == SpeakerRole::Me {
+        if is_users_row(&*tx, &row)? {
             return Err(EditError::UserRow(speaker).into());
         }
         let linked = row.person_id.ok_or(EditError::NoPerson(speaker))?;
-        if resolve_person(&*tx, linked)
-            .map_err(voiceprint_err)?
-            .is_some_and(|p| p.is_me)
-        {
-            return Err(EditError::UserRow(speaker).into());
-        }
         let key = crate::identities::record_key(meeting);
         let has_entry = matches!(
             tx.local_value(key.as_str())?.map(|b| crate::identities::decode(&b)),
