@@ -1304,31 +1304,29 @@ fn meeting_events_provisional_words_banner_is_taken_back_when_they_start() {
 /// once while the other people's words run, and it is not an error.
 #[test]
 fn meeting_events_provisional_words_refused_for_your_own_voice_say_so_once() {
-    use crate::plain_text::{PREVIEWS_OWN_VOICE_MEMORY, PREVIEWS_OWN_VOICE_NPU};
-    for (reason, copy) in [
-        (PreviewOffReason::OwnVoiceOnNpu, PREVIEWS_OWN_VOICE_NPU),
-        (PreviewOffReason::NotEnoughMemory, PREVIEWS_OWN_VOICE_MEMORY),
-    ] {
-        let mut m = EventMapper::new(CaptureMode::Call);
-        let now = Instant::now();
-        assert!(
-            m.map(&preview_state(TrackId::Reference, None), now)
-                .is_empty()
-        );
-        let said = m.map(&preview_state(TrackId::Mic, Some(reason)), now);
-        assert_eq!(preview_banner(&said), copy);
-        assert!(
-            m.map(&preview_state(TrackId::Mic, Some(reason)), now)
-                .is_empty()
-        );
-    }
+    use crate::plain_text::PREVIEWS_OWN_VOICE_MEMORY;
+    let reason = PreviewOffReason::NotEnoughMemory;
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    assert!(
+        m.map(&preview_state(TrackId::Reference, None), now)
+            .is_empty()
+    );
+    let said = m.map(&preview_state(TrackId::Mic, Some(reason)), now);
+    assert_eq!(preview_banner(&said), PREVIEWS_OWN_VOICE_MEMORY);
+    assert!(
+        m.map(&preview_state(TrackId::Mic, Some(reason)), now)
+            .is_empty()
+    );
 }
 
 /// T12.33: one track off while the other runs names whose words are off; two different reasons
 /// are two sentences in one banner, other people first.
 #[test]
 fn meeting_events_provisional_words_banner_names_whose_words_are_off() {
-    use crate::plain_text::{PREVIEWS_OWN_VOICE_NPU_ALONE, PreviewScope, provisional_words_copy};
+    use crate::plain_text::{
+        PREVIEWS_OWN_VOICE_MEMORY_ALONE, PreviewScope, provisional_words_copy,
+    };
     let behind = |scope| provisional_words_copy(PreviewOffReason::FellBehind, scope).unwrap();
     let said = |you, them| provisional_words_banner([you, them]);
     let fell = Some(Some(PreviewOffReason::FellBehind));
@@ -1341,9 +1339,9 @@ fn meeting_events_provisional_words_banner_names_whose_words_are_off() {
     // Other people's words are off: the user's own voice is said alone, never "shown for other
     // people only" (T12.33 review).
     assert_eq!(
-        said(Some(Some(PreviewOffReason::OwnVoiceOnNpu)), fell),
+        said(Some(Some(PreviewOffReason::NotEnoughMemory)), fell),
         Some(format!(
-            "{} {PREVIEWS_OWN_VOICE_NPU_ALONE}",
+            "{} {PREVIEWS_OWN_VOICE_MEMORY_ALONE}",
             behind(PreviewScope::Them)
         ))
     );
@@ -1357,58 +1355,50 @@ fn meeting_events_provisional_words_banner_names_whose_words_are_off() {
 #[test]
 fn meeting_events_provisional_words_own_voice_never_contradicts_the_other_track() {
     use crate::plain_text::{
-        PREVIEWS_OWN_VOICE_MEMORY, PREVIEWS_OWN_VOICE_MEMORY_ALONE, PREVIEWS_OWN_VOICE_NPU,
-        PREVIEWS_OWN_VOICE_NPU_ALONE, PreviewScope, provisional_words_copy,
+        PREVIEWS_OWN_VOICE_MEMORY, PREVIEWS_OWN_VOICE_MEMORY_ALONE, PreviewScope,
+        provisional_words_copy,
     };
     let other = |reason| provisional_words_copy(reason, PreviewScope::Them).unwrap();
-    for (own, shown, alone) in [
-        (
-            PreviewOffReason::OwnVoiceOnNpu,
-            PREVIEWS_OWN_VOICE_NPU,
-            PREVIEWS_OWN_VOICE_NPU_ALONE,
-        ),
-        (
-            PreviewOffReason::NotEnoughMemory,
-            PREVIEWS_OWN_VOICE_MEMORY,
-            PREVIEWS_OWN_VOICE_MEMORY_ALONE,
-        ),
+    let (own, shown, alone) = (
+        PreviewOffReason::NotEnoughMemory,
+        PREVIEWS_OWN_VOICE_MEMORY,
+        PREVIEWS_OWN_VOICE_MEMORY_ALONE,
+    );
+    let you = Some(Some(own));
+    let said = |them| provisional_words_banner([you, them]);
+    // Other people's run.
+    assert_eq!(said(Some(None)), Some(shown.to_owned()));
+    // Other people's off for every reason the banner gives.
+    for reason in [
+        PreviewOffReason::OnBattery,
+        PreviewOffReason::CatchingUp,
+        PreviewOffReason::FellBehind,
+        PreviewOffReason::NeedsCompiledModel,
+        PreviewOffReason::CompiledModelRefused,
+        PreviewOffReason::Model,
+        PreviewOffReason::LoadFailed,
+        PreviewOffReason::Failed,
     ] {
-        let you = Some(Some(own));
-        let said = |them| provisional_words_banner([you, them]);
-        // Other people's run.
-        assert_eq!(said(Some(None)), Some(shown.to_owned()));
-        // Other people's off for every reason the banner gives.
-        for reason in [
-            PreviewOffReason::OnBattery,
-            PreviewOffReason::CatchingUp,
-            PreviewOffReason::FellBehind,
-            PreviewOffReason::NeedsCompiledModel,
-            PreviewOffReason::CompiledModelRefused,
-            PreviewOffReason::Model,
-            PreviewOffReason::LoadFailed,
-            PreviewOffReason::Failed,
-        ] {
-            let banner = said(Some(Some(reason))).expect("a banner");
-            assert_eq!(banner, format!("{} {alone}", other(reason)), "{reason:?}");
-            assert!(!banner.contains("other people only"), "{banner}");
-            assert_copy(&banner);
-        }
-        // Other people's not heard from yet, or off for a reason that needs no word.
-        assert_eq!(said(None), None);
-        assert_eq!(said(Some(Some(PreviewOffReason::TranscriptStopped))), None);
+        let banner = said(Some(Some(reason))).expect("a banner");
+        assert_eq!(banner, format!("{} {alone}", other(reason)), "{reason:?}");
+        assert!(!banner.contains("other people only"), "{banner}");
+        assert_copy(&banner);
     }
+    // Other people's not heard from yet, or off for a reason that needs no word.
+    assert_eq!(said(None), None);
+    assert_eq!(said(Some(Some(PreviewOffReason::TranscriptStopped))), None);
 }
 
 /// T12.33 review: on battery, under Everyone on a computer that refuses the user's own voice, the
 /// banner says the battery for other people and the user's own voice alone.
 #[test]
 fn meeting_events_provisional_words_own_voice_refused_and_others_on_battery() {
-    use crate::plain_text::PREVIEWS_OWN_VOICE_NPU_ALONE;
+    use crate::plain_text::PREVIEWS_OWN_VOICE_MEMORY_ALONE;
     let mut m = EventMapper::new(CaptureMode::Call);
     let now = Instant::now();
     assert!(
         m.map(
-            &preview_state(TrackId::Mic, Some(PreviewOffReason::OwnVoiceOnNpu)),
+            &preview_state(TrackId::Mic, Some(PreviewOffReason::NotEnoughMemory)),
             now
         )
         .is_empty(),
@@ -1422,7 +1412,7 @@ fn meeting_events_provisional_words_own_voice_refused_and_others_on_battery() {
         banner,
         format!(
             "Provisional words for other people are paused because the computer is on battery. \
-             They start again when it is plugged in. {PREVIEWS_OWN_VOICE_NPU_ALONE}"
+             They start again when it is plugged in. {PREVIEWS_OWN_VOICE_MEMORY_ALONE}"
         )
     );
 }
@@ -1431,7 +1421,7 @@ fn meeting_events_provisional_words_own_voice_refused_and_others_on_battery() {
 /// as the "other people only" sentence and never says both at once.
 #[test]
 fn meeting_events_provisional_words_own_voice_refused_while_others_catch_up_then_run() {
-    use crate::plain_text::{PREVIEWS_OWN_VOICE_NPU, PREVIEWS_OWN_VOICE_NPU_ALONE};
+    use crate::plain_text::{PREVIEWS_OWN_VOICE_MEMORY, PREVIEWS_OWN_VOICE_MEMORY_ALONE};
     let mut m = EventMapper::new(CaptureMode::Call);
     let now = Instant::now();
     let waiting = preview_banner(&m.map(
@@ -1443,18 +1433,18 @@ fn meeting_events_provisional_words_own_voice_refused_while_others_catch_up_then
         "Provisional words start once the live transcript has caught up."
     );
     let both = preview_banner(&m.map(
-        &preview_state(TrackId::Mic, Some(PreviewOffReason::OwnVoiceOnNpu)),
+        &preview_state(TrackId::Mic, Some(PreviewOffReason::NotEnoughMemory)),
         now,
     ));
     assert_eq!(
         both,
         format!(
             "Provisional words for other people start once the live transcript has caught up. \
-             {PREVIEWS_OWN_VOICE_NPU_ALONE}"
+             {PREVIEWS_OWN_VOICE_MEMORY_ALONE}"
         )
     );
     let running = preview_banner(&m.map(&preview_state(TrackId::Reference, None), now));
-    assert_eq!(running, PREVIEWS_OWN_VOICE_NPU);
+    assert_eq!(running, PREVIEWS_OWN_VOICE_MEMORY);
     assert!(
         m.map(&preview_state(TrackId::Reference, None), now)
             .is_empty()

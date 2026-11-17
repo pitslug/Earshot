@@ -2465,11 +2465,11 @@ fn npu_run(
     (events, with, without)
 }
 
-/// T12.12c: a meeting on the NPU of a machine above the limit shows the far end's provisional words
-/// from a session on the NPU, refuses the user's own voice with its reason under Everyone, and
-/// stores exactly what it stores without previews.
+/// T12.12c, T12.75: a meeting on the NPU of a machine above the limit shows the far end's
+/// provisional words and, under Everyone, the user's own from a second session, both on the NPU,
+/// and stores exactly what it stores without previews.
 #[test]
-fn live_preview_on_the_npu_runs_for_the_far_end_and_refuses_your_own_voice() {
+fn live_preview_on_the_npu_runs_for_the_far_end_and_your_own_voice() {
     let scene = scene_of(27);
     let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
     let (far_asked, own_asked) = (
@@ -2488,21 +2488,18 @@ fn live_preview_on_the_npu_runs_for_the_far_end_and_refuses_your_own_voice() {
     };
     let (events, with, without) = npu_run(&scene, config, None, 351);
     assert_eq!(*far_asked.lock().unwrap(), vec![BackendKind::Qnn]);
-    assert!(own_asked.lock().unwrap().is_empty(), "own voice loaded");
-    assert_eq!(own.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(*own_asked.lock().unwrap(), vec![BackendKind::Qnn]);
+    assert!(own.calls.load(Ordering::SeqCst) > 0);
     let far_report = report_for(&events, TrackId::Reference);
     assert_eq!(far_report.backend, Some(BackendKind::Qnn), "{far_report:?}");
     assert_eq!(far_report.off, None, "{far_report:?}");
     assert!(far_report.decodes > 0, "{far_report:?}");
     assert!(shown_on(&events, TrackId::Reference));
     let mic = report_for(&events, TrackId::Mic);
-    assert_eq!(
-        mic.off.as_deref(),
-        Some(crate::backends::OWN_VOICE_NPU_REFUSED),
-        "{mic:?}"
-    );
-    assert_eq!(mic.backend, None, "{mic:?}");
-    assert!(!shown_on(&events, TrackId::Mic));
+    assert_eq!(mic.backend, Some(BackendKind::Qnn), "{mic:?}");
+    assert_eq!(mic.off, None, "{mic:?}");
+    assert!(mic.decodes > 0, "{mic:?}");
+    assert!(shown_on(&events, TrackId::Mic));
     assert!(warnings(&events).is_empty(), "{:?}", warnings(&events));
     assert_eq!(with, without);
 }
@@ -3103,41 +3100,52 @@ fn live_preview_a_track_falling_behind_says_why() {
     assert_eq!(report.reason, Some(PreviewOffReason::FellBehind));
 }
 
-/// T12.33: under Everyone beside the NPU the far end's previews run and the user's own voice
-/// says its refusal once, as its own kind.
+/// T12.33, T12.75: under Everyone on the NPU both tracks' previews run and each says so once; on a
+/// machine under the second session's memory limit the far end's still run and the user's own
+/// voice says its refusal once, as its own kind.
 #[test]
-fn live_preview_on_the_npu_own_voice_says_its_refusal_once() {
+fn live_preview_on_the_npu_own_voice_says_its_state_once() {
     let scene = scene_of(27);
-    let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
-    let (far_asked, own_asked) = (
-        Arc::new(Mutex::new(Vec::new())),
-        Arc::new(Mutex::new(Vec::new())),
-    );
-    let surface = npu_machine(Some(15 * GIB));
-    let config = LivePreviews {
-        own_voice: Some(npu_rule_own_voice(&own, &own_asked, surface.clone())),
-        ..previews(npu_rule_loader(
-            &far,
-            &far_asked,
-            surface,
-            crate::preview_settings::PreviewChoice::Everyone,
-        ))
+    let run = |memory: u64, seed: u64| {
+        let (far, own) = (Arc::new(Seen::default()), Arc::new(Seen::default()));
+        let (far_asked, own_asked) = (
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let machine = npu_machine(Some(memory));
+        let config = LivePreviews {
+            own_voice: Some(npu_rule_own_voice(&own, &own_asked, machine.clone())),
+            ..previews(npu_rule_loader(
+                &far,
+                &far_asked,
+                machine,
+                crate::preview_settings::PreviewChoice::Everyone,
+            ))
+        };
+        let (events, ..) = npu_run(&scene, config, None, seed);
+        let of = |track: TrackId| -> Vec<Option<PreviewOffReason>> {
+            states_of(&events)
+                .into_iter()
+                .filter(|(t, _)| *t == track)
+                .map(|(_, off)| off)
+                .collect()
+        };
+        let (far_states, mic_states) = (of(TrackId::Reference), of(TrackId::Mic));
+        let mic = report_for(&events, TrackId::Mic);
+        let own_loads = own_asked.lock().unwrap().clone();
+        (far_states, mic_states, mic.reason, own_loads)
     };
-    let (events, ..) = npu_run(&scene, config, None, 371);
-    let of = |track: TrackId| -> Vec<Option<PreviewOffReason>> {
-        states_of(&events)
-            .into_iter()
-            .filter(|(t, _)| *t == track)
-            .map(|(_, off)| off)
-            .collect()
-    };
-    assert_eq!(of(TrackId::Reference), vec![None]);
-    assert_eq!(
-        of(TrackId::Mic),
-        vec![Some(PreviewOffReason::OwnVoiceOnNpu)]
-    );
-    let mic = report_for(&events, TrackId::Mic);
-    assert_eq!(mic.reason, Some(PreviewOffReason::OwnVoiceOnNpu));
+    let (far, mic, reason, own_loads) = run(15 * GIB, 371);
+    assert_eq!(far, vec![None]);
+    assert_eq!(mic, vec![None]);
+    assert_eq!(reason, None);
+    assert_eq!(own_loads, vec![BackendKind::Qnn]);
+    let small = crate::backends::PREVIEW_BOTH_MIN_MEMORY - 1;
+    let (far, mic, reason, own_loads) = run(small, 372);
+    assert_eq!(far, vec![None]);
+    assert_eq!(mic, vec![Some(PreviewOffReason::NotEnoughMemory)]);
+    assert_eq!(reason, Some(PreviewOffReason::NotEnoughMemory));
+    assert!(own_loads.is_empty(), "a refused session was loaded");
 }
 
 /// T12.33: a load that fails and a chunker session each say their kind.
@@ -3178,8 +3186,8 @@ fn live_preview_a_failed_load_and_a_chunker_session_say_their_kind() {
 #[test]
 fn live_preview_refusals_carry_their_kind_beside_the_same_text() {
     use crate::backends::{
-        OWN_VOICE_NPU_REFUSED, PREVIEW_BOTH_MIN_MEMORY, PREVIEW_MIN_MEMORY, PREVIEW_NEEDS_COMPILED,
-        preview_backend, preview_backend_or_refusal, preview_load_refusal, second_preview_backend,
+        PREVIEW_BOTH_MIN_MEMORY, PREVIEW_MIN_MEMORY, PREVIEW_NEEDS_COMPILED, preview_backend,
+        preview_backend_or_refusal, preview_load_refusal, second_preview_backend,
         second_preview_backend_or_refusal,
     };
     use crate::preview_settings::PreviewChoice;
@@ -3235,17 +3243,20 @@ fn live_preview_refusals_carry_their_kind_beside_the_same_text() {
     );
     assert_eq!(
         second(BackendKind::Qnn, &big, PreviewChoice::Everyone),
-        Some(PreviewOffReason::OwnVoiceOnNpu)
+        None
     );
     // The user asked for their own voice too, and the machine has no room for it.
-    assert_eq!(
-        second(
-            BackendKind::Cpu,
-            &machine(PREVIEW_BOTH_MIN_MEMORY - 1),
-            PreviewChoice::Everyone
-        ),
-        Some(PreviewOffReason::NotEnoughMemory)
-    );
+    for kind in [BackendKind::Cpu, BackendKind::Qnn] {
+        assert_eq!(
+            second(
+                kind,
+                &machine(PREVIEW_BOTH_MIN_MEMORY - 1),
+                PreviewChoice::Everyone
+            ),
+            Some(PreviewOffReason::NotEnoughMemory),
+            "{kind:?}"
+        );
+    }
     // The loader: the NPU's own refusal, as `qnn_load_steps` makes it, and any other failure.
     let needs = preview_load_refusal(&AsrError::Backend(PREVIEW_NEEDS_COMPILED.to_owned()));
     assert_eq!(needs.reason, PreviewOffReason::NeedsCompiledModel);
@@ -3261,7 +3272,6 @@ fn live_preview_refusals_carry_their_kind_beside_the_same_text() {
     let other = preview_load_refusal(&AsrError::Backend("a file is missing".to_owned()));
     assert_eq!(other.reason, PreviewOffReason::LoadFailed);
     assert!(other.contains("a file is missing"), "{other}");
-    assert_ne!(OWN_VOICE_NPU_REFUSED, PREVIEW_NEEDS_COMPILED);
     // Plain words from a loader are a load that failed.
     assert_eq!(
         PreviewRefusal::from("no session").reason,
@@ -3503,8 +3513,8 @@ fn live_preview_each_track_is_judged_by_its_own_rule() {
     let config = LivePreviews {
         own_voice: Some(loader(&own, marker_words)),
         own_voice_rule: Some(refusing_rule(
-            PreviewOffReason::OwnVoiceOnNpu,
-            crate::backends::OWN_VOICE_NPU_REFUSED,
+            PreviewOffReason::NotEnoughMemory,
+            "not enough memory for a third session of the model",
         )),
         ..previews(loader(&far, marker_words))
     };
@@ -3514,7 +3524,7 @@ fn live_preview_each_track_is_judged_by_its_own_rule() {
     assert_eq!(
         states,
         vec![
-            (TrackId::Mic, Some(PreviewOffReason::OwnVoiceOnNpu)),
+            (TrackId::Mic, Some(PreviewOffReason::NotEnoughMemory)),
             (TrackId::Reference, None),
         ]
     );
@@ -3523,15 +3533,36 @@ fn live_preview_each_track_is_judged_by_its_own_rule() {
     let mic = report_for(&events, TrackId::Mic);
     assert_eq!(
         mic.off.as_deref(),
-        Some(crate::backends::OWN_VOICE_NPU_REFUSED)
+        Some("not enough memory for a third session of the model")
     );
 }
 
 /// T12.33: the app's previews carry the loaders' own rule: the first for every choice, the
 /// user's own voice only under Everyone; with the setting off the rule says so on any backend.
+/// T12.75: judged on fixed machines (one with room for the user's own session, one just under
+/// `PREVIEW_BOTH_MIN_MEMORY`), never on this host, so the own-voice rule is told apart from the
+/// first.
 #[test]
 fn live_preview_the_apps_previews_carry_the_loaders_rule() {
+    use crate::backends::PREVIEW_BOTH_MIN_MEMORY;
     use crate::preview_settings::PreviewChoice;
+    use earshot_hardware::Hardware;
+    fn with_memory(memory: u64) -> Hardware {
+        Hardware {
+            total_memory: Some(memory),
+            npus: vec![earshot_hardware::Npu {
+                name: "A test NPU".to_owned(),
+                driver_version: Some("1.0.0.0".to_owned()),
+            }],
+            ..Hardware::default()
+        }
+    }
+    fn roomy() -> Hardware {
+        with_memory(64 * GIB)
+    }
+    fn tight() -> Hardware {
+        with_memory(PREVIEW_BOTH_MIN_MEMORY - 1)
+    }
     let empty = TempDir::new();
     let models = crate::backends::ModelDir::new(&empty.0);
     let on = |kind| BackendInfo {
@@ -3539,54 +3570,67 @@ fn live_preview_the_apps_previews_carry_the_loaders_rule() {
         device: "a device".to_owned(),
         model: "a model".to_owned(),
     };
-    for choice in [
-        PreviewChoice::Off,
-        PreviewChoice::Automatic,
-        PreviewChoice::On,
-        PreviewChoice::Everyone,
-    ] {
-        let previews = crate::host::live_previews(&models, choice);
-        let rule = previews.rule.clone().expect("the first rule");
-        assert_eq!(
-            previews.own_voice_rule.is_some(),
-            choice == PreviewChoice::Everyone,
-            "{choice:?}"
-        );
-        assert_eq!(
-            previews.own_voice.is_some(),
-            previews.own_voice_rule.is_some(),
-            "{choice:?}"
-        );
-        for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
-            let said = rule(&on(kind)).map(|r| r.reason);
-            if choice == PreviewChoice::Off {
-                assert_eq!(said, Some(PreviewOffReason::TurnedOff), "{kind:?}");
-            } else {
-                assert_ne!(
-                    said,
-                    Some(PreviewOffReason::TurnedOff),
+    let machines: [(fn() -> Hardware, bool); 2] = [(roomy, true), (tight, false)];
+    for (machine, room_for_both) in machines {
+        for choice in [
+            PreviewChoice::Off,
+            PreviewChoice::Automatic,
+            PreviewChoice::On,
+            PreviewChoice::Everyone,
+        ] {
+            let previews = crate::host::live_previews_on(&models, choice, machine);
+            let rule = previews.rule.clone().expect("the first rule");
+            assert_eq!(
+                previews.own_voice_rule.is_some(),
+                choice == PreviewChoice::Everyone,
+                "{choice:?}"
+            );
+            assert_eq!(
+                previews.own_voice.is_some(),
+                previews.own_voice_rule.is_some(),
+                "{choice:?}"
+            );
+            for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+                let said = rule(&on(kind)).map(|r| r.reason);
+                if choice == PreviewChoice::Off {
+                    assert_eq!(said, Some(PreviewOffReason::TurnedOff), "{kind:?}");
+                } else {
+                    assert_ne!(
+                        said,
+                        Some(PreviewOffReason::TurnedOff),
+                        "{choice:?} {kind:?}"
+                    );
+                }
+                // The rule is the loader's: what one refuses, the other refuses in the same words.
+                assert_eq!(
+                    rule(&on(kind)).map(|r| r.text),
+                    crate::backends::previews_refused(kind, &machine(), choice),
                     "{choice:?} {kind:?}"
                 );
             }
-            // The rule is the loader's: what one refuses, the other refuses in the same words.
-            assert_eq!(
-                rule(&on(kind)).map(|r| r.text),
-                crate::backends::previews_refused(kind, &crate::hardware(), choice),
-                "{choice:?} {kind:?}"
-            );
-        }
-        // No preview runs beside a part that is not Parakeet's, whatever was chosen.
-        if choice != PreviewChoice::Off {
-            assert_eq!(
-                rule(&on(BackendKind::Vulkan)).map(|r| r.reason),
-                Some(PreviewOffReason::Model)
-            );
-        }
-        if let Some(own) = &previews.own_voice_rule {
-            assert_eq!(
-                own(&on(BackendKind::Qnn)).map(|r| r.reason),
-                Some(PreviewOffReason::OwnVoiceOnNpu)
-            );
+            // No preview runs beside a part that is not Parakeet's, whatever was chosen.
+            if choice != PreviewChoice::Off {
+                assert_eq!(
+                    rule(&on(BackendKind::Vulkan)).map(|r| r.reason),
+                    Some(PreviewOffReason::Model)
+                );
+            }
+            // T12.75: the user's own voice follows the second session's rule on every backend,
+            // the NPU included: run where there is room for it, refused for memory where not,
+            // while the first session runs on both machines.
+            if let Some(own) = &previews.own_voice_rule {
+                for kind in [BackendKind::Cpu, BackendKind::Cuda, BackendKind::Qnn] {
+                    let said = own(&on(kind));
+                    assert_eq!(
+                        said.clone().map(|r| r.text),
+                        crate::backends::previews_refused_second(kind, &machine(), choice),
+                        "{choice:?} {kind:?}"
+                    );
+                    let want = (!room_for_both).then_some(PreviewOffReason::NotEnoughMemory);
+                    assert_eq!(said.map(|r| r.reason), want, "{kind:?} {room_for_both}");
+                    assert_eq!(rule(&on(kind)), None, "{kind:?} {room_for_both}");
+                }
+            }
         }
     }
 }

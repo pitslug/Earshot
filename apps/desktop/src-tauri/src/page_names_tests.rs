@@ -116,30 +116,6 @@ fn page_names_the_rule_finds_a_gone_page_and_passes_the_pages_that_exist() {
     assert!(stale_page_names("Settings, Modelsville").is_empty());
 }
 
-/// T12.64: the "Everyone" note on the NPU sends the user to the transcription choice "Processor"
-/// in Settings, System, Where it runs: the page, section, row label and option the UI shows
-/// (`SystemPage.tsx` holds the section, `ModelsParts.tsx`'s `WhereItRuns` the row and option).
-#[test]
-fn page_names_the_npu_everyone_note_names_the_place_the_ui_shows() {
-    use earshot_runtime::preview_settings::NOTE_EVERYONE_NPU;
-    let settings = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../packages/ui/src/settings");
-    let read = |file: &str| std::fs::read_to_string(settings.join(file)).unwrap();
-    assert!(
-        NOTE_EVERYONE_NPU
-            .contains("choose Processor for transcription in Settings, System, Where it runs."),
-        "{NOTE_EVERYONE_NPU}"
-    );
-    assert!(stale_page_names(NOTE_EVERYONE_NPU).is_empty());
-    let system = read("SystemPage.tsx");
-    assert!(system.contains("<Section title=\"Where it runs\">"));
-    assert!(system.contains("<WhereItRuns"));
-    let parts = read("ModelsParts.tsx");
-    assert!(parts.contains("Processor: \"Processor\","));
-    assert!(parts.contains("<label htmlFor={asrId}>Transcription</label>"));
-    let view = read("SettingsView.tsx");
-    assert!(view.contains("\"System\""), "the System page is gone");
-}
-
 #[test]
 fn page_names_no_shown_text_of_the_app_or_the_runtime_names_a_gone_page() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));

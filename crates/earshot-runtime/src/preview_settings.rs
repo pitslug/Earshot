@@ -100,17 +100,6 @@ pub const NOTE_CARD_PROCESSOR: &str =
     "Your graphics card has too little memory for provisional words, so they run on the processor.";
 /// Everyone chosen, and no room for the second session.
 pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other people only: it needs more memory to run them for you too.";
-/// Everyone chosen with transcription on the NPU, which runs no session for the user's own voice
-/// (T12.12c, `backends::OWN_VOICE_NPU_REFUSED`): a rule while transcription runs there, kept until
-/// T12.12d fixes shown words leaving early and the owner decides (T12.64); on the processor the
-/// user's own voice has its session. Shown only where the processor's rule would run that session
-/// ([`NOTE_EVERYONE_NPU_ONLY`] otherwise, T12.64 review).
-pub const NOTE_EVERYONE_NPU: &str = "While transcription runs on the NPU they show for the other people only. To show them for your own voice too, choose Processor for transcription in Settings, System, Where it runs.";
-/// [`NOTE_EVERYONE_NPU`] without the pointer to the processor, for a machine whose processor would
-/// refuse the user's own voice too (too little or unknown memory).
-pub const NOTE_EVERYONE_NPU_ONLY: &str =
-    "While transcription runs on the NPU they show for the other people only.";
-
 /// The page for a machine whose transcription would lead with `lead`.
 #[must_use]
 pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardware) -> PreviewPage {
@@ -150,19 +139,10 @@ pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardwar
         PreviewChoice::Everyone => {
             let note = match second_preview_backend(backend, hardware, choice) {
                 // Beside a card too small for the first, both run on the processor (T12.3c);
-                // with room, both run on the card (T12.60), so the second runs with the first.
+                // with room, both run on the card (T12.60), so the second runs with the first;
+                // on the NPU both run there (T12.75).
                 Ok(_) if card_note.is_some() => card_note,
                 Ok(_) => below_limit.then_some(NOTE_ON_BELOW_LIMIT),
-                // T12.12c: the NPU runs no session for the user's own voice, whatever the memory.
-                // The pointer to the processor only where its rule would run the user's own
-                // voice (T12.64 review): below its memory limit it refuses too.
-                Err(_) if backend == BackendKind::Qnn => Some(
-                    if second_preview_backend(BackendKind::Cpu, hardware, choice).is_ok() {
-                        NOTE_EVERYONE_NPU
-                    } else {
-                        NOTE_EVERYONE_NPU_ONLY
-                    },
-                ),
                 Err(_) => Some(NOTE_EVERYONE_MEMORY),
             };
             (PreviewSetting::Everyone, note)
@@ -750,26 +730,22 @@ mod tests {
         }
     }
 
-    /// T12.12c: "Everyone" on the NPU shows the other people's words only, and says why, whatever
-    /// the memory (never the memory note).
+    /// T12.75: "Everyone" on the NPU shows the user's own words too with enough memory, and says
+    /// nothing about the NPU; below the second session's limit, or with unknown memory, it says the
+    /// memory note, as on the processor.
     #[test]
-    fn preview_everyone_on_the_npu_shows_the_other_people_only_and_says_why() {
-        // T12.64 review: the pointer to the processor only where the processor's rule would run
-        // the user's own voice; below its limit, or with unknown memory, it would refuse too.
+    fn preview_everyone_on_the_npu_shows_your_own_voice_with_enough_memory() {
         for (memory, note) in [
-            (Some(64 * GIB), NOTE_EVERYONE_NPU),
-            (Some(16 * GIB), NOTE_EVERYONE_NPU),
-            (Some(15 * GIB), NOTE_EVERYONE_NPU),
+            (Some(64 * GIB), None),
+            (Some(16 * GIB), None),
+            (Some(15 * GIB), None),
+            (Some(PREVIEW_BOTH_MIN_MEMORY), None),
             (
-                Some(crate::backends::PREVIEW_BOTH_MIN_MEMORY),
-                NOTE_EVERYONE_NPU,
+                Some(PREVIEW_BOTH_MIN_MEMORY - 1),
+                Some(NOTE_EVERYONE_MEMORY),
             ),
-            (
-                Some(crate::backends::PREVIEW_BOTH_MIN_MEMORY - 1),
-                NOTE_EVERYONE_NPU_ONLY,
-            ),
-            (Some(8 * GIB), NOTE_EVERYONE_NPU_ONLY),
-            (None, NOTE_EVERYONE_NPU_ONLY),
+            (Some(8 * GIB), Some(NOTE_EVERYONE_MEMORY)),
+            (None, Some(NOTE_EVERYONE_MEMORY)),
         ] {
             let m = npu_machine(memory);
             assert_eq!(
@@ -777,34 +753,21 @@ mod tests {
                 PreviewPage {
                     shown: PreviewSetting::Everyone,
                     can_change: true,
-                    note: Some(note)
+                    note
                 },
                 "{memory:?}"
             );
-            // The pointer agrees with what the processor's rule says on this machine.
+            // The note agrees with the second session's rule on the NPU.
             assert_eq!(
-                note == NOTE_EVERYONE_NPU,
-                second_preview_backend(BackendKind::Cpu, &m, PreviewChoice::Everyone).is_ok(),
+                note.is_none(),
+                second_preview_backend(BackendKind::Qnn, &m, PreviewChoice::Everyone)
+                    == Ok(BackendKind::Qnn),
                 "{memory:?}"
             );
             assert_eq!(
                 crate::backends::previews_refused(BackendKind::Qnn, &m, PreviewChoice::Everyone),
                 None
             );
-        }
-        assert!(NOTE_EVERYONE_NPU.contains("other people only"));
-        // A rule while transcription runs on the NPU, with the way round it (T12.64): no reason
-        // T12.12c step 4 showed is not the NPU's.
-        assert!(NOTE_EVERYONE_NPU.contains("While transcription runs on the NPU"));
-        assert!(NOTE_EVERYONE_NPU.contains("Processor"));
-        assert!(NOTE_EVERYONE_NPU.contains("Where it runs"));
-        for word in ["vanished", "not understood", "this computer"] {
-            assert!(!NOTE_EVERYONE_NPU.contains(word), "{word}");
-            assert!(!NOTE_EVERYONE_NPU_ONLY.contains(word), "{word}");
-        }
-        assert!(NOTE_EVERYONE_NPU.starts_with(NOTE_EVERYONE_NPU_ONLY));
-        for word in ["Processor", "Where it runs", "own voice"] {
-            assert!(!NOTE_EVERYONE_NPU_ONLY.contains(word), "{word}");
         }
     }
 
@@ -817,8 +780,6 @@ mod tests {
             NOTE_NOT_HERE,
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
-            NOTE_EVERYONE_NPU,
-            NOTE_EVERYONE_NPU_ONLY,
         ] {
             assert_eq!(crate::catalogue::manifest_id_in(note), None, "{note}");
             assert!(!note.contains("not measured"), "{note}");
@@ -833,8 +794,6 @@ mod tests {
             NOTE_NOT_HERE,
             NOTE_CARD_PROCESSOR,
             NOTE_EVERYONE_MEMORY,
-            NOTE_EVERYONE_NPU,
-            NOTE_EVERYONE_NPU_ONLY,
         ] {
             assert!(!note.contains('\u{2014}'), "{note}");
         }

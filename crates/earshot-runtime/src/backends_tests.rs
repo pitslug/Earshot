@@ -20,6 +20,13 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
 use super::*;
+
+thread_local! {
+    /// Every `load_parakeet_with` call on this thread, as (accelerator, whose NPU load): the seam
+    /// that shows a preview's load passes `QnnLoadFor::Preview` (T12.75 review).
+    pub(crate) static PARAKEET_LOADS_SEEN: RefCell<Vec<(Accelerator, QnnLoadFor)>> =
+        const { RefCell::new(Vec::new()) };
+}
 use crate::post::PostConfig;
 
 /// A loader that refuses the backends in `fail` (as `load_verified` does when the log and
@@ -1839,7 +1846,12 @@ fn backends_previews_second_session_only_for_everyone_on_a_big_cpu_machine() {
         previews_refused_second(BackendKind::Cuda, &big, PreviewChoice::Everyone),
         None
     );
-    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+    // T12.75: on the NPU it runs beside the first session there.
+    assert_eq!(
+        second_preview_backend(BackendKind::Qnn, &big, PreviewChoice::Everyone),
+        Ok(BackendKind::Qnn)
+    );
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             previews_refused_second(kind, &big, PreviewChoice::Everyone).is_some(),
             "{kind:?}"
@@ -1960,7 +1972,12 @@ fn backends_previews_second_session_beside_cuda_follows_the_first() {
         assert_eq!(cuda, cpu, "{:?}", m.total_memory);
     }
     let big = machine(roomy, card);
-    for kind in [BackendKind::Qnn, BackendKind::Vulkan, BackendKind::Fake] {
+    // T12.75: a QNN track's second session runs on the NPU, never on the card.
+    assert_eq!(
+        second_preview_backend(BackendKind::Qnn, &big, everyone),
+        Ok(BackendKind::Qnn)
+    );
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
         assert!(
             second_preview_backend(kind, &big, everyone).is_err(),
             "{kind:?}"
@@ -2313,27 +2330,22 @@ fn backends_preview_on_hardware_load_applies_the_rule_to_the_given_machine() {
         };
         assert!(want.is_some());
         assert_eq!(off.err(), want, "{slot:?}");
-        // T12.12c: on the NPU the first session goes on to load (and fails here for a load
-        // reason); the user's own voice is refused there.
+        // T12.12c, T12.75: on the NPU both sessions go on to load (and fail here for a load
+        // reason), the user's own voice included.
         let npu = BackendInfo {
             kind: BackendKind::Qnn,
             ..cuda.clone()
         };
-        let npu_load =
-            load_preview_on_hardware(&models, &npu, PreviewChoice::Everyone, slot, &small).err();
-        match slot {
-            PreviewSlot::First => {
-                let why = npu_load.expect("an empty models folder");
-                assert_ne!(why, OWN_VOICE_NPU_REFUSED);
-                assert!(
-                    !why.contains("not measured") && !why.contains("memory"),
-                    "{why}"
-                );
-            }
-            PreviewSlot::OwnVoice => {
-                assert_eq!(npu_load.as_deref(), Some(OWN_VOICE_NPU_REFUSED));
-            }
-        }
+        let why = load_preview_on_hardware(&models, &npu, PreviewChoice::Everyone, slot, &small)
+            .err()
+            .expect("an empty models folder");
+        assert!(
+            !why.contains("not measured")
+                && !why.contains("memory")
+                && !why.contains("own voice")
+                && !why.contains("CPU or CUDA"),
+            "{slot:?}: refused instead of loading: {why}"
+        );
     }
     // "Other people only" has no second session, on any machine.
     let second = load_preview_on_hardware(
@@ -2440,28 +2452,49 @@ fn backends_previews_on_the_npu_run_there_above_the_limit_and_refuse_below() {
     }
 }
 
-/// T12.12c: the user's own track in a call has no preview session beside the NPU, whatever the
-/// memory and the choice, and the reason says why without naming a model.
+/// T12.75 (the owner, 2026-11-17, lifting T12.12c's refusal): under Everyone the user's own track
+/// in a call has its preview session on the NPU beside the first, with
+/// [`PREVIEW_BOTH_MIN_MEMORY`] known to be there; below it, or with memory unknown, it is refused
+/// for memory; "Other people only" and the other choices give no second session.
 #[test]
-fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
+fn backends_previews_own_voice_runs_on_the_npu_with_enough_memory() {
     use crate::preview_settings::PreviewChoice;
     for memory in [
         Some(64 * GIB),
-        Some(15 * GIB),
-        Some(PREVIEW_MIN_MEMORY_NPU - 1),
-        None,
+        Some(15 * GIB + GIB / 2),
+        Some(PREVIEW_BOTH_MIN_MEMORY),
     ] {
         let m = npu_machine(memory);
         assert_eq!(
-            previews_refused_second(BackendKind::Qnn, &m, PreviewChoice::Everyone).as_deref(),
-            Some(OWN_VOICE_NPU_REFUSED),
+            second_preview_backend_or_refusal(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            Ok(BackendKind::Qnn),
             "{memory:?}"
         );
         assert_eq!(
-            second_preview_backend(BackendKind::Qnn, &m, PreviewChoice::Everyone),
-            Err(OWN_VOICE_NPU_REFUSED.to_owned())
+            previews_refused_second(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            None
         );
-        // The first session still runs: only the user's own voice is refused.
+        assert_eq!(
+            previews_refused(BackendKind::Qnn, &m, PreviewChoice::Everyone),
+            None
+        );
+    }
+    for memory in [Some(PREVIEW_BOTH_MIN_MEMORY - 1), Some(8 * GIB), None] {
+        let m = npu_machine(memory);
+        let refusal =
+            second_preview_backend_or_refusal(BackendKind::Qnn, &m, PreviewChoice::Everyone)
+                .expect_err("too little memory for a second session");
+        assert_eq!(
+            refusal.reason,
+            PreviewOffReason::NotEnoughMemory,
+            "{memory:?}"
+        );
+        assert_eq!(
+            previews_refused_second(BackendKind::Qnn, &m, PreviewChoice::Everyone).as_deref(),
+            Some("not enough memory for a third session of the model"),
+            "{memory:?}"
+        );
+        // The first session still runs: Everyone lifts its own limit as "on" does.
         assert_eq!(
             previews_refused(BackendKind::Qnn, &m, PreviewChoice::Everyone),
             None
@@ -2469,23 +2502,20 @@ fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
     }
     // Choices without a second session keep their own reason.
     let big = npu_machine(Some(64 * GIB));
+    assert_eq!(
+        second_preview_backend_or_refusal(BackendKind::Qnn, &big, PreviewChoice::On)
+            .expect_err("Other people only")
+            .reason,
+        PreviewOffReason::NotAsked
+    );
     for choice in [
         PreviewChoice::Off,
         PreviewChoice::Automatic,
         PreviewChoice::On,
     ] {
-        assert_ne!(
-            previews_refused_second(BackendKind::Qnn, &big, choice).as_deref(),
-            Some(OWN_VOICE_NPU_REFUSED),
-            "{choice:?}"
-        );
         assert!(previews_refused_second(BackendKind::Qnn, &big, choice).is_some());
     }
-    assert!(OWN_VOICE_NPU_REFUSED.contains("own voice"));
-    assert!(OWN_VOICE_NPU_REFUSED.contains("T12.12d"));
-    assert!(!OWN_VOICE_NPU_REFUSED.contains("not understood"));
     for text in [
-        OWN_VOICE_NPU_REFUSED,
         PREVIEW_NEEDS_COMPILED,
         PREVIEW_COMPILED_REFUSED,
         PREVIEW_NO_COMPILE_KEY,
@@ -2497,8 +2527,8 @@ fn backends_previews_own_voice_stays_refused_on_the_npu_with_its_reason() {
     }
 }
 
-/// T12.12c: the loaders the app uses ask for the NPU for the first session and load nothing for a
-/// refusal: the user's own voice, or a machine below the limit by default.
+/// T12.12c, T12.75: the loaders the app uses ask for the NPU for both sessions and load nothing for
+/// a refusal: a machine below the limit by default, or below the second session's limit.
 #[test]
 fn backends_previews_on_the_npu_load_there_and_refuse_before_loading() {
     use crate::preview_settings::PreviewChoice;
@@ -2519,41 +2549,99 @@ fn backends_previews_on_the_npu_load_there_and_refuse_before_loading() {
             Ok(BackendKind::Qnn)
         );
     }
-    assert_eq!(*asked.borrow(), vec![BackendKind::Qnn; 3]);
+    assert_eq!(
+        load_preview_second_with(&track, &surface, PreviewChoice::Everyone, load),
+        Ok(BackendKind::Qnn)
+    );
+    assert_eq!(*asked.borrow(), vec![BackendKind::Qnn; 4]);
     asked.borrow_mut().clear();
     let small = npu_machine(Some(8 * GIB));
     assert!(load_preview_with(&track, &small, PreviewChoice::Automatic, load).is_err());
     assert_eq!(
-        load_preview_second_with(&track, &surface, PreviewChoice::Everyone, load),
-        Err(OWN_VOICE_NPU_REFUSED.to_owned())
+        load_preview_second_with(&track, &small, PreviewChoice::Everyone, load),
+        Err("not enough memory for a third session of the model".to_owned())
     );
+    assert!(load_preview_second_with(&track, &surface, PreviewChoice::On, load).is_err());
     assert!(load_preview_with(&track, &surface, PreviewChoice::Off, load).is_err());
     assert!(
         asked.borrow().is_empty(),
         "a refusal loaded {:?}",
         asked.borrow()
     );
-    // The real loaders on an empty models folder: the first goes on to load and fails for a load
-    // reason (no NPU version here), never a refusal; the second refuses before touching a file.
+    // The real loaders on an empty models folder: both go on to load and fail for a load reason
+    // (no NPU version here), never a refusal.
     let empty = std::env::temp_dir().join(format!("earshot-preview-npu-{}", std::process::id()));
     let models = ModelDir::new(&empty);
+    let refused_instead = |why: &str| {
+        why.contains("not measured")
+            || why.contains("memory")
+            || why.contains("Settings")
+            || why.contains("own voice")
+    };
     for choice in [PreviewChoice::On, PreviewChoice::Everyone] {
         let why = load_preview(&models, &track, choice)
             .err()
             .expect("an empty models folder");
         assert!(
-            !why.contains("not measured")
-                && !why.contains("memory")
-                && !why.contains("Settings")
-                && why != OWN_VOICE_NPU_REFUSED,
+            !refused_instead(&why),
             "{choice:?}: refused instead of loading: {why}"
         );
     }
+    // Both sessions through the production paths of `load_preview` and `load_preview_second`
+    // on the Surface's memory: each reaches the Parakeet load as a preview's NPU load
+    // (`QnnLoadFor::Preview`: the compiled model only, never recorded), which finds nothing here.
+    PARAKEET_LOADS_SEEN.with(|seen| seen.borrow_mut().clear());
+    let first = load_preview_on(&models, &track, &surface, PreviewChoice::Everyone)
+        .err()
+        .expect("an empty models folder");
+    let second = load_preview_second_on(&models, &track, &surface, PreviewChoice::Everyone)
+        .err()
+        .expect("an empty models folder");
+    for why in [first, second] {
+        assert!(!refused_instead(&why), "refused instead of loading: {why}");
+        assert_eq!(why.reason, PreviewOffReason::LoadFailed, "{why}");
+    }
     assert_eq!(
-        load_preview_second(&models, &track, PreviewChoice::Everyone)
-            .err()
-            .as_deref(),
-        Some(OWN_VOICE_NPU_REFUSED)
+        PARAKEET_LOADS_SEEN.with(|seen| seen.borrow().clone()),
+        vec![
+            (Accelerator::Qnn, QnnLoadFor::Preview),
+            (Accelerator::Qnn, QnnLoadFor::Preview)
+        ]
+    );
+    // Under the second session's memory limit nothing reaches a load.
+    PARAKEET_LOADS_SEEN.with(|seen| seen.borrow_mut().clear());
+    let tight = npu_machine(Some(PREVIEW_BOTH_MIN_MEMORY - 1));
+    let refused = load_preview_second_on(&models, &track, &tight, PreviewChoice::Everyone)
+        .err()
+        .expect("too little memory");
+    assert_eq!(refused.reason, PreviewOffReason::NotEnoughMemory);
+    assert!(PARAKEET_LOADS_SEEN.with(|seen| seen.borrow().is_empty()));
+}
+
+/// The negative control of the seam above: a track's own NPU load says `QnnLoadFor::Track`, so the
+/// recorder tells a preview's load from a track's.
+#[test]
+fn backends_a_tracks_npu_load_is_recorded_as_a_tracks() {
+    let empty = std::env::temp_dir().join(format!("earshot-track-npu-{}", std::process::id()));
+    let models = ModelDir::new(&empty);
+    let Ok(AsrModel::Parakeet(model)) = asr_model("parakeet-tdt-0.6b-v2") else {
+        panic!("a Parakeet model");
+    };
+    PARAKEET_LOADS_SEEN.with(|seen| seen.borrow_mut().clear());
+    assert!(
+        load_parakeet_with(
+            &models,
+            model,
+            Accelerator::Qnn,
+            Some(1),
+            false,
+            QnnLoadFor::Track
+        )
+        .is_err()
+    );
+    assert_eq!(
+        PARAKEET_LOADS_SEEN.with(|seen| seen.borrow().clone()),
+        vec![(Accelerator::Qnn, QnnLoadFor::Track)]
     );
 }
 
@@ -3179,33 +3267,179 @@ fn backends_nemotron_preview_load_is_used_by_no_shipped_code() {
 /// with other hardware would skip the rule for this computer.
 #[test]
 fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code() {
+    // Bare names, matched as whole identifiers (T12.75 review): an alias (`use .. as x`) or a
+    // function value (`let f = ..;`) names the seam without calling it, and fails here too.
     for name in [
-        concat!("load_preview_", "with("),
-        concat!("load_preview_", "second_with("),
+        concat!("load_preview_", "with"),
+        concat!("load_preview_", "second_with"),
     ] {
-        // `live/preview_tests.rs` is compiled only under `#[cfg(test)]` (see the nemotron scan).
-        let found: Vec<PathBuf> = shipped_files_naming(name)
-            .into_iter()
-            .filter(|p| p.file_name().is_none_or(|f| f != "preview_tests.rs"))
-            .collect();
-        assert!(found.is_empty(), "shipped code calls {name}: {found:?}");
+        let found = shipped_files_naming_ident(name);
+        assert!(found.is_empty(), "shipped code names {name}: {found:?}");
         let src = backends_source();
         let evaluation = item_span(&src, concat!("pub fn load_preview_", "on_hardware("));
+        // T12.75 review: the `_on` seams pass on the hardware their callers give, which the scan
+        // below holds to this computer's in shipped code.
+        let on_seams = [
+            item_span(&src, concat!("pub(crate) fn load_preview_", "on(")),
+            item_span(&src, concat!("pub(crate) fn load_preview_", "second_on(")),
+        ];
         let mut calls = 0;
-        for (at, line) in code_lines(&src) {
-            if line.contains(name) && !line.contains("fn load_preview_") {
-                calls += 1;
-                assert!(
-                    line.contains("&crate::hardware()") || evaluation.contains(&at),
-                    "{name} with other hardware outside the evaluation loader: {line}"
-                );
+        for (at, line) in ident_lines(&src, name) {
+            if line.contains(&format!("fn {name}")) {
+                continue;
             }
+            calls += 1;
+            assert!(
+                line.contains(&format!("{name}("))
+                    && (line.contains("&crate::hardware()")
+                        || evaluation.contains(&at)
+                        || on_seams.iter().any(|seam| seam.contains(&at))),
+                "{name} with other hardware outside the evaluation loader: {line}"
+            );
         }
         assert!(
             calls >= 2,
             "{name}: {calls} calls found, the scan reads nothing"
         );
     }
+    // The `_on` seams (T12.75 review): in `backends.rs` called with this computer's hardware; in
+    // other shipped code only by `host::live_previews_on`, with what its caller gave, and that
+    // only by `host::live_previews`, with `crate::hardware`.
+    let host =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs")).unwrap();
+    assert_eq!(seam_uses_outside_the_rule(&host), Vec::<String>::new());
+    for name in [
+        concat!("load_preview_", "on"),
+        concat!("load_preview_", "second_on"),
+        concat!("live_previews_", "on"),
+    ] {
+        let found = shipped_files_naming_ident(name);
+        assert!(
+            found.len() == 1 && found[0].ends_with("src/host.rs"),
+            "{name}: {found:?}"
+        );
+    }
+    let src = backends_source();
+    for name in [
+        concat!("load_preview_", "on"),
+        concat!("load_preview_", "second_on"),
+    ] {
+        let uses: Vec<&str> = ident_lines(&src, name)
+            .into_iter()
+            .map(|(_, line)| line)
+            .filter(|line| !line.contains(&format!("fn {name}(")))
+            .collect();
+        assert_eq!(uses.len(), 1, "{name}: {uses:?}");
+        assert!(
+            uses[0].contains(&format!("{name}(")) && uses[0].contains("&crate::hardware()"),
+            "{name}: {uses:?}"
+        );
+    }
+    assert!(ident_lines(&src, concat!("live_previews_", "on")).is_empty());
+}
+
+/// The negative control of the seam guard (T12.75 review): an alias, a function value or a call
+/// with other hardware in `host.rs` is found; a longer name that only starts like a seam is not.
+#[test]
+fn backends_preview_seam_guard_finds_aliases_values_and_other_hardware() {
+    let host =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs")).unwrap();
+    for extra in [
+        concat!("use crate::host::live_previews_", "on as previews;"),
+        concat!("    let f = crate::host::live_previews_", "on;"),
+        concat!("    let f = crate::backends::load_preview_", "on;"),
+        concat!("use crate::backends::load_preview_", "second_on as second;"),
+        concat!(
+            "    let p = live_previews_",
+            "on(models, choice, || Hardware::default());"
+        ),
+    ] {
+        let found = seam_uses_outside_the_rule(&format!("{host}\n{extra}\n"));
+        assert!(!found.is_empty(), "missed: {extra}");
+    }
+    // A longer identifier is another name, not a use of the seam.
+    let longer = concat!("    let x = load_preview_", "on_hardware;");
+    assert_eq!(
+        seam_uses_outside_the_rule(&format!("{host}\n{longer}\n")),
+        Vec::<String>::new()
+    );
+    assert!(names_ident(
+        concat!("x(load_preview_", "on)"),
+        concat!("load_preview_", "on")
+    ));
+    assert!(!names_ident(
+        concat!("load_preview_", "on_hardware("),
+        concat!("load_preview_", "on")
+    ));
+}
+
+/// What in a `host.rs` source uses a preview hardware seam outside the rule: `load_preview_on`
+/// and `load_preview_second_on` each called once, inside `live_previews_on`, with `&hardware()`;
+/// `live_previews_on` used only as `live_previews_on(models, choice, crate::hardware)`. A use is
+/// any code line naming the identifier, so aliases and function values count.
+fn seam_uses_outside_the_rule(host: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    let span = item_span(host, concat!("pub fn live_previews_", "on("));
+    for name in [
+        concat!("load_preview_", "on"),
+        concat!("load_preview_", "second_on"),
+    ] {
+        let uses = ident_lines(host, name);
+        if uses.len() != 1 {
+            bad.push(format!("{name}: {} uses", uses.len()));
+        }
+        for (at, line) in uses {
+            if !(span.contains(&at)
+                && line.contains(&format!("{name}("))
+                && line.contains("&hardware()"))
+            {
+                bad.push(line.to_owned());
+            }
+        }
+    }
+    let name = concat!("live_previews_", "on");
+    let declaration = format!("pub fn {name}(");
+    let mut calls = 0;
+    for (_, line) in ident_lines(host, name) {
+        if line.starts_with(&declaration) {
+            continue;
+        }
+        calls += 1;
+        if line != concat!("live_previews_", "on(models, choice, crate::hardware)") {
+            bad.push(line.to_owned());
+        }
+    }
+    if calls != 1 {
+        bad.push(format!("{name}: {calls} uses"));
+    }
+    bad
+}
+
+/// Whether `text` names `name` as a whole identifier (no identifier character on either side).
+fn names_ident(text: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && !text[at + name.len()..].chars().next().is_some_and(ident)
+    })
+}
+
+/// The code lines of `src` (comments left out) naming `name` as a whole identifier.
+fn ident_lines<'a>(src: &'a str, name: &str) -> Vec<(usize, &'a str)> {
+    code_lines(src)
+        .into_iter()
+        .filter(|(_, line)| names_ident(line, name))
+        .collect()
+}
+
+/// [`shipped_files_naming`] for `name` as a whole identifier, leaving out only the runtime's own
+/// `live/preview_tests.rs`, which is compiled only under `#[cfg(test)]` (see the nemotron scan).
+fn shipped_files_naming_ident(name: &str) -> Vec<PathBuf> {
+    shipped_files_naming(name)
+        .into_iter()
+        .filter(|p| !p.ends_with("crates/earshot-runtime/src/live/preview_tests.rs"))
+        .filter(|p| names_ident(&std::fs::read_to_string(p).unwrap_or_default(), name))
+        .collect()
 }
 
 /// TODO 93: inside `backends.rs`, the evaluation-only loaders and their types are named only by

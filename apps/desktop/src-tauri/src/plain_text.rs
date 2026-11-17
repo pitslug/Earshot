@@ -240,24 +240,12 @@ pub enum PreviewScope {
     Them,
 }
 
-/// The user's own voice is refused beside the NPU: the other people's words are still shown. A
-/// rule while transcription runs on the NPU, not a limit of the computer (T12.64): on the
-/// processor the user's own voice has its provisional words.
-pub const PREVIEWS_OWN_VOICE_NPU: &str = "Provisional words are shown for other people only. \
-     While transcription runs on the NPU, Earshot does not show them for your own voice.";
-
 /// The user's own voice is refused for want of memory: the other people's words are still shown.
 pub const PREVIEWS_OWN_VOICE_MEMORY: &str = "Provisional words are shown for other people only. \
      This computer does not have enough memory to show them for your own voice as well.";
 
-/// The user's own voice is refused beside the NPU, said alone: nothing about other people's words,
-/// which are off themselves or not started yet (as [`PREVIEWS_OWN_VOICE_NPU`], a rule while
-/// transcription runs on the NPU).
-pub const PREVIEWS_OWN_VOICE_NPU_ALONE: &str = "While transcription runs on the NPU, Earshot does \
-     not show provisional words for your own voice.";
-
-/// The user's own voice is refused for want of memory, said alone (as
-/// [`PREVIEWS_OWN_VOICE_NPU_ALONE`]).
+/// The user's own voice is refused for want of memory, said alone: nothing about other people's
+/// words, which are off themselves or not started yet.
 pub const PREVIEWS_OWN_VOICE_MEMORY_ALONE: &str =
     "This computer does not have enough memory to show provisional words for your own voice.";
 
@@ -267,7 +255,6 @@ pub const PREVIEWS_OWN_VOICE_MEMORY_ALONE: &str =
 #[must_use]
 pub fn own_voice_alone_copy(reason: PreviewOffReason) -> Option<&'static str> {
     match reason {
-        PreviewOffReason::OwnVoiceOnNpu => Some(PREVIEWS_OWN_VOICE_NPU_ALONE),
         PreviewOffReason::NotEnoughMemory => Some(PREVIEWS_OWN_VOICE_MEMORY_ALONE),
         _ => None,
     }
@@ -313,7 +300,6 @@ pub fn provisional_words_copy(reason: PreviewOffReason, scope: PreviewScope) -> 
         }
         // About the user's own voice whatever the scope, and saying other people's words are
         // shown: only for while they are ([`own_voice_alone_copy`] otherwise).
-        PreviewOffReason::OwnVoiceOnNpu => return Some(PREVIEWS_OWN_VOICE_NPU.to_owned()),
         PreviewOffReason::NotEnoughMemory => return Some(PREVIEWS_OWN_VOICE_MEMORY.to_owned()),
         PreviewOffReason::TranscriptStopped
         | PreviewOffReason::OffByDefault
@@ -824,14 +810,13 @@ mod provisional_words_tests {
 
     /// One of every kind. `index` is exhaustive, so a new kind fails to compile until it has an
     /// index here, a place in `ALL` and an entry in `plain_text_provisional_words_*` below.
-    const ALL: [PreviewOffReason; 16] = [
+    const ALL: [PreviewOffReason; 15] = [
         PreviewOffReason::OnBattery,
         PreviewOffReason::CatchingUp,
         PreviewOffReason::FellBehind,
         PreviewOffReason::TranscriptStopped,
         PreviewOffReason::NeedsCompiledModel,
         PreviewOffReason::CompiledModelRefused,
-        PreviewOffReason::OwnVoiceOnNpu,
         PreviewOffReason::NotEnoughMemory,
         PreviewOffReason::OffByDefault,
         PreviewOffReason::Model,
@@ -851,16 +836,15 @@ mod provisional_words_tests {
             PreviewOffReason::TranscriptStopped => 3,
             PreviewOffReason::NeedsCompiledModel => 4,
             PreviewOffReason::CompiledModelRefused => 5,
-            PreviewOffReason::OwnVoiceOnNpu => 6,
-            PreviewOffReason::NotEnoughMemory => 7,
-            PreviewOffReason::OffByDefault => 8,
-            PreviewOffReason::Model => 9,
-            PreviewOffReason::TurnedOff => 10,
-            PreviewOffReason::NotAsked => 11,
-            PreviewOffReason::NotApplicable => 12,
-            PreviewOffReason::LoadFailed => 13,
-            PreviewOffReason::Failed => 14,
-            PreviewOffReason::MeetingEnded => 15,
+            PreviewOffReason::NotEnoughMemory => 6,
+            PreviewOffReason::OffByDefault => 7,
+            PreviewOffReason::Model => 8,
+            PreviewOffReason::TurnedOff => 9,
+            PreviewOffReason::NotAsked => 10,
+            PreviewOffReason::NotApplicable => 11,
+            PreviewOffReason::LoadFailed => 12,
+            PreviewOffReason::Failed => 13,
+            PreviewOffReason::MeetingEnded => 14,
         }
     }
 
@@ -880,7 +864,6 @@ mod provisional_words_tests {
             PreviewOffReason::FellBehind,
             PreviewOffReason::NeedsCompiledModel,
             PreviewOffReason::CompiledModelRefused,
-            PreviewOffReason::OwnVoiceOnNpu,
             PreviewOffReason::NotEnoughMemory,
             PreviewOffReason::Model,
             PreviewOffReason::LoadFailed,
@@ -897,19 +880,13 @@ mod provisional_words_tests {
         }
     }
 
-    /// The user's own voice said alone: only its two kinds have words, which are plain by the same
+    /// The user's own voice said alone: only its kind has words, which are plain by the same
     /// rules as the rest and never claim other people's words are shown.
     #[test]
     fn plain_text_provisional_words_own_voice_alone_is_plain_and_claims_nothing_of_others() {
         for reason in ALL {
             let Some(copy) = own_voice_alone_copy(reason) else {
-                assert!(
-                    !matches!(
-                        reason,
-                        PreviewOffReason::OwnVoiceOnNpu | PreviewOffReason::NotEnoughMemory
-                    ),
-                    "{reason:?}"
-                );
+                assert_ne!(reason, PreviewOffReason::NotEnoughMemory);
                 continue;
             };
             assert!(copy.ends_with('.'), "{copy}");
@@ -927,43 +904,9 @@ mod provisional_words_tests {
                 "preview", "session", "parakeet", "whisper", "onnx", "qnn", "npu", "cuda",
                 "backend", "thread", "decode", "compiled", "please",
             ] {
-                if word == "npu" && reason == PreviewOffReason::OwnVoiceOnNpu {
-                    continue;
-                }
                 assert!(!lower.contains(word), "{word:?} in: {copy}");
             }
         }
-    }
-
-    /// T12.64: the own-voice refusal beside the NPU is a rule while transcription runs there (the
-    /// processor shows the user's own voice), never a limit of this computer. "NPU" is the part's
-    /// own name on the System page, so it is the one kind allowed to name it.
-    #[test]
-    fn plain_text_provisional_words_own_voice_on_the_npu_says_it_is_while_transcription_runs_there()
-    {
-        let alone = own_voice_alone_copy(PreviewOffReason::OwnVoiceOnNpu).unwrap();
-        let beside =
-            provisional_words_copy(PreviewOffReason::OwnVoiceOnNpu, PreviewScope::All).unwrap();
-        assert_eq!(alone, PREVIEWS_OWN_VOICE_NPU_ALONE);
-        assert_eq!(beside, PREVIEWS_OWN_VOICE_NPU);
-        for copy in [alone, beside.as_str()] {
-            assert!(
-                copy.contains("While transcription runs on the NPU"),
-                "{copy}"
-            );
-            assert!(!copy.contains("this computer"), "{copy}");
-            assert!(!copy.contains("yet"), "{copy}");
-        }
-        assert_eq!(
-            beside,
-            "Provisional words are shown for other people only. While transcription runs on the \
-             NPU, Earshot does not show them for your own voice."
-        );
-        assert_eq!(
-            alone,
-            "While transcription runs on the NPU, Earshot does not show provisional words for \
-             your own voice."
-        );
     }
 
     /// T12.64: a prepared model the NPU refused is not "still preparing", and still preparing is
@@ -1015,22 +958,16 @@ mod provisional_words_tests {
                     "preview", "session", "parakeet", "whisper", "onnx", "qnn", "npu", "cuda",
                     "backend", "thread", "decode", "compiled", "please",
                 ] {
-                    // T12.64: the own-voice rule applies while transcription runs on the NPU,
-                    // and says so (the part's own name on the System page).
-                    if word == "npu" && reason == PreviewOffReason::OwnVoiceOnNpu {
-                        continue;
-                    }
                     assert!(!lower.contains(word), "{word:?} in: {copy}");
                 }
                 seen.insert((index(reason), copy));
             }
         }
-        // A kind's words differ by whose voices they are about, except the two about the user's
-        // own voice, which name it themselves.
+        // A kind's words differ by whose voices they are about, except the one about the user's
+        // own voice, which names it itself.
         let per_kind =
             |reason: PreviewOffReason| seen.iter().filter(|(i, _)| *i == index(reason)).count();
         assert_eq!(per_kind(PreviewOffReason::OnBattery), 3);
-        assert_eq!(per_kind(PreviewOffReason::OwnVoiceOnNpu), 1);
         assert_eq!(per_kind(PreviewOffReason::NotEnoughMemory), 1);
         assert_eq!(
             provisional_words_copy(PreviewOffReason::OnBattery, PreviewScope::All).unwrap(),
@@ -1798,12 +1735,8 @@ mod every_variant_tests {
             NPU_LIBRARY_UNAVAILABLE,
             CHECK_NPU_LIBRARY_UNAVAILABLE,
             NPU_PREPARING,
-            PREVIEWS_OWN_VOICE_NPU,
-            PREVIEWS_OWN_VOICE_NPU_ALONE,
             earshot_runtime::npu_compiled::NOTE,
             earshot_runtime::npu_compiled::NOTE_PREPARED_AGAIN,
-            earshot_runtime::preview_settings::NOTE_EVERYONE_NPU,
-            earshot_runtime::preview_settings::NOTE_EVERYONE_NPU_ONLY,
         ]
         .into_iter()
         .map(str::to_owned)

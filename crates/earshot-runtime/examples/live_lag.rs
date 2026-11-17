@@ -15,7 +15,7 @@
 //! ```
 //!
 //! `--backend qnn` needs an ARM64 build with `--features qnn` (the NPU, T12.4). Since T12.12c the
-//! app runs the far end's previews there and refuses the user's own voice
+//! app runs the far end's previews there, and since T12.75 the user's own voice too under Everyone
 //! (`backends::previews_refused_second`); `--force-previews` (evaluation only) loads the preview
 //! sessions through `backends::load_preview_unrefused` instead, which skips only the refusals. The report's `preview_refusal` says what the app would decide on this machine and
 //! whether this run went past it; `preview_sessions` lists every preview load with the backend
@@ -718,7 +718,18 @@ fn previews_for(
             return p;
         }
     }
-    let mut p = host::live_previews(models, choice);
+    app_previews(models, choice, log, earshot_runtime::hardware)
+}
+
+/// The app's own previews (`host::live_previews_on`) on the machine `hardware` reads, every load
+/// recorded. Runs pass this computer's facts; tests pass a fixed machine.
+fn app_previews(
+    models: &ModelDir,
+    choice: PreviewChoice,
+    log: &Arc<Mutex<Vec<Value>>>,
+    hardware: fn() -> earshot_hardware::Hardware,
+) -> LivePreviews {
+    let mut p = host::live_previews_on(models, choice, hardware);
     p.load = recorded_loader("first", p.load, Arc::clone(log));
     p.own_voice = p
         .own_voice
@@ -2347,6 +2358,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use earshot_runtime::live::PreviewOffReason;
 
     #[test]
     fn live_lag_percentile_is_the_nearest_rank() {
@@ -2494,35 +2506,56 @@ mod tests {
         ModelDir::new(std::env::temp_dir().join(format!("live-lag-preview-{}", std::process::id())))
     }
 
-    /// Without `--force-previews` the app's loaders run unchanged (T12.12c): on the NPU the far end's
-    /// goes on to load (and fails here for a load reason, on an empty models folder) and the user's
-    /// own voice is refused with its reason, recorded.
+    /// Without `--force-previews` the app's loaders run unchanged (T12.12c), judged on fixed
+    /// machines, never this host: on the NPU the far end's goes on to load (and fails here for a
+    /// load reason, on an empty models folder), and so does the user's own voice with room for it
+    /// (T12.75); just under `PREVIEW_BOTH_MIN_MEMORY` the user's own voice is refused for memory.
+    /// Every load is recorded.
     #[test]
     fn live_lag_preview_loads_are_the_apps_unless_forced() {
-        use earshot_runtime::backends::OWN_VOICE_NPU_REFUSED;
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let p = previews_for(
-            &empty_models(),
-            PreviewChoice::Everyone,
-            &PreviewLoads::App,
-            &log,
-        );
-        let own = p.own_voice.clone().expect("everyone has a second loader");
-        let why = (p.load)(&npu_track()).err().expect("no models here");
-        assert_ne!(why, OWN_VOICE_NPU_REFUSED);
-        assert!(!why.contains("not measured"), "{why}");
-        assert_eq!(
-            own(&npu_track()).err().as_deref(),
-            Some(OWN_VOICE_NPU_REFUSED)
-        );
-        let log = log.lock().unwrap();
-        assert_eq!(log.len(), 2);
-        for (record, slot) in log.iter().zip(["first", "own_voice"]) {
-            assert_eq!(record["slot"], slot);
-            assert_eq!(record["refusal_bypassed"], false);
-            assert_eq!(record["requested"]["kind"], "Qnn");
+        fn with_memory(memory: u64) -> earshot_hardware::Hardware {
+            earshot_hardware::Hardware {
+                total_memory: Some(memory),
+                ..earshot_hardware::Hardware::default()
+            }
         }
-        assert_eq!(log[1]["not_loaded"], OWN_VOICE_NPU_REFUSED);
+        fn roomy() -> earshot_hardware::Hardware {
+            with_memory(64 * GIB)
+        }
+        fn tight() -> earshot_hardware::Hardware {
+            with_memory(earshot_runtime::backends::PREVIEW_BOTH_MIN_MEMORY - 1)
+        }
+        let machines: [(fn() -> earshot_hardware::Hardware, bool); 2] =
+            [(roomy, true), (tight, false)];
+        for (machine, room_for_both) in machines {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let p = app_previews(&empty_models(), PreviewChoice::Everyone, &log, machine);
+            let own = p.own_voice.clone().expect("everyone has a second loader");
+            let why = (p.load)(&npu_track()).err().expect("no models here");
+            assert!(
+                !why.contains("not measured") && !why.contains("memory"),
+                "{why}"
+            );
+            let own_why = own(&npu_track()).err().expect("no models here");
+            if room_for_both {
+                assert_eq!(own_why.reason, PreviewOffReason::LoadFailed, "{own_why}");
+                assert!(!own_why.contains("memory"), "{own_why}");
+            } else {
+                assert_eq!(
+                    own_why.reason,
+                    PreviewOffReason::NotEnoughMemory,
+                    "{own_why}"
+                );
+            }
+            let log = log.lock().unwrap();
+            assert_eq!(log.len(), 2);
+            for (record, slot) in log.iter().zip(["first", "own_voice"]) {
+                assert_eq!(record["slot"], slot);
+                assert_eq!(record["refusal_bypassed"], false);
+                assert_eq!(record["requested"]["kind"], "Qnn");
+            }
+            assert_eq!(log[1]["not_loaded"], own_why.text);
+        }
         let on = previews_for(
             &empty_models(),
             PreviewChoice::Automatic,
@@ -2646,7 +2679,7 @@ mod tests {
 
     /// With a simulated card the app's rule runs on that machine: a CUDA track's previews are
     /// asked for on the CPU (the load fails here for a load reason, on an empty models folder), on
-    /// the NPU the user's own voice is still refused (T12.12c), and every record names the
+    /// the NPU the user's own voice goes on to load too (T12.75), and every record names the
     /// simulated card and no bypass.
     #[test]
     fn live_lag_simulated_preview_loads_apply_the_apps_rule_to_the_simulated_card() {
@@ -2677,14 +2710,34 @@ mod tests {
             !why.contains("not measured") && !why.contains("memory"),
             "{why}"
         );
-        assert_eq!(
-            own(&npu_track()).err().as_deref(),
-            Some(earshot_runtime::backends::OWN_VOICE_NPU_REFUSED)
+        let own_why = own(&npu_track()).err().expect("no models here");
+        assert!(
+            !own_why.contains("not measured") && !own_why.contains("memory"),
+            "{own_why}"
         );
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert!(log.iter().all(|r| r["refusal_bypassed"] == false));
         assert!(log.iter().all(|r| r["simulated_card_gib"] == 6));
+        drop(log);
+        // T12.75: just under the second session's limit the user's own voice on the NPU is
+        // refused for memory; the far end's still goes on to load.
+        let tight = earshot_hardware::Hardware {
+            total_memory: Some(earshot_runtime::backends::PREVIEW_BOTH_MIN_MEMORY - 1),
+            gpus: vec![a_card(Some(6 * GIB), Some(false))],
+            ..earshot_hardware::Hardware::default()
+        };
+        let p = previews_for(
+            &empty_models(),
+            PreviewChoice::Everyone,
+            &PreviewLoads::Simulated(tight),
+            &Arc::new(Mutex::new(Vec::new())),
+        );
+        let own = p.own_voice.clone().expect("everyone has a second loader");
+        let why = (p.load)(&npu_track()).err().expect("no models here");
+        assert!(!why.contains("memory"), "{why}");
+        let own_why = own(&npu_track()).err().expect("too little memory");
+        assert!(own_why.contains("not enough memory"), "{own_why}");
     }
 
     #[test]

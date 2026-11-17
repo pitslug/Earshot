@@ -369,6 +369,34 @@ fn previews_view_on(
     order: &[earshot_runtime::backends::Accelerator],
     hardware: &earshot_runtime::earshot_hardware::Hardware,
 ) -> Result<PreviewsView, IpcError> {
+    let lead = previews_lead_on(services, models, order, hardware)?;
+    let page = earshot_runtime::preview_settings::preview_page(lead.choice, lead.runs_on, hardware);
+    Ok(PreviewsView {
+        choice: page.shown.into(),
+        can_change: page.can_change,
+        note: page.note.map(str::to_owned),
+        unknown: lead.unknown,
+    })
+}
+
+/// What [`previews_view_on`] judges the page on.
+#[derive(Debug)]
+struct PreviewsLead {
+    /// The stored choice.
+    choice: earshot_runtime::preview_settings::PreviewChoice,
+    /// A stored value this version does not know, read as automatic.
+    unknown: Option<String>,
+    /// Where the next meeting's transcription model runs.
+    runs_on: earshot_runtime::backends::Accelerator,
+}
+
+/// The stored choice and where the next meeting's transcription model runs.
+fn previews_lead_on(
+    services: &earshot_runtime::Services,
+    models: &earshot_runtime::backends::ModelDir,
+    order: &[earshot_runtime::backends::Accelerator],
+    hardware: &earshot_runtime::earshot_hardware::Hardware,
+) -> Result<PreviewsLead, IpcError> {
     use earshot_runtime::backends::Accelerator;
     // Only the stored settings are read under the store lock; the model files are looked at
     // with it free.
@@ -381,13 +409,10 @@ fn previews_view_on(
     let setup = earshot_runtime::host::transcription_setup_from(reads, models, order, hardware)?;
     let runs_on =
         earshot_runtime::recommend::runs_on_here(models, &setup.choice.model, &setup.order);
-    let lead = Accelerator::of(runs_on).unwrap_or(Accelerator::Cpu);
-    let page = earshot_runtime::preview_settings::preview_page(choice, lead, hardware);
-    Ok(PreviewsView {
-        choice: page.shown.into(),
-        can_change: page.can_change,
-        note: page.note.map(str::to_owned),
+    Ok(PreviewsLead {
+        choice,
         unknown,
+        runs_on: Accelerator::of(runs_on).unwrap_or(Accelerator::Cpu),
     })
 }
 
@@ -626,7 +651,7 @@ mod tests {
     fn previews_page_follows_where_the_chosen_model_runs() {
         use earshot_runtime::backends::{Accelerator, AsrModel, ModelDir, asr_model};
         use earshot_runtime::earshot_hardware::{Cpu, Hardware, Npu};
-        use earshot_runtime::preview_settings::NOTE_EVERYONE_NPU;
+        use earshot_runtime::preview_settings::PreviewChoice;
         const GIB: u64 = 1 << 30;
         let dir = crate::testutil::TempDir::new("previews-model");
         let services = crate::testutil::services(&dir);
@@ -656,11 +681,15 @@ mod tests {
         )
         .unwrap();
         store_previews(&services, PreviewsChoice::Everyone).unwrap();
-        // No NPU version: the model runs on the processor, so no NPU note.
+        // T12.75 made the processor's and the NPU's pages read alike on this machine, so where
+        // the page was judged shows in the lead itself.
+        // No NPU version: the model runs on the processor, and the page is judged there.
+        let lead = previews_lead_on(&services, &models, &order, &hw).unwrap();
+        assert_eq!(lead.runs_on, Accelerator::Cpu);
         let cpu = previews_view_on(&services, &models, &order, &hw).unwrap();
-        assert_ne!(cpu.note.as_deref(), Some(NOTE_EVERYONE_NPU), "{cpu:?}");
+        assert_eq!(cpu.note, None, "{cpu:?}");
         assert!(cpu.can_change);
-        // With its NPU version the model runs on the NPU, and the page says so.
+        // With its NPU version the model runs on the NPU, and the page is judged there.
         let Ok(AsrModel::Parakeet(p)) = asr_model(model) else {
             panic!("a Parakeet model");
         };
@@ -669,7 +698,14 @@ mod tests {
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, b"x").unwrap();
         }
+        let lead = previews_lead_on(&services, &models, &order, &hw).unwrap();
+        assert_eq!(lead.choice, PreviewChoice::Everyone);
+        assert_eq!(lead.unknown, None);
+        assert_eq!(lead.runs_on, Accelerator::Qnn);
         let npu = previews_view_on(&services, &models, &order, &hw).unwrap();
-        assert_eq!(npu.note.as_deref(), Some(NOTE_EVERYONE_NPU), "{npu:?}");
+        assert!(npu.can_change);
+        // T12.75: Everyone on the NPU with this much memory shows the user's own voice too, and
+        // the page says nothing about it.
+        assert_eq!(npu.note, None, "{npu:?}");
     }
 }
