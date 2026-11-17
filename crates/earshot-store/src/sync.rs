@@ -298,6 +298,14 @@ pub struct Applied {
     /// Summary requests this device withdrew that came back open (claimed elsewhere before
     /// that device heard of the withdrawal): the withdrawal was stamped again here.
     pub withdrawals_kept: usize,
+    /// The meetings a row written here belongs to (a meeting's own row, its tracks, lines,
+    /// speakers, notes, summaries and summary requests), including a summary the convergence
+    /// rules replaced: ids only, so the window can read again what changed (T12.81). A row
+    /// held, ignored or skipped names nothing.
+    pub meetings: std::collections::BTreeSet<EntityId>,
+    /// Whether a person row was written here or "Me" people merged: names shown in any meeting
+    /// resolve through persons, so the window reads the open meeting again (T12.81).
+    pub people: bool,
 }
 
 impl Applied {
@@ -440,6 +448,7 @@ fn converge<C: Clock + ?Sized>(
             merged.meta.touch(hlc, clock);
             crate::repo::put_person(&tx.conn, &merged)?;
             out.mes_merged += 1;
+            out.people = true;
         }
     }
     let crowded: Vec<[u8; 16]> = {
@@ -462,6 +471,7 @@ fn converge<C: Clock + ?Sized>(
             replaced.meta.touch(hlc, clock);
             crate::repo::put_summary(&tx.conn, &replaced)?;
             out.summaries_replaced += 1;
+            out.meetings.insert(replaced.meeting_id);
         }
     }
     Ok(())
@@ -781,6 +791,7 @@ impl Store {
                             unhold(tx, inc)?;
                             let _ = hlc.observe(inc.stamp, clock);
                             out.written += 1;
+                            out.meetings.insert(there.meeting_id);
                             continue;
                         }
                         Withdrawal::KeepMine => {
@@ -837,6 +848,10 @@ impl Store {
                 unhold(tx, inc)?;
                 let _ = hlc.observe(inc.stamp, clock);
                 out.written += 1;
+                if let Some(m) = row.meeting() {
+                    out.meetings.insert(m);
+                }
+                out.people |= matches!(row, SyncedRow::Person(_));
                 if let SyncedRow::Person(p) = row
                     && p.meta.deleted
                     && person_was_live

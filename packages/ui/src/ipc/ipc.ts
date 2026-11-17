@@ -38,6 +38,7 @@ import type {
   PreviewsChoice,
   PreviewsView,
   ShellEvent,
+  SyncEvent,
   RecoveredRecording,
   ObsidianSettingsValue,
   ObsidianSettingsView,
@@ -308,6 +309,9 @@ export interface Ipc extends IpcCommands {
   onCudaEvent(handler: (event: CudaEvent) => void): Promise<() => void>;
   /** Calls `handler` for what the tray, the shortcut and notifications ask of the window. */
   onShellEvent(handler: (event: ShellEvent) => void): Promise<() => void>;
+  /** Calls `handler` after every sync tick that changed rows here (T12.81): the meetings it
+   * touched, by id only. */
+  onSyncEvent(handler: (event: SyncEvent) => void): Promise<() => void>;
 }
 
 /** The names of the generated commands; `IpcCommands` must have exactly these methods. */
@@ -324,6 +328,7 @@ export const EVENT_METHODS = [
   "onBenchmarkEvent",
   "onCudaEvent",
   "onShellEvent",
+  "onSyncEvent",
 ] as const;
 
 // Compile-time check: a command added in Rust without an `Ipc` method (or the reverse)

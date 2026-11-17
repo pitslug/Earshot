@@ -192,6 +192,268 @@ fn sync_two_devices_converge_after_concurrent_edits() {
 }
 
 #[test]
+fn sync_a_tick_that_changed_rows_names_their_meetings_and_only_then() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let changes = |r: &TickReport| SyncChanges::after(Some(r), None);
+
+    // Rows of its own pushed, nothing pulled: nothing changed here, nothing is said.
+    let own = meeting(&b.svc, "Pushed only", 6);
+    let r = cb.tick().unwrap();
+    assert_eq!(changes(&r), None, "{r:?}");
+
+    // Rows pulled and written: their meeting, by id only.
+    let m = meeting(&a.svc, "From the other computer", 7);
+    ca.tick().unwrap();
+    let r = cb.tick().unwrap();
+    assert!(r.written > 0, "{r:?}");
+    let c = changes(&r).expect("rows were written");
+    assert_eq!(c.meetings, vec![m], "not this device's own ({own:?})");
+
+    // A quiet tick says nothing.
+    assert_eq!(changes(&cb.tick().unwrap()), None);
+
+    // A rename there names the meeting again; a deletion there names it too.
+    a.clock.advance_ms(1_000);
+    a.rename(m, "Renamed there");
+    ca.tick().unwrap();
+    assert_eq!(changes(&cb.tick().unwrap()).unwrap().meetings, vec![m]);
+    a.clock.advance_ms(1_000);
+    a.svc.delete_meeting(m).unwrap();
+    ca.tick().unwrap();
+    let r = cb.tick().unwrap();
+    assert_eq!(r.deleted_meetings, 1, "{r:?}");
+    assert_eq!(changes(&r).unwrap().meetings, vec![m]);
+}
+
+#[test]
+fn sync_changes_merge_the_tick_and_the_offload_step_once() {
+    use earshot_core::identity::EntityId;
+    let (m1, m2) = (EntityId::from_bytes([1; 16]), EntityId::from_bytes([2; 16]));
+    let quiet = TickReport::default();
+    let step_none = crate::offload::StepReport::default();
+    assert_eq!(SyncChanges::after(Some(&quiet), Some(&step_none)), None);
+    assert_eq!(SyncChanges::after(None, None), None);
+    // A step that withdrew or handed back a request of this device names its meeting alone.
+    let mut step = crate::offload::StepReport::default();
+    step.meetings.insert(m2);
+    assert_eq!(
+        SyncChanges::after(Some(&quiet), Some(&step)),
+        Some(SyncChanges {
+            meetings: vec![m2],
+            people: false
+        })
+    );
+    // Both: one set, in id order.
+    let mut tick = TickReport {
+        written: 2,
+        ..TickReport::default()
+    };
+    tick.meetings.extend([m2, m1]);
+    assert_eq!(
+        SyncChanges::after(Some(&tick), Some(&step)),
+        Some(SyncChanges {
+            meetings: vec![m1, m2],
+            people: false
+        })
+    );
+    // A person changed: no meeting named, people said.
+    let person = TickReport {
+        written: 1,
+        people: true,
+        ..TickReport::default()
+    };
+    assert_eq!(
+        SyncChanges::after(Some(&person), None),
+        Some(SyncChanges {
+            meetings: vec![],
+            people: true
+        })
+    );
+}
+
+#[test]
+fn sync_a_panicking_change_listener_never_ends_sync() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let client = b.client().with_changes(Arc::new(move |_: &SyncChanges| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        panic!("an invented listener failure");
+    }));
+    assert!(!client.tell_changes(&SyncChanges::default()));
+    let timing = SyncTiming {
+        tick: Duration::from_millis(100),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_secs(3600),
+    };
+    let thread = SyncThread::start(client, timing).unwrap();
+    let ca = a.client();
+    // Two changes, each heard (and panicked on) by the thread, which keeps syncing.
+    for (n, title) in [(1_usize, "First"), (2, "Second")] {
+        let m = meeting(&a.svc, title, 40 + n as u64);
+        ca.tick().unwrap();
+        wait_for("the thread pulled the meeting", || b.title(m).is_some());
+        wait_for("the listener was told", || {
+            calls.load(std::sync::atomic::Ordering::SeqCst) > n
+        });
+        assert!(!thread.ended(), "a listener panic ended sync");
+    }
+    assert_eq!(sync_status(&b.svc.store()).unwrap().problem, None);
+    thread.stop();
+}
+
+/// A host that answers every hand-back with one answer and counts them (each one is a pass of the
+/// thread's offload step that reached the meeting).
+struct Answers {
+    answer: crate::offload::ContinueAnswer,
+    handed: std::sync::Mutex<Vec<earshot_core::identity::EntityId>>,
+}
+
+impl Answers {
+    fn new(answer: crate::offload::ContinueAnswer) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            handed: std::sync::Mutex::default(),
+        })
+    }
+    fn count(&self) -> usize {
+        self.handed.lock().unwrap().len()
+    }
+}
+
+impl crate::offload::OffloadHost for Answers {
+    fn continue_run(&self, job: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
+        self.handed.lock().unwrap().push(job.meeting);
+        self.answer
+    }
+    fn write_for(&self, _: earshot_core::model::SummaryRequest) {}
+}
+
+/// A listener that records every call.
+fn recorder() -> (ChangeListener, Arc<std::sync::Mutex<Vec<SyncChanges>>>) {
+    let heard: Arc<std::sync::Mutex<Vec<SyncChanges>>> = Arc::default();
+    let sink = Arc::clone(&heard);
+    (
+        Arc::new(move |c: &SyncChanges| sink.lock().unwrap().push(c.clone())),
+        heard,
+    )
+}
+
+fn quick() -> SyncTiming {
+    SyncTiming {
+        tick: Duration::from_millis(50),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_secs(3600),
+    }
+}
+
+/// T12.81: what the offload step writes reaches the window in the pass's one call, though the
+/// tick itself changed nothing here (the original bug: only the tick's rows were told), and a
+/// hand-back the host keeps refusing is not told again every pass.
+#[test]
+fn sync_thread_tells_the_window_what_the_offload_step_wrote_once() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked of the other computer", 50);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let host = Answers::new(crate::offload::ContinueAnswer::Refused);
+    // A first step reads when the request was asked, on this device's clock.
+    crate::offload::Offload::new()
+        .step(&a.svc, &mut || None, &*host)
+        .unwrap();
+    a.clock.advance_ms(crate::offload::CLAIM_WITHIN_MS);
+    let (listener, heard) = recorder();
+    let calls = || heard.lock().unwrap().clone();
+    let thread = SyncThread::start_offloading(
+        a.client().with_changes(listener),
+        quick(),
+        Arc::clone(&host) as Arc<dyn crate::offload::OffloadHost>,
+    )
+    .unwrap();
+    // The first pass withdraws the request (nothing pulled): told once, naming the meeting.
+    wait_for("the step's withdrawal was told", || !calls().is_empty());
+    // Refused every pass since: the host is asked again each pass, the window is not told again.
+    wait_for("three more passes handed it back", || host.count() >= 4);
+    assert_eq!(
+        calls(),
+        vec![SyncChanges {
+            meetings: vec![m],
+            people: false
+        }]
+    );
+    assert_eq!(calls().len(), 1, "one call, in the withdrawing pass only");
+    thread.stop();
+}
+
+/// T12.81: a step that panics after writing keeps what it wrote in the caller's report, as the
+/// tick's report survives a problem, so the thread still tells the window.
+#[test]
+fn sync_a_step_that_panics_after_writing_keeps_its_report() {
+    struct Panics;
+    impl crate::offload::OffloadHost for Panics {
+        fn continue_run(&self, _: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
+            panic!("an invented host failure")
+        }
+        fn write_for(&self, _: earshot_core::model::SummaryRequest) {}
+    }
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked, then the host fails", 52);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let state = crate::offload::Offload::new();
+    state.step(&a.svc, &mut || None, &Panics).unwrap();
+    a.clock.advance_ms(crate::offload::CLAIM_WITHIN_MS);
+    let mut report = crate::offload::StepReport::default();
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.step_into(&a.svc, &mut || None, &Panics, &mut report)
+    }));
+    assert!(ran.is_err(), "the host panicked");
+    assert_eq!(report.withdrawn, 1);
+    assert_eq!(
+        SyncChanges::after(None, Some(&report)).map(|c| c.meetings),
+        Some(vec![m])
+    );
+}
+
+/// T12.81: a thread that stops on a problem the user must fix still tells the window what its
+/// last offload step withdrew and handed back.
+#[test]
+fn sync_thread_stopping_on_a_problem_tells_what_its_last_step_wrote() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked before the removal", 51);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let host = Answers::new(crate::offload::ContinueAnswer::Started);
+    let (listener, heard) = recorder();
+    let a_id = a.svc.store().device();
+    remove_other_device(&b.svc, b.vault(), a_id).unwrap();
+    let thread = SyncThread::start_offloading(
+        a.client().with_changes(listener),
+        quick(),
+        Arc::clone(&host) as Arc<dyn crate::offload::OffloadHost>,
+    )
+    .unwrap();
+    wait_for("the thread stopped on the problem", || thread.ended());
+    assert_eq!(host.count(), 1, "handed back to write here");
+    assert_eq!(
+        heard.lock().unwrap().clone(),
+        vec![SyncChanges {
+            meetings: vec![m],
+            people: false
+        }]
+    );
+}
+
+#[test]
 fn sync_a_meeting_being_recorded_is_not_pushed_until_it_is_saved() {
     let relay = relay();
     let (a, b) = pair(&relay);

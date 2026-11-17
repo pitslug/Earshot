@@ -302,7 +302,9 @@ pub struct MeetingDetail {
     /// for a draft transcript, which offers neither.
     pub dictionary: Vec<String>,
     /// While another computer was asked to write the summary and has not answered (T11.3db):
-    /// the meeting's waiting line (fixed copy, `offload::waiting_copy`).
+    /// the meeting's one waiting banner (fixed copy, `offload::waiting_banner`: the computer's
+    /// name and what happens if it does not answer; T12.81). `None` once the summary arrived or
+    /// the request settled, by whatever route.
     pub waiting_for: Option<String>,
     /// The last run of the order of summary writers, when it has something to say (T12.63b,
     /// `summary_order::run_note`): interrupted, a named computer's hand-back, or what became of
@@ -889,8 +891,8 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             Some(s) => earshot_runtime::summary_edits::is_edited(&db, meeting, s.id)?,
             None => false,
         };
-        let waiting_for = earshot_runtime::offload::waiting_for(&db, db.device(), meeting)?
-            .map(|_| crate::offload::waiting_copy(None));
+        // A summary that arrived before the request's own row ends the waiting (T12.81).
+        let waiting_for = earshot_runtime::offload::waiting_shown(&db, db.device(), meeting)?;
         let run_view = earshot_runtime::summary_order::run::run_view(&db, meeting)?;
         (
             persons,
@@ -1025,7 +1027,14 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         kept_local,
         word_list: words.list,
         dictionary,
-        waiting_for,
+        // The device's name as this process heard it (its presence, or when it was asked);
+        // "your other computer" until then.
+        waiting_for: waiting_for.map(|device| {
+            let name = crate::offload::known_computers()
+                .get(&device)
+                .and_then(|n| n.name.clone());
+            crate::offload::waiting_banner(name.as_deref(), crate::offload::if_no_answer(&run_view))
+        }),
         // A run not ended while the meeting's work or a job still holds it is not interrupted.
         summary_run: crate::summary_order::run_note(
             &run_view,

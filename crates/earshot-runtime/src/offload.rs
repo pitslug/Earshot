@@ -654,6 +654,41 @@ pub fn waiting_for(
     Ok(open_request(store, me, meeting)?.map(|r| r.target_device))
 }
 
+/// [`waiting_for`] as the meeting's page shows it (T12.81): `None` also once the meeting holds a
+/// summary created after the open request ([`summarised_since`]), which can arrive before the
+/// request's own row does
+/// (the helper writes both in one transaction; sync may bring them in different pages).
+///
+/// # Errors
+/// Store errors.
+pub fn waiting_shown(
+    store: &earshot_store::Store,
+    me: DeviceId,
+    meeting: EntityId,
+) -> Result<Option<DeviceId>, RuntimeError> {
+    let Some(r) = open_request(store, me, meeting)? else {
+        return Ok(None);
+    };
+    Ok((!summarised_since(store, &r)?).then_some(r.target_device))
+}
+
+/// Whether `request`'s meeting holds a summary created after the request: the one rule the
+/// offload step (a closed request settles) and the page's banner (the waiting ends) share. A
+/// summary row counts whether or not it was later tombstoned (replaced by a re-summary or the
+/// convergence rules, undone): a summary was written after the request either way.
+///
+/// # Errors
+/// Store errors.
+pub fn summarised_since<R: MeetingRepo + ?Sized>(
+    repo: &R,
+    request: &SummaryRequest,
+) -> Result<bool, RuntimeError> {
+    Ok(repo
+        .summaries(request.meeting_id)?
+        .iter()
+        .any(|s| s.meta.created_at > request.meta.created_at))
+}
+
 /// Whether `request`'s last write came from the device allowed to write its state: the asker
 /// for requested and withdrawn, the target for claimed, done and declined. A row written by any
 /// other device is ignored, whatever it says.
@@ -808,7 +843,8 @@ pub trait OffloadHost: Send + Sync {
     fn write_for(&self, request: SummaryRequest);
 }
 
-/// What one [`Offload::step`] did. Counts only.
+/// What one [`Offload::step`] did: counts, and the meetings whose requests or run records this
+/// device wrote as their asker (ids only, T12.81).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StepReport {
     /// Requests this device claimed.
@@ -824,6 +860,9 @@ pub struct StepReport {
     /// Meetings the host refused to start writing here (a job of the meeting runs, it is in
     /// use): the next step hands them again.
     pub refused_here: usize,
+    /// The meetings whose waiting changed here as their asker: a request withdrawn, a run handed
+    /// back or ended after the computer's summary (T12.81), so the window reads them again.
+    pub meetings: BTreeSet<EntityId>,
 }
 
 /// The offload state of one running process: which requests were already handed to the host,
@@ -910,7 +949,25 @@ impl Offload {
         peers: &mut dyn FnMut() -> Option<Vec<Peer>>,
         host: &dyn OffloadHost,
     ) -> Result<StepReport, RuntimeError> {
-        self.step_with(services, peers, host, false)
+        let mut report = StepReport::default();
+        self.step_into(services, peers, host, &mut report)
+            .map(|()| report)
+    }
+
+    /// [`Self::step`] into `report`, which keeps what the step did even when it ends on an error
+    /// or a panic after writing (as [`crate::sync::SyncClient::tick_reporting`] does for the
+    /// tick), so the window still hears of the meetings it already changed (T12.81).
+    ///
+    /// # Errors
+    /// Store errors; what was done before stays done and stays in `report`.
+    pub fn step_into(
+        &self,
+        services: &Services,
+        peers: &mut dyn FnMut() -> Option<Vec<Peer>>,
+        host: &dyn OffloadHost,
+        report: &mut StepReport,
+    ) -> Result<(), RuntimeError> {
+        self.step_with(services, peers, host, false, report)
     }
 
     /// The last step of a sync thread that stops on a problem the user must act on (this device
@@ -929,7 +986,22 @@ impl Offload {
         services: &Services,
         host: &dyn OffloadHost,
     ) -> Result<StepReport, RuntimeError> {
-        self.step_with(services, &mut || None, host, true)
+        let mut report = StepReport::default();
+        self.step_sync_stopped_into(services, host, &mut report)
+            .map(|()| report)
+    }
+
+    /// [`Self::step_sync_stopped`] into `report` ([`Self::step_into`]).
+    ///
+    /// # Errors
+    /// Store errors; what was done before stays done and stays in `report`.
+    pub fn step_sync_stopped_into(
+        &self,
+        services: &Services,
+        host: &dyn OffloadHost,
+        report: &mut StepReport,
+    ) -> Result<(), RuntimeError> {
+        self.step_with(services, &mut || None, host, true, report)
     }
 
     fn step_with(
@@ -938,7 +1010,8 @@ impl Offload {
         peers: &mut dyn FnMut() -> Option<Vec<Peer>>,
         host: &dyn OffloadHost,
         sync_stopped: bool,
-    ) -> Result<StepReport, RuntimeError> {
+        report: &mut StepReport,
+    ) -> Result<(), RuntimeError> {
         let (me, now) = (services.store().device(), services.clock.now_unix_ms());
         let (seen, offers, mut times, held) = {
             let db = services.store();
@@ -977,11 +1050,7 @@ impl Offload {
                 }
                 let meeting = db.meeting(r.meeting_id)?;
                 let meeting_live = meeting.is_some_and(|m| !m.meta.deleted);
-                let summarised_since = meeting_live
-                    && db
-                        .summaries(r.meeting_id)?
-                        .iter()
-                        .any(|s| s.meta.created_at > r.meta.created_at);
+                let summarised_since = meeting_live && summarised_since(&**db, &r)?;
                 let final_segments = if meeting_live && r.target_device == me {
                     final_segments(&**db, r.meeting_id)?
                 } else {
@@ -1010,7 +1079,6 @@ impl Offload {
                     && s.request.state == RequestState::Claimed
             });
         let peers = if waits_on_claim { peers() } else { None };
-        let mut report = StepReport::default();
         let mut outcome = Ok(());
         for s in seen {
             let r = &s.request;
@@ -1026,11 +1094,11 @@ impl Offload {
                     peers.as_deref(),
                     &mut times,
                     host,
-                    &mut report,
+                    report,
                     sync_stopped,
                 )
             } else {
-                self.as_helper(services, &s, now, offers, &mut times, host, &mut report)
+                self.as_helper(services, &s, now, offers, &mut times, host, report)
             };
             if let Err(e) = done {
                 outcome = Err(e);
@@ -1043,7 +1111,7 @@ impl Offload {
                 .store()
                 .transaction(|tx| store_step_times(tx, &before, &times))?;
         }
-        outcome.map(|()| report)
+        outcome
     }
 
     /// This device's reading for `r` in its current state, started now when there is none.
@@ -1097,6 +1165,7 @@ impl Offload {
                     return Ok(());
                 }
                 report.withdrawn += 1;
+                report.meetings.insert(r.meeting_id);
                 HereReason::Withdrawn
             }
             RequestState::Requested => {
@@ -1113,6 +1182,7 @@ impl Offload {
                     return Ok(());
                 }
                 report.withdrawn += 1;
+                report.meetings.insert(r.meeting_id);
                 HereReason::NotClaimed
             }
             RequestState::Claimed => {
@@ -1146,6 +1216,7 @@ impl Offload {
                     return Ok(());
                 }
                 report.withdrawn += 1;
+                report.meetings.insert(r.meeting_id);
                 HereReason::HelperStale
             }
             RequestState::Declined | RequestState::Withdrawn if s.summarised_since => {
@@ -1164,7 +1235,9 @@ impl Offload {
             RequestState::Done => {
                 // The computer stored the summary: a run waiting on it ends with that computer
                 // as its writer.
-                crate::summary_order::run::end_after_done(services, r.meeting_id, r.id)?;
+                if crate::summary_order::run::end_after_done(services, r.meeting_id, r.id)? {
+                    report.meetings.insert(r.meeting_id);
+                }
                 self.settle(r.id);
                 return Ok(());
             }
@@ -1185,6 +1258,12 @@ impl Offload {
                 self.settle(r.id);
                 return Ok(());
             }
+            // A named run's record was ended here: the page shows its account.
+            HandBack::Ended => {
+                report.meetings.insert(r.meeting_id);
+                self.settle(r.id);
+                return Ok(());
+            }
             HandBack::Legacy => Continuation::Legacy,
             HandBack::ContinueOrder => Continuation::Order { word },
         };
@@ -1199,6 +1278,7 @@ impl Offload {
             match answer {
                 ContinueAnswer::Started => {
                     report.written_here += 1;
+                    report.meetings.insert(r.meeting_id);
                     Self::closed(times, r, now).started_ms.get_or_insert(now);
                 }
                 // Refused (a job of the meeting runs, the meeting is in use): the next step tries

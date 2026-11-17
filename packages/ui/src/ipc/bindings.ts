@@ -472,6 +472,7 @@ export const events = {
 	meetingEvent: makeEvent<MeetingEvent>("meeting-event"),
 	modelJobEvent: makeEvent<ModelJobEvent>("model-job-event"),
 	shellEvent: makeEvent<ShellEvent>("shell-event"),
+	syncEvent: makeEvent<SyncEvent>("sync-event"),
 	updateEvent: makeEvent<UpdateEvent>("update-event"),
 	voiceEvent: makeEvent<VoiceEvent>("voice-event"),
 };
@@ -1342,7 +1343,9 @@ export type MeetingDetail = {
 	dictionary: string[],
 	/**
 	 *  While another computer was asked to write the summary and has not answered (T11.3db):
-	 *  the meeting's waiting line (fixed copy, `offload::waiting_copy`).
+	 *  the meeting's one waiting banner (fixed copy, `offload::waiting_banner`: the computer's
+	 *  name and what happens if it does not answer; T12.81). `None` once the summary arrived or
+	 *  the request settled, by whatever route.
 	 */
 	waiting_for: string | null,
 	/**
@@ -2412,6 +2415,23 @@ export type SyncDeviceView = {
 	joined_unix_s: number,
 	/**  Seconds since it last reached the server. */
 	seen_s_ago: number,
+};
+
+/**
+ *  What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
+ *  tick and the offload step after it) changed here, by id only (never a title, a line or a
+ *  summary), so the window reads them again. Sent only after a pass that changed something;
+ *  `meetings` is empty when only people, folders or Dictionary words changed, which the meeting
+ *  list still reads again.
+ */
+export type SyncEvent = {
+	/**  Meeting ids. */
+	meetings: string[],
+	/**
+	 *  A person changed (a rename, a merge, a "Me" repair): names in every meeting resolve
+	 *  through persons, so the open meeting is read again even when it is not named.
+	 */
+	people: boolean,
 };
 
 /**  Another computer was removed (T11.6c). */

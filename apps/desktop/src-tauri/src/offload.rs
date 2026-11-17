@@ -203,6 +203,61 @@ pub fn waiting_copy(name: Option<&str>) -> String {
     WAITING_TEMPLATE.replace("{device}", &named(name, UNNAMED_INLINE))
 }
 
+/// What happens to a meeting's summary if the computer it waits for does not answer (T12.81).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IfNoAnswer {
+    /// The next step is a writer here, or the request is from before the order (whose hand-back
+    /// writes here).
+    WritesHere,
+    /// The next step asks another computer.
+    NextComputer,
+    /// Nothing follows: a re-summarise "On <device>", or the order's last step.
+    Nothing,
+}
+
+/// The sentence for `then` (the table's `if_no_answer`).
+#[must_use]
+pub const fn if_no_answer_copy(then: IfNoAnswer) -> &'static str {
+    match then {
+        IfNoAnswer::WritesHere => "If it does not answer, this computer writes it.",
+        IfNoAnswer::NextComputer => {
+            "If it does not answer, the next computer in your summary order is asked."
+        }
+        IfNoAnswer::Nothing => {
+            "If it does not answer, no summary is written. Re-summarise to try again."
+        }
+    }
+}
+
+/// What follows a waiting run's computer step: the first step after it not yet tried.
+#[must_use]
+pub fn if_no_answer(view: &earshot_runtime::summary_order::run::RunView) -> IfNoAnswer {
+    use earshot_runtime::summary_order::OrderStep;
+    use earshot_runtime::summary_order::run::{RunOrigin, RunView};
+    match view {
+        RunView::Waiting(run) if run.origin == RunOrigin::Named => IfNoAnswer::Nothing,
+        RunView::Waiting(run) => match (run.cursor..run.steps.len())
+            .find(|i| run.outcome_of(*i).is_none())
+            .and_then(|i| run.steps.get(i))
+        {
+            Some(OrderStep::Writer(_)) => IfNoAnswer::WritesHere,
+            Some(OrderStep::Computer(_)) => IfNoAnswer::NextComputer,
+            None => IfNoAnswer::Nothing,
+        },
+        // A record that cannot be read promises nothing.
+        RunView::Unreadable => IfNoAnswer::Nothing,
+        // No run waits on it: a request asked before the order, whose hand-back writes here.
+        RunView::None | RunView::Ended(_) | RunView::Unfinished(_) => IfNoAnswer::WritesHere,
+    }
+}
+
+/// The one banner of a meeting waiting for another computer's summary (T12.81): who, and what
+/// happens if it does not answer.
+#[must_use]
+pub fn waiting_banner(name: Option<&str>, then: IfNoAnswer) -> String {
+    format!("{} {}", waiting_copy(name), if_no_answer_copy(then))
+}
+
 /// The banner of a summary step whose chosen computer was not asked; `None` for any other
 /// choice. It says this computer wrote the summary only when `summary` is a stored one; for a
 /// summary skipped, failed or cancelled it says only that the computer was not asked.

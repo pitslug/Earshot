@@ -285,6 +285,14 @@ fn main() {
             );
             // Sync (T11.3a) starts off the setup path (Credential Manager is read first), once
             // summary offload's host exists (T11.3db).
+            // What a tick brought reaches the window as ids only (T12.81); only to this app's
+            // own webview, nothing leaves the device.
+            let handle = app.handle().clone();
+            sync_for_start.set_change_listener(Arc::new(
+                move |c: &earshot_runtime::sync::SyncChanges| {
+                    let _ = sync_settings::sync_event(c).emit(&handle);
+                },
+            ));
             if let Ok(services) = app.state::<ipc::AppState>().services() {
                 sync_for_start.set_offload_host(Arc::new(offload::HostOffload::new(
                     services.clone(),

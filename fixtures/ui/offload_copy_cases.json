@@ -1,5 +1,5 @@
 {
-  "_comment": "Summary offload copy (T11.3db, docs/sync.md section 10). writers: the label of each writer kind presence carries. local_model_places: the label in place of writers.local for a summary worker whose presence says where its own local model runs (T11.6a), by the presence word with - as _. unavailable: the banner when the chosen computer was not asked and this computer stored the summary, by reason. not_asked: the same reasons claiming nothing about a summary, for a summary step that stored none here and a refused re-summarise On <device>. {device} (always at the start of a sentence) is the chosen computer's name. written_here: the first warning of the re-summary this computer runs after asking, sent before it runs, by reason; {device} as above. waiting: the meeting's line while a request is open. already_waiting: re-summarise On <device> while the meeting waits for another computer. unnamed: {device} at the start of a sentence for a computer whose name is not known; unnamed_inline: the same inside a sentence (waiting). Pinned to the desktop's offload copy by its tests and read by the UI mock. Shipped with the app: public copy only.",
+  "_comment": "Summary offload copy (T11.3db, docs/sync.md section 10). writers: the label of each writer kind presence carries. local_model_places: the label in place of writers.local for a summary worker whose presence says where its own local model runs (T11.6a), by the presence word with - as _. unavailable: the banner when the chosen computer was not asked and this computer stored the summary, by reason. not_asked: the same reasons claiming nothing about a summary, for a summary step that stored none here and a refused re-summarise On <device>. {device} (always at the start of a sentence) is the chosen computer's name. written_here: the first warning of the re-summary this computer runs after asking, sent before it runs, by reason; {device} as above. waiting: the meeting's line while a request is open. if_no_answer: the sentence after it in the meeting's one waiting banner, by what follows if the computer does not answer (T12.81). already_waiting: re-summarise On <device> while the meeting waits for another computer. unnamed: {device} at the start of a sentence for a computer whose name is not known; unnamed_inline: the same inside a sentence (waiting). Pinned to the desktop's offload copy by its tests and read by the UI mock. Shipped with the app: public copy only.",
   "writers": {
     "local": "local model",
     "anthropic": "Claude with an API key",
@@ -38,6 +38,11 @@
     "withdrawn": "{device} did not write the summary, so this computer writes it instead."
   },
   "waiting": "Waiting for {device} to write the summary.",
+  "if_no_answer": {
+    "writes_here": "If it does not answer, this computer writes it.",
+    "next_computer": "If it does not answer, the next computer in your summary order is asked.",
+    "nothing": "If it does not answer, no summary is written. Re-summarise to try again."
+  },
   "already_waiting": "This meeting already waits for another computer to write its summary.",
   "unnamed": "Your other computer",
   "unnamed_inline": "your other computer"

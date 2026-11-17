@@ -33,11 +33,18 @@ describe("keeping a meeting on this computer", () => {
     }
   });
 
-  it("shows the bar on a kept meeting only, with no way back while the writer is local", async () => {
+  // T12.81: the bar shows only where it offers something to do. While the writer is this
+  // computer, allowing would change nothing, so there is no bar (and no way back to offer).
+  it("shows the bar on a kept meeting only when there is a writer to allow", async () => {
     await setup({ keptLocal: [ITEM.id] });
+    await screen.findByText(/TL;DR/);
+    expect(screen.queryByText("Kept on this computer")).toBeNull();
+    expect(screen.queryByRole("button", { name: /summarise it$/ })).toBeNull();
+    cleanup();
+    await setup({ keptLocal: [ITEM.id], summaries: claudeCode });
     expect(await screen.findByText("Kept on this computer")).toBeInTheDocument();
     expect(screen.getByText(KEPT_LOCAL_TEXT)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /summarise it$/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Let Claude Code summarise it" })).toBeInTheDocument();
     expect(document.body.textContent ?? "").not.toMatch(/—|please|!/i);
   });
 

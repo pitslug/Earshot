@@ -31,6 +31,7 @@ import {
   type RememberOutcome,
   type SummaryEvent,
   type SummaryView,
+  type SyncEvent,
   type TranscriptRow,
 } from "./ipc";
 import { dictionaryWord, splitToken, tokensOf, withoutEndQuotes } from "../detail/dictionaryWord";
@@ -65,7 +66,7 @@ import { type CudaMockData, createCudaMock } from "./mockCuda";
 import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
-import { OFFLOAD_COPY, type SyncMockData, createSyncMock, mockDeviceId, offloadCopy } from "./mockSync";
+import { OFFLOAD_COPY, type SyncMockData, createSyncMock, mockDeviceId } from "./mockSync";
 import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
@@ -173,6 +174,9 @@ export const POST_STEPS: PostStep[] = [
 
 /** Time between scripted post-meeting steps (and before the summary). */
 export const POST_STEP_MS = 400;
+/** How long after a meeting's summary was handed to another computer its summary arrives by
+ * sync in the preview (T12.81). */
+export const MOCK_OFFLOAD_ANSWER_MS = 8_000;
 
 /** The refusals of a meeting deletion (T12.38): the UI's one copy of `deletion.rs`'s words. */
 export const MOCK_DELETE_COPY = DELETE_COPY;
@@ -278,6 +282,9 @@ export interface MockIpcData {
   /** The meeting detail's account of a meeting's last summary run, by meeting id (T12.63b:
    * fixture data; the mock runs no order). */
   summaryRuns?: Record<string, string>;
+  /** The meeting detail's waiting banner of a meeting another computer writes the summary of,
+   * by meeting id (T12.81: fixture data). */
+  waitingFor?: Record<string, string>;
   /** Offers to stop this long into a meeting (the preview's `?callEnded=1`). */
   callEndOfferAfterMs?: number;
   /** The folders (default: `SAMPLE_FOLDERS` with the sample meetings, none with given ones). */
@@ -407,7 +414,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   // The summary each meeting's detail last showed (`summary-seen/<meeting>`, T12.76).
   const seenSummaries = new Map<string, string>();
   // Meetings asked of another computer, with their waiting line (T11.3db).
-  const waitingFor = new Map<string, string>();
+  const waitingFor = new Map<string, string>(Object.entries(data.waitingFor ?? {}));
+  // The window's sync subscriptions (T12.81): told when the other computer's summary arrives.
+  const syncListeners = new Set<(event: SyncEvent) => void>();
   const { exportTarget, ...settingsMock } = createSettingsMock(
     { vault: data.vault, ...data.settings },
     data.machine ?? "surface",
@@ -772,7 +781,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     // T11.3db: a meeting asked of another computer shows that it waits.
     askSummaryHelper: async (meeting, device) => {
       const line = await syncMock.askSummaryHelper(meeting, device);
-      waitingFor.set(meeting, offloadCopy(OFFLOAD_COPY.waiting, null, true));
+      // A named run: nothing follows if the computer does not answer (T12.81).
+      waitingFor.set(meeting, `${line} ${OFFLOAD_COPY.if_no_answer.nothing}`);
       return line;
     },
     ...foldersMock,
@@ -871,6 +881,19 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         if (result.kind === "Stored" && row.title === "") row.title = result.title;
         // A stored summary is new until the meeting's detail shows it (T12.76).
         if (result.kind === "Stored") row.new_summary = true;
+        // Another computer writes it (T11.3db): the page waits, and the summary arrives by sync
+        // a while later (T12.81).
+        if (result.kind === "Offloaded") {
+          waitingFor.set(row.id, `${result.message} ${OFFLOAD_COPY.if_no_answer.writes_here}`);
+          update(row.id, (d) => ({ ...d, summary: null }));
+          timer.setTimeout(() => {
+            if (!meetings.includes(row)) return;
+            waitingFor.delete(row.id);
+            details.delete(row.id);
+            row.new_summary = true;
+            for (const l of [...syncListeners]) l({ meetings: [row.id], people: false });
+          }, MOCK_OFFLOAD_ANSWER_MS);
+        }
         emit({ type: "Summary", meeting: row.id, result });
         afterOlder?.();
         afterOlder = null;
@@ -943,6 +966,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     // The tray, the shortcut and notifications do not exist in the preview: nothing is sent.
     onShellEvent: async () => () => {},
+    // The only tick that changes anything in the preview brings the summary another computer
+    // was asked for (T12.81).
+    onSyncEvent: async (handler) => {
+      syncListeners.add(handler);
+      return () => {
+        syncListeners.delete(handler);
+      };
+    },
     getMeeting: async (meeting) => {
       const row = meetings.find((m) => m.id === meeting);
       const d = detailOf(meeting);

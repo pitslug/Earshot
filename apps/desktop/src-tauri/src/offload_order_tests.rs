@@ -291,8 +291,18 @@ fn offload_resummarise_on_a_computer_is_a_named_run_that_a_hand_back_ends() {
             panic!("nothing asked this computer")
         }
     }
+    // The declined row has arrived but the step has not run: no banner and no account yet. The
+    // window is told only after the step (T12.81), whose report names the meeting, so its one
+    // read shows the account.
+    let before = crate::detail::meeting_detail(&a.svc, m).unwrap();
+    assert_eq!(
+        (before.waiting_for, before.summary_run),
+        (None, None),
+        "what a read between apply and step would show"
+    );
     let state = earshot_runtime::offload::Offload::new();
-    state.step(&a.svc, &mut || None, &NoJobs).unwrap();
+    let r = state.step(&a.svc, &mut || None, &NoJobs).unwrap();
+    assert_eq!(r.meetings.iter().copied().collect::<Vec<_>>(), vec![m]);
     let detail = crate::detail::meeting_detail(&a.svc, m).unwrap();
     assert_eq!(
         detail.summary_run.as_deref(),
@@ -472,4 +482,182 @@ fn offload_named_run_never_asks_a_device_it_was_not_decided_for() {
         &CancelToken::new(),
     );
     assert!(matches!(out.summary, SummaryResult::Offloaded { .. }));
+}
+
+/// A host that records each run handed back to this computer and starts it.
+#[derive(Default)]
+struct Continues(Mutex<Vec<WriteHere>>);
+
+impl OffloadHost for Continues {
+    fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
+        self.0.lock().unwrap().push(job);
+        ContinueAnswer::Started
+    }
+    fn write_for(&self, _: earshot_core::model::SummaryRequest) {
+        panic!("nothing asked this computer")
+    }
+}
+
+/// The meeting's waiting banner as `meeting_detail` gives it (T12.81).
+fn banner(svc: &Services, m: EntityId) -> Option<String> {
+    crate::detail::meeting_detail(svc, m).unwrap().waiting_for
+}
+
+const THEN_HERE: &str = "Waiting for Invented desk to write the summary. If it does not answer, this computer writes it.";
+const THEN_NOTHING: &str = "Waiting for Invented desk to write the summary. If it does not answer, no summary is written. Re-summarise to try again.";
+
+/// T12.81 A4: the banner names the computer and says what follows its step in an order run, and
+/// what a request from before the order (no run record) does.
+#[test]
+fn offload_waiting_banner_follows_the_run_and_a_legacy_request() {
+    let dir = TempDir::new("offload-banner-runs");
+    let svc = services(&dir);
+    crate::offload::remember_computer(DESK, Some("Invented desk".into()), None);
+    let then_local = meeting_with_final(&svc, 31, 2);
+    waiting_run(
+        &svc,
+        then_local,
+        &[OrderStep::Computer(DESK), OrderStep::LOCAL],
+    );
+    assert_eq!(banner(&svc, then_local).as_deref(), Some(THEN_HERE));
+    let alone = meeting_with_final(&svc, 32, 2);
+    waiting_run(&svc, alone, &[OrderStep::Computer(DESK)]);
+    assert_eq!(banner(&svc, alone).as_deref(), Some(THEN_NOTHING));
+    let legacy = meeting_with_final(&svc, 33, 2);
+    earshot_runtime::offload::ask(&svc, legacy, DESK)
+        .unwrap()
+        .expect("asked");
+    assert!(matches!(
+        earshot_runtime::summary_order::run::read(&svc.store(), legacy).unwrap(),
+        RunRecord::Absent
+    ));
+    assert_eq!(banner(&svc, legacy).as_deref(), Some(THEN_HERE));
+}
+
+/// T12.81 A2: a summary created after the open request ends the banner, though the request's
+/// own row has not arrived yet (sync can bring them in different pages).
+#[test]
+fn offload_a_summary_that_arrived_before_its_request_ends_the_banner() {
+    let dir = TempDir::new("offload-banner-arrived");
+    let svc = services(&dir);
+    for (seed, run) in [(34, true), (35, false)] {
+        let m = meeting_with_final(&svc, seed, 2);
+        if run {
+            waiting_run(&svc, m, &[OrderStep::Computer(DESK), OrderStep::LOCAL]);
+        } else {
+            earshot_runtime::offload::ask(&svc, m, DESK)
+                .unwrap()
+                .unwrap();
+        }
+        assert!(banner(&svc, m).is_some());
+        put_summary_now(&svc, m, seed);
+        let me = svc.store().device();
+        assert_eq!(
+            earshot_runtime::offload::waiting_for(&svc.store(), me, m).unwrap(),
+            Some(DESK),
+            "the request is still open"
+        );
+        assert_eq!(banner(&svc, m), None, "run: {run}");
+    }
+}
+
+/// A live summary of `m`, created now.
+fn put_summary_now(svc: &Services, m: EntityId, seed: u64) {
+    use earshot_core::model::{MeetingRepo, Stamp, Summary};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+    let clock = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let body = earshot_core::summary::SummaryV1 {
+        title: "Invented review".into(),
+        tldr: "Written on the other computer.".into(),
+        enhanced_notes: Vec::new(),
+        decisions: Vec::new(),
+        action_items: Vec::new(),
+        open_questions: Vec::new(),
+        topics: Vec::new(),
+    };
+    let s = Summary::new(
+        m,
+        earshot_core::prompt::Template::General,
+        None,
+        body,
+        &mut stamp,
+    );
+    store.put_summary(s).unwrap();
+}
+
+/// T12.81 B1: a named request nobody claims is withdrawn by the offload step; the step names
+/// the meeting (the window reads it once, after the step), and that one read shows the run's
+/// account and no waiting banner.
+#[test]
+fn offload_a_named_request_that_times_out_clears_its_banner_and_shows_the_note() {
+    let dir = TempDir::new("offload-named-timeout");
+    let (svc, clock) = crate::testutil::services_with_clock(&dir);
+    crate::offload::remember_computer(DESK, Some("Invented desk".into()), None);
+    let m = meeting_with_final(&svc, 36, 2);
+    let out = run_summary_order(
+        &svc,
+        m,
+        RunStart::Named(OrderStep::Computer(DESK)),
+        &RunPlan {
+            writers: &AskDesk,
+            local_not_now: &|| false,
+            order: None,
+        },
+        &CancelToken::new(),
+    );
+    assert!(matches!(out.summary, SummaryResult::Offloaded { .. }));
+    assert_eq!(banner(&svc, m).as_deref(), Some(THEN_NOTHING));
+    let host = Continues::default();
+    let state = earshot_runtime::offload::Offload::new();
+    let r = state.step(&svc, &mut || None, &host).unwrap();
+    assert!(r.meetings.is_empty(), "not yet: {r:?}");
+    clock.advance_ms(earshot_runtime::offload::CLAIM_WITHIN_MS);
+    let r = state.step(&svc, &mut || None, &host).unwrap();
+    assert_eq!(r.meetings.iter().copied().collect::<Vec<_>>(), vec![m]);
+    assert!(
+        host.0.lock().unwrap().is_empty(),
+        "a named run is never continued"
+    );
+    let detail = crate::detail::meeting_detail(&svc, m).unwrap();
+    assert_eq!(detail.waiting_for, None);
+    assert_eq!(
+        detail.summary_run.as_deref(),
+        Some("Invented desk could not write the summary: no reply.")
+    );
+}
+
+/// T12.81 B1: order and legacy runs handed back name their meetings in the same step that starts
+/// their jobs (the jobs' own events then follow the page).
+#[test]
+fn offload_runs_handed_back_name_their_meetings_with_their_jobs() {
+    let dir = TempDir::new("offload-order-timeout");
+    let (svc, clock) = crate::testutil::services_with_clock(&dir);
+    let m = meeting_with_final(&svc, 37, 2);
+    waiting_run(&svc, m, &[OrderStep::Computer(DESK), OrderStep::LOCAL]);
+    let legacy = meeting_with_final(&svc, 38, 2);
+    earshot_runtime::offload::ask(&svc, legacy, DESK)
+        .unwrap()
+        .unwrap();
+    clock.advance_ms(earshot_runtime::offload::CLAIM_WITHIN_MS);
+    let host = Continues::default();
+    let r = earshot_runtime::offload::Offload::new()
+        .step(&svc, &mut || None, &host)
+        .unwrap();
+    let mut both = vec![m, legacy];
+    both.sort();
+    assert_eq!(r.meetings.iter().copied().collect::<Vec<_>>(), both);
+    let jobs: Vec<EntityId> = host.0.lock().unwrap().iter().map(|w| w.meeting).collect();
+    assert_eq!(jobs.len(), 2, "both continue here");
+    assert!(jobs.contains(&m) && jobs.contains(&legacy));
+    assert_eq!(banner(&svc, m), None);
+    assert_eq!(banner(&svc, legacy), None);
 }

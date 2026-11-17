@@ -768,3 +768,50 @@ fn store_sync_a_held_copy_newer_than_a_retried_row_stays() {
     assert_eq!(a.written, 1);
     assert!(!e.store.is_held(&newer.key).unwrap());
 }
+
+#[test]
+fn store_sync_applied_names_only_the_meetings_whose_rows_were_written() {
+    let mut e = env("sync-applied-meetings");
+    let t = at(T0 + 1_000, 0, THERE);
+    let page = [
+        incoming(1, SyncedRow::Meeting(meeting(1, "Planning", t))),
+        incoming(2, SyncedRow::Track(track(2, 1, t))),
+        incoming(3, SyncedRow::Meeting(meeting(3, "Review", t))),
+    ];
+    let applied = e.apply(&page, &rules(false));
+    assert_eq!(applied.written, 3);
+    assert_eq!(
+        applied.meetings.iter().copied().collect::<Vec<_>>(),
+        vec![id(1), id(3)]
+    );
+    // The same rows again change nothing here: no meeting is named.
+    let again = e.apply(&page, &rules(false));
+    assert_eq!(again.ignored, 3);
+    assert!(again.meetings.is_empty(), "{again:?}");
+    // A row held because its meeting is in use here is not written: not named either.
+    let busy = |m: EntityId| m == id(1);
+    let held_rules = ApplyRules {
+        kinds: vp(false),
+        leased: &busy,
+        now_ms: T0 + 10_000,
+        after: None,
+    };
+    let later = at(T0 + 2_000, 0, THERE);
+    let applied = e.apply(
+        &[incoming(
+            4,
+            SyncedRow::Meeting(meeting(1, "Planning again", later)),
+        )],
+        &held_rules,
+    );
+    assert_eq!(applied.held, held(1, HoldReason::Busy));
+    assert!(applied.meetings.is_empty(), "{applied:?}");
+    assert!(!applied.people);
+    // A person written here names no meeting but says people changed.
+    let p = e.apply(
+        &[incoming(5, SyncedRow::Person(person(9, false, later)))],
+        &rules(false),
+    );
+    assert_eq!(p.written, 1);
+    assert!(p.meetings.is_empty() && p.people, "{p:?}");
+}
