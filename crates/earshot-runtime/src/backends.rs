@@ -460,7 +460,7 @@ pub(crate) fn accelerator_order_with(
 }
 
 /// Whether this build offers the NPU: an ARM64 `qnn` build (T8.3, T8.4f).
-const NPU_BUILD: bool = cfg!(all(feature = "qnn", target_arch = "aarch64"));
+pub(crate) const NPU_BUILD: bool = cfg!(all(feature = "qnn", target_arch = "aarch64"));
 
 /// Set once the QNN library of this process failed to load ([`record_qnn_load_failure`]).
 static QNN_LOAD_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

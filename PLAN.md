@@ -2212,6 +2212,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - deps: T12.67
   - do: (1) commit the rule in docs/voiceprint-real-meetings.md before any run. (2) `earshot-store`: `ReadOnlyStore` gains `local_value` and a read-only `VoiceprintRepo` (writes refused). (3) `post::voice_match`, the one-voice naming of `name_speakers` made public and used by it unchanged. (4) earshot-runtime example `vp_readout`: copies the store into a `fixtures/private/real-meetings/<run>/` folder (the copy rule shared with `store_inputs`), scores every stored speaker identity against the voiceprints with the voice's own enrolment left out, under the shipped setting and 0.56, prints counts only and writes per-voice scores inside the run folder. Unit tests on an invented store. Nothing shipped changes behaviour.
   - accept: `cargo test -p earshot-store read_only`; `cargo test -p earshot-runtime post`; `cargo test -p earshot-runtime --example vp_readout`; the owner's run and the rule's result in docs/voiceprint-real-meetings.md
+- [x] T12.72 The hardware-facts test knows an ARM64 `qnn` build lists the NPU
+  - found (T12.47 Surface run, 2026-11-17): `model_check_hardware_read_reports_cores_memory_and_the_build` fails on an ARM64 `cargo test -p earshot-runtime --features qnn` (also on main): it expects no accelerator unless the build has `cuda`, but `accelerator_order` adds QNN in an ARM64 `qnn` build.
+  - deps: none
+  - do: the test expects QNN exactly when the build offers the NPU (`backends::NPU_BUILD`) and the process has not recorded a QNN load failure, and never otherwise; the CUDA expectation for every other accelerator stays exact. No production change.
+  - accept: `cargo test -p earshot-runtime model_check_hardware` (x64), and with `--features qnn` on the Surface
 
 ### Parked (the owner, 2026-11-14)
 
