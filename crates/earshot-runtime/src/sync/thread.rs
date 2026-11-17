@@ -269,16 +269,16 @@ fn hand_back_until_started(
     let (state, host) = offload;
     let deadline = Instant::now() + limit;
     loop {
-        let step = catch_unwind(AssertUnwindSafe(|| {
-            state.step_sync_stopped(services, &**host)
-        }))
-        .ok()
-        .and_then(Result::ok);
-        // What it withdrew and handed back reaches the window (T12.81).
-        if let Some(changes) = super::SyncChanges::after(None, step.as_ref()) {
+        // The report is kept whatever the step ends with: what it wrote before an error or a
+        // panic still reaches the window (T12.81).
+        let mut step = crate::offload::StepReport::default();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            state.step_sync_stopped_into(services, &**host, &mut step)
+        }));
+        if let Some(changes) = super::SyncChanges::after(None, Some(&step)) {
             client.tell_changes(&changes);
         }
-        let refused = step.is_some_and(|r| r.refused_here > 0);
+        let refused = step.refused_here > 0;
         let now = Instant::now();
         if !refused || now >= deadline {
             return;
@@ -411,7 +411,7 @@ fn run(
             Ok((report, outcome)) => (Some(report), Ok(outcome)),
             Err(panic) => (None, Err(panic)),
         };
-        let mut step_report = None;
+        let mut step_report = crate::offload::StepReport::default();
         if let Some(pair) = offload {
             // A store failure or a panic here is the next step's to retry; it never ends sync.
             // A problem that stops sync gets a last step that withdraws and writes here what
@@ -434,17 +434,20 @@ fn run(
                 return;
             }
             let (state, host) = pair;
-            step_report = catch_unwind(AssertUnwindSafe(|| {
-                state.step(&services, &mut || client.peers().ok(), &**host)
-            }))
-            .ok()
-            .and_then(Result::ok);
+            // Kept whatever the step ends with, as the tick's report is (T12.81).
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                state.step_into(
+                    &services,
+                    &mut || client.peers().ok(),
+                    &**host,
+                    &mut step_report,
+                )
+            }));
         }
         // Once per pass, after the step (T12.81): what the tick applied and what the step wrote
         // as an asker reach the window together, so a page never reads a request that settled
         // before the run record the step writes for it.
-        if let Some(changes) = super::SyncChanges::after(tick_report.as_ref(), step_report.as_ref())
-        {
+        if let Some(changes) = super::SyncChanges::after(tick_report.as_ref(), Some(&step_report)) {
             client.tell_changes(&changes);
         }
         match ticked {

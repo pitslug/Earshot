@@ -305,6 +305,154 @@ fn sync_a_panicking_change_listener_never_ends_sync() {
     thread.stop();
 }
 
+/// A host that answers every hand-back with one answer and counts them (each one is a pass of the
+/// thread's offload step that reached the meeting).
+struct Answers {
+    answer: crate::offload::ContinueAnswer,
+    handed: std::sync::Mutex<Vec<earshot_core::identity::EntityId>>,
+}
+
+impl Answers {
+    fn new(answer: crate::offload::ContinueAnswer) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            handed: std::sync::Mutex::default(),
+        })
+    }
+    fn count(&self) -> usize {
+        self.handed.lock().unwrap().len()
+    }
+}
+
+impl crate::offload::OffloadHost for Answers {
+    fn continue_run(&self, job: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
+        self.handed.lock().unwrap().push(job.meeting);
+        self.answer
+    }
+    fn write_for(&self, _: earshot_core::model::SummaryRequest) {}
+}
+
+/// A listener that records every call.
+fn recorder() -> (ChangeListener, Arc<std::sync::Mutex<Vec<SyncChanges>>>) {
+    let heard: Arc<std::sync::Mutex<Vec<SyncChanges>>> = Arc::default();
+    let sink = Arc::clone(&heard);
+    (
+        Arc::new(move |c: &SyncChanges| sink.lock().unwrap().push(c.clone())),
+        heard,
+    )
+}
+
+fn quick() -> SyncTiming {
+    SyncTiming {
+        tick: Duration::from_millis(50),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_secs(3600),
+    }
+}
+
+/// T12.81: what the offload step writes reaches the window in the pass's one call, though the
+/// tick itself changed nothing here (the original bug: only the tick's rows were told), and a
+/// hand-back the host keeps refusing is not told again every pass.
+#[test]
+fn sync_thread_tells_the_window_what_the_offload_step_wrote_once() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked of the other computer", 50);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let host = Answers::new(crate::offload::ContinueAnswer::Refused);
+    // A first step reads when the request was asked, on this device's clock.
+    crate::offload::Offload::new()
+        .step(&a.svc, &mut || None, &*host)
+        .unwrap();
+    a.clock.advance_ms(crate::offload::CLAIM_WITHIN_MS);
+    let (listener, heard) = recorder();
+    let calls = || heard.lock().unwrap().clone();
+    let thread = SyncThread::start_offloading(
+        a.client().with_changes(listener),
+        quick(),
+        Arc::clone(&host) as Arc<dyn crate::offload::OffloadHost>,
+    )
+    .unwrap();
+    // The first pass withdraws the request (nothing pulled): told once, naming the meeting.
+    wait_for("the step's withdrawal was told", || !calls().is_empty());
+    // Refused every pass since: the host is asked again each pass, the window is not told again.
+    wait_for("three more passes handed it back", || host.count() >= 4);
+    assert_eq!(
+        calls(),
+        vec![SyncChanges {
+            meetings: vec![m],
+            people: false
+        }]
+    );
+    assert_eq!(calls().len(), 1, "one call, in the withdrawing pass only");
+    thread.stop();
+}
+
+/// T12.81: a step that panics after writing keeps what it wrote in the caller's report, as the
+/// tick's report survives a problem, so the thread still tells the window.
+#[test]
+fn sync_a_step_that_panics_after_writing_keeps_its_report() {
+    struct Panics;
+    impl crate::offload::OffloadHost for Panics {
+        fn continue_run(&self, _: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
+            panic!("an invented host failure")
+        }
+        fn write_for(&self, _: earshot_core::model::SummaryRequest) {}
+    }
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked, then the host fails", 52);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let state = crate::offload::Offload::new();
+    state.step(&a.svc, &mut || None, &Panics).unwrap();
+    a.clock.advance_ms(crate::offload::CLAIM_WITHIN_MS);
+    let mut report = crate::offload::StepReport::default();
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.step_into(&a.svc, &mut || None, &Panics, &mut report)
+    }));
+    assert!(ran.is_err(), "the host panicked");
+    assert_eq!(report.withdrawn, 1);
+    assert_eq!(
+        SyncChanges::after(None, Some(&report)).map(|c| c.meetings),
+        Some(vec![m])
+    );
+}
+
+/// T12.81: a thread that stops on a problem the user must fix still tells the window what its
+/// last offload step withdrew and handed back.
+#[test]
+fn sync_thread_stopping_on_a_problem_tells_what_its_last_step_wrote() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked before the removal", 51);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let host = Answers::new(crate::offload::ContinueAnswer::Started);
+    let (listener, heard) = recorder();
+    let a_id = a.svc.store().device();
+    remove_other_device(&b.svc, b.vault(), a_id).unwrap();
+    let thread = SyncThread::start_offloading(
+        a.client().with_changes(listener),
+        quick(),
+        Arc::clone(&host) as Arc<dyn crate::offload::OffloadHost>,
+    )
+    .unwrap();
+    wait_for("the thread stopped on the problem", || thread.ended());
+    assert_eq!(host.count(), 1, "handed back to write here");
+    assert_eq!(
+        heard.lock().unwrap().clone(),
+        vec![SyncChanges {
+            meetings: vec![m],
+            people: false
+        }]
+    );
+}
+
 #[test]
 fn sync_a_meeting_being_recorded_is_not_pushed_until_it_is_saved() {
     let relay = relay();

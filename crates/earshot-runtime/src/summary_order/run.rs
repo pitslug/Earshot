@@ -1035,9 +1035,11 @@ fn run_steps(
 /// What the asker's offload step does with a request a computer handed back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandBack {
-    /// Nothing more: the record names another request or none, cannot be read (fails closed), or
-    /// a named run was ended here.
+    /// Nothing more: the record names another request or none, or cannot be read (fails closed).
+    /// Nothing was written.
     Settle,
+    /// Nothing more: a named run waiting on it was ended here (its record written).
+    Ended,
     /// No record at all: a request asked before this version, written here as before.
     Legacy,
     /// The record waits on it in an order run: a re-summarise job continues the run.
@@ -1072,7 +1074,7 @@ pub(crate) fn hand_back(
                             run.waiting_on = None;
                             run.state = RunState::Ended;
                             put_tx(tx, meeting, &run)?;
-                            Ok(HandBack::Settle)
+                            Ok(HandBack::Ended)
                         }
                     }
                 }
