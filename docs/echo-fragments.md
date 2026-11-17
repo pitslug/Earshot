@@ -179,3 +179,34 @@ What the numbers say beside the verdict (not a decision):
 Reproduce (the takes are private; from the repo root on the Surface): `earshot-cli record-raw --seconds 70 --out <take> [--mic-raw]` while the speech plays, then `earshot-cli replay --mic <take>\mic.wav --ref <take>\loopback.wav --timeline <take>\timestamps.json --out <dir> --no-summary` and `cargo run --release -p earshot-core --example aec_eval -- . --private <take>`.
 
 **The owner's reading (2026-11-14, after the measurement, so not part of the rule):** people in a meeting mostly take turns, so talking over the far end is the rare case and the far end alone is the common one. On that weighting the far-end-only half matters most, and the half these takes did not measure is the other common case: the owner talking with the far end silent, default against raw (does the recogniser lose words without Windows' processing when there is no echo to cancel?). That take pair, under a rule written before it, is what a decision on raw needs next.
+
+## The owner talking with the far end silent (T12.36)
+
+The question T12.32 left open: in talk-over the raw mic kept 40 of 53 read words against 46, with 5 more stray words. Two causes fit, and those takes cannot separate them: the raw stream lacks the processing Windows applies to the user's own voice, or the canceller cuts near-end speech in double talk. With nothing playing the canceller has no reference and does nothing, so a difference here comes from the mic stream alone. It is also the case the user is in for most of a meeting.
+
+### The rule (written and committed 2026-11-17, before any take was recorded)
+
+Setup:
+
+- The Surface's built-in mic, on mains, the lid and the machine where the owner uses it; nothing playing and no call app open.
+- Four takes in the order default, raw, raw, default (two pairs; the order balances tiredness and warming up). Each is 40 s of `earshot-cli record-raw --seconds 40 --out <take> [--mic-raw]`: about 5 s of quiet, the owner reading the same fixed public text as T12.32's talk-over (the `fixtures/smoke/transcripts.txt` lines of speaker 121, 53 words), then quiet to the end. A refused raw open ends the task with the refusal as the result.
+- The takes are private recordings: they stay under `fixtures/private/`, and only counts are written here.
+
+Measured per take, from `earshot-cli replay --mic <take>\mic.wav --timeline <take>\timestamps.json --out <dir> --no-summary` (no `--ref`: the mic track alone, no canceller), on the same build for all four:
+
+1. **Read words kept:** of the 53 words read, how many are in the stored mic transcript after Whisper normalisation, in order, each counted once (T12.32's point 6).
+2. **Stray words:** stored mic words that are not from the text.
+
+What counts (judgements, not derived), summed over the two takes of each kind (106 read words each):
+
+- **Raw hurts the user's own voice:** raw keeps at least 4 fewer read words than default in total, and fewer in each pair (pair 1: takes 1 and 2; pair 2: takes 3 and 4).
+- **Raw helps:** the mirror image (at least 4 more in total, and more in each pair).
+- **No clear difference:** anything else. Stray words are reported beside the verdict and decide nothing.
+
+What each verdict means (for the owner; each next step is a decision, not automatic):
+
+- **No clear difference:** the T12.32 talk-over loss came from the canceller in double talk, not the raw stream, so raw looks good for the common cases and the owner's real meeting with the setting on decides T12.36.
+- **Raw hurts:** the setting stays off by default with that cost noted beside it; T12.36 closes on the owner's meeting check.
+- **Raw helps:** a case for raw by default on the Surface, as its own task for the owner.
+
+A measurement that contradicts this rule is reported as it is; the rule is not changed after measuring.
