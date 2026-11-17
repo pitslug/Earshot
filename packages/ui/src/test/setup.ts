@@ -3,11 +3,14 @@ import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach } from "vitest";
 
 import { installMatchMedia } from "./matchMedia";
+import { restoreWindowWatched, setWindowWatched } from "./windowWatched";
 
 // Every test starts on a light system theme with a fresh fake `matchMedia` (jsdom has none), so a
 // test that switches it never reaches the next; a test that needs dark installs its own.
 beforeEach(() => {
   installMatchMedia(false);
+  // A watched window (T12.76): jsdom's `document.hasFocus()` is false until something is focused.
+  setWindowWatched(true, true);
 });
 
 // jsdom has no ResizeObserver; Fluent's MessageBar observes its own size for reflow.
@@ -43,6 +46,8 @@ HTMLBodyElement.prototype.getBoundingClientRect = function (this: HTMLBodyElemen
 
 afterEach(() => {
   cleanup();
+  // A watched or unwatched window set by one test is not the next test's.
+  restoreWindowWatched();
   // The theme chosen in one test is not the next test's.
   window.localStorage.clear();
 });

@@ -40,8 +40,8 @@ const at = (day: number, hour: number, minute = 0, second = 0) =>
 const NOW = at(2, 16);
 
 const MEETINGS: MeetingListItem[] = [
-  { id: "m2", title: "Hedge trimming plan", started_at_ms: at(2, 14), duration_ms: 30 * 60_000, state: "Ready", folder_id: null },
-  { id: "m1", title: "Gravel order", started_at_ms: at(1, 11), duration_ms: 20 * 60_000, state: "Ready", folder_id: null },
+  { id: "m2", title: "Hedge trimming plan", started_at_ms: at(2, 14), duration_ms: 30 * 60_000, state: "Ready", folder_id: null, new_summary: false },
+  { id: "m1", title: "Gravel order", started_at_ms: at(1, 11), duration_ms: 20 * 60_000, state: "Ready", folder_id: null, new_summary: false },
 ];
 
 /** The mock IPC with its meeting events sent by the test, and the app's commits counted. */

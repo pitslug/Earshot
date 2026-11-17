@@ -43,7 +43,8 @@ pub use entities::{
 pub use memory::InMemoryRepo;
 pub use repo::{
     AudioFileRepo, DictionaryRepo, ExportRepo, FolderRepo, MeetingErasure, MeetingRepo, RepoError,
-    SummaryRequestRepo, delete_folder, delete_meeting, live_segments, replace_segments,
+    SummaryRequestRepo, current_summary, delete_folder, delete_meeting, live_segments,
+    replace_segments,
 };
 
 #[cfg(test)]

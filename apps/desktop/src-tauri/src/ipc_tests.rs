@@ -222,6 +222,74 @@ fn list_meetings_final_transcript_answer_equals_loading_the_segments() {
     }
 }
 
+/// Stores a new current summary of `meeting` (tombstoning the one before, as a re-summary does).
+fn summary(svc: &Services, meeting: EntityId, seed: u64) -> EntityId {
+    use earshot_core::model::{MeetingRepo, Summary};
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    for mut old in store.summaries(meeting).unwrap() {
+        if !old.meta.deleted {
+            old.meta.mark_deleted(stamp.hlc, stamp.clock);
+            store.put_summary(old).unwrap();
+        }
+    }
+    let body = earshot_core::summary::SummaryV1 {
+        title: "Plan".into(),
+        tldr: "Agreed.".into(),
+        enhanced_notes: Vec::new(),
+        decisions: Vec::new(),
+        action_items: Vec::new(),
+        open_questions: Vec::new(),
+        topics: Vec::new(),
+    };
+    let s = Summary::new(meeting, Template::General, None, body, &mut stamp);
+    let id = s.id;
+    store.put_summary(s).unwrap();
+    id
+}
+
+#[test]
+fn list_meetings_marks_a_summary_this_device_has_not_opened() {
+    use earshot_runtime::summary_seen::{mark_existing_once, mark_seen};
+    let dir = TempDir::new("list-new-summary");
+    let svc = services(&dir);
+    let old = meeting(&svc, "Before the upgrade", T0, Some(60_000), 51);
+    summary(&svc, old, 61);
+    // The first start of this version marks what was already there as seen.
+    assert_eq!(mark_existing_once(&svc).unwrap(), 1);
+    let fresh = meeting(&svc, "Summarised", T0 + 60_000, Some(60_000), 52);
+    meeting(&svc, "No summary", T0 + 120_000, Some(60_000), 53);
+    let first = summary(&svc, fresh, 62);
+    let new = |svc: &Services| -> Vec<(String, bool)> {
+        meeting_list(svc)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.title, m.new_summary))
+            .collect()
+    };
+    let want = |fresh_new: bool| {
+        vec![
+            ("No summary".to_owned(), false),
+            ("Summarised".to_owned(), fresh_new),
+            ("Before the upgrade".to_owned(), false),
+        ]
+    };
+    assert_eq!(new(&svc), want(true));
+    // Opened in the detail: the mark goes.
+    assert!(mark_seen(&svc, fresh, first).unwrap());
+    assert_eq!(new(&svc), want(false));
+    // A re-summary is a new row: new again.
+    summary(&svc, fresh, 63);
+    assert_eq!(new(&svc), want(true));
+}
+
 #[test]
 fn list_meetings_of_an_empty_store_is_empty() {
     let dir = TempDir::new("empty");

@@ -85,6 +85,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       duration_ms: 34 * MINUTE,
       state: "Processing",
       folder_id: null,
+      new_summary: false,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000003",
@@ -93,6 +94,8 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       duration_ms: 47 * MINUTE,
       state: "Ready",
       folder_id: null,
+      // An unread summary (T12.76).
+      new_summary: true,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000002",
@@ -101,6 +104,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       duration_ms: 22 * MINUTE,
       state: "Ready",
       folder_id: SAMPLE_FOLDERS[1].id,
+      new_summary: false,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000001",
@@ -109,6 +113,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       duration_ms: 95 * MINUTE,
       state: "Ready",
       folder_id: SAMPLE_FOLDERS[0].id,
+      new_summary: false,
     },
   ];
 }
@@ -398,6 +403,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     data.summaryOrder,
   );
   const summaryRuns = new Map(Object.entries(data.summaryRuns ?? {}));
+  // The summary each meeting's detail last showed (`summary-seen/<meeting>`, T12.76).
+  const seenSummaries = new Map<string, string>();
   // Meetings asked of another computer, with their waiting line (T11.3db).
   const waitingFor = new Map<string, string>();
   const { exportTarget, ...settingsMock } = createSettingsMock(
@@ -692,6 +699,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (d.summary) previous.set(meeting, d.summary);
       if (d.summary) previousEdited.set(meeting, d.header.summary_edited);
       const next = d.summary ? resummarised(d.summary) : null;
+      const row = meetings.find((m) => m.id === meeting);
+      if (next !== null && row !== undefined) row.new_summary = true;
       details.set(meeting, {
         ...d,
         header: { ...d.header, summary_edited: false },
@@ -782,6 +791,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         duration_ms: null,
         state: "Recording",
         folder_id: null,
+        new_summary: false,
       };
       meetings.push(row);
       if (keepLocal) keptLocal.add(row.id);
@@ -853,6 +863,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         // The detail read during processing was the draft; the next read is the final one.
         if (!unprocessed) details.delete(row.id);
         if (result.kind === "Stored" && row.title === "") row.title = result.title;
+        // A stored summary is new until the meeting's detail shows it (T12.76).
+        if (result.kind === "Stored") row.new_summary = true;
         emit({ type: "Summary", meeting: row.id, result });
         afterOlder?.();
         afterOlder = null;
@@ -1389,6 +1401,16 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         header: { ...d.header, summary_edited: wasEdited },
         summary: prev ?? null,
       });
+    },
+    // `summary_seen::mark_seen` (T12.76): only the live summary of a live meeting is recorded, and
+    // the answer says whether the record changed.
+    markSummarySeen: async (meeting, summary) => {
+      const row = meetings.find((m) => m.id === meeting);
+      if (row === undefined || detailOf(meeting).summary?.id !== summary) return false;
+      row.new_summary = false;
+      if (seenSummaries.get(meeting) === summary) return false;
+      seenSummaries.set(meeting, summary);
+      return true;
     },
     exportMeeting: async (meeting) => {
       call("exportMeeting", meeting);

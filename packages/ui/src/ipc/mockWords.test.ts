@@ -17,6 +17,7 @@ const READY = {
   duration_ms: 60_000,
   state: "Ready" as const,
   folder_id: null,
+  new_summary: false,
 };
 const DRAFT = { ...READY, id: "m2", state: "Processing" as const };
 const LINE8 = "5e000000-0000-7000-8000-000000000008";

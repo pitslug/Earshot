@@ -111,6 +111,7 @@ pub mod summary_edits;
 #[cfg(feature = "engines")]
 pub mod summary_model;
 pub mod summary_order;
+pub mod summary_seen;
 pub mod summary_settings;
 pub mod summary_step;
 pub mod summary_style;

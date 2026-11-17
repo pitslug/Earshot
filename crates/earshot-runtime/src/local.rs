@@ -115,6 +115,9 @@ meeting_records! {
     /// `unknown-lines/<meeting>`: the final transcript lines diarisation left without a
     /// speaker (T12.65; row ids only, [`crate::unknown_lines`]).
     UnknownLines => "unknown-lines/", meeting at 0;
+    /// `summary-seen/<meeting>`: the summary row this device last showed in the meeting's detail
+    /// (T12.76; a row id only, [`crate::summary_seen`]).
+    SummarySeen => "summary-seen/", meeting at 0;
 }
 
 impl MeetingRecord {
@@ -292,6 +295,9 @@ pub(crate) enum DeviceRecord {
     /// `settings/summary-order`: the order of summary writers (T12.63a;
     /// [`crate::summary_order`]).
     SummaryOrder,
+    /// `summary-seen-start`: every meeting's summary from before T12.76 was marked seen
+    /// ([`crate::summary_seen::mark_existing_once`]).
+    SummarySeenStart,
 }
 
 impl DeviceRecord {
@@ -348,6 +354,7 @@ impl DeviceRecord {
         DeviceRecord::SummaryOffloadDevice,
         DeviceRecord::OffloadTimes,
         DeviceRecord::SummaryOrder,
+        DeviceRecord::SummarySeenStart,
     ];
 
     /// Its key.
@@ -426,6 +433,7 @@ impl DeviceRecord {
                 DeviceRecord::SummaryOffloadDevice => crate::offload::OFFLOAD_DEVICE_KEY,
                 DeviceRecord::OffloadTimes => crate::offload::OFFLOAD_TIMES_KEY,
                 DeviceRecord::SummaryOrder => crate::summary_order::SUMMARY_ORDER_KEY,
+                DeviceRecord::SummarySeenStart => crate::summary_seen::SEEN_START_KEY,
             }
             .to_owned(),
         )

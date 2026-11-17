@@ -35,8 +35,8 @@ describe("mock IPC", () => {
 
   it("serves the meetings it was given, sorted, as copies", async () => {
     const meetings = [
-      { id: "1", title: "Old", started_at_ms: 10, duration_ms: 5, state: "Ready" as const, folder_id: null },
-      { id: "2", title: "New", started_at_ms: 20, duration_ms: null, state: "Recording" as const, folder_id: null },
+      { id: "1", title: "Old", started_at_ms: 10, duration_ms: 5, state: "Ready" as const, folder_id: null, new_summary: false },
+      { id: "2", title: "New", started_at_ms: 20, duration_ms: null, state: "Recording" as const, folder_id: null, new_summary: false },
     ];
     const ipc = createMockIpc({ meetings });
     const listed = await ipc.listMeetings();
@@ -447,6 +447,7 @@ describe("mock speech helpers (T9.1f)", () => {
       duration_ms: 60_000,
       state: "Ready" as const,
       folder_id: folder,
+      new_summary: false,
     });
     const folders = [{ id: "f1", name: "One" }, { id: "f2", name: "Two" }];
     const ipc = createMockIpc({

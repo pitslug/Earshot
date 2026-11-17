@@ -41,7 +41,8 @@ pub struct MeetingView {
     pub edited: BTreeMap<EntityId, HlcTimestamp>,
     /// The user's notes in meeting order.
     pub notes: Vec<Note>,
-    /// The current summary: the most recently updated live one.
+    /// The current summary: the most recently updated live one
+    /// (`earshot_core::model::current_summary`).
     pub summary: Option<Summary>,
     /// The final lines diarisation left without a speaker (T12.65, `crate::unknown_lines`):
     /// empty from [`MeetingView::load`], read by [`MeetingView::load_named`].
@@ -104,10 +105,7 @@ impl MeetingView {
         segments.sort_by_key(|s| (s.start, s.id));
         let mut notes: Vec<Note> = all_notes.into_iter().filter(|n| !n.meta.deleted).collect();
         notes.sort_by_key(|n| (n.at, n.id));
-        let summary = all_summaries
-            .into_iter()
-            .filter(|s| !s.meta.deleted)
-            .max_by_key(|s| s.meta.updated_at);
+        let summary = earshot_core::model::current_summary(all_summaries);
         Ok(Some(Self {
             meeting: m,
             tracks,
