@@ -403,6 +403,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     data.summaryOrder,
   );
   const summaryRuns = new Map(Object.entries(data.summaryRuns ?? {}));
+  // The summary each meeting's detail last showed (`summary-seen/<meeting>`, T12.76).
+  const seenSummaries = new Map<string, string>();
   // Meetings asked of another computer, with their waiting line (T11.3db).
   const waitingFor = new Map<string, string>();
   const { exportTarget, ...settingsMock } = createSettingsMock(
@@ -1400,11 +1402,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         summary: prev ?? null,
       });
     },
-    // `summary_seen::mark_seen` (T12.76): only the summary the detail shows now clears the mark.
+    // `summary_seen::mark_seen` (T12.76): only the live summary of a live meeting is recorded, and
+    // the answer says whether the record changed.
     markSummarySeen: async (meeting, summary) => {
       const row = meetings.find((m) => m.id === meeting);
-      if (row === undefined || !row.new_summary || detailOf(meeting).summary?.id !== summary) return false;
+      if (row === undefined || detailOf(meeting).summary?.id !== summary) return false;
       row.new_summary = false;
+      if (seenSummaries.get(meeting) === summary) return false;
+      seenSummaries.set(meeting, summary);
       return true;
     },
     exportMeeting: async (meeting) => {

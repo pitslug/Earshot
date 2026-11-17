@@ -82,6 +82,7 @@ import {
   pointTarget,
 } from "./DictionaryWords";
 import { dictionaryWord, inDictionary, tokensOf } from "./dictionaryWord";
+import { useWindowWatched } from "../shell/windowWatched";
 import { LineText, WORD_ATTRIBUTE, type WordActions } from "./WordMarks";
 import {
   COPIED_MS,
@@ -606,10 +607,12 @@ export function MeetingDetailView({
     setTab("summary");
   }, [showSummary]);
 
-  // The summary this page shows counts as read on this computer (T12.76): the list's "New
-  // summary" mark goes. Asked again only when another summary is shown; the list is read again
-  // only when something changed, also after the page has gone.
-  const shownSummary = tab === "summary" ? (detail?.summary?.id ?? null) : null;
+  // The summary this page shows counts as read on this computer (T12.76) once the window is
+  // watched (visible and focused, as notifications judge it): the list's "New summary" mark goes.
+  // Asked again when another summary is shown or the window comes back into view; the list is
+  // read again only when something changed, also after the page has gone.
+  const watched = useWindowWatched();
+  const shownSummary = watched && tab === "summary" ? (detail?.summary?.id ?? null) : null;
   const changedRef = useRef(onChanged);
   changedRef.current = onChanged;
   useEffect(() => {

@@ -125,11 +125,21 @@ pub trait MeetingRepo {
     /// [`RepoError::MissingParent`] if its meeting does not exist.
     fn put_note(&mut self, note: Note) -> Result<(), RepoError>;
 
-    /// Summaries of `meeting`, by `meta.created_at`, then id (the last live one is current).
+    /// Summaries of `meeting`, by `meta.created_at`, then id (tombstones included; the current
+    /// one is [`current_summary`]).
     ///
     /// # Errors
     /// [`RepoError::Storage`].
     fn summaries(&self, meeting: EntityId) -> Result<Vec<Summary>, RepoError>;
+    /// The id of `meeting`'s current summary: the answer of [`current_summary`] over
+    /// [`MeetingRepo::summaries`]. A repository may answer it without reading any summary body
+    /// (the SQLite store reads one id, T12.76).
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
+        Ok(current_summary(self.summaries(meeting)?).map(|s| s.id))
+    }
     /// Inserts or replaces a summary.
     ///
     /// # Errors
@@ -379,6 +389,15 @@ pub fn delete_meeting<R: MeetingRepo + ?Sized, C: Clock + ?Sized>(
         out.rows_written += 1;
     }
     Ok(out)
+}
+
+/// A meeting's current summary among its summary rows (as [`MeetingRepo::summaries`] returns
+/// them): the live one updated last (`meta.updated_at`); on equal stamps the later one in
+/// creation order. The one rule of "current summary" (T12.76).
+pub fn current_summary(all: impl IntoIterator<Item = Summary>) -> Option<Summary> {
+    all.into_iter()
+        .filter(|s| !s.meta.deleted)
+        .max_by_key(|s| s.meta.updated_at)
 }
 
 /// Live (not tombstoned) segments of `meeting` from `pass`, by start, then id.

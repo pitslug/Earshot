@@ -220,3 +220,68 @@ fn local_summary_seen_key_is_pinned() {
         "summary-seen/01010101-0101-0101-0101-010101010101"
     );
 }
+
+#[test]
+fn local_summary_seen_is_not_written_for_a_deleted_meeting() {
+    let dir = TempDir::new("summary-seen-deleted-meeting");
+    let (svc, _clock) = services(&dir);
+    let m = meeting(&svc, "Release", 1);
+    let s = new_summary(&svc, m, 2);
+    {
+        // A tombstoned meeting row, as a deletion from another device arrives by sync.
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let mut row = db.meeting(m).unwrap().unwrap();
+        let (store, hlc) = db.parts();
+        row.meta.mark_deleted(hlc, &*clock);
+        store.put_meeting(row).unwrap();
+    }
+    assert!(!mark_seen(&svc, m, s).unwrap());
+    assert_eq!(
+        svc.store().local_value(record_key(m).as_str()).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn local_summary_seen_is_not_written_for_a_tombstoned_summary() {
+    let dir = TempDir::new("summary-seen-tombstone");
+    let (svc, _clock) = services(&dir);
+    let m = meeting(&svc, "Release", 1);
+    let s = new_summary(&svc, m, 2);
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        for mut row in store.summaries(m).unwrap() {
+            row.meta.mark_deleted(&mut *hlc, &*clock);
+            store.put_summary(row).unwrap();
+        }
+    }
+    assert!(!mark_seen(&svc, m, s).unwrap());
+    assert_eq!(
+        svc.store().local_value(record_key(m).as_str()).unwrap(),
+        None
+    );
+    assert!(!is_new(&svc, m), "no live summary, nothing new");
+}
+
+#[test]
+fn local_summary_seen_reads_the_current_summary_by_the_one_rule() {
+    // The cheap id read the list uses is `current_summary` over the rows (T12.76).
+    let dir = TempDir::new("summary-seen-rule");
+    let (svc, _clock) = services(&dir);
+    let m = meeting(&svc, "Release", 1);
+    let check = |svc: &Services| {
+        let db = svc.store();
+        let id = db.current_summary_id(m).unwrap();
+        let rule = earshot_core::model::current_summary(db.summaries(m).unwrap()).map(|s| s.id);
+        assert_eq!(id, rule);
+        id
+    };
+    assert_eq!(check(&svc), None);
+    let first = new_summary(&svc, m, 2);
+    assert_eq!(check(&svc), Some(first));
+    let second = new_summary(&svc, m, 3);
+    assert_eq!(check(&svc), Some(second));
+}

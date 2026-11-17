@@ -1,9 +1,11 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { DATA_FOLDER_COPY, type Ipc, IpcFailure, type MeetingListItem, createMockIpc } from "../ipc";
+import { DATA_FOLDER_COPY, type Ipc, IpcFailure, type MeetingListItem, POST_STEP_MS, createMockIpc } from "../ipc";
 import { renderApp } from "../test/app";
+import { ITEM, listRow, setup } from "../test/meetingDetail";
+import { setWindowWatched } from "../test/windowWatched";
 
 const at = (day: number, hour: number, minute = 0) =>
   new Date(2026, 10, day, hour, minute).getTime();
@@ -180,5 +182,50 @@ describe("AppShell status dots (T12.76)", () => {
     await waitFor(() => expect(dot(row(/^Unread meeting/))).toBeNull());
     expect(row(/^Unread meeting/)).not.toHaveTextContent("New summary");
     expect(seen).toContainEqual(["s2", shown.summary?.id ?? ""]);
+  });
+
+  it("marks nothing read while the window is not watched, then marks it once it is", async () => {
+    setWindowWatched(false, false);
+    const user = userEvent.setup();
+    const ipc = createMockIpc({ meetings: STATES });
+    const seen: string[] = [];
+    renderShell({
+      ...ipc,
+      markSummarySeen: (meeting, summary) => {
+        seen.push(meeting);
+        return ipc.markSummarySeen(meeting, summary);
+      },
+    });
+    await screen.findByRole("list", { name: "Meetings" });
+    await user.click(row(/^Unread meeting/));
+    // The summary is on screen, but nobody is looking at the window.
+    expect(await screen.findByText(/TL;DR/)).toBeInTheDocument();
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(seen).toEqual([]);
+    expect(dot(row(/^Unread meeting/))).toBe("newSummary");
+    // Focused but hidden (minimised or in the tray) is still not watched.
+    act(() => setWindowWatched(false, true, true));
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(seen).toEqual([]);
+    // Brought up on that meeting: now it counts as read.
+    act(() => setWindowWatched(true, true, true));
+    await waitFor(() => expect(dot(row(/^Unread meeting/))).toBeNull());
+    expect(seen).toEqual(["s2"]);
+  });
+
+  it("shows a running re-summary of a read meeting as green Summarising..., and no dot at its end", async () => {
+    const { user, timer } = await setup();
+    const item = () => listRow(ITEM);
+    // The shown meeting's summary is read here at once.
+    await waitFor(() => expect(dot(item())).toBeNull());
+    expect(ITEM.state).toBe("Ready");
+    await user.click(screen.getAllByRole("button", { name: "Re-summarise" })[0]);
+    await waitFor(() => expect(dot(item())).toBe("working"));
+    expect(item()).toHaveTextContent(/· Summarising\.\.\.$/);
+    // The job's terminal event: the new summary is shown on this page, so it is read too.
+    act(() => timer.advance(POST_STEP_MS));
+    expect(await screen.findByText(/New summary ready/)).toBeInTheDocument();
+    await waitFor(() => expect(dot(item())).toBeNull());
+    expect(item()).not.toHaveTextContent(/Summarising|New summary/);
   });
 });

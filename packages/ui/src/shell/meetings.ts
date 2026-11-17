@@ -1,6 +1,6 @@
 // Pure helpers of the meeting list: day groups and the secondary line.
 
-import type { MeetingListItem } from "../ipc";
+import type { MeetingListItem, PostStep } from "../ipc";
 
 export type DayGroupLabel = "Today" | "Yesterday" | "Earlier";
 
@@ -50,7 +50,31 @@ export function recordedDate(ms: number): string {
 
 /** What the work on a meeting is doing, as the window heard it (T12.76): the step of its work
  * after the meeting (`MeetingEvent::PostProgress`) or the job running on it. */
-export type MeetingWork = "Transcribing" | "Summarising";
+export type MeetingWork = "Transcribing" | "FindingSpeakers" | "Finishing" | "Summarising";
+
+/** What the work after a meeting does once `step` was heard: reading the recordings back and
+ * starting the final pass lead to transcribing; a transcribed track and found speakers say their
+ * own step; the echo check and storing are the last steps before the summary ("Finishing...",
+ * also after `Stored` when no summary step follows). */
+export function workOfStep(step: PostStep): MeetingWork {
+  switch (step.kind) {
+    case "Loading":
+    case "Starting":
+    case "Transcribed":
+      return "Transcribing";
+    case "Diarised":
+      return "FindingSpeakers";
+    case "EchoChecked":
+    case "Stored":
+      return "Finishing";
+    case "Summarising":
+      return "Summarising";
+    default: {
+      const unknown: never = step;
+      return unknown;
+    }
+  }
+}
 
 /** The dot beside a row's second line (T12.76), always with a word in that line saying the same:
  * recording (red), work after the meeting running or waiting (green), a summary this computer has
@@ -74,14 +98,23 @@ export function rowDot(m: MeetingListItem, work?: MeetingWork): RowDot | null {
  * for a meeting queued behind an older one's work, else "Finishing..." (the window has not heard
  * which step runs, for example after it was reloaded). */
 function workWord(m: MeetingListItem, work: MeetingWork | undefined): string {
-  if (work === "Summarising") return "Summarising...";
-  if (work === "Transcribing") return "Transcribing...";
-  return m.state === "Waiting" ? "Waiting..." : "Finishing...";
+  switch (work) {
+    case "Transcribing":
+      return "Transcribing...";
+    case "FindingSpeakers":
+      return "Finding speakers...";
+    case "Finishing":
+      return "Finishing...";
+    case "Summarising":
+      return "Summarising...";
+    case undefined:
+      return m.state === "Waiting" ? "Waiting..." : "Finishing...";
+  }
 }
 
 /** The list's second line: the date and start time it was recorded, its length and where the
  * meeting is in its life: "D Mon YYYY HH:MM · Recording...", "... · N min · Transcribing..."
- * (or "Summarising...", "Waiting...", "Finishing..."), "... · Interrupted",
+ * (or "Finding speakers...", "Summarising...", "Waiting...", "Finishing..."), "... · Interrupted",
  * "... · N min · Draft transcript", "... · N min · New summary" or "D Mon YYYY HH:MM · N min".
  * `work`: what the window heard the meeting's work doing (`MeetingWork`). */
 export function secondaryLine(m: MeetingListItem, work?: MeetingWork): string {

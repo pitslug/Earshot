@@ -567,6 +567,27 @@ pub(crate) fn summaries_of(c: &Connection, meeting: EntityId) -> Result<Vec<Summ
     query(c, &sql, &[id_value(meeting)], summary_row)
 }
 
+/// The query of [`current_summary_id`]: `?1` the meeting id. The order is
+/// `earshot_core::model::current_summary`'s: the live row updated last, then the later in
+/// creation order (`summaries_of`'s order), so the contract pins one to the other.
+pub(crate) const CURRENT_SUMMARY_SQL: &str = "SELECT id FROM summary \
+     WHERE meeting_id = ?1 AND deleted = 0 \
+     ORDER BY updated_wall DESC, updated_logical DESC, updated_node DESC, \
+     created_wall DESC, created_logical DESC, created_node DESC, id DESC LIMIT 1";
+
+/// The id of `meeting`'s current summary, read without any summary body (the meeting list asks
+/// this per meeting, T12.76).
+pub(crate) fn current_summary_id(
+    c: &Connection,
+    meeting: EntityId,
+) -> Result<Option<EntityId>, RepoError> {
+    Ok(query(c, CURRENT_SUMMARY_SQL, &[id_value(meeting)], |r| {
+        get_id(r, 0)
+    })?
+    .into_iter()
+    .next())
+}
+
 pub(crate) fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
     need_meeting(c, s.meeting_id)?;
     let v = synced_values(
@@ -1057,6 +1078,9 @@ macro_rules! impl_repos {
             fn summaries(&self, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
                 summaries_of(&self.conn, meeting)
             }
+            fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
+                current_summary_id(&self.conn, meeting)
+            }
             fn put_summary(&mut self, summary: Summary) -> Result<(), RepoError> {
                 put_summary(&self.conn, &summary)
             }
@@ -1200,6 +1224,9 @@ impl MeetingRepo for ReadOnlyStore {
     }
     fn summaries(&self, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
         summaries_of(&self.conn, meeting)
+    }
+    fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
+        current_summary_id(&self.conn, meeting)
     }
     fn put_summary(&mut self, _summary: Summary) -> Result<(), RepoError> {
         Err(read_only())

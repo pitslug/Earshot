@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { MeetingListItem } from "../ipc";
+import type { MeetingListItem, PostStep } from "../ipc";
 import {
   clockTime,
   displayTitle,
@@ -9,6 +9,7 @@ import {
   recoveredText,
   rowDot,
   secondaryLine,
+  workOfStep,
 } from "./meetings";
 
 // Local times, so the tests hold in any time zone.
@@ -93,6 +94,26 @@ describe("secondaryLine", () => {
       [m, "Transcribing"],
     ] as const) {
       expect(rowDot(item, work)).toBe("working");
+    }
+  });
+
+  it("names each step of the work after a meeting truthfully (T12.76)", () => {
+    const m = { ...meeting("a", at(2, 7, 0), 47 * 60_000), state: "Processing" as const };
+    const steps: [PostStep, string][] = [
+      [{ kind: "Loading" }, "Transcribing..."],
+      [{ kind: "Starting" }, "Transcribing..."],
+      [{ kind: "Transcribed", track: "You" }, "Transcribing..."],
+      [{ kind: "Transcribed", track: "Them" }, "Transcribing..."],
+      [{ kind: "Diarised", track: "You" }, "Finding speakers..."],
+      [{ kind: "Diarised", track: "Them" }, "Finding speakers..."],
+      [{ kind: "EchoChecked" }, "Finishing..."],
+      // Stored with no summary step after it: still finishing, never "Summarising...".
+      [{ kind: "Stored" }, "Finishing..."],
+      [{ kind: "Summarising" }, "Summarising..."],
+    ];
+    for (const [step, word] of steps) {
+      expect(secondaryLine(m, workOfStep(step)), step.kind).toBe(`2 Nov 2026 07:00 · 47 min · ${word}`);
+      expect(rowDot(m, workOfStep(step))).toBe("working");
     }
   });
 

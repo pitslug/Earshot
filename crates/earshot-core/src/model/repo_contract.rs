@@ -353,8 +353,43 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
     let second = f.summary(m, s_early.segment.id);
     repo.put_summary(second.clone()).unwrap();
     repo.put_summary(first.clone()).unwrap();
-    assert_eq!(repo.summaries(m).unwrap(), vec![first, second]);
+    assert_eq!(
+        repo.summaries(m).unwrap(),
+        vec![first.clone(), second.clone()]
+    );
     assert!(repo.summaries(other).unwrap().is_empty());
+
+    // `current_summary_id` answers what `current_summary` over the rows would (T12.76): the
+    // live row updated last, tombstones never.
+    let current = |repo: &R, id: EntityId| {
+        let got = repo.current_summary_id(id).unwrap();
+        let rule = super::repo::current_summary(repo.summaries(id).unwrap()).map(|s| s.id);
+        assert_eq!(got, rule, "current summary of {id}: as current_summary");
+        got
+    };
+    assert_eq!(current(&repo, m), Some(second.id), "the later one");
+    assert_eq!(current(&repo, other), None);
+    assert_eq!(current(&repo, ghost), None);
+    let mut edited = first.clone();
+    edited.meta.touch(&mut f.hlc, &f.clock);
+    repo.put_summary(edited.clone()).unwrap();
+    assert_eq!(
+        current(&repo, m),
+        Some(first.id),
+        "updated last, not created last"
+    );
+    let mut first_gone = edited;
+    first_gone.meta.mark_deleted(&mut f.hlc, &f.clock);
+    repo.put_summary(first_gone).unwrap();
+    assert_eq!(
+        current(&repo, m),
+        Some(second.id),
+        "a tombstone is never current"
+    );
+    let mut second_gone = second;
+    second_gone.meta.mark_deleted(&mut f.hlc, &f.clock);
+    repo.put_summary(second_gone).unwrap();
+    assert_eq!(current(&repo, m), None, "no live summary");
 }
 
 /// [`AudioFileRepo`]: round trip, parent checks, order, hard delete.

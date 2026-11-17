@@ -88,6 +88,7 @@ import {
   recoveredText,
   rowDot,
   secondaryLine,
+  workOfStep,
 } from "./meetings";
 import { openMenuFromKeyboard } from "./menuKeys";
 import { STOPPING_TEXT, deleteQuestion, stopsWork } from "./deleteQuestion";
@@ -423,7 +424,7 @@ export function AppShell({
     });
   }, []);
   // What each meeting's work after the meeting is doing, as its events said, until its summary
-  // event (T12.76): the list says "Transcribing..." or "Summarising..." for it.
+  // event (T12.76): the list says what runs ("Transcribing...", "Summarising...") for it.
   const [afterWork, setAfterWork] = useState<Record<string, MeetingWork>>({});
   // Whether an update waits for the user (available, downloading or ready): a mark beside Settings.
   const [updateWaiting, setUpdateWaiting] = useState(false);
@@ -558,7 +559,7 @@ export function AppShell({
       if (event.result.kind === "Stored") setSummaryStored((n) => n + 1);
     }
     if (event.type === "PostProgress") {
-      const work: MeetingWork = event.step.kind === "Summarising" ? "Summarising" : "Transcribing";
+      const work = workOfStep(event.step);
       setAfterWork((all) => (all[event.meeting] === work ? all : { ...all, [event.meeting]: work }));
     }
     if (event.type === "Summary") {
@@ -575,7 +576,9 @@ export function AppShell({
   const workOf = (m: MeetingListItem): MeetingWork | undefined => {
     const job = jobs[m.id];
     if (job !== undefined && !isTerminal(job.last)) {
-      return job.job === "Resummarise" ? "Summarising" : "Transcribing";
+      if (job.job === "Resummarise") return "Summarising";
+      // A re-transcription says which step it is at; before its first step it transcribes.
+      return job.last?.type === "Progress" ? workOfStep(job.last.step) : "Transcribing";
     }
     return m.state === "Processing" || m.state === "Waiting" ? afterWork[m.id] : undefined;
   };
