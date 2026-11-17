@@ -696,12 +696,12 @@ describe("MeetingDetailView", () => {
 describe("MeetingDetailView, review fixes", () => {
   it("keeps a voice's draft name on blur and saves it only on Enter or Save", async () => {
     const { user, calls } = await setup();
-    const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
     await user.type(field, "Sam");
     await user.tab();
     expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
-    expect(within(panel()).getByRole("textbox", { name: "Name of Speaker 2" })).toHaveValue("Sam");
-    await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 2" }), " Lee{Enter}");
+    expect(within(panel()).getByRole("combobox", { name: "Name of Speaker 2" })).toHaveValue("Sam");
+    await user.type(within(panel()).getByRole("combobox", { name: "Name of Speaker 2" }), " Lee{Enter}");
     await waitFor(() =>
       expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Sam Lee" }]),
     );
@@ -727,7 +727,7 @@ describe("MeetingDetailView, review fixes", () => {
     const { user } = await setup({
       rememberOutcomes: { [SAMPLE_SPEAKERS.second]: "Unsupported" },
     });
-    await user.type(await screen.findByRole("textbox", { name: "Name of Speaker 2" }), "Jo Park{Enter}");
+    await user.type(await screen.findByRole("combobox", { name: "Name of Speaker 2" }), "Jo Park{Enter}");
     expect(
       await screen.findByText("Saved Jo Park. The speaker model in use cannot remember voices, so no voiceprint was kept."),
     ).toBeInTheDocument();
@@ -1274,7 +1274,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
       ),
     ).toBeInTheDocument();
     const row = speakerRow("Speaker 3");
-    const name = within(row).getByRole("textbox", { name: "Name of Speaker 3" });
+    const name = within(row).getByRole("combobox", { name: "Name of Speaker 3" });
     expect(name).toBeDisabled();
     expect(within(row).getByRole("button", { name: "Save Speaker 3" })).toBeDisabled();
     expect(within(row).getByRole("button", { name: "Ignore" })).toBeDisabled();
@@ -1306,7 +1306,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
 
     view.rerender(show(false, ipc));
     expect(within(panel()).queryByText(/Name voices when the summary is done/)).toBeNull();
-    expect(within(speakerRow("Speaker 3")).getByRole("textbox", { name: "Name of Speaker 3" })).toBeEnabled();
+    expect(within(speakerRow("Speaker 3")).getByRole("combobox", { name: "Name of Speaker 3" })).toBeEnabled();
     await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Ignore" }));
     expect(calls).toContainEqual(["ignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
   });

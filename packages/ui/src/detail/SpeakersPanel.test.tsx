@@ -6,12 +6,12 @@ import { describe, expect, it } from "vitest";
 
 import { POST_STEP_MS, RECOGNISED_ME_COPY, SAMPLE_SPEAKERS, sampleDetail, samplePersons } from "../ipc";
 import { ITEM, setup, panel, speakerRow, openNamed } from "../test/meetingDetail";
-import { notThisPersonHint } from "./SpeakersPanel";
+import { keyAction, notThisPersonHint } from "./SpeakersPanel";
 
 describe("MeetingDetailView", () => {
   it("offers This is me only in the room, and it and its undo follow through the transcript", async () => {
     const { user, calls } = await setup({ inRoom: true });
-    await screen.findByRole("textbox", { name: "Name of Speaker 1" });
+    await screen.findByRole("combobox", { name: "Name of Speaker 1" });
     expect(within(panel()).getAllByRole("button", { name: "This is me" })).toHaveLength(4);
     expect(within(panel()).queryByRole("button", { name: "This isn't me" })).toBeNull();
 
@@ -33,14 +33,14 @@ describe("MeetingDetailView", () => {
     await user.click(within(mine).getByRole("button", { name: "This isn't me" }));
     expect(calls).toContainEqual(["unmarkMe", ITEM.id, SAMPLE_SPEAKERS.priya]);
     const back = await within(panel()).findByRole("listitem", { name: "Speaker 2" });
-    expect(within(back).getByRole("textbox", { name: "Name of Speaker 2" })).toBeInTheDocument();
+    expect(within(back).getByRole("combobox", { name: "Name of Speaker 2" })).toBeInTheDocument();
     expect(within(panel()).getAllByRole("button", { name: "This is me" })).toHaveLength(4);
     expect(within(table).queryByText("Casey")).toBeNull();
   });
 
   it("offers neither on a call, and the mock refuses like the runtime", async () => {
     const { ipc } = await setup();
-    await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    await screen.findByRole("combobox", { name: "Name of Speaker 2" });
     expect(within(panel()).queryByRole("button", { name: "This is me" })).toBeNull();
     expect(within(panel()).queryByRole("button", { name: "This isn't me" })).toBeNull();
     await expect(ipc.markMe(ITEM.id, SAMPLE_SPEAKERS.second)).rejects.toMatchObject({
@@ -67,15 +67,16 @@ describe("MeetingDetailView", () => {
 
   it("says which person a typed name links to before Save", async () => {
     const { user } = await setup();
-    const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
     await user.type(field, "  priya SHAH ");
-    const hint = within(speakerRow("Speaker 2")).getByText("Links to Priya Shah");
+    const hint = within(speakerRow("Speaker 2")).getByText("Links to Priya Shah (4 meetings)");
     expect(field).toHaveAttribute("aria-describedby", hint.id);
-    // A new name links to nobody yet.
+    // A new name links to nobody yet: it makes a new person.
     await user.clear(field);
     await user.type(field, "Ana Diaz");
     expect(within(speakerRow("Speaker 2")).queryByText(/^Links to/)).toBeNull();
-    expect(field).not.toHaveAttribute("aria-describedby");
+    const fresh = within(speakerRow("Speaker 2")).getByText("New person: Ana Diaz");
+    expect(field).toHaveAttribute("aria-describedby", fresh.id);
     // The user's own name links to nobody either, and says why (only the user's row is them).
     await user.clear(field);
     await user.type(field, "casey");
@@ -88,7 +89,7 @@ describe("MeetingDetailView", () => {
 
   it("points to This is me when the user's own name is typed in the room", async () => {
     const { user } = await setup({ inRoom: true });
-    const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
     await user.type(field, "Casey");
     expect(
       within(speakerRow("Speaker 2")).getByText(
@@ -97,11 +98,11 @@ describe("MeetingDetailView", () => {
     ).toBeInTheDocument();
   });
 
-  const TWIN = { id: "9e000000-0000-7000-8000-000000000009", name: "casey", has_voiceprint: true, is_me: false };
+  const TWIN = { id: "9e000000-0000-7000-8000-000000000009", name: "casey", has_voiceprint: true, is_me: false, meetings: 1 };
 
   it("offers to merge a person named after the user after This is me", async () => {
     const { user, calls } = await setup({ inRoom: true, persons: [...samplePersons(), TWIN] });
-    await screen.findByRole("textbox", { name: "Name of Speaker 1" });
+    await screen.findByRole("combobox", { name: "Name of Speaker 1" });
     expect(screen.queryByRole("button", { name: "Merge into me" })).toBeNull();
     await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "This is me" }));
     const merge = await within(panel()).findByRole("button", { name: "Merge into me" });
@@ -118,7 +119,7 @@ describe("MeetingDetailView", () => {
 
   it("keeps a person named after the user separate when asked", async () => {
     const { user, calls, ipc } = await setup({ inRoom: true, persons: [...samplePersons(), TWIN] });
-    await screen.findByRole("textbox", { name: "Name of Speaker 1" });
+    await screen.findByRole("combobox", { name: "Name of Speaker 1" });
     await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "This is me" }));
     await user.click(await within(panel()).findByRole("button", { name: "Keep separate" }));
     expect(within(panel()).queryByRole("button", { name: "Merge into me" })).toBeNull();
@@ -132,7 +133,7 @@ describe("MeetingDetailView", () => {
 
   it("refuses This isn't me on a voice the user's voiceprint named, and says how to change it", async () => {
     const { user, calls, ipc } = await setup({ inRoom: "recognised" });
-    await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    await screen.findByRole("combobox", { name: "Name of Speaker 2" });
     await openNamed(user);
     const mine = within(panel()).getByRole("listitem", { name: "Casey" });
     const button = within(mine).getByRole("button", { name: "This isn't me" });
@@ -149,9 +150,9 @@ describe("MeetingDetailView", () => {
 
   it("saves a voice from its name field: named, linked and remembered in one step, and the transcript follows", async () => {
     const { user, calls } = await setup();
-    const field = await screen.findByRole("textbox", { name: "Name of Speaker 2" });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
     await user.type(field, "Sam Lee{Enter}");
-    await waitFor(() => expect(within(panel()).queryByRole("textbox", { name: "Name of Speaker 2" })).toBeNull());
+    await waitFor(() => expect(within(panel()).queryByRole("combobox", { name: "Name of Speaker 2" })).toBeNull());
     expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Sam Lee" }]);
     expect(calls.filter((c) => c[0] === "saveVoice")).toHaveLength(1);
     expect(calls.some((c) => c[0] === "linkSpeaker")).toBe(false);
@@ -197,9 +198,8 @@ describe("MeetingDetailView", () => {
     await openNamed(user);
     await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" }));
     const dialog = await screen.findByRole("dialog", { name: "Link Priya Shah to a person" });
-    await user.click(within(dialog).getByRole("combobox"));
-    await user.click(await screen.findByRole("option", { name: "New person" }));
-    await user.type(within(dialog).getByRole("textbox", { name: "New person's name" }), "Ana Diaz");
+    await user.type(within(dialog).getByRole("combobox", { name: "Person" }), "Ana Diaz");
+    await user.click(await screen.findByRole("option", { name: "New person: Ana Diaz" }));
     await user.click(within(dialog).getByRole("button", { name: "Link" }));
     await waitFor(() => expect(within(panel()).getByRole("listitem", { name: "Ana Diaz" })).toBeInTheDocument());
     expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, { kind: "New", name: "Ana Diaz" }]);
@@ -211,9 +211,9 @@ describe("MeetingDetailView", () => {
     const { user, calls } = await setup();
     const save = await screen.findByRole("button", { name: "Save Speaker 3" });
     expect(save).toBeDisabled();
-    await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" }), "  ");
+    await user.type(within(panel()).getByRole("combobox", { name: "Name of Speaker 3" }), "  ");
     expect(save).toBeDisabled();
-    await user.type(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" }), "tom reid");
+    await user.type(within(panel()).getByRole("combobox", { name: "Name of Speaker 3" }), "tom reid");
     await user.click(save);
     await waitFor(() =>
       expect(calls).toContainEqual([
@@ -247,7 +247,7 @@ describe("MeetingDetailView", () => {
     expect(calls).toContainEqual(["unignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
     expect(await screen.findByRole("button", { name: "Speakers, 2 need names" })).toBeInTheDocument();
     expect(within(panel()).queryByRole("button", { name: /^Ignored/ })).toBeNull();
-    expect(within(panel()).getByRole("textbox", { name: "Name of Speaker 3" })).toBeInTheDocument();
+    expect(within(panel()).getByRole("combobox", { name: "Name of Speaker 3" })).toBeInTheDocument();
   });
 
   it("puts a wrongly named voice back as an ignored speaker with Not <name>, and never on the user", async () => {
@@ -272,7 +272,7 @@ describe("MeetingDetailView", () => {
     const back = within(panel()).getByRole("list", { name: "Ignored" });
     expect(within(back).getByRole("listitem", { name: "Speaker 1" })).toBeInTheDocument();
     // It does not ask for a name, and nothing is linked, saved or forgotten.
-    expect(within(panel()).queryByRole("textbox", { name: "Name of Speaker 1" })).toBeNull();
+    expect(within(panel()).queryByRole("combobox", { name: "Name of Speaker 1" })).toBeNull();
     expect(
       calls.some((c) => ["saveVoice", "linkSpeaker", "forgetPersonVoices", "removePerson"].includes(c[0] as string)),
     ).toBe(false);
@@ -470,5 +470,259 @@ describe("MeetingDetailView", () => {
     for (let el: HTMLElement | null = aside; el !== null && el !== column.parentElement; el = el.parentElement) {
       expect(["absolute", "fixed"]).not.toContain(getComputedStyle(el).position);
     }
+  });
+});
+
+describe("Speakers panel person field (T12.80)", () => {
+  // Two saved people with one name: the cause of T12.80's missing "Links to" (the hint needed
+  // exactly one person with the typed name and said nothing for two).
+  const SECOND_PRIYA = {
+    id: "9e000000-0000-7000-8000-000000000010",
+    name: "Priya  shah",
+    has_voiceprint: false,
+    is_me: false,
+    meetings: 1,
+  };
+  const ZOE = { id: "9e000000-0000-7000-8000-000000000011", name: "Zoë Brontë", has_voiceprint: true, is_me: false, meetings: 2 };
+
+  it("tells two people with one whole name apart instead of saying nothing", async () => {
+    const { user, calls } = await setup({ persons: [...samplePersons(), SECOND_PRIYA] });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "Priya Shah");
+    const hint = within(speakerRow("Speaker 2")).getByText("2 people are called Priya Shah. Choose one from the list.");
+    expect(field).toHaveAttribute("aria-describedby", hint.id);
+    // Nothing is highlighted, since Enter takes no option; Save waits for a choice: it would
+    // otherwise guess, or make a third Priya Shah.
+    expect(field.getAttribute("aria-activedescendant") ?? "").toBe("");
+    expect(within(speakerRow("Speaker 2")).getByRole("button", { name: "Save Speaker 2" })).toBeDisabled();
+    await user.keyboard("{Enter}");
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+    // Both are listed, each with how many meetings they are in.
+    await user.click(field);
+    expect(screen.getByRole("option", { name: "Priya Shah (4 meetings)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: "Priya shah (1 meeting)" }));
+    expect(within(speakerRow("Speaker 2")).getByText("Links to Priya shah (1 meeting)")).toBeInTheDocument();
+    await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "Save Speaker 2" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        "saveVoice",
+        ITEM.id,
+        SAMPLE_SPEAKERS.second,
+        { kind: "Existing", person: SECOND_PRIYA.id },
+      ]),
+    );
+  });
+
+  it("filters saved people by any part of the name, case and accents ignored", async () => {
+    const { user } = await setup({ persons: [...samplePersons(), ZOE] });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.click(field);
+    // Everyone before typing, the user disabled.
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Casey (you)",
+      "Priya Shah (4 meetings)",
+      "Tom Reid (2 meetings)",
+      "Zoë Brontë (2 meetings)",
+    ]);
+    expect(screen.getByRole("option", { name: "Casey (you)" })).toHaveAttribute("aria-disabled", "true");
+    await user.type(field, "BRONTE");
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "New person: BRONTE",
+      "Zoë Brontë (2 meetings)",
+    ]);
+    await user.clear(field);
+    await user.type(field, "eid");
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "New person: eid",
+      "Tom Reid (2 meetings)",
+    ]);
+    // An accented whole name links without typing the accents.
+    await user.clear(field);
+    await user.type(field, "zoe bronte");
+    expect(within(speakerRow("Speaker 2")).getByText("Links to Zoë Brontë (2 meetings)")).toBeInTheDocument();
+    // A name someone has offers no new person, and the highlighted option is the one Enter links.
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Zoë Brontë (2 meetings)"]);
+    expect(field).toHaveAttribute("aria-activedescendant", screen.getByRole("option", { name: "Zoë Brontë (2 meetings)" }).id);
+    // So with inner spaces and another case.
+    await user.clear(field);
+    await user.type(field, "TOM   reid");
+    expect(field).toHaveAttribute("aria-activedescendant", screen.getByRole("option", { name: "Tom Reid (2 meetings)" }).id);
+    expect(screen.queryByRole("option", { name: /^New person/ })).toBeNull();
+    // A name no one has highlights "New person", which Enter makes.
+    await user.clear(field);
+    await user.type(field, "Tom");
+    expect(field).toHaveAttribute("aria-activedescendant", screen.getByRole("option", { name: "New person: Tom" }).id);
+  });
+
+  it("chooses a person with the keyboard on one Enter and saves on the next", async () => {
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "r");
+    // "New person: r" first, then Priya Shah and Tom Reid.
+    await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+    // The first Enter chooses only: Save is the consent to remember the voice.
+    expect(field).toHaveValue("Tom Reid");
+    expect(within(speakerRow("Speaker 2")).getByText("Links to Tom Reid (2 meetings)")).toBeInTheDocument();
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        "saveVoice",
+        ITEM.id,
+        SAMPLE_SPEAKERS.second,
+        { kind: "Existing", person: "9e000000-0000-7000-8000-000000000003" },
+      ]),
+    );
+    expect(await screen.findByText("Saved Tom Reid. Later meetings will recognise this voice.")).toBeInTheDocument();
+  });
+
+  it("makes a new person from a name no one has on Enter, and from its option", async () => {
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "Ana");
+    expect(screen.getByRole("option", { name: "New person: Ana" })).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Ana" }]),
+    );
+    // A name someone has offers no new person: Save links to them, never a second Tom Reid.
+    const third = await screen.findByRole("combobox", { name: "Name of Speaker 3" });
+    await user.type(third, "Tom Reid");
+    expect(screen.queryByRole("option", { name: /^New person/ })).toBeNull();
+    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Save Speaker 3" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        "saveVoice",
+        ITEM.id,
+        SAMPLE_SPEAKERS.third,
+        { kind: "Existing", person: "9e000000-0000-7000-8000-000000000003" },
+      ]),
+    );
+    expect(calls.some((c) => c[0] === "saveVoice" && JSON.stringify(c[3]).includes("Tom Reid"))).toBe(false);
+  });
+
+  it("chooses on Tab without saving", async () => {
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "r");
+    await user.keyboard("{ArrowDown}");
+    await user.tab();
+    expect(field).toHaveValue("Priya Shah");
+    expect(within(speakerRow("Speaker 2")).getByText("Links to Priya Shah (4 meetings)")).toBeInTheDocument();
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+  });
+
+  it("never links a voice to the user from the list", async () => {
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "case");
+    await user.click(screen.getByRole("option", { name: "Casey (you)" }));
+    expect(field).toHaveValue("case");
+    await user.clear(field);
+    await user.type(field, "Casey");
+    expect(
+      within(speakerRow("Speaker 2")).getByText(
+        "This is your name. Save makes a separate person called Casey, because only your own row can be you.",
+      ),
+    ).toBeInTheDocument();
+    await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "Save Speaker 2" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "Casey" }]),
+    );
+  });
+
+  it("links a named voice to a saved person through the same field", async () => {
+    const { user, calls } = await setup();
+    await screen.findByText(/TL;DR/);
+    await openNamed(user);
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" }));
+    const dialog = await screen.findByRole("dialog", { name: "Link Priya Shah to a person" });
+    await user.type(within(dialog).getByRole("combobox", { name: "Person" }), "tom");
+    await user.click(screen.getByRole("option", { name: "Tom Reid (2 meetings)" }));
+    await user.click(within(dialog).getByRole("button", { name: "Link" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        "linkSpeaker",
+        ITEM.id,
+        SAMPLE_SPEAKERS.priya,
+        { kind: "Existing", person: "9e000000-0000-7000-8000-000000000003" },
+      ]),
+    );
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+  });
+});
+
+describe("Speakers panel person field keys (T12.80 re-review)", () => {
+  const POOLE = [
+    { id: "9e000000-0000-7000-8000-000000000001", name: "Casey Poole", has_voiceprint: true, is_me: true, meetings: 12 },
+    ...samplePersons().filter((p) => !p.is_me),
+  ];
+
+  it("does nothing on Enter over the user's disabled option", async () => {
+    const { user, calls } = await setup({ persons: POOLE });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "casey");
+    // "New person: casey" is highlighted; the arrow lands on the user, who is disabled.
+    await user.keyboard("{ArrowDown}");
+    const you = screen.getByRole("option", { name: "Casey Poole (you)" });
+    expect(field).toHaveAttribute("aria-activedescendant", you.id);
+    await user.keyboard("{Enter}");
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+    expect(field).toHaveValue("casey");
+    expect(within(speakerRow("Speaker 2")).getByText("New person: casey")).toBeInTheDocument();
+  });
+
+  it("still chooses the highlighted option on Enter after ArrowLeft moved the text cursor", async () => {
+    // Fluent hides `aria-activedescendant` on ArrowLeft/ArrowRight for screen readers; in 9.17.8
+    // that hide is a no-op, and if an upgrade makes it real this pins that Enter still chooses.
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "r");
+    await user.keyboard("{ArrowDown}");
+    expect(field).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "Priya Shah (4 meetings)" }).id,
+    );
+    await user.keyboard("{ArrowLeft}{Enter}");
+    expect(field).toHaveValue("Priya Shah");
+    expect(within(speakerRow("Speaker 2")).getByText("Links to Priya Shah (4 meetings)")).toBeInTheDocument();
+    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+  });
+
+  it("does what the hint says on Enter after Escape closed the list", async () => {
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "r");
+    await user.keyboard("{ArrowDown}{Escape}");
+    // The list is closed, so nothing is highlighted: the hint says what Enter does.
+    expect(field).toHaveAttribute("aria-expanded", "false");
+    expect(within(speakerRow("Speaker 2")).getByText("New person: r")).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(calls).toContainEqual(["saveVoice", ITEM.id, SAMPLE_SPEAKERS.second, { kind: "New", name: "r" }]),
+    );
+    expect(calls.filter((c) => c[0] === "saveVoice")).toHaveLength(1);
+  });
+});
+
+describe("keyAction", () => {
+  const tom = samplePersons()[2];
+  const priya = samplePersons()[1];
+  const pickTom = { kind: "existing" as const, person: tom };
+  it("decides Enter and Tab from the highlighted option and the hint", () => {
+    expect(keyAction("Enter", { disabled: true }, { kind: "new", name: "casey" })).toEqual({ kind: "nothing" });
+    expect(keyAction("Enter", { disabled: false, pick: pickTom }, { kind: "new", name: "r" })).toEqual({
+      kind: "choose",
+      pick: pickTom,
+    });
+    expect(keyAction("Enter", { disabled: false, pick: pickTom }, pickTom)).toEqual({ kind: "save", pick: pickTom });
+    expect(keyAction("Enter", null, pickTom)).toEqual({ kind: "save", pick: pickTom });
+    expect(keyAction("Enter", null, { kind: "several", name: "Priya Shah", count: 2 })).toEqual({ kind: "nothing" });
+    expect(keyAction("Enter", null, { kind: "none" })).toEqual({ kind: "nothing" });
+    expect(keyAction("Tab", { disabled: false, pick: { kind: "existing", person: priya } }, pickTom)).toEqual({
+      kind: "choose",
+      pick: { kind: "existing", person: priya },
+    });
+    expect(keyAction("Tab", null, pickTom)).toEqual({ kind: "nothing" });
   });
 });

@@ -42,9 +42,9 @@ function advance(timer: ManualTimer, ms: number) {
 
 describe("Settings, People, people", () => {
   const people = [
-    { id: "me", name: "The User", has_voiceprint: true, is_me: true },
-    { id: "a", name: "Alex Sample", has_voiceprint: true, is_me: false },
-    { id: "b", name: "Bo Example", has_voiceprint: false, is_me: false },
+    { id: "me", name: "The User", has_voiceprint: true, is_me: true, meetings: 3 },
+    { id: "a", name: "Alex Sample", has_voiceprint: true, is_me: false, meetings: 1 },
+    { id: "b", name: "Bo Example", has_voiceprint: false, is_me: false, meetings: 1 },
   ];
 
   it("lists everyone but the user, saying whose voice is saved", async () => {
@@ -126,7 +126,7 @@ describe("Settings, People, people", () => {
   });
 
   it("offers no way to remove you", async () => {
-    await open({ persons: [...people, { id: "me", name: "Casey", has_voiceprint: true, is_me: true }] });
+    await open({ persons: [...people, { id: "me", name: "Casey", has_voiceprint: true, is_me: true, meetings: 3 }] });
     await screen.findByRole("button", { name: "Remove Bo Example" });
     expect(screen.queryByRole("button", { name: "Remove Casey" })).toBeNull();
   });

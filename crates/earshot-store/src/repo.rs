@@ -485,6 +485,19 @@ fn speakers_of(c: &Connection, meeting: EntityId) -> Result<Vec<Speaker>, RepoEr
     query(c, &sql, &[id_value(meeting)], speaker_row)
 }
 
+/// Every (person, meeting) pair where a live speaker row of a live meeting is linked to the
+/// person, each pair once, in one query (T12.80: how many meetings each person is in).
+pub(crate) fn person_meetings(c: &Connection) -> Result<Vec<(EntityId, EntityId)>, RepoError> {
+    query(
+        c,
+        "SELECT DISTINCT s.person_id, s.meeting_id FROM speaker s \
+         JOIN meeting m ON m.id = s.meeting_id \
+         WHERE s.deleted = 0 AND m.deleted = 0 AND s.person_id IS NOT NULL",
+        &[],
+        |r| Ok((get_id(r, 0)?, get_id(r, 1)?)),
+    )
+}
+
 fn put_speaker(c: &Connection, s: &Speaker) -> Result<(), RepoError> {
     need_meeting(c, s.meeting_id)?;
     let v = synced_values(

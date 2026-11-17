@@ -1,0 +1,31 @@
+{
+  "_comment": "The Speakers panel's person filter (T12.80): earshot_runtime::edit::person_name_key and person_name_matches, mirrored by packages/ui/src/detail/personFilter.ts. Both suites read this table. Names are invented.",
+  "keys": [
+    { "name": "Sam Lee", "key": "sam lee" },
+    { "name": "  Sam   Lee  ", "key": "sam lee" },
+    { "name": "Sam\tLee", "key": "sam lee" },
+    { "name": "Sam Lee", "key": "sam lee" },
+    { "name": "Zoë Brontë", "key": "zoe bronte" },
+    { "name": "ÉMILE", "key": "emile" },
+    { "name": "Søren Æsir", "key": "soren aesir" },
+    { "name": "Straße", "key": "strasse" },
+    { "name": "Łukasz", "key": "lukasz" },
+    { "name": "Νίκη", "key": "νίκη" },
+    { "name": "", "key": "" }
+  ],
+  "matches": [
+    { "name": "Sam Lee", "query": "", "matches": true },
+    { "name": "Sam Lee", "query": "sam lee", "matches": true },
+    { "name": "Sam Lee", "query": "lee", "matches": true },
+    { "name": "Sam Lee", "query": "m l", "matches": true },
+    { "name": "Sam Lee", "query": " SAM   LEE ", "matches": true },
+    { "name": "Sam Lee", "query": "Samuel", "matches": false },
+    { "name": "Zoë Brontë", "query": "zoe", "matches": true },
+    { "name": "Zoe Bronte", "query": "Zoë", "matches": true },
+    { "name": "Émilie", "query": "emil", "matches": true },
+    { "name": "Søren", "query": "soren", "matches": true },
+    { "name": "Renée", "query": "renee", "matches": true },
+    { "name": "Renee", "query": "rené", "matches": true },
+    { "name": "Priya Shah", "query": "tom", "matches": false }
+  ]
+}

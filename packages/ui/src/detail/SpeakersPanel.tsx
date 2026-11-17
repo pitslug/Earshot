@@ -7,7 +7,10 @@
 // after all. T12.44: a typed name that is someone's says "Links to <name>" before Save; after
 // "This is me" a separate person with the user's name is offered for merging into the user;
 // "This isn't me" waits on a voice the user's voiceprint named. T12.77: "Not <name>" puts a
-// voice named or recognised as the wrong person back as an ignored "Speaker N".
+// voice named or recognised as the wrong person back as an ignored "Speaker N". T12.80: the
+// name of a voice that needs one, and Link on a named voice, are one combobox that lists saved
+// people as you type (any part of the name, case and accents ignored), tells persons with one
+// name apart by how many meetings each is in, and offers "New person: <name>".
 
 import {
   Accordion,
@@ -45,10 +48,11 @@ import {
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactElement, type Ref, useRef, useState } from "react";
 
 import { RECOGNISED_ME_COPY, type LinkChoice, type MeetingDetail, type PersonItem, type SpeakerCard } from "../ipc";
-import { linkablePersons, personNamed, recognised, recordingsGone, sourceLabel, speakerGroups } from "./detail";
+import { recognised, recordingsGone, sourceLabel, speakerGroups } from "./detail";
+import { meetingsText, personNameKey, personsMatching, personsNamed } from "./personFilter";
 
 const useStyles = makeStyles({
   panel: {
@@ -174,13 +178,12 @@ export interface SpeakersPanelProps {
   onKeepSeparate?(): void;
 }
 
-/** The user's person when `name` is the user's own name (not the default "Me"), case
- * ignored as `personNamed` does; else null. */
+/** The user's person when `name` is the user's own name (not the default "Me"), case and
+ * accents ignored as the person filter compares names; else null. */
 export function userNamed(name: string, persons: PersonItem[]): PersonItem | null {
-  const n = name.trim().toLowerCase();
   const user = persons.find((p) => p.is_me);
   if (!user || user.name.trim() === "Me") return null;
-  return user.name.trim().toLowerCase() === n ? user : null;
+  return personNameKey(user.name) === personNameKey(name) ? user : null;
 }
 
 /** Why typing the user's own name does not link the voice to them (T12.44). */
@@ -393,71 +396,45 @@ function MarkMeButton({ card, onMarkMe, locked }: RowProps) {
 function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | null) => void }) {
   const styles = useStyles();
   const { card, persons, onSave, onIgnore, nameRef, locked = false } = props;
-  const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
-  const placeholder = `Name ${card.name.toLowerCase().startsWith("speaker") ? card.name.toLowerCase() : "this voice"}`;
-  const typed = value.trim();
-  // The person Save would link to (T12.44): said before Save, so a typed name that is
-  // already someone's is never a surprise.
-  const linksTo = typed === "" ? null : personNamed(typed, persons);
-  // The user's own name links to nobody: only the meeting's own row can be the user (the
-  // runtime refuses linking any other voice to them), so Save would make a separate person.
-  const ownName = typed === "" ? null : userNamed(typed, persons);
-  const hint = linksTo
-    ? `Links to ${linksTo.name}`
-    : ownName
-      ? ownNameHint(ownName, card.can_mark_me)
-      : null;
-  const hintId = `${card.id}-links-to`;
-  // Saving makes a person (an existing one with exactly that name) and remembers the voice,
-  // so only on Save or Enter: leaving the field keeps the draft.
-  const save = async () => {
-    if (typed === "" || saving || locked) return;
-    const existing = linksTo;
+  // Saving makes a person (or links the one chosen or named) and remembers the voice, so only
+  // on Save or Enter: leaving the field keeps the draft.
+  const save = async (pick: PersonPick) => {
+    if (saving || locked) return;
+    const target = linkOf(pick);
+    if (target === null) return;
     setSaving(true);
     try {
-      await onSave(
-        card.id,
-        existing ? { kind: "Existing", person: existing.id } : { kind: "New", name: typed },
-        existing ? existing.name : typed,
-      );
+      await onSave(card.id, target.choice, target.name);
     } finally {
       setSaving(false);
     }
   };
+  const field = usePersonField({
+    card,
+    persons,
+    label: `Name of ${card.name}`,
+    placeholder: `Name ${card.name.toLowerCase().startsWith("speaker") ? card.name.toLowerCase() : "this voice"}`,
+    disabled: locked,
+    inputRef: nameRef,
+    onEnter: (pick) => void save(pick),
+  });
   return (
     <li className={styles.row} aria-label={card.name}>
       <div className={styles.nameLine}>
         <PlayButton {...props} />
-        <Input
-          className={styles.nameInput}
-          size="small"
-          value={value}
-          placeholder={placeholder}
-          aria-label={`Name of ${card.name}`}
-          aria-describedby={hint ? hintId : undefined}
-          disabled={locked}
-          ref={nameRef}
-          onChange={(_, d) => setValue(d.value)}
-          onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-            if (e.key === "Enter") void save();
-          }}
-        />
+        {field.element}
         <Button
           size="small"
           appearance="primary"
           aria-label={`Save ${card.name}`}
-          disabled={typed === "" || saving || locked}
-          onClick={() => void save()}
+          disabled={linkOf(field.pick) === null || saving || locked}
+          onClick={() => void save(field.pick)}
         >
           Save
         </Button>
       </div>
-      {hint && (
-        <Caption1 id={hintId} className={styles.muted}>
-          {hint}
-        </Caption1>
-      )}
+      {field.hint}
       <RowFacts {...props} />
       <div className={styles.actions}>
         {card.can_ignore && (
@@ -699,8 +676,229 @@ function NameInput({
   );
 }
 
+/** The value of the "New person: <name>" option. */
 const NEW_PERSON = "__new__";
 
+/** What a person field's text and choice mean (T12.80). */
+type PersonPick =
+  /** Nothing typed, or (on the user's own row) a name that is not the user's. */
+  | { kind: "none" }
+  /** A saved person: chosen from the list, or the only one with the whole typed name. */
+  | { kind: "existing"; person: PersonItem }
+  /** A new person with this name: chosen, or a name no one other than the user has. */
+  | { kind: "new"; name: string }
+  /** Several people have the whole typed name and none was chosen. */
+  | { kind: "several"; name: string; count: number };
+
+/** The link a pick makes and the name it is saved as; null when there is nothing to link. */
+function linkOf(pick: PersonPick): { choice: LinkChoice; name: string } | null {
+  switch (pick.kind) {
+    case "existing":
+      return { choice: { kind: "Existing", person: pick.person.id }, name: pick.person.name };
+    case "new":
+      return { choice: { kind: "New", name: pick.name }, name: pick.name };
+    default:
+      return null;
+  }
+}
+
+/** Starts every option's `text`, so no typed text ever starts an option's text. Fluent then
+ * finds no option to highlight from the typed text (it would match the options of the render
+ * before the keystroke, a stale list) and, once the new options render, highlights the first
+ * one: by this field's order, the option the typed name means (the one person with the whole
+ * typed name, else "New person"). Where the typed name means no option the highlight is turned
+ * off (`disableAutoFocus`). The input never shows `text`: its value is controlled here. */
+const OPTION_TEXT_PREFIX = "⁣";
+
+/** The attribute naming an option's value on its element, read back by [`keyAction`]. */
+const OPTION_VALUE_ATTRIBUTE = "data-person-option";
+
+/** Whether two picks link the same way. */
+function samePick(a: PersonPick, b: PersonPick): boolean {
+  if (a.kind === "existing" && b.kind === "existing") return a.person.id === b.person.id;
+  if (a.kind === "new" && b.kind === "new") return a.name === b.name;
+  return false;
+}
+
+/** What Enter or Tab does in a person field: the one rule, decided from the option highlighted
+ * in the open list as the user saw it, never from key history.
+ * - A highlighted disabled option (the user, on another voice's row): nothing.
+ * - A highlighted option that is not what the hint says: choose it (the hint then says it);
+ *   nothing is saved, because Save is the consent to remember the voice (T12.19).
+ * - Otherwise (no highlighted option, or the one the hint already says): Enter does what the
+ *   hint says (link to the one person, or a new person); several people or no name: nothing.
+ *   Tab never saves. */
+export function keyAction(
+  key: "Enter" | "Tab",
+  highlighted: { disabled: true } | { disabled: false; pick: PersonPick } | null,
+  pick: PersonPick,
+): { kind: "nothing" } | { kind: "choose"; pick: PersonPick } | { kind: "save"; pick: PersonPick } {
+  if (highlighted?.disabled) return { kind: "nothing" };
+  if (highlighted && !samePick(highlighted.pick, pick)) return { kind: "choose", pick: highlighted.pick };
+  if (key === "Enter" && linkOf(pick) !== null) return { kind: "save", pick };
+  return { kind: "nothing" };
+}
+
+/** The person combobox of a voice (T12.80): typing filters saved people by any part of the name,
+ * case and accents ignored; each is listed with how many meetings they are in, the user
+ * disabled (only the user's own row can be them), and "New person: <name>" for a name no one
+ * other than the user has, so a click never makes a second person with a saved name. A click on
+ * an option, or Enter or Tab on a highlighted option the hint does not already say, chooses it
+ * and shows what Save will do; else the whole typed name decides: the one person with it,
+ * several (the user must choose), or a new person ([`keyAction`]). `onEnter` gets the pick an
+ * Enter saves. */
+function usePersonField({
+  card,
+  persons,
+  label,
+  placeholder,
+  disabled,
+  inputRef,
+  onEnter,
+}: {
+  card: SpeakerCard;
+  persons: PersonItem[];
+  label: string;
+  placeholder: string;
+  disabled: boolean;
+  inputRef?: Ref<HTMLInputElement>;
+  onEnter(pick: PersonPick): void;
+}): { element: ReactElement; pick: PersonPick; hint: ReactElement | null } {
+  const styles = useStyles();
+  const [value, setValue] = useState("");
+  const [chosen, setChosen] = useState<PersonPick | null>(null);
+  const own = card.kind === "Me";
+  const typed = value.trim();
+
+  const pickOf = (choice: PersonPick | null): PersonPick => {
+    if (choice !== null) return choice;
+    if (typed === "") return { kind: "none" };
+    if (own) {
+      const user = persons.find((p) => p.is_me && personNameKey(p.name) === personNameKey(typed));
+      return user ? { kind: "existing", person: user } : { kind: "none" };
+    }
+    const named = personsNamed(typed, persons);
+    if (named.length === 1) return { kind: "existing", person: named[0] };
+    if (named.length > 1) return { kind: "several", name: typed, count: named.length };
+    return { kind: "new", name: typed };
+  };
+  const pick = pickOf(chosen);
+
+  // The pick of an option's value; null for the user on another voice's row (disabled).
+  const pickOfOption = (optionValue: string): PersonPick | null => {
+    if (optionValue === NEW_PERSON) return typed === "" ? null : { kind: "new", name: typed };
+    const person = persons.find((p) => p.id === optionValue);
+    if (!person || (person.is_me && !own)) return null;
+    return { kind: "existing", person };
+  };
+  const choose = (choice: PersonPick) => {
+    setChosen(choice);
+    if (choice.kind === "existing") setValue(choice.person.name);
+  };
+
+  // The user's own name makes a separate person (only the meeting's own row can be the user,
+  // and the runtime refuses linking any other voice to them).
+  const ownName = !own && pick.kind === "new" ? userNamed(pick.name, persons) : null;
+  const hintText =
+    pick.kind === "existing"
+      ? `Links to ${pick.person.name} (${meetingsText(pick.person.meetings)})`
+      : pick.kind === "several"
+        ? `${pick.count} people are called ${pick.name}. Choose one from the list.`
+        : ownName
+          ? ownNameHint(ownName, card.can_mark_me)
+          : pick.kind === "new"
+            ? `New person: ${pick.name}`
+            : null;
+  const hintId = `${card.id}-links-to`;
+
+  // Persons with the whole typed name (case, accents and spaces ignored) first, so the first
+  // option is the person the typed name means (`OPTION_TEXT_PREFIX`).
+  const named = own ? [] : personsNamed(typed, persons);
+  const listed = personsMatching(typed, own ? persons.filter((p) => p.is_me) : persons);
+  const ordered = [...named, ...listed.filter((p) => !named.includes(p))];
+  const personOptions = ordered.map((p) => {
+    const user = p.is_me && !own;
+    return (
+      <Option
+        key={p.id}
+        value={p.id}
+        text={OPTION_TEXT_PREFIX + p.name}
+        disabled={user}
+        {...{ [OPTION_VALUE_ATTRIBUTE]: p.id }}
+      >
+        {user ? `${p.name} (you)` : `${p.name} (${meetingsText(p.meetings)})`}
+      </Option>
+    );
+  });
+  const newOption =
+    !own && typed !== "" && named.length === 0 ? (
+      <Option
+        key={NEW_PERSON}
+        value={NEW_PERSON}
+        text={OPTION_TEXT_PREFIX + typed}
+        {...{ [OPTION_VALUE_ATTRIBUTE]: NEW_PERSON }}
+      >
+        {`New person: ${typed}`}
+      </Option>
+    ) : null;
+  // A name someone has lists them first; any other name lists "New person" first.
+  const options = newOption === null ? personOptions : [newOption, ...personOptions];
+  const selected =
+    pick.kind === "existing" && chosen !== null ? [pick.person.id] : pick.kind === "new" && chosen !== null ? [NEW_PERSON] : [];
+
+  const element = (
+    <Combobox
+      className={styles.nameInput}
+      size="small"
+      freeform
+      value={value}
+      selectedOptions={selected}
+      disableAutoFocus={pick.kind !== "existing" && pick.kind !== "new"}
+      placeholder={placeholder}
+      aria-label={label}
+      aria-describedby={hintText ? hintId : undefined}
+      disabled={disabled}
+      ref={inputRef}
+      onChange={(e) => {
+        setValue(e.target.value);
+        setChosen(null);
+      }}
+      onOptionSelect={(e, d) => {
+        // Keys are decided by `keyAction` in `onKeyDown`; only a click chooses here.
+        if (e.type === "keydown" || d.optionValue === undefined) return;
+        const choice = pickOfOption(d.optionValue);
+        if (choice !== null) choose(choice);
+      }}
+      onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+        if ((e.key !== "Enter" && e.key !== "Tab") || e.nativeEvent.isComposing) return;
+        // The list and highlight as last rendered, which is what the user saw: Fluent's own
+        // handler has already run for this key, but nothing it changed is drawn yet.
+        const input = e.currentTarget;
+        const id = input.getAttribute("aria-expanded") === "true" ? input.getAttribute("aria-activedescendant") : null;
+        const option = id ? input.ownerDocument.getElementById(id) : null;
+        const optionValue = option?.getAttribute(OPTION_VALUE_ATTRIBUTE) ?? null;
+        let highlighted: Parameters<typeof keyAction>[1] = null;
+        if (option !== null && optionValue !== null) {
+          const choice = option.getAttribute("aria-disabled") === "true" ? null : pickOfOption(optionValue);
+          highlighted = choice === null ? { disabled: true } : { disabled: false, pick: choice };
+        }
+        const action = keyAction(e.key === "Enter" ? "Enter" : "Tab", highlighted, pick);
+        if (action.kind === "choose") choose(action.pick);
+        if (action.kind === "save") onEnter(action.pick);
+      }}
+    >
+      {options}
+    </Combobox>
+  );
+  const hint = hintText ? (
+    <Caption1 id={hintId} className={styles.muted}>
+      {hintText}
+    </Caption1>
+  ) : null;
+  return { element, pick, hint };
+}
+
+/** Link on a named voice: the same person combobox, then Link (links only, remembers nothing). */
 function LinkPopover({
   card,
   persons,
@@ -712,67 +910,62 @@ function LinkPopover({
   onLink(speaker: string, choice: LinkChoice): Promise<void>;
   locked?: boolean;
 }) {
-  const styles = useStyles();
   const [open, setOpen] = useState(false);
-  const [chosen, setChosen] = useState<string | null>(null);
-  const [newName, setNewName] = useState("");
-  const options = linkablePersons(card, persons);
-  const canLink = chosen !== null && (chosen !== NEW_PERSON || newName.trim() !== "");
-  const link = () => {
-    if (chosen === null) return;
-    const choice: LinkChoice =
-      chosen === NEW_PERSON ? { kind: "New", name: newName.trim() } : { kind: "Existing", person: chosen };
-    setOpen(false);
-    void onLink(card.id, choice);
-  };
   return (
-    <Popover
-      open={open}
-      onOpenChange={(_, d) => {
-        setOpen(d.open);
-        if (d.open) {
-          setChosen(null);
-          setNewName("");
-        }
-      }}
-      trapFocus
-    >
+    <Popover open={open} onOpenChange={(_, d) => setOpen(d.open)} trapFocus>
       <PopoverTrigger disableButtonEnhancement>
         <Button size="small" appearance="subtle" disabled={locked}>
           Link to person
         </Button>
       </PopoverTrigger>
       <PopoverSurface aria-label={`Link ${card.name} to a person`}>
-        <div className={styles.linkSurface}>
-          <Field label="Person">
-            <Combobox
-              placeholder="Choose a person"
-              onOptionSelect={(_, d) => setChosen(d.optionValue ?? null)}
-            >
-              {options.map((p) => (
-                <Option key={p.id} value={p.id}>
-                  {p.name}
-                </Option>
-              ))}
-              {card.kind !== "Me" && (
-                <Option value={NEW_PERSON} text="New person">
-                  New person
-                </Option>
-              )}
-            </Combobox>
-          </Field>
-          {chosen === NEW_PERSON && (
-            <Field label="New person's name">
-              <Input value={newName} onChange={(_, d) => setNewName(d.value)} />
-            </Field>
-          )}
-          <div>
-            <Button appearance="primary" size="small" disabled={!canLink} onClick={link}>
-              Link
-            </Button>
-          </div>
-        </div>
+        {open && (
+          <LinkForm
+            card={card}
+            persons={persons}
+            onLink={(choice) => {
+              setOpen(false);
+              void onLink(card.id, choice);
+            }}
+          />
+        )}
       </PopoverSurface>
     </Popover>
+  );
+}
+
+/** The popover's form, mounted only while it is open, so each opening starts empty. */
+function LinkForm({
+  card,
+  persons,
+  onLink,
+}: {
+  card: SpeakerCard;
+  persons: PersonItem[];
+  onLink(choice: LinkChoice): void;
+}) {
+  const styles = useStyles();
+  const link = (pick: PersonPick) => {
+    const target = linkOf(pick);
+    if (target !== null) onLink(target.choice);
+  };
+  const field = usePersonField({
+    card,
+    persons,
+    label: "Person",
+    placeholder: card.kind === "Me" ? "Your name" : "Type a name",
+    disabled: false,
+    onEnter: link,
+  });
+  return (
+    <div className={styles.linkSurface}>
+      <Field label="Person">{field.element}</Field>
+      {field.hint}
+      <div>
+        <Button appearance="primary" size="small" disabled={linkOf(field.pick) === null} onClick={() => link(field.pick)}>
+          Link
+        </Button>
+      </div>
+    </div>
   );
 }

@@ -629,6 +629,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         name: checkName(choice.name),
         has_voiceprint: false,
         is_me: false,
+        meetings: 1,
       };
       persons.push(person);
       persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
@@ -644,6 +645,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
     }
     const linkedTo = person;
+    // The person is in one more meeting when no other voice here was theirs (`list_persons`).
+    if (choice.kind === "Existing" && !detailOf(meeting).speakers.some((s) => s.person?.id === linkedTo.id)) {
+      linkedTo.meetings += 1;
+    }
     update(meeting, (d) => linked(d, speaker, linkedTo));
     return person.id;
   };
@@ -1246,6 +1251,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           name: "Me",
           has_voiceprint: false,
           is_me: true,
+          meetings: 1,
         };
         persons.push(user);
         persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));

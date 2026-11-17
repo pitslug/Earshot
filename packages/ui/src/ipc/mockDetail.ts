@@ -22,9 +22,9 @@ export const SAMPLE_SPEAKERS = {
 /** Persons the sample starts with. */
 export function samplePersons(): PersonItem[] {
   return [
-    { id: "9e000000-0000-7000-8000-000000000001", name: "Casey", has_voiceprint: true, is_me: true },
-    { id: "9e000000-0000-7000-8000-000000000002", name: "Priya Shah", has_voiceprint: true, is_me: false },
-    { id: "9e000000-0000-7000-8000-000000000003", name: "Tom Reid", has_voiceprint: false, is_me: false },
+    { id: "9e000000-0000-7000-8000-000000000001", name: "Casey", has_voiceprint: true, is_me: true, meetings: 12 },
+    { id: "9e000000-0000-7000-8000-000000000002", name: "Priya Shah", has_voiceprint: true, is_me: false, meetings: 4 },
+    { id: "9e000000-0000-7000-8000-000000000003", name: "Tom Reid", has_voiceprint: false, is_me: false, meetings: 2 },
   ];
 }
 

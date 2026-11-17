@@ -3,7 +3,6 @@
 import {
   IpcFailure,
   type MeetingDetail,
-  type PersonItem,
   type RememberOutcome,
   type SpeakerCard,
   type SummaryView,
@@ -122,20 +121,6 @@ export function speakerGroups(d: MeetingDetail): {
 /** A voice the final pass named from a stored voiceprint ("Recognised"). */
 export function recognised(s: SpeakerCard): boolean {
   return s.source === "Voiceprint";
-}
-
-/** The persons a speaker may be linked to: the user's own person only for the "Me" row, and
- * only other people for everyone else. */
-export function linkablePersons(card: SpeakerCard, persons: PersonItem[]): PersonItem[] {
-  return persons.filter((p) => (card.kind === "Me" ? p.is_me : !p.is_me));
-}
-
-/** The person a typed name means: an existing (non-user) person with exactly that name, else
- * none (a new person). */
-export function personNamed(name: string, persons: PersonItem[]): PersonItem | null {
-  const n = name.trim().toLowerCase();
-  const found = persons.filter((p) => !p.is_me && p.name.trim().toLowerCase() === n);
-  return found.length === 1 ? found[0] : null;
 }
 
 /** Plain copy for a failed call. */
