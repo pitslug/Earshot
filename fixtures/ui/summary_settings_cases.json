@@ -562,6 +562,7 @@
    { "before": [], "add": "'rock'n'roll'", "added": true, "word": "rock'n'roll", "stored": ["rock'n'roll"], "error": null },
    { "before": ["QXR-7"], "add": "''", "added": false, "word": null, "stored": ["QXR-7"], "error": "Only a word can be added to the dictionary." },
    { "before": ["QXR-7"], "add": " “ ” ", "added": false, "word": null, "stored": ["QXR-7"], "error": "Only a word can be added to the dictionary." },
+   { "before": ["QXR-7"], "add": "'\tword'", "added": false, "word": null, "stored": ["QXR-7"], "error": "A word can hold only text, with no line breaks or tabs." },
    { "before": ["\"test\""], "add": "test", "added": false, "word": "test", "stored": ["test"], "error": null },
    { "before": ["\"test\"", "QXR-7"], "add": "TEST", "added": false, "word": "test", "remove": "test", "stored": ["QXR-7"], "error": null },
    { "before": ["QXR-7", "Velmora"], "add": "'Zorbek'", "added": true, "word": "Zorbek", "remove": "‘velmora’", "stored": ["QXR-7", "Zorbek"], "error": null }

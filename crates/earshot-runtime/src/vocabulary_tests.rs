@@ -610,6 +610,73 @@ fn vocabulary_a_word_stored_in_double_quotes_reads_matches_and_is_removed() {
 }
 
 #[test]
+fn vocabulary_a_stored_entry_still_reads_through_a_leading_tab() {
+    let dir = TempDir::new("summary-vocabulary");
+    let (svc, _clock) = services(&dir);
+    // Written raw: readers trim every white space before the quotes, as before T12.78.
+    svc.store()
+        .set_local_value(VOCABULARY_KEY, b"[\"\\tQuillmarsh\", \"'QXR-7'\\t\"]")
+        .unwrap();
+    let (words, refused) = vocabulary(&svc.store()).unwrap();
+    assert_eq!(refused, None);
+    assert_eq!(words.words(), ["Quillmarsh", "QXR-7"]);
+    // A row stored the same way is read and matched too.
+    with_stamp(&svc, |tx, stamp| -> Result<(), StoreError> {
+        Ok(tx.put_dictionary_word(DictionaryWord::new("\tVelmora", stamp))?)
+    })
+    .unwrap();
+    crate::sync::set_sync_on(&svc, true).unwrap();
+    assert_eq!(
+        vocabulary(&svc.store()).unwrap().0.words(),
+        ["Velmora", "Quillmarsh", "QXR-7"]
+    );
+    assert!(!add_entry(&svc, "velmora").unwrap().added);
+}
+
+#[test]
+fn vocabulary_a_row_of_only_quotes_from_0_3_11_is_tombstoned() {
+    for sync in [false, true] {
+        let dir = TempDir::new("summary-vocabulary");
+        let (svc, _clock) = services(&dir);
+        replace_words(&svc, &["Quillmarsh", "QXR-7"]).unwrap();
+        // As 0.3.11 made a row of a typed `"`.
+        with_stamp(&svc, |tx, stamp| -> Result<(), StoreError> {
+            tx.put_dictionary_word(DictionaryWord::new("\"", stamp))?;
+            Ok(tx.put_dictionary_word(DictionaryWord::new(" \u{201c}' ", stamp))?)
+        })
+        .unwrap();
+        if sync {
+            crate::sync::set_sync_on(&svc, true).unwrap();
+        } else {
+            reconcile(&svc).unwrap();
+        }
+        let rows: Vec<(String, bool)> = svc
+            .store()
+            .dictionary_words()
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.word, r.meta.deleted))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Quillmarsh".into(), false),
+                ("QXR-7".into(), false),
+                (String::new(), true),
+                (String::new(), true)
+            ],
+            "sync {sync}"
+        );
+        assert_eq!(
+            vocabulary(&svc.store()).unwrap().0.words(),
+            ["Quillmarsh", "QXR-7"],
+            "sync {sync}"
+        );
+        assert_eq!(dictionary_state(&svc.store()).unwrap().not_in_use, 0);
+    }
+}
+
+#[test]
 fn vocabulary_without_end_quotes_keeps_inner_quotes_and_control_characters() {
     assert_eq!(without_end_quotes("'test'"), "test");
     assert_eq!(without_end_quotes(" \"' test '\" "), "test");

@@ -108,7 +108,15 @@ pub fn vocabulary(store: &Store) -> Result<(Vocabulary, Option<UnknownSetting>),
 /// entry may make. Only quotes at the ends of a whole entry go: other punctuation the user
 /// typed stays.
 fn stored_without_quotes(words: &[String]) -> Vec<&str> {
-    words.iter().map(|w| without_end_quotes(w)).collect()
+    words.iter().map(|w| stored_entry(w)).collect()
+}
+
+/// A stored entry or row as the readers take it ([`stored_without_quotes`], [`word_key`],
+/// [`joined`]): trimmed of every white space first, a tab included, as before T12.78, then
+/// [`without_end_quotes`]. Only stored text is read this way; what the user types goes through
+/// [`without_end_quotes`] alone, so a control character there is still refused.
+fn stored_entry(word: &str) -> &str {
+    without_end_quotes(word.trim())
 }
 
 /// The quotes [`without_end_quotes`] drops at the ends of an entry: straight single and double,
@@ -181,13 +189,13 @@ fn syncs_from(
     Ok(switch(crate::sync::SYNC_ON_KEY, false)? && switch(crate::sync::SYNC_DICTIONARY_KEY, true)?)
 }
 
-/// The comparison key of a stored word, by the rules [`joined`] reads rows with: trimmed,
-/// quotes at the ends dropped ([`without_end_quotes`]), read by [`Vocabulary::new`] (inner white space joined),
+/// The comparison key of a stored word, by the rules [`joined`] reads rows with: trimmed and
+/// the quotes at the ends dropped ([`stored_entry`]), read by [`Vocabulary::new`] (inner white space joined),
 /// lower-cased as it compares repeats. `None` for a word it refuses on its own (too long, a
 /// control or formatting character) or that is empty; such a row is matched by its lower-cased
 /// text instead ([`row_key`]), so a row from another build can still be removed.
 fn word_key(word: &str) -> Option<String> {
-    let one = Vocabulary::new([without_end_quotes(word)]).ok()?;
+    let one = Vocabulary::new([stored_entry(word)]).ok()?;
     one.words().first().map(|w| w.to_lowercase())
 }
 
@@ -208,7 +216,7 @@ fn joined(rows: &[DictionaryWord]) -> (Vocabulary, usize) {
     let mut full = false;
     let mut not_in_use = 0;
     for row in rows.iter().filter(|r| r.is_live()) {
-        let Ok(one) = Vocabulary::new([without_end_quotes(&row.word)]) else {
+        let Ok(one) = Vocabulary::new([stored_entry(&row.word)]) else {
             if seen.insert(row_key(&row.word)) {
                 not_in_use += 1;
             }
@@ -287,12 +295,28 @@ fn write_list_tx(tx: &mut StoreTx<'_>, words: &Vocabulary) -> Result<(), StoreEr
 /// every sync tick pulls and inside every write here, so a rebuild never loses them. Returns how
 /// many rows it made.
 ///
+/// It also tombstones every live row that is no word once its quotes are dropped
+/// ([`stored_entry`] empty): Earshot 0.3.11 kept the quotes of a typed entry, so an entry of
+/// only quotes (`"`) became a row of its own, which this version never reads as a word. The
+/// tombstone is synced, so the row leaves every device. Until a device runs this version, 0.3.11
+/// still counts such a row as a word in use, so its count of words not in use near the limits
+/// may differ from this version's by those rows (left as it is).
+///
 /// # Errors
 /// Store errors.
 pub(crate) fn reconcile_tx(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
 ) -> Result<usize, StoreError> {
+    for mut row in tx
+        .dictionary_words()?
+        .into_iter()
+        .filter(|r| r.is_live() && stored_entry(&r.word).is_empty())
+    {
+        if row.remove(stamp.hlc, stamp.clock) {
+            tx.put_dictionary_word(row)?;
+        }
+    }
     let (current, _) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
     let rows = tx.dictionary_words()?;
     let mut made = 0;
