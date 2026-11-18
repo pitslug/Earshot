@@ -1827,33 +1827,33 @@ fn version_parts(v: &str) -> Vec<u64> {
     v.split('.').map(|p| p.parse().unwrap()).collect()
 }
 
-#[test]
-fn detail_voice_sample_copy_names_a_release_not_yet_past() {
-    let since = voice_copy()["since"].as_str().unwrap().to_owned();
-    let workspace = env!("CARGO_PKG_VERSION");
-    assert!(
-        version_parts(&since) >= version_parts(workspace),
-        "since {since} names a release before this one ({workspace})"
-    );
-    assert_eq!(version_parts("0.4.0"), [0, 4, 0]);
-    assert!(version_parts("0.3.11") < version_parts("0.4.0"));
-}
-
 /// The release that first wrote voice samples (T12.77b8 merges only with its version bump).
 const SAMPLES_RELEASE: &str = "0.4.0";
 
-/// T12.77b8: `since` names the release that first wrote samples. With the test above (never a
-/// release already past), that pins it equal to the workspace version at the 0.4.0 bump, and
-/// leaves later releases naming the one that changed how voices are saved. Before the bump
-/// (0.3.11) only the release name is checked.
+/// `since` names the release that first wrote voice samples, fixed at 0.4.0. Before the
+/// workspace reaches it (0.3.11 until the bump) `since` is at least the workspace version, so
+/// the copy never names a release already past; from the bump on it is at most the workspace
+/// version (equal at 0.4.0, and later releases keep naming the one that changed how voices are
+/// saved).
 #[test]
 fn detail_voice_sample_copy_since_is_the_release_that_wrote_samples() {
     let since = voice_copy()["since"].as_str().unwrap().to_owned();
     assert_eq!(since, SAMPLES_RELEASE);
     let workspace = env!("CARGO_PKG_VERSION");
-    if version_parts(workspace) == version_parts(SAMPLES_RELEASE) {
-        assert_eq!(since, workspace);
+    if version_parts(workspace) < version_parts(SAMPLES_RELEASE) {
+        assert!(
+            version_parts(&since) >= version_parts(workspace),
+            "since {since} names a release before this one ({workspace})"
+        );
+    } else {
+        assert!(
+            version_parts(&since) <= version_parts(workspace),
+            "since {since} names a release after this one ({workspace})"
+        );
     }
+    assert_eq!(version_parts("0.4.0"), [0, 4, 0]);
+    assert!(version_parts("0.3.11") < version_parts("0.4.0"));
+    assert!(version_parts("0.4.1") > version_parts("0.4.0"));
 }
 
 #[test]

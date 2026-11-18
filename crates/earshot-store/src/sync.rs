@@ -454,18 +454,20 @@ fn dead_person_repair<C: Clock + ?Sized>(
     clock: &C,
     out: &mut Applied,
 ) -> Result<(), StoreError> {
-    let samples: Vec<([u8; 16], [u8; 16])> = {
+    // (sample id, person id, meeting id as stored).
+    type SampleRow = ([u8; 16], [u8; 16], Option<Vec<u8>>);
+    let samples: Vec<SampleRow> = {
         let mut st = tx.conn.prepare(
-            "SELECT id, person_id FROM voiceprint_sample WHERE deleted = 0 AND person_id IS NOT NULL",
+            "SELECT id, person_id, meeting_id FROM voiceprint_sample \
+             WHERE deleted = 0 AND person_id IS NOT NULL",
         )?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<Result<_, _>>()?
     };
-    for (id, person) in samples {
+    for (id, person, meeting) in samples {
         if ends_deleted(tx, EntityId::from_bytes(person))? == Some(true) {
             erase_sample_by_id(tx, hlc, clock, id)?;
-            out.biometrics_forgotten += 1;
-            out.people = true;
+            erased_sample(out, meeting.as_deref());
         }
     }
     let prints: Vec<([u8; 16], [u8; 16])> = {
@@ -607,21 +609,31 @@ fn converge<C: Clock + ?Sized>(
     // or a chain that loops, leaves the row alone.
     dead_person_repair(tx, hlc, clock, out)?;
     // Rule 3: no live voice sample of a print tombstoned here (docs/voice-samples.md 7.4).
-    let dead: Vec<[u8; 16]> = {
+    let dead: Vec<([u8; 16], Option<Vec<u8>>)> = {
         let mut st = tx.conn.prepare(
-            "SELECT s.id FROM voiceprint_sample s JOIN voiceprint v ON v.id = s.voiceprint_id \
-             WHERE s.deleted = 0 AND v.deleted = 1",
+            "SELECT s.id, s.meeting_id FROM voiceprint_sample s \
+             JOIN voiceprint v ON v.id = s.voiceprint_id WHERE s.deleted = 0 AND v.deleted = 1",
         )?;
-        st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?
     };
     // Erased by id in SQL, never read back first: a damaged live row (one `from_stored`
     // refuses) is erased too and cannot abort the page.
-    for id in dead {
+    for (id, meeting) in dead {
         erase_sample_by_id(tx, hlc, clock, id)?;
-        out.biometrics_forgotten += 1;
-        out.people = true;
+        erased_sample(out, meeting.as_deref());
     }
     Ok(())
+}
+
+/// Counts a sample a repair erased and names its meeting (read in the repair's own query), so
+/// a window showing that meeting reloads.
+fn erased_sample(out: &mut Applied, meeting: Option<&[u8]>) {
+    out.biometrics_forgotten += 1;
+    out.people = true;
+    if let Some(m) = meeting.and_then(|b| <[u8; 16]>::try_from(b).ok()) {
+        out.meetings.insert(EntityId::from_bytes(m));
+    }
 }
 
 impl Store {
@@ -700,10 +712,16 @@ impl Store {
                 .query_map(values.as_slice(), |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
             for id in ids {
-                match crate::repo::synced_by_id(&self.conn, table, EntityId::from_bytes(id)) {
+                // Only a row whose stored values do not convert counts as unreadable; any
+                // other store error fails the page (and the tick).
+                match crate::repo::synced_by_id_or_damaged(
+                    &self.conn,
+                    table,
+                    EntityId::from_bytes(id),
+                )? {
                     Ok(Some(row)) => rows.push(row),
                     Ok(None) => {}
-                    Err(_) => unreadable += 1,
+                    Err(()) => unreadable += 1,
                 }
             }
         }

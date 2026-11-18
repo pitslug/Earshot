@@ -1,5 +1,5 @@
 {
-  "_comment": "Sync page copy (T11.3a). problems: the last sync's status, by word. command_problems: a button press that failed, by word (nothing retries those). Pinned to sync_settings::problem_copy and command_copy by the desktop's tests and read by the UI mock. Shipped with the app: public copy only. device_name_too_long: the refusal of a computer name over 64 characters (T11.3db). remove_other: removing another computer from its row (T11.6c); {device} is the row's name, not_another is sync_settings::NOT_ANOTHER_DEVICE.",
+  "_comment": "Sync page copy (T11.3a). problems: the last sync's status, by word. command_problems: a button press that failed, by word (nothing retries those). Pinned to sync_settings::problem_copy and command_copy by the desktop's tests and read by the UI mock. Shipped with the app: public copy only. device_name_too_long: the refusal of a computer name over 64 characters (T11.3db). remove_other: removing another computer from its row (T11.6c); {device} is the row's name, not_another is sync_settings::NOT_ANOTHER_DEVICE. unsendable_note: shown under the status when the last sync skipped queued items it could not read (damaged), which are then not counted as waiting (T12.77b8; sync_settings::UNSENDABLE_NOTE).",
   "problems": {
     "unreachable": "The sync server could not be reached. Earshot will try again.",
     "server": "The sync server gave an answer Earshot does not understand. Earshot will try again.",
@@ -42,6 +42,7 @@
     "vault"
   ],
   "secret_missing": "Enter the server's setup secret.",
+  "unsendable_note": "Some items on this computer are damaged and could not be sent, so they were skipped. Everything else syncs as usual.",
   "address_cases": [
     {
       "input": "",

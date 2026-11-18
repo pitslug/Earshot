@@ -346,4 +346,14 @@ fn store_voiceprint_sample_a_damaged_queued_row_is_counted_and_the_rest_still_re
         dictionary: true,
     };
     assert_eq!(store.outbox_page(100, &[], off).unwrap().unreadable, 0);
+    drop(store);
+    // Any other store error (here a column the read needs is gone) fails the page, never
+    // counted as a damaged row.
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("ALTER TABLE voiceprint_sample RENAME COLUMN speech_ms TO gone")
+            .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    assert!(store.outbox_page(100, &[], SyncKinds::ALL).is_err());
 }

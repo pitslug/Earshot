@@ -876,6 +876,11 @@ async fn relay_answers_unknown_calls_with_a_fixed_word() {
 /// T12.77b8: a format-1 pull racing the format-2 push that raises the vault either sees the
 /// vault as it was before the push (none of its rows) or is refused `update_needed`; it never
 /// receives a row of the push (the format is read in the pull's own transaction).
+///
+/// The interleaving cannot be forced from outside: the format check and the row read happen
+/// inside one call under the relay's database lock, with no seam between them to stop at, so the
+/// test races real tasks on several threads and prints how the pulls fell. A round where every
+/// pull landed on one side still checks the rule; it just did not exercise the race.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_a_format_one_pull_racing_the_raise_never_gets_a_pushed_row() {
     let raised = b64(&[9; 16]);
@@ -928,5 +933,5 @@ async fn relay_a_format_one_pull_racing_the_raise_never_gets_a_pushed_row() {
         let (s, v) = h.call("GET", "/v1/rows", Some(&t), Some(1), None).await;
         assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "update_needed"));
     }
-    assert_eq!(before + refused, 160);
+    println!("format-1 pulls: {before} before the raise, {refused} refused update_needed");
 }

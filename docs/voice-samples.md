@@ -253,6 +253,7 @@ The owner agreed this table and the tooltip below as written (2026-11-18, T12.77
 - Each sample is one more stored embedding (about 2 KB raw at 512 values, about 12 KB as sync JSON): one per saved voice, plus one per final pass for Me where `enroll_me` is on (no shipped build), plus one per "Your voice" sample, kept as long as its print.
 - A live sample tied to a meeting id says which meeting a person spoke in, which a centroid alone does not; its tombstone says nothing (section 2).
 - Samples sync only when voiceprint sync is on (off by default), sealed like every row; no build without the entity ever receives one (7.3); a computer with voiceprint sync off never hears of a forget or a "Not" made elsewhere (section 1).
+- A pulled row held in `sync_pending` (a newer format, a malformed sample, a parent not yet here) stays there as the relay sent it, sealed ciphertext under the vault key, and is not cleared by forgetting or removing a person; it is applied (and then erased by the usual rules) or dropped when the device joins another vault.
 
 ## 12. Tests that pin each rule
 

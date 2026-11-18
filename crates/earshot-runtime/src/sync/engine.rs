@@ -46,9 +46,11 @@ pub struct TickReport {
     pub pushed: usize,
     /// Rows sent that the relay already held at the same or a later stamp.
     pub superseded: usize,
-    /// Rows left queued because they could not be sealed (over the size limit, or audio) or
-    /// read (a damaged voice sample row).
+    /// Rows left queued because they could not be sealed (over the size limit, or audio).
     pub refused: usize,
+    /// Queued rows this device could not read to send (a damaged voice sample row), left
+    /// queued and skipped; the most found in one push page.
+    pub unsendable: usize,
     /// Rows pulled (held rows tried again not included).
     pub pulled: usize,
     /// Rows written here.
@@ -494,6 +496,7 @@ impl SyncClient {
                 Ok(()) => {
                     status.problem = None;
                     status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
+                    status.unsendable = u64::try_from(report.unsendable).unwrap_or(u64::MAX);
                 }
                 Err(p) => status.problem = Some(*p),
             }
@@ -573,7 +576,7 @@ impl SyncClient {
             }
             Ok(())
         })();
-        report.refused += unreadable;
+        report.unsendable = unreadable;
         result
     }
 

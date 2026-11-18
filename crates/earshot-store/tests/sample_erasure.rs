@@ -275,6 +275,10 @@ fn store_sample_erasure_a_pulled_print_tombstone_is_stored_zeroed_and_erases_its
     assert_eq!(a.written, 1);
     // The live print it replaced and the sample of it the repair erased.
     assert_eq!(a.biometrics_forgotten, 2, "{a:?}");
+    assert!(
+        a.meetings.contains(&s.meeting),
+        "the erased sample's meeting: {a:?}"
+    );
     s.store.flush_erasures().unwrap();
     let v = s.store.voiceprints_of(s.person).unwrap().remove(0);
     assert!(v.meta().deleted);
@@ -609,6 +613,12 @@ fn store_sample_erasure_a_late_sample_or_print_of_a_removed_person_is_erased() {
         // The late print and sample, plus this computer's own print and sample of the person.
         assert_eq!(a.biometrics_forgotten, 4, "{through_merge}: {a:?}");
         assert!(a.people);
+        // Both erased samples' meetings: this computer's own and the late one's.
+        assert!(a.meetings.contains(&s.meeting), "{through_merge}: {a:?}");
+        assert!(
+            a.meetings.contains(&EntityId::from_bytes([0x6a; 16])),
+            "{through_merge}: {a:?}"
+        );
         s.store.flush_erasures().unwrap();
         assert!(
             s.store

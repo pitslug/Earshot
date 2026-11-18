@@ -29,6 +29,10 @@ use crate::ipc::{AppState, IpcError, blocking};
 /// The IPC error kind of a sync problem.
 pub const SYNC_ERROR_KIND: &str = "sync";
 
+/// Shown when the last sync skipped queued items it could not read (T12.77b8: a damaged voice
+/// sample row); names no content (`unsendable_note` in `fixtures/ui/sync_copy_cases.json`).
+pub const UNSENDABLE_NOTE: &str = "Some items on this computer are damaged and could not be sent, so they were skipped. Everything else syncs as usual.";
+
 /// Fixed copy for each problem (the words in `fixtures/ui/sync_copy_cases.json`).
 #[must_use]
 pub fn problem_copy(problem: SyncProblem) -> &'static str {
@@ -354,8 +358,10 @@ pub struct SyncView {
     pub stopped: bool,
     /// Rows from other devices that could not be read, in all.
     pub unreadable: u64,
-    /// Rows changed here and not yet sent.
+    /// Rows changed here and not yet sent (damaged ones the last sync skipped left out).
     pub waiting: u64,
+    /// [`UNSENDABLE_NOTE`] when the last sync skipped damaged queued rows.
+    pub unsendable_note: Option<String>,
     /// Rows from other devices held for later.
     pub held: u64,
     /// "Write summaries for my other computers" (T11.3db).
@@ -383,6 +389,7 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         stopped: o.status.problem.is_some_and(SyncProblem::stops),
         unreadable: o.status.unreadable,
         waiting: o.waiting,
+        unsendable_note: (o.status.unsendable > 0).then(|| UNSENDABLE_NOTE.to_owned()),
         held: o.held,
         offers_summaries: o.settings.offers_summaries,
         device_name: o.settings.device_name,

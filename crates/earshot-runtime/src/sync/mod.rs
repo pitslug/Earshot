@@ -593,6 +593,15 @@ pub struct SyncStatus {
     pub problem: Option<SyncProblem>,
     /// Pulled rows that could not be opened or read, in all.
     pub unreadable: u64,
+    /// Queued rows the last completed tick could not read to send (damaged), skipped. Left out
+    /// of the record when 0, so a status without any reads as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unsendable: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// What the Sync page shows: the settings, the last tick's outcome and the queues. Counts and
@@ -605,7 +614,8 @@ pub struct SyncOverview {
     pub settings: SyncSettings,
     /// The last tick's outcome.
     pub status: SyncStatus,
-    /// Rows changed here and not yet sent.
+    /// Rows changed here and not yet sent, the damaged ones ([`SyncStatus::unsendable`]) left
+    /// out.
     pub waiting: u64,
     /// Pulled rows held for later (a meeting in use, a missing parent, a newer format, a clock).
     pub held: u64,
@@ -623,12 +633,16 @@ pub fn sync_overview(
     let recording = services.recording_meetings();
     let store = services.store();
     let settings = sync_settings(&store)?;
+    let status = sync_status(&store)?;
+    // What the push would send now: a recording's rows and switched-off kinds are not behind,
+    // and damaged rows the last tick skipped are not waiting in the ordinary sense.
+    let waiting = store
+        .outbox_len_except(&recording, settings.kinds())?
+        .saturating_sub(status.unsendable);
     Ok(SyncOverview {
         set_up,
-        status: sync_status(&store)?,
-        // What the push would send now: a recording's rows and switched-off kinds are not
-        // behind.
-        waiting: store.outbox_len_except(&recording, settings.kinds())?,
+        status,
+        waiting,
         held: u64::try_from(store.held_rows()?.len()).unwrap_or(u64::MAX),
         settings,
     })

@@ -1184,6 +1184,7 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         last_success_unix_ms: Some(5),
         problem: Some(SyncProblem::Unreachable),
         unreadable: 2,
+        unsendable: 0,
     };
     set_sync_status(&mut db, &status).unwrap();
     assert_eq!(
@@ -1191,6 +1192,16 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         b"\x01\x00\x00\x00{\"last_success_unix_ms\":5,\"problem\":\"unreachable\",\"unreadable\":2}"
     );
     assert_eq!(sync_status(&db).unwrap(), status);
+    let damaged = SyncStatus {
+        unsendable: 3,
+        ..status.clone()
+    };
+    set_sync_status(&mut db, &damaged).unwrap();
+    assert_eq!(
+        db.local_value(SYNC_STATUS_KEY).unwrap().unwrap(),
+        b"\x01\x00\x00\x00{\"last_success_unix_ms\":5,\"problem\":\"unreachable\",\"unreadable\":2,\"unsendable\":3}"
+    );
+    assert_eq!(sync_status(&db).unwrap(), damaged);
     // Another version, or bytes that do not read, are the defaults.
     db.set_local_value(SYNC_STATUS_KEY, b"\x02\x00\x00\x00{}")
         .unwrap();
@@ -2952,12 +2963,15 @@ fn sync_a_damaged_sample_row_is_kept_and_reported_never_stopping_the_push() {
     }
     let ca = a.client();
     let r = ca.tick().unwrap();
-    assert_eq!(r.refused, 1, "{r:?}");
+    assert_eq!((r.unsendable, r.refused), (1, 0), "{r:?}");
     assert!(r.pushed >= 5, "the rest went: {r:?}");
     let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
     assert_eq!(a.svc.store().outbox_len_except(&[], kinds).unwrap(), 1);
+    // The page counts it as damaged, not as waiting.
+    let view = sync_overview(&a.svc, &*a.vault).unwrap();
+    assert_eq!((view.waiting, view.status.unsendable), (0, 1));
     let r = ca.tick().unwrap();
-    assert_eq!((r.pushed, r.refused), (0, 1), "{r:?}");
+    assert_eq!((r.pushed, r.unsendable), (0, 1), "{r:?}");
     b.client().tick().unwrap();
     let on_b = b.svc.store().samples_of(live).unwrap();
     assert_eq!(on_b, vec![samples[1].clone()], "only the readable sample");

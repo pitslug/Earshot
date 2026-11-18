@@ -159,6 +159,18 @@ describe("the Sync page", () => {
     expect(calls.filter((c) => c === "setSyncDictionary")).toHaveLength(2);
   });
 
+  it("says damaged items were skipped only when the last sync skipped some (T12.77b8)", async () => {
+    await setup({ setUp: true, unsendable: true });
+    await screen.findByRole("switch", { name: "Sync is on" });
+    expect(screen.getByText(table.unsendable_note)).toBeInTheDocument();
+  });
+
+  it("says nothing about damaged items when none were skipped", async () => {
+    await setup({ setUp: true, waiting: 2 });
+    await screen.findByRole("switch", { name: "Sync is on" });
+    expect(screen.queryByText(table.unsendable_note)).toBeNull();
+  });
+
   it("turns sync off and voiceprints on at once", async () => {
     const { user, calls } = await setup({ setUp: true, waiting: 3 });
     const on = await screen.findByRole("switch", { name: "Sync is on" });
