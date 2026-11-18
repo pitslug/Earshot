@@ -69,4 +69,36 @@ Added at the owner's request (2026-11-18) after the dev run had started and befo
 
 ## Result
 
-(Filled after the run.)
+**First run (2026-11-18, the Surface, ARM64, CPU, release build of `cluster_sweep --training-cap`): the rule picks R, T12.66's regrouping alone.** Raw output: `training-cap.json` beside this file, the tool's unmodified report. The replayed baseline equalled the direct run on all 41 items.
+
+Embeddings per AMI dev meeting: 1239 to 5530 (every one above the 1000 trained; the "b" and "c" meetings are longer, up to 5.5 times the cap). Scenes: 357 to 619.
+
+| candidate | cost | AMI merges + lost | AMI extras | AMI pooled DER | L merges + lost / extras | S talkers found | S pooled DER | conditions 1-4 |
+|---|---|---|---|---|---|---|---|---|
+| B (today) | 23 | 1 | 1 | 0.0835 | 0 / 2 | 6 of 10 | 0.1748 | (reference) |
+| **R (pick)** | **11** | 1 | 1 | 0.0835 | 0 / 2 | **9 of 10** | 0.1615 | all hold |
+| C | 38 | 1 | 16 | 0.0864 | 0 / 2 | 6 of 10 | 0.1748 | 1 fails |
+| CR | 30 | 1 | 20 | 0.0876 | 0 / 2 | 9 of 10 | 0.1615 | 1 fails |
+
+- **Using every embedding (C) removes no merge and adds extra voices.** The one AMI merge (ES2011a, at every threshold since T12.9) stays; ten of fifteen meetings gain one to four extra voices (TS3004 and TS3006 on all three meetings), and no meeting loses one. Every per-meeting DER stays within the 0.02 slack, so conditions 2 to 4 hold, but the extras make C dearer than today. On the scenes it changes nothing, as expected (all under the cap).
+- **R is exactly T12.66's result on the scenes** (9 of 10 talkers, S DER 0.1615) **and changes nothing on any of the fifteen AMI meetings**: no new speaker, every DER equal. So, as in T12.66, the AMI guard is not exercised: these meetings have no quiet voice the regrouping would separate, and its speech estimate on them still counts only the 1000 trained embeddings.
+- **CR** gets R's talkers and C's extras: the cap change still only adds voices.
+
+So on dev data the cap is not what keeps quiet voices together: where today's grouping merges, using every embedding does not undo it, and where it does not merge, more embeddings split real speakers into extra voices. The regrouping passes the rule again, now with ten more AMI meetings behind it, which unblocks T12.74 on the rule's terms (a production task for the owner, AGENTS 6.2).
+
+What this does not show: no AMI dev meeting holds a merge the regrouping could undo, so neither candidate's effect on a quiet talker in a long real meeting is measured here; that is what the owner's meetings below can illustrate, never select.
+
+### The owner's meetings (informational)
+
+Run 2026-11-18 on the Surface where they were recorded, after the dev result above; nothing here selects. Four kept recordings; per track counts only (the run folder holds the turn times).
+
+- **A far-end track with no speech**: nothing found by any candidate.
+- **A long meeting in the room** (6197 embeddings): R changes nothing. C and CR add one extra voice of about 26 s, gathered from bits of three of the baseline's voices.
+- **The call T12.73 judged** (2209 embeddings): no candidate changes anything, as T12.73 found for R.
+- **The call that raised T12.75** (1984 embeddings, two far-end voices found today, four people by the owner's corrections, line groups inferred):
+  - Today: one voice holds a stored talker's lines with an unstored talker's; the other holds the presenter's lines with a second stored talker's.
+  - R: the first stored talker's lines leave that voice for two new voices (6 of 7 lines), which also take 4 of the presenter's 86 lines; the unstored talker keeps the old voice alone; the second stored talker stays with the presenter.
+  - C: the unstored talker gets a voice of their own (9 of 12 lines); the first stored talker stays in a voice that also holds 3 of the unstored talker's and 7 of the presenter's lines.
+  - CR: the second stored talker gets a voice of their own (6 of 7 lines) and the unstored talker one (9 of 12); the first stored talker is split over two voices that also hold presenter and unstored lines.
+
+On the owner's meetings R never adds a voice where there is one person and, on the call that raised the question, separates the stored talker that T12.75 could not name, at the cost of two voices for one person (one merge in the app) and a few of the presenter's lines. The cap change adds a voice to a long meeting in the room and, on that call, separates other talkers while mixing more lines between voices. This agrees with the dev pick; it is not evidence for it.

@@ -21,6 +21,12 @@
 //! added to the data: the data, measures and rule are `docs/far-speakers/short-turns.md`
 //! (module `cluster_sweep_parts/short_turns.rs`).
 //!
+//! With `--training-cap` (T12.76) the threshold, floor and regrouping grid are held and four
+//! candidates are run: today's pipeline, every embedding training, T12.66's regrouping, and
+//! both, over all fifteen AMI dev meetings, the long scenes and the short-turn scenes: the
+//! data, measures and rule are `docs/far-speakers/training-cap.md` (module
+//! `cluster_sweep_parts/training_cap.rs`).
+//!
 //! With `--floors` (T12.65) the threshold is held and the unassigned floor is swept instead:
 //! the data are the same, the measures and rule are `docs/far-speakers/unassigned-floor.md`
 //! (module `cluster_sweep_parts/floors.rs`).
@@ -53,8 +59,12 @@ mod calls;
 mod copy;
 #[path = "cluster_sweep_parts/floors.rs"]
 mod floors;
+#[path = "cluster_sweep_parts/meetings_cap.rs"]
+mod meetings_cap;
 #[path = "cluster_sweep_parts/short_turns.rs"]
 mod short_turns;
+#[path = "cluster_sweep_parts/training_cap.rs"]
+mod training_cap;
 
 /// The held constant.
 const HELD: u32 = 68;
@@ -965,12 +975,21 @@ fn main() {
         calls::run(picks, parts, &config, &model, &a.into);
         return;
     }
+    if args.iter().any(|a| a == "--meetings-cap") {
+        let a = meetings_cap::parse_args(args.into_iter().filter(|a| a != "--meetings-cap"))
+            .unwrap_or_else(|e| fail(e));
+        let picks = meetings_cap::tracks(&a).unwrap_or_else(|e| fail(e));
+        let (parts, config, _) = load_parts(&a.models);
+        meetings_cap::run(&a, picks, parts, &config);
+        return;
+    }
     let mut it = args.into_iter();
     let root = PathBuf::from(
         it.next()
             .unwrap_or_else(|| fail("usage: cluster_sweep <repo-root> --models <dir>")),
     );
     let (mut models, mut out, mut floor_mode, mut short_mode) = (None, None, false, false);
+    let mut cap_mode = false;
     while let Some(flag) = it.next() {
         if flag == "--floors" {
             floor_mode = true;
@@ -978,6 +997,10 @@ fn main() {
         }
         if flag == "--short-turns" {
             short_mode = true;
+            continue;
+        }
+        if flag == "--training-cap" {
+            cap_mode = true;
             continue;
         }
         let value = it
@@ -990,18 +1013,28 @@ fn main() {
         }
     }
     let models = models.unwrap_or_else(|| fail("--models is required"));
-    if floor_mode && short_mode {
-        fail("--floors and --short-turns are separate runs");
+    if [floor_mode, short_mode, cap_mode]
+        .iter()
+        .filter(|m| **m)
+        .count()
+        > 1
+    {
+        fail("--floors, --short-turns and --training-cap are separate runs");
     }
     let short = short_curve(
         &std::fs::read_to_string(root.join("docs/far-speakers/long-scenes-calibration.txt"))
             .unwrap_or_else(|e| fail(format!("long-scenes-calibration.txt: {e}"))),
     );
     let fixtures = fixtures_dir();
-    let mut items: Vec<Item> = AMI_DEV.iter().map(|m| ami_item(&fixtures, m)).collect();
+    let meetings: &[&str] = if cap_mode {
+        &training_cap::AMI_DEV_ALL
+    } else {
+        &AMI_DEV
+    };
+    let mut items: Vec<Item> = meetings.iter().map(|m| ami_item(&fixtures, m)).collect();
     let (scenes, long_files) = scene_items(&fixtures);
     items.extend(scenes);
-    let short_scenes = if short_mode {
+    let short_scenes = if short_mode || cap_mode {
         Some(short_turns::short_items(&fixtures, &long_files))
     } else {
         None
@@ -1010,6 +1043,11 @@ fn main() {
     let (mut parts, config, model) = load_parts(&models);
     if floor_mode {
         run_floors(&items, parts, &config, &model, out.as_deref());
+        return;
+    }
+    if cap_mode {
+        let short_scenes = short_scenes.unwrap_or_else(|| unreachable!());
+        training_cap::run(items, short_scenes, parts, &config, &model, out.as_deref());
         return;
     }
     if let Some(short_scenes) = short_scenes {
