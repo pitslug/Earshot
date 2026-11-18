@@ -451,7 +451,7 @@ fn voiceprint_naming_threshold_is_stricter_than_the_same_voice_threshold() {
         calibrated_threshold(&campplus),
         Ok(CAMPPLUS_DEV_CLEAN_THRESHOLD)
     );
-    assert!(CAMPPLUS_MEETING_THRESHOLD > CAMPPLUS_DEV_CLEAN_THRESHOLD);
+    const { assert!(CAMPPLUS_MEETING_THRESHOLD > CAMPPLUS_DEV_CLEAN_THRESHOLD) };
     // Every model with a naming threshold has a same-voice one, and the naming one is never
     // the looser of the two.
     for c in CALIBRATED_NAMING_THRESHOLDS {
