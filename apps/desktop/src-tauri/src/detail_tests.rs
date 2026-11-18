@@ -1869,7 +1869,13 @@ fn detail_no_voice_sample_result_serialises_a_vector() {
             taken_back: 1,
         }),
         serde_json::to_value(MarkedMeResult {
-            offers: Vec::new(),
+            offers: vec![PersonItem {
+                id: "p".into(),
+                name: "Robin Invented".into(),
+                has_voiceprint: true,
+                is_me: false,
+                meetings: 2,
+            }],
             taken_back: 1,
         }),
         serde_json::to_value(MergeResult {

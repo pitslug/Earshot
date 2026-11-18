@@ -4269,3 +4269,110 @@ fn post_the_margin_never_costs_the_user_their_own_name() {
     assert_eq!(person, None);
     assert!(name.starts_with("Speaker "), "{name}");
 }
+
+/// Sets the frozen marker (`SpeakerIdentity::enrolled`) on `speaker`'s entry: test set-up for
+/// a save made before samples existed.
+fn mark_saved_before_samples(svc: &Services, meeting: EntityId, speaker: EntityId) {
+    let key = crate::identities::record_key(meeting);
+    let mut db = svc.store();
+    let Some(crate::identities::StoredIdentities::Record(mut record)) = db
+        .local_value(key.as_str())
+        .unwrap()
+        .map(|b| crate::identities::decode(&b))
+    else {
+        panic!("a record");
+    };
+    for i in &mut record.speakers {
+        if i.speaker == speaker {
+            i.enrolled = true;
+        }
+    }
+    // Test set-up only: production writes this record through the runtime's registry.
+    db.set_local_value(key.as_str(), &crate::identities::encode(&record))
+        .unwrap();
+}
+
+fn marker_of(svc: &Services, meeting: EntityId, speaker: EntityId) -> bool {
+    let key = crate::identities::record_key(meeting);
+    match svc
+        .store()
+        .local_value(key.as_str())
+        .unwrap()
+        .map(|b| crate::identities::decode(&b))
+    {
+        Some(crate::identities::StoredIdentities::Record(r)) => r
+            .speakers
+            .iter()
+            .any(|i| i.speaker == speaker && i.enrolled),
+        _ => false,
+    }
+}
+
+/// T12.77b7 review (1): a voice the pass named (no user edit) keeps the frozen marker across a
+/// re-run that names the same person; a re-run naming someone else drops it.
+#[test]
+fn post_rerun_carries_the_frozen_marker_only_to_the_same_person() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = enroll_alice(&svc, 1);
+    let run = |svc: &Services| {
+        let (mic_audio, them_audio) = scene();
+        let mut post = PostProcessor::new(
+            transcriber(),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            config(),
+        )
+        .unwrap();
+        let input = PostInput {
+            echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
+            meeting,
+            tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        post.run(svc, input, &mut rng, &CancelToken::new()).unwrap()
+    };
+    let first = run(&svc);
+    let voice = first.speakers[1].id;
+    assert_eq!(first.speakers[1].person, Some(alice), "named by the pass");
+    mark_saved_before_samples(&svc, meeting, voice);
+    let again = run(&svc);
+    assert_eq!(again.speakers[1].id, voice);
+    assert_eq!(again.speakers[1].person, Some(alice));
+    assert!(
+        marker_of(&svc, meeting, voice),
+        "carried to the same person"
+    );
+
+    // The same voice is someone else's now (Alice's print erased elsewhere, her entry kept
+    // here): the re-run names them, and the marker, set for Alice, goes.
+    crate::edit::write(&svc, |tx, stamp| {
+        earshot_core::voiceprint::forget_voiceprints(tx, alice, stamp.hlc, stamp.clock)
+            .map_err(RuntimeError::Voiceprint)?;
+        let bea = Person::new("Bea", false, stamp);
+        tx.put_person(bea.clone())
+            .map_err(RuntimeError::Voiceprint)?;
+        let e = earshot_core::diar::Embedding::new(EmbeddingModelId::new(MODEL), centroid(1));
+        enroll(
+            tx,
+            bea.id,
+            &[e],
+            Duration::from_secs(20),
+            earshot_core::voiceprint::SampleOrigin::Own,
+            &EnrolmentConfig::default(),
+            stamp,
+        )
+        .map_err(RuntimeError::Voiceprint)?;
+        Ok(())
+    })
+    .unwrap();
+    let third = run(&svc);
+    assert_eq!(third.speakers[1].id, voice);
+    assert_eq!(third.speakers[1].display_name, "Bea");
+    assert!(
+        !marker_of(&svc, meeting, voice),
+        "not carried to someone else"
+    );
+}

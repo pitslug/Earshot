@@ -635,7 +635,9 @@ pub(super) fn erase<C: Clock + ?Sized>(
 /// Erases the samples `ids` (docs/voice-samples.md 2): each live one is written as a tombstone
 /// stamped now, keeping only its id and sync metadata; tombstones and unknown ids are left as
 /// they are. Returns how many were erased; the caller checkpoints after the commit when that
-/// is not 0. The one sample erasure every writer goes through.
+/// is not 0. The one sample erasure every core and runtime writer goes through, except the
+/// store's convergence rule 3 (dead-print repair), which erases by id in SQL so a damaged
+/// row it could not read is erased too.
 ///
 /// # Errors
 /// Storage errors.

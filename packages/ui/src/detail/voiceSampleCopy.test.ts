@@ -40,6 +40,8 @@ describe("voice sample copy", () => {
     );
     expect(linkedText("Ana", "Bo", { person: "p", taken_back: 0 })).toBeNull();
     expect(linkedText(null, "Bo", { person: "p", taken_back: 1 })).toBeNull();
+    // Linked to the same person again (a stray sample for someone else went): no notice.
+    expect(linkedText("Bo", "Bo", { person: "p", taken_back: 1 })).toBeNull();
     expect(markedMeText("Ana", { offers: [], taken_back: 1 })).toBe(
       "Marked as you. This meeting's voice is no longer part of Ana's saved voice.",
     );
@@ -55,8 +57,12 @@ describe("voice sample copy", () => {
     expect(savedVoiceText("Ana", "Bo", { ...base, outcome: "Remembered" })).toBe(
       "Saved for Bo. This meeting's voice is no longer part of Ana's saved voice.",
     );
+    // Refused: the link and the refusal's reason, without "Saved Bo." in between.
     expect(savedVoiceText("Ana", "Bo", { ...base, moved: false, outcome: "NotEnoughSpeech" })).toBe(
-      "Linked to Bo. This meeting's voice is no longer part of Ana's saved voice. Saved Bo. They did not speak long enough for their voice to be remembered, so later meetings will not recognise it yet.",
+      "Linked to Bo. This meeting's voice is no longer part of Ana's saved voice. They did not speak long enough for their voice to be remembered, so later meetings will not recognise it yet.",
+    );
+    expect(savedVoiceText("Ana", "Bo", { ...base, moved: false, outcome: "Unsupported" })).toBe(
+      "Linked to Bo. This meeting's voice is no longer part of Ana's saved voice. The speaker model in use cannot remember voices, so no voiceprint was kept.",
     );
     // Nothing moved: the save's own words.
     expect(savedVoiceText(null, "Bo", { ...base, taken_back: 0, moved: false, outcome: "Remembered" })).toBe(

@@ -34,7 +34,9 @@ export function notThisPersonText(name: string, result: NotThisPersonResult): st
 /** What linking a voice that was `name`'s to `other` did, or `null` when no saved voice
  * changed (nothing to say beyond the new name in the transcript). */
 export function linkedText(name: string | null, other: string, result: LinkResult): string | null {
-  if (result.taken_back === 0 || name === null) return null;
+  // The same person as before: what was taken back was a stray sample saved for someone else,
+  // and naming the same person twice would say nothing true.
+  if (result.taken_back === 0 || name === null || name === other) return null;
   return fillVoiceCopy(table.linked_away, { name, other });
 }
 
@@ -44,8 +46,12 @@ export function linkedText(name: string | null, other: string, result: LinkResul
 export function savedVoiceText(name: string | null, other: string, result: SavedVoiceResult): string {
   const saved = result.outcome === "Remembered" || result.outcome === "Replaced";
   if (name !== null && result.moved && saved) return fillVoiceCopy(table.save_moved, { name, other });
-  if (name !== null && result.taken_back > 0 && !saved && result.outcome !== "AlreadyRemembered") {
-    return `${fillVoiceCopy(table.linked_away, { name, other })} ${savedText(other, result.outcome)}`;
+  if (name !== null && name !== other && result.taken_back > 0 && !saved && result.outcome !== "AlreadyRemembered") {
+    // The refusal's reason alone: its "Saved {other}." lead would contradict the link.
+    const full = savedText(other, result.outcome);
+    const lead = `Saved ${other}. `;
+    const reason = full.startsWith(lead) ? full.slice(lead.length) : full;
+    return `${fillVoiceCopy(table.linked_away, { name, other })} ${reason}`;
   }
   return savedText(other, result.outcome);
 }
