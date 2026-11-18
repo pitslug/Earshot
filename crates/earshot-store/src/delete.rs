@@ -38,6 +38,8 @@ pub struct PersonRemoval {
     pub persons_removed: usize,
     /// Voiceprints forgotten.
     pub voiceprints_forgotten: usize,
+    /// Voice samples forgotten (T12.77b3).
+    pub samples_forgotten: usize,
     /// Speakers in kept meetings that went back to "Speaker N".
     pub speakers_unnamed: usize,
 }
@@ -133,8 +135,9 @@ impl Store {
             let mut report = PersonRemoval::default();
             let identity = identity_of(tx, person).map_err(storage)?;
             // Before the rows are unlinked: it finds a centroid through the row's link too.
-            report.voiceprints_forgotten =
-                crate::identities::forget_identity_biometrics(tx, person, hlc, clock)?;
+            let forgotten = crate::identities::forget_identity_biometrics(tx, person, hlc, clock)?;
+            report.voiceprints_forgotten = forgotten.voiceprints;
+            report.samples_forgotten = forgotten.samples;
             for meeting in tx.meetings().map_err(StoreError::Repo)? {
                 let rows = tx.speakers(meeting.id).map_err(StoreError::Repo)?;
                 let theirs = |p: Option<EntityId>| p.is_some_and(|p| identity.contains(&p));

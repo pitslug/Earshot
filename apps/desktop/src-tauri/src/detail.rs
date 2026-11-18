@@ -226,6 +226,9 @@ pub struct SpeakerCard {
     /// The user may say this named voice is not that person ("Not <name>", T12.77:
     /// `edit::can_not_this_person`).
     pub can_not_this_person: bool,
+    /// This meeting's voice is saved for the linked person as a voice sample, so "Not <name>"
+    /// takes it out of their saved voice (`edit::voice_saved_here`, T12.77b7).
+    pub voice_saved_here: bool,
     /// The user may say this voice is theirs ("This is me": `edit::can_mark_me`).
     pub can_mark_me: bool,
     /// The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`).
@@ -383,6 +386,8 @@ pub enum RememberOutcome {
     NoStoredVoice,
     /// Already remembered.
     AlreadyRemembered,
+    /// This meeting's earlier sample of the voice was replaced by the new one.
+    Replaced,
     /// The speaker model cannot match voiceprints.
     Unsupported,
 }
@@ -391,9 +396,10 @@ impl RememberOutcome {
     fn of(r: &Remembered) -> Self {
         match r {
             Remembered::Enrolled { .. } => Self::Remembered,
+            Remembered::Replaced { .. } => Self::Replaced,
             Remembered::NotEnoughSpeech { .. } => Self::NotEnoughSpeech,
             Remembered::NoStoredVoice => Self::NoStoredVoice,
-            Remembered::AlreadyEnrolled => Self::AlreadyRemembered,
+            Remembered::AlreadySaved => Self::AlreadyRemembered,
             Remembered::Uncalibrated { .. } => Self::Unsupported,
         }
     }
@@ -406,6 +412,50 @@ pub struct SavedVoiceResult {
     pub person: String,
     /// What remembering its voice did.
     pub outcome: RememberOutcome,
+    /// Voice samples of this meeting's voice taken back from the person it was linked to
+    /// before (and a replaced earlier sample).
+    pub taken_back: u32,
+    /// The save moved the voice's sample from the person it was saved for before.
+    pub moved: bool,
+}
+
+/// What "Not <name>" did (T12.77b7): counts and a flag only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct NotThisPersonResult {
+    /// Voice samples of this meeting's voice taken back.
+    pub taken_back: u32,
+    /// The voice was saved before samples existed, so it stays in the person's saved voice.
+    pub saved_before_samples: bool,
+}
+
+/// What linking a speaker did (T12.77b7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct LinkResult {
+    /// The person the speaker is linked to (hyphenated UUID).
+    pub person: String,
+    /// Voice samples of this meeting's voice taken back from the person it was linked to.
+    pub taken_back: u32,
+}
+
+/// What "This is me" did (T12.77b7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct MarkedMeResult {
+    /// The separate persons named after the user, offered to merge into the user (T12.44).
+    pub offers: Vec<PersonItem>,
+    /// Voice samples of this meeting's voice taken back from the person it was linked to.
+    pub taken_back: u32,
+}
+
+/// What merging two speakers did (T12.77b7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct MergeResult {
+    /// Voice samples of the merged-away voice taken back.
+    pub samples_taken_back: u32,
+}
+
+/// A count for an IPC result.
+fn count(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Which text of a summary an edit changes (T12.16; `edit::SummaryField`). Indices count
@@ -742,6 +792,7 @@ fn speaker_cards(
     voiceprint_me: Option<EntityId>,
     resolved: &BTreeMap<EntityId, EntityId>,
     not_person: &BTreeSet<EntityId>,
+    saved_here: &BTreeSet<EntityId>,
 ) -> Vec<SpeakerCard> {
     let total: u64 = view.segments.iter().map(duration_ms).sum();
     // `list_persons_in` counts the voiceprints of everyone merged into a person, as
@@ -799,6 +850,7 @@ fn speaker_cards(
                 ignored,
                 can_ignore: edit::can_ignore(s, identities),
                 can_not_this_person: not_person.contains(&s.id),
+                voice_saved_here: saved_here.contains(&s.id),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
                 can_unmark_me: edit::can_unmark_me(&view.tracks, s, voiceprint_me, user_print),
                 recognised_me: edit::recognised_me(&view.tracks, s, voiceprint_me, user_print),
@@ -859,9 +911,13 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         let entries = edit::identities_in(&db, meeting)?;
         // Where "Not <name>" is offered (T12.77), by the runtime's own rule over this snapshot.
         let mut not_person = BTreeSet::new();
+        let mut saved_here = BTreeSet::new();
         for s in &view.speakers {
             if edit::can_not_this_person(&**db, s, &entries)? {
                 not_person.insert(s.id);
+            }
+            if edit::voice_saved_here(&**db, s)? {
+                saved_here.insert(s.id);
             }
         }
         let identities = (
@@ -869,6 +925,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             edit::voiceprint_me_in(&db, meeting)?,
             resolved,
             not_person,
+            saved_here,
         );
         let backend = match view.pass {
             Some(TranscriptPass::Final) => pass_backend(&db, meeting, TranscriptPass::Final, None)?,
@@ -1007,6 +1064,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             identities.1,
             &identities.2,
             &identities.3,
+            &identities.4,
         ),
         summary,
         transcript,
@@ -1132,15 +1190,18 @@ pub fn mark_me(
     services: &Services,
     meeting: EntityId,
     speaker: EntityId,
-) -> Result<Vec<PersonItem>, IpcError> {
-    edit::mark_me(services, meeting, speaker)?;
-    Ok(edit::named_after_me(services)?
-        .iter()
-        .map(PersonItem::of)
-        .collect())
+) -> Result<MarkedMeResult, IpcError> {
+    let marked = edit::mark_me(services, meeting, speaker)?;
+    Ok(MarkedMeResult {
+        offers: edit::named_after_me(services)?
+            .iter()
+            .map(PersonItem::of)
+            .collect(),
+        taken_back: count(marked.took_back.taken_back),
+    })
 }
 
-/// Links a speaker to a person; returns the person's id.
+/// Links a speaker to a person; returns the person's id and what was taken back.
 ///
 /// # Errors
 /// Edit refusals ([`edit_error`]); store errors.
@@ -1149,8 +1210,44 @@ pub fn link(
     meeting: EntityId,
     speaker: EntityId,
     choice: &LinkChoice,
-) -> Result<String, IpcError> {
-    Ok(edit::link_speaker(services, meeting, speaker, &person_choice(choice)?)?.to_string())
+) -> Result<LinkResult, IpcError> {
+    let linked = edit::link_speaker(services, meeting, speaker, &person_choice(choice)?)?;
+    Ok(LinkResult {
+        person: linked.person.to_string(),
+        taken_back: count(linked.took_back.taken_back),
+    })
+}
+
+/// "Not <name>" on a named voice (T12.77): what was taken back.
+///
+/// # Errors
+/// Edit refusals ([`edit_error`]); store errors.
+pub fn not_this_person(
+    services: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<NotThisPersonResult, IpcError> {
+    let done = edit::not_this_person(services, meeting, speaker)?;
+    Ok(NotThisPersonResult {
+        taken_back: count(done.took_back.taken_back),
+        saved_before_samples: done.saved_before_samples,
+    })
+}
+
+/// Merges speaker `merge` into `keep`: what was taken back.
+///
+/// # Errors
+/// Edit refusals ([`edit_error`]); store errors.
+pub fn merge(
+    services: &Services,
+    meeting: EntityId,
+    keep: EntityId,
+    merge: EntityId,
+) -> Result<MergeResult, IpcError> {
+    let merged = edit::merge_speakers(services, meeting, keep, merge)?;
+    Ok(MergeResult {
+        samples_taken_back: count(merged.samples_taken_back),
+    })
 }
 
 fn person_choice(choice: &LinkChoice) -> Result<PersonChoice, IpcError> {
@@ -1174,6 +1271,8 @@ pub fn save_voice(
     Ok(SavedVoiceResult {
         person: saved.person.to_string(),
         outcome: RememberOutcome::of(&saved.remembered),
+        taken_back: count(saved.took_back.taken_back),
+        moved: saved.moved_from.is_some(),
     })
 }
 

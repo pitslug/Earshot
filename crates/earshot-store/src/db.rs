@@ -20,7 +20,7 @@ const CHECKPOINT_ATTEMPTS: u32 = 5;
 const CHECKPOINT_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Schema version this build writes (the number of migrations).
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Store errors.
 #[derive(Debug)]
@@ -485,7 +485,7 @@ impl Store {
     /// [`earshot_core::voiceprint::forget_voiceprints`] in one transaction, followed by a
     /// truncating WAL checkpoint, so with `secure_delete` the forgotten vectors are gone from
     /// the database file, its free pages and the WAL (PLAN.md 3.9 #4). Returns how many
-    /// voiceprints were deleted.
+    /// voiceprints and voice samples were deleted.
     ///
     /// In the same transaction it drops that identity's speaker centroids from every
     /// meeting's speaker identity record ([`crate::identities`], T6.25): they are the same
@@ -499,13 +499,13 @@ impl Store {
         person: EntityId,
         hlc: &mut Hlc,
         clock: &C,
-    ) -> Result<usize, StoreError> {
+    ) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
         self.forget_voiceprints_of(&[person], hlc, clock)
     }
 
     /// [`Store::forget_voiceprints`] for every person of `persons` in one transaction (all
-    /// or nothing), followed by one truncating checkpoint. Returns how many voiceprints
-    /// were deleted.
+    /// or nothing), followed by one truncating checkpoint. Returns how many voiceprints and
+    /// voice samples were deleted.
     ///
     /// # Errors
     /// As [`Store::forget_voiceprints`]: [`StoreError::Busy`] after the commit means every
@@ -515,13 +515,13 @@ impl Store {
         persons: &[EntityId],
         hlc: &mut Hlc,
         clock: &C,
-    ) -> Result<usize, StoreError> {
+    ) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
         let n = self.transaction(|tx| {
-            let mut n = 0;
+            let mut n = earshot_core::voiceprint::Forgotten::default();
             for &person in persons {
                 n += crate::identities::forget_identity_biometrics(tx, person, hlc, clock)?;
             }
-            Ok::<usize, StoreError>(n)
+            Ok::<_, StoreError>(n)
         })?;
         self.checkpoint_with_retry(CHECKPOINT_ATTEMPTS)?;
         Ok(n)

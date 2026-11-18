@@ -171,11 +171,16 @@ fn store_forget_voiceprints_leaves_no_trace_on_disk() {
         ada.id,
         &[Embedding::new(model.clone(), v)],
         Duration::from_secs(12),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut w.stamp(),
     )
     .unwrap();
-    let sum = store.voiceprints_of(ada.id).unwrap()[0].sum.clone();
+    // The print folded with its samples: the enrolled vector, as stored in its sample.
+    let sum = earshot_core::voiceprint::live_prints_of(&store, ada.id).unwrap()[0]
+        .1
+        .sum()
+        .to_vec();
     let needle: Vec<u8> = sum[10..16].iter().flat_map(|x| x.to_le_bytes()).collect();
     assert!(
         on_disk(&db, &needle),
@@ -185,7 +190,7 @@ fn store_forget_voiceprints_leaves_no_trace_on_disk() {
     let n = store
         .forget_voiceprints(ada.id, &mut w.hlc, &w.clock)
         .unwrap();
-    assert_eq!(n, 1);
+    assert_eq!(n.voiceprints, 1);
     assert!(
         !on_disk(&db, &needle),
         "the biometric vector must not survive in free pages or the WAL"
@@ -209,11 +214,16 @@ fn store_forgotten_voiceprints_do_not_outlive_the_session_when_a_reader_blocks()
         ada.id,
         &[Embedding::new(model.clone(), v)],
         Duration::from_secs(12),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut w.stamp(),
     )
     .unwrap();
-    let sum = store.voiceprints_of(ada.id).unwrap()[0].sum.clone();
+    // The print folded with its samples: the enrolled vector, as stored in its sample.
+    let sum = earshot_core::voiceprint::live_prints_of(&store, ada.id).unwrap()[0]
+        .1
+        .sum()
+        .to_vec();
     let needle: Vec<u8> = sum[10..16].iter().flat_map(|x| x.to_le_bytes()).collect();
     // Fold the enrolment into the main file so the vector sits in a database page.
     store.checkpoint().unwrap();
@@ -234,7 +244,7 @@ fn store_forgotten_voiceprints_do_not_outlive_the_session_when_a_reader_blocks()
         "retries are brief"
     );
     assert!(
-        store.voiceprints_of(ada.id).unwrap()[0].meta.deleted,
+        store.voiceprints_of(ada.id).unwrap()[0].meta().deleted,
         "deletion committed"
     );
     assert!(

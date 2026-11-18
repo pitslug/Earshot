@@ -128,6 +128,7 @@ fn enroll_existing(svc: &Services, person: EntityId, k: usize) {
         person,
         &[e],
         Duration::from_secs(20),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut stamp,
     )
@@ -145,7 +146,7 @@ fn post_rerun_keeps_an_edit_marking_a_voice_as_me_and_adds_no_second_me() {
     assert_eq!(names(&first), ["Speaker 1", "Speaker 2"]);
     let (voice, other) = (first.speakers[0].id, first.speakers[1].id);
 
-    let user = crate::edit::mark_me(&svc, meeting, voice).unwrap();
+    let user = crate::edit::mark_me(&svc, meeting, voice).unwrap().person;
 
     // Twice, so the kept entry is itself good for the next run.
     for seed in [501, 502] {
@@ -286,7 +287,7 @@ fn post_rerun_a_voiceprint_me_takes_over_an_edit_mark_with_one_me_row() {
         let mut post = room_post(2, false);
         let first = run_room(&mut post, &svc, &mic, room_scene(), seed);
         let voice = first.speakers[0].id;
-        let user = crate::edit::mark_me(&svc, meeting, voice).unwrap();
+        let user = crate::edit::mark_me(&svc, meeting, voice).unwrap().person;
         enroll_existing(&svc, user, matched_voice);
 
         let again = run_room(&mut post, &svc, &mic, room_scene(), seed + 1);

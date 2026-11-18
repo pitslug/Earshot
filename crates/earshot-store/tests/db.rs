@@ -10,7 +10,8 @@ use earshot_core::identity::{DeviceId, Hlc, ManualClock};
 use earshot_core::model::{MeetingRepo, repo_contract};
 use earshot_core::prompt::Template;
 use earshot_core::voiceprint::{
-    EnrolmentConfig, Person, Stamp, VoiceprintRepo, enroll, forget_voiceprints, merge_persons,
+    EnrolmentConfig, Person, Stamp, VoiceprintRepo, effective, enroll, forget_voiceprints,
+    merge_persons,
 };
 use earshot_store::{SCHEMA_VERSION, Store, StoreError};
 use rand_chacha::ChaCha8Rng;
@@ -196,6 +197,7 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
             ada.id,
             &[emb(&[1.0, 0.0, 0.0]), emb(&[0.9, 0.1, 0.0])],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &cfg,
             &mut w.stamp(),
         )
@@ -205,6 +207,7 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
             dup.id,
             &[emb(&[0.0, 1.0, 0.0])],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &cfg,
             &mut w.stamp(),
         )
@@ -217,20 +220,30 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
     assert_eq!(vps.len(), 2);
     let a = store.voiceprints_of(ada.id).unwrap();
     assert_eq!(a.len(), 1);
-    assert_eq!(a[0].count, 2);
-    assert_eq!(a[0].speech_ms, 12_000);
+    // Survived the reopen: the print and its two samples fold to the enrolment.
+    let samples = store.samples_of(a[0].id()).unwrap();
+    assert_eq!(samples.len(), 2);
+    let folded = effective(&a[0], &samples);
+    assert_eq!((folded.count(), folded.speech_ms()), (2, 12_000));
     assert_eq!(
         store.person(dup.id).unwrap().unwrap().merged_into,
         Some(ada.id)
     );
 
     let n = forget_voiceprints(&mut store, ada.id, &mut w.hlc, &w.clock).unwrap();
-    assert_eq!(n, 2, "the merged duplicate's voiceprint is deleted too");
+    assert_eq!(
+        (n.voiceprints, n.samples),
+        (2, 3),
+        "the merged duplicate's voiceprint and samples are deleted too"
+    );
     drop(store);
     let store = Store::open(&path).unwrap();
     for v in store.voiceprints(&model).unwrap() {
-        assert!(v.meta.deleted, "tombstoned after reopen");
-        assert!(v.sum.iter().all(|&x| x == 0.0), "vector zeroed on disk");
+        assert!(v.meta().deleted, "tombstoned after reopen");
+        assert!(
+            effective(&v, &[]).sum().iter().all(|&x| x == 0.0),
+            "vector zeroed on disk"
+        );
     }
 }
 
@@ -252,6 +265,7 @@ fn store_forget_voiceprints_of_several_persons_forgets_all_of_them_at_once() {
             p.id,
             &[emb(&v)],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &cfg,
             &mut w.stamp(),
         )
@@ -265,6 +279,7 @@ fn store_forget_voiceprints_of_several_persons_forgets_all_of_them_at_once() {
         other.id,
         &[emb(&[0.0, 0.0, 1.0])],
         Duration::from_secs(12),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &cfg,
         &mut w.stamp(),
     )
@@ -272,16 +287,16 @@ fn store_forget_voiceprints_of_several_persons_forgets_all_of_them_at_once() {
     let n = store
         .forget_voiceprints_of(&people, &mut w.hlc, &w.clock)
         .unwrap();
-    assert_eq!(n, 2);
+    assert_eq!(n.voiceprints, 2);
     drop(store);
     let store = Store::open(&path).unwrap();
     for p in &people {
         for v in store.voiceprints_of(*p).unwrap() {
-            assert!(v.meta.deleted && v.sum.iter().all(|&x| x == 0.0));
+            assert!(v.meta().deleted && effective(&v, &[]).sum().iter().all(|&x| x == 0.0));
         }
     }
     assert!(
-        !store.voiceprints_of(other.id).unwrap()[0].meta.deleted,
+        !store.voiceprints_of(other.id).unwrap()[0].meta().deleted,
         "others are kept"
     );
 }

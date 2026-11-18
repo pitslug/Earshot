@@ -239,7 +239,11 @@ fn speakers_voice_sample_records_saves_and_is_forgotten() {
     assert!(speakers_view(&svc, true).unwrap().voice.saved);
     // The pass is released: a meeting may start now.
     drop(gate.enter_meeting().unwrap());
-    assert_eq!(forget_voice(&svc).unwrap(), 1);
+    assert_eq!(
+        forget_voice(&svc).unwrap(),
+        2,
+        "the print and its one sample"
+    );
     assert!(!speakers_view(&svc, true).unwrap().voice.saved);
 }
 

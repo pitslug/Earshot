@@ -32,7 +32,7 @@ use earshot_core::identity::{DeviceId, EntityId, Hlc, ManualClock};
 use earshot_core::voiceprint::{
     CAMPPLUS_DEV_CLEAN_THRESHOLD, DEV_TARGET_FALSE_ACCEPT, EnrolmentConfig, InMemoryVoiceprintRepo,
     MatchOutcome, Person, Stamp, VoiceprintRepo, calibrate_threshold, calibrated_threshold, enroll,
-    match_embedding,
+    live_prints_of, match_embedding,
 };
 use earshot_onnx::SessionConfig;
 use earshot_onnx::embed::CamppEmbedder;
@@ -201,6 +201,7 @@ fn protocol(speakers: &[Speaker]) -> Scores {
                 p.id,
                 &s.enrol,
                 Duration::from_secs_f64(s.enrol_seconds),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut stamp,
             )
@@ -226,10 +227,10 @@ fn protocol(speakers: &[Speaker]) -> Scores {
             }
         }
         for (_, person) in &person_of {
-            let prints = repo.voiceprints_of(*person).unwrap();
+            let prints = live_prints_of(&repo, *person).unwrap();
             for s in speakers {
                 for t in &s.tests {
-                    for v in &prints {
+                    for (_, v) in &prints {
                         pairs.push(v.score(t).unwrap());
                     }
                 }

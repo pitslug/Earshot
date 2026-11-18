@@ -1718,8 +1718,10 @@ where
                             // The user's edit, kept: an edit for the next run too.
                             given_stamp: None,
                             user_edited: true,
-                            // A new centroid: saving the voice may add it.
-                            enrolled: false,
+                            // The same voice: a save from before samples (the frozen marker,
+                            // docs/voice-samples.md 5.2) still counts, so a re-save adds it
+                            // nothing again.
+                            enrolled: identity.enrolled,
                             // An ignored voice stays ignored (T12.19).
                             ignored: identity.ignored,
                         });
@@ -1762,6 +1764,11 @@ where
                     next_unknown += 1;
                     (None, format!("Speaker {next_unknown}"))
                 };
+                // A save from before samples carries to the same voice still linked to the
+                // same person (the frozen marker, docs/voice-samples.md 5.2).
+                let carried_marker = earlier_speaker
+                    .as_ref()
+                    .is_some_and(|(_, i)| i.enrolled && i.given_person == person);
                 // An earlier speaker without an edit: its row, named by this run.
                 let row = match earlier_speaker {
                     Some((row, _)) => {
@@ -1799,7 +1806,7 @@ where
                         // The row as this pass left it: any later write is an edit.
                         given_stamp: Some(row.meta.updated_at),
                         user_edited: false,
-                        enrolled: false,
+                        enrolled: carried_marker,
                         ignored: false,
                     });
                 }
@@ -1950,22 +1957,53 @@ where
                 && let Some(k) = meeting_diar.me()
             {
                 let me = &meeting_diar.speakers[k];
+                // The sample's origin is the Me row, which survives re-runs; a final pass never
+                // takes a sample back (decision 6), so a re-run that finds one from this row
+                // already saved for the user adds nothing (docs/voice-samples.md 4).
+                let me_row = speakers
+                    .iter()
+                    .find(|s| s.role == SpeakerRole::Me)
+                    .map(|s| s.id);
+                let mut saved = false;
+                if let Some(row) = me_row {
+                    for s in tx
+                        .samples_from(meeting, row)
+                        .map_err(RuntimeError::Voiceprint)?
+                    {
+                        let to = match s.person_id() {
+                            Some(p) => earshot_core::voiceprint::resolve_person(&*tx, p)
+                                .map_err(RuntimeError::Voiceprint)?,
+                            None => None,
+                        };
+                        saved |= to.is_some_and(|p| p.is_me);
+                    }
+                }
                 // Always the user's person: a Me row is linked to no one else (`link_speaker`
                 // refuses it), so nothing is enrolled into another person.
-                let result = enroll_me(
-                    tx,
-                    std::slice::from_ref(&me.centroid),
-                    me.speech,
-                    &config.enrolment,
-                    &mut stamp,
-                )
-                .map(|(_, voiceprint)| voiceprint);
+                // A diarised Me with no Me row cannot happen (the rows above give every worded
+                // voice one); "Me" enrolment is off in every shipped build anyway, so nothing is
+                // enrolled then rather than with an origin no take back could reach.
+                let result = match me_row {
+                    _ if saved => Err(None),
+                    Some(speaker) => enroll_me(
+                        tx,
+                        std::slice::from_ref(&me.centroid),
+                        me.speech,
+                        earshot_core::voiceprint::SampleOrigin::Meeting { meeting, speaker },
+                        &config.enrolment,
+                        &mut stamp,
+                    )
+                    .map(|(_, voiceprint)| voiceprint)
+                    .map_err(Some),
+                    None => Err(None),
+                };
                 match result {
                     Ok(voiceprint) => enrolled_me = Some(voiceprint),
-                    Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {
+                    Err(None) => {}
+                    Err(Some(VoiceprintError::NotEnoughSpeech { needed, got })) => {
                         warnings.push(PostWarning::NotEnoughSpeechForMe { needed, got });
                     }
-                    Err(e) => return Err(RuntimeError::Voiceprint(e)),
+                    Err(Some(e)) => return Err(RuntimeError::Voiceprint(e)),
                 }
             }
             // The live records are transient (speaker embeddings are biometric data, the
@@ -2478,7 +2516,8 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
     warnings: &mut Vec<PostWarning>,
 ) -> Result<Vec<Naming>, RuntimeError> {
     let vp = RuntimeError::Voiceprint;
-    // One read of the persons and this model's voiceprints for all speakers.
+    // One read of the persons and this model's voiceprints and voice samples for all
+    // speakers.
     let mut snapshot = InMemoryVoiceprintRepo::new();
     let persons = repo.persons().map_err(vp)?;
     for p in &persons {
@@ -2486,6 +2525,9 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
     }
     for v in repo.voiceprints(model).map_err(vp)? {
         snapshot.put_voiceprint(v).map_err(vp)?;
+    }
+    for s in repo.samples(model).map_err(vp)? {
+        snapshot.put_sample(s).map_err(vp)?;
     }
     let is_me = |id: EntityId| persons.iter().any(|p| p.id == id && p.is_me);
 

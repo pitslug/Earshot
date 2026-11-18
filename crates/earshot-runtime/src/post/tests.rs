@@ -143,6 +143,7 @@ fn enroll_alice(svc: &Services, k: usize) -> EntityId {
         alice.id,
         &[e],
         Duration::from_secs(20),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut stamp,
     )
@@ -237,6 +238,107 @@ fn post_unreadable_echo_locks_are_reported_once_and_the_pass_still_stores() {
     );
 }
 
+/// T12.77b2: "Alice" with a zero-base print whose voice is only a stored sample of scene
+/// speaker `k`; the final pass's snapshot copies the samples, so she is named.
+#[test]
+fn post_final_pass_names_a_voice_held_only_in_stored_samples() {
+    use earshot_core::voiceprint::{SampleOrigin, Voiceprint, VoiceprintSample};
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = {
+        let clock = ManualClock::new(1_760_000_000_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(2);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = Stamp {
+            clock: &clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let alice = Person::new("Alice", false, &mut stamp);
+        store.put_person(alice.clone()).unwrap();
+        let id = EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+        let dim = centroid(1).len();
+        let print = Voiceprint::from_stored(
+            id,
+            meta,
+            alice.id,
+            EmbeddingModelId::new(MODEL),
+            vec![0.0; dim],
+            0,
+            0,
+        );
+        store.put_voiceprint(print.clone()).unwrap();
+        let s = VoiceprintSample::new(&print, &centroid(1), 20_000, SampleOrigin::Own, &mut stamp)
+            .unwrap();
+        store.put_sample(s).unwrap();
+        alice.id
+    };
+    let (mic_audio, them_audio) = scene();
+    let mut post = PostProcessor::new(
+        transcriber(),
+        FakeSegmenter::segmentation_3_0(),
+        embedder(),
+        config(),
+    )
+    .unwrap();
+    let input = PostInput {
+        echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
+        meeting,
+        tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+    };
+    let mut rng = ChaCha8Rng::seed_from_u64(3);
+    let outcome = post
+        .run(&svc, input, &mut rng, &CancelToken::new())
+        .unwrap();
+    assert_eq!(outcome.speakers[1].display_name, "Alice");
+    assert_eq!(outcome.speakers[1].person, Some(alice));
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+}
+
+/// T12.77b6 (docs/voice-samples.md 4): with "Me" enrolment on, the final pass saves the user's
+/// voice as a sample from the Me row; a re-run that finds that sample adds no second one (a
+/// final pass never takes a sample back, and the Me row survives re-runs).
+#[test]
+fn post_rerun_saves_no_second_me_sample() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let run = |svc: &Services| {
+        let (mic_audio, them_audio) = scene();
+        let mut post = PostProcessor::new(
+            transcriber(),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            config(),
+        )
+        .unwrap();
+        let input = PostInput {
+            echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
+            meeting,
+            tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        post.run(svc, input, &mut rng, &CancelToken::new()).unwrap()
+    };
+    let first = run(&svc);
+    assert!(first.enrolled_me.is_some());
+    let me_row = first.speakers[0].id;
+    assert_eq!(first.speakers[0].role, SpeakerRole::Me);
+    assert_eq!(svc.store().samples_from(meeting, me_row).unwrap().len(), 1);
+    let again = run(&svc);
+    assert_eq!(
+        again.speakers[0].id, me_row,
+        "the Me row survives the re-run"
+    );
+    assert_eq!(again.enrolled_me, None, "nothing added again");
+    assert_eq!(svc.store().samples_from(meeting, me_row).unwrap().len(), 1);
+}
+
 #[test]
 fn post_final_pass_diarises_names_and_stores_speakers() {
     let dir = TempDir::new();
@@ -317,7 +419,7 @@ fn post_final_pass_diarises_names_and_stores_speakers() {
     // "Me" was enrolled (22 s of mic speech) and is now recognised.
     let vp = outcome.enrolled_me.expect("Me enrolled");
     let prints = store.voiceprints_of(me.person.unwrap()).unwrap();
-    assert!(prints.iter().any(|p| p.id == vp));
+    assert!(prints.iter().any(|p| p.id() == vp));
     let probe = earshot_core::diar::Embedding::new(EmbeddingModelId::new(MODEL), centroid(0));
     assert!(matches!(
         match_embedding(&**store, &probe, 0.5).unwrap(),
@@ -885,6 +987,7 @@ fn enroll_person_with(svc: &Services, name: &str, is_me: bool, k: usize, model: 
         p.id,
         &[e],
         Duration::from_secs(20),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut stamp,
     )
@@ -1547,6 +1650,7 @@ fn post_in_room_session_stores_one_track_and_names_me_by_voiceprint_only() {
             p.id,
             &[print],
             Duration::from_secs(20),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             &mut stamp,
         )
@@ -2465,13 +2569,19 @@ fn post_echo_users_voiceprint_beats_a_louder_colleague() {
     let prints = store.voiceprints_of(user).unwrap();
     let stored = prints
         .iter()
-        .find(|p| p.id == vp)
+        .find(|p| p.id() == vp)
         .expect("the user's print");
     let user_voice =
         earshot_core::diar::Embedding::new(EmbeddingModelId::new(CAMPPLUS_ID), centroid(0));
     // The print adds the Me centroid to the earlier enrolment: still the user's voice (a
     // colleague's centroid would pull it to 0.7).
-    let centroid_now = stored.centroid().expect("a centroid");
+    let as_store: &earshot_store::Store = &store;
+    let (_, folded) = earshot_core::voiceprint::live_prints_of(as_store, user)
+        .unwrap()
+        .into_iter()
+        .find(|(p, _)| p.id() == stored.id())
+        .unwrap();
+    let centroid_now = folded.centroid().expect("a centroid");
     assert!(centroid_now.cosine_similarity(&user_voice).unwrap() > 0.9);
 }
 
@@ -4020,6 +4130,7 @@ fn post_a_voice_close_to_two_people_is_named_only_with_a_clear_margin() {
                 p.id,
                 &[e],
                 Duration::from_secs(20),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut stamp,
             )
@@ -4106,6 +4217,7 @@ fn post_the_margin_never_costs_the_user_their_own_name() {
                 p.id,
                 &[e],
                 Duration::from_secs(20),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut stamp,
             )
@@ -4156,4 +4268,111 @@ fn post_the_margin_never_costs_the_user_their_own_name() {
     assert_eq!(role, SpeakerRole::Room);
     assert_eq!(person, None);
     assert!(name.starts_with("Speaker "), "{name}");
+}
+
+/// Sets the frozen marker (`SpeakerIdentity::enrolled`) on `speaker`'s entry: test set-up for
+/// a save made before samples existed.
+fn mark_saved_before_samples(svc: &Services, meeting: EntityId, speaker: EntityId) {
+    let key = crate::identities::record_key(meeting);
+    let mut db = svc.store();
+    let Some(crate::identities::StoredIdentities::Record(mut record)) = db
+        .local_value(key.as_str())
+        .unwrap()
+        .map(|b| crate::identities::decode(&b))
+    else {
+        panic!("a record");
+    };
+    for i in &mut record.speakers {
+        if i.speaker == speaker {
+            i.enrolled = true;
+        }
+    }
+    // Test set-up only: production writes this record through the runtime's registry.
+    db.set_local_value(key.as_str(), &crate::identities::encode(&record))
+        .unwrap();
+}
+
+fn marker_of(svc: &Services, meeting: EntityId, speaker: EntityId) -> bool {
+    let key = crate::identities::record_key(meeting);
+    match svc
+        .store()
+        .local_value(key.as_str())
+        .unwrap()
+        .map(|b| crate::identities::decode(&b))
+    {
+        Some(crate::identities::StoredIdentities::Record(r)) => r
+            .speakers
+            .iter()
+            .any(|i| i.speaker == speaker && i.enrolled),
+        _ => false,
+    }
+}
+
+/// T12.77b7 review (1): a voice the pass named (no user edit) keeps the frozen marker across a
+/// re-run that names the same person; a re-run naming someone else drops it.
+#[test]
+fn post_rerun_carries_the_frozen_marker_only_to_the_same_person() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = enroll_alice(&svc, 1);
+    let run = |svc: &Services| {
+        let (mic_audio, them_audio) = scene();
+        let mut post = PostProcessor::new(
+            transcriber(),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            config(),
+        )
+        .unwrap();
+        let input = PostInput {
+            echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
+            meeting,
+            tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        post.run(svc, input, &mut rng, &CancelToken::new()).unwrap()
+    };
+    let first = run(&svc);
+    let voice = first.speakers[1].id;
+    assert_eq!(first.speakers[1].person, Some(alice), "named by the pass");
+    mark_saved_before_samples(&svc, meeting, voice);
+    let again = run(&svc);
+    assert_eq!(again.speakers[1].id, voice);
+    assert_eq!(again.speakers[1].person, Some(alice));
+    assert!(
+        marker_of(&svc, meeting, voice),
+        "carried to the same person"
+    );
+
+    // The same voice is someone else's now (Alice's print erased elsewhere, her entry kept
+    // here): the re-run names them, and the marker, set for Alice, goes.
+    crate::edit::write(&svc, |tx, stamp| {
+        earshot_core::voiceprint::forget_voiceprints(tx, alice, stamp.hlc, stamp.clock)
+            .map_err(RuntimeError::Voiceprint)?;
+        let bea = Person::new("Bea", false, stamp);
+        tx.put_person(bea.clone())
+            .map_err(RuntimeError::Voiceprint)?;
+        let e = earshot_core::diar::Embedding::new(EmbeddingModelId::new(MODEL), centroid(1));
+        enroll(
+            tx,
+            bea.id,
+            &[e],
+            Duration::from_secs(20),
+            earshot_core::voiceprint::SampleOrigin::Own,
+            &EnrolmentConfig::default(),
+            stamp,
+        )
+        .map_err(RuntimeError::Voiceprint)?;
+        Ok(())
+    })
+    .unwrap();
+    let third = run(&svc);
+    assert_eq!(third.speakers[1].id, voice);
+    assert_eq!(third.speakers[1].display_name, "Bea");
+    assert!(
+        !marker_of(&svc, meeting, voice),
+        "not carried to someone else"
+    );
 }

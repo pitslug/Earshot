@@ -127,7 +127,8 @@ fn edit_names_removing_a_person_marks_a_summary_that_used_their_name() {
             name: "Rowan".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     store(&svc, m, "Rowan will book the venue.", 839);
     let other = processed(&svc, 840);
     store(&svc, other, "The venue was booked.", 841);
@@ -177,7 +178,8 @@ fn edit_names_link_rename_person_and_not_this_person_each_mark_a_summary_using_t
             name: "Rowan".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     assert!(named(&svc, m).summary_names_changed(), "link");
 
     store(&svc, m, "Rowan will book the venue.", 831);

@@ -20,7 +20,7 @@ use earshot_core::model::{
     DictionaryWord, Folder, Meeting, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
     SummaryRequest, Track,
 };
-use earshot_core::voiceprint::{Person, Voiceprint};
+use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintSample};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{Store, StoreError, StoreTx};
@@ -55,6 +55,10 @@ pub enum SyncedRow {
     SummaryRequest(SummaryRequest),
     /// `dictionary_word` (synced only while the device's Dictionary switch is on, T11.3e).
     DictionaryWord(DictionaryWord),
+    /// `voiceprint_sample` (an opt-in kind with voiceprints, T12.77b2). Not decoded from the
+    /// wire until sample sync is turned on (T12.77b8): a pulled sample row is held as
+    /// [`HoldReason::Format`].
+    VoiceprintSample(VoiceprintSample),
 }
 
 macro_rules! each {
@@ -71,6 +75,7 @@ macro_rules! each {
             SyncedRow::Folder($r) => $e,
             SyncedRow::SummaryRequest($r) => $e,
             SyncedRow::DictionaryWord($r) => $e,
+            SyncedRow::VoiceprintSample($r) => $e,
         }
     };
 }
@@ -98,7 +103,7 @@ impl SyncedRow {
     }
 
     /// The meeting it belongs to: its own id for a meeting, `None` for people, voiceprints,
-    /// folders and Dictionary words.
+    /// voice samples (never held for their meeting), folders and Dictionary words.
     #[must_use]
     pub fn meeting(&self) -> Option<EntityId> {
         match self {
@@ -109,9 +114,11 @@ impl SyncedRow {
             Self::Note(r) => Some(r.meeting_id),
             Self::Summary(r) => Some(r.meeting_id),
             Self::SummaryRequest(r) => Some(r.meeting_id),
-            Self::Person(_) | Self::Voiceprint(_) | Self::Folder(_) | Self::DictionaryWord(_) => {
-                None
-            }
+            Self::Person(_)
+            | Self::Voiceprint(_)
+            | Self::VoiceprintSample(_)
+            | Self::Folder(_)
+            | Self::DictionaryWord(_) => None,
         }
     }
 
@@ -229,6 +236,17 @@ pub struct Held {
     pub reason: HoldReason,
 }
 
+/// What a push holds back until voice samples sync (T12.77b4, docs/voice-samples.md 7.1).
+/// Removed when sample sync is turned on (T12.77b8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushHold {
+    /// Nothing held: every row of a kind switched on goes.
+    Off,
+    /// Live voiceprints and every voice sample row wait in the outbox; voiceprint tombstones
+    /// (the same shape in every build) still go, when voiceprints sync.
+    Samples,
+}
+
 /// The opt-in kinds this device syncs (docs/sync.md section 9): a row of a kind switched off
 /// is neither pushed nor applied here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,7 +269,7 @@ impl SyncKinds {
     #[must_use]
     pub fn syncs(self, table: &str) -> bool {
         match table {
-            "voiceprint" => self.voiceprints,
+            "voiceprint" | "voiceprint_sample" => self.voiceprints,
             "dictionary_word" => self.dictionary,
             _ => true,
         }
@@ -286,10 +304,13 @@ pub struct Applied {
     pub skipped: usize,
     /// Rows held, per reason, in [`HoldReason::ALL`] order.
     pub held: [usize; 4],
-    /// Voiceprints and centroids forgotten because a person was deleted elsewhere.
+    /// Biometric rows erased by the page: voiceprints, voice samples and centroids forgotten
+    /// because a person was deleted elsewhere, live prints a pulled print tombstone replaced,
+    /// and samples of a print tombstoned here (the dead-print repair).
     pub biometrics_forgotten: usize,
-    /// Live meeting rows refused because the meeting is deleted here (its tombstone was
-    /// stamped again, so it goes out and wins at the relay).
+    /// Live meeting rows refused because the meeting is deleted here, and live voiceprints
+    /// refused because the print is deleted here (T12.77b3): the tombstone was stamped again,
+    /// so it goes out and wins at the relay.
     pub deletions_kept: usize,
     /// "Me" people merged into the earliest one (two devices each made their own).
     pub mes_merged: usize,
@@ -474,6 +495,33 @@ fn converge<C: Clock + ?Sized>(
             out.meetings.insert(replaced.meeting_id);
         }
     }
+    // Rule 3: no live voice sample of a print tombstoned here (docs/voice-samples.md 7.4).
+    let dead: Vec<[u8; 16]> = {
+        let mut st = tx.conn.prepare(
+            "SELECT s.id FROM voiceprint_sample s JOIN voiceprint v ON v.id = s.voiceprint_id \
+             WHERE s.deleted = 0 AND v.deleted = 1",
+        )?;
+        st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+    };
+    // Erased by id in SQL, never read back first: a damaged live row (one `from_stored`
+    // refuses) is erased too and cannot abort the page.
+    for id in dead {
+        let at = hlc.now(clock);
+        tx.conn.execute(
+            "UPDATE voiceprint_sample SET deleted = 1, voiceprint_id = NULL, person_id = NULL, \
+             model = NULL, vector = x'', speech_ms = NULL, meeting_id = NULL, speaker_id = NULL, \
+             updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+             WHERE id = ?4 AND deleted = 0",
+            params![
+                i64_of(at.wall_ms)?,
+                at.logical,
+                &at.node.as_uuid().as_bytes()[..],
+                &id[..],
+            ],
+        )?;
+        out.biometrics_forgotten += 1;
+        out.people = true;
+    }
     Ok(())
 }
 
@@ -581,6 +629,78 @@ impl Store {
             .conn
             .query_row("SELECT count(*) FROM sync_outbox", [], |r| r.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+
+    /// Up to `limit` tombstones of `table` waiting in the outbox, oldest `updated_at` first
+    /// (the voiceprint tombstones a [`PushHold::Samples`] push still sends).
+    ///
+    /// # Errors
+    /// Store errors; [`StoreError::Repo`] for a table that is not synced.
+    pub fn outbox_tombstones(
+        &self,
+        table: &str,
+        limit: usize,
+    ) -> Result<Vec<SyncedRow>, StoreError> {
+        if !SYNCED_TABLES.contains(&table) {
+            return Err(StoreError::Repo(RepoError::Storage(format!(
+                "{table} is not a synced table"
+            ))));
+        }
+        let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
+        let sql = format!(
+            "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id \
+             WHERE o.tbl = ?1 AND r.deleted = 1 \
+             ORDER BY r.updated_wall, r.updated_logical, r.updated_node LIMIT ?2"
+        );
+        let ids: Vec<[u8; 16]> = {
+            let mut st = self.conn.prepare(&sql)?;
+            st.query_map(params![table, limit_sql], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(row) =
+                crate::repo::synced_by_id(&self.conn, table, EntityId::from_bytes(id))?
+            {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// What a push sends under `hold` with the same exclusions, counted: the one waiting count,
+    /// read by the push's paging and by the Sync page, so held rows never show as behind. With
+    /// [`PushHold::Off`] it is [`Store::outbox_len_except`]; with [`PushHold::Samples`] the
+    /// rows of every other kind plus the voiceprint tombstones (when voiceprints sync).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_len_held(
+        &self,
+        meetings: &[EntityId],
+        kinds: SyncKinds,
+        hold: PushHold,
+    ) -> Result<u64, StoreError> {
+        match hold {
+            PushHold::Off => self.outbox_len_except(meetings, kinds),
+            PushHold::Samples => {
+                let others = SyncKinds {
+                    voiceprints: false,
+                    ..kinds
+                };
+                let mut n = self.outbox_len_except(meetings, others)?;
+                if kinds.voiceprints {
+                    let t: i64 = self.conn.query_row(
+                        "SELECT count(*) FROM sync_outbox o JOIN voiceprint r ON r.id = o.id \
+                         WHERE o.tbl = 'voiceprint' AND r.deleted = 1",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    n += u64::try_from(t).unwrap_or(0);
+                }
+                Ok(n)
+            }
+        }
     }
 
     /// How many rows [`Store::outbox_except`] would send with the same exclusions: what a
@@ -774,6 +894,35 @@ impl Store {
                     unhold(tx, inc)?;
                     continue;
                 }
+                // A voiceprint deletion is final, as a meeting's (docs/voice-samples.md 7.4): a
+                // live copy written elsewhere after it (an older build that still had the print)
+                // never brings the voice back. The tombstone is stamped again and goes out.
+                if let (Some(SyncedRow::Voiceprint(here)), SyncedRow::Voiceprint(there)) =
+                    (&local, row)
+                    && here.meta().deleted
+                    && !there.meta().deleted
+                {
+                    let _ = hlc.observe(inc.stamp, clock);
+                    if here.meta().updated_at < row.meta().updated_at {
+                        let mut meta = *here.meta();
+                        meta.touch(hlc, clock);
+                        let again = Voiceprint::from_stored(
+                            here.id(),
+                            meta,
+                            here.person_id(),
+                            here.model().clone(),
+                            here.base_sum().to_vec(),
+                            here.base_count(),
+                            here.base_speech_ms(),
+                        );
+                        crate::repo::put_synced(&tx.conn, &SyncedRow::Voiceprint(again))?;
+                        out.deletions_kept += 1;
+                    } else {
+                        out.ignored += 1;
+                    }
+                    unhold(tx, inc)?;
+                    continue;
+                }
                 // A summary request's withdrawal is final (docs/sync-spec.md section 10.1).
                 if let (Some(SyncedRow::SummaryRequest(here)), SyncedRow::SummaryRequest(there)) =
                     (&local, row)
@@ -825,6 +974,25 @@ impl Store {
                     None => matches!(row, SyncedRow::Person(_)),
                     Some(_) => false,
                 };
+                let print_was_live =
+                    matches!(&local, Some(SyncedRow::Voiceprint(v)) if !v.meta().deleted);
+                // A pulled print tombstone is stored with its vector zeroed, whatever it holds.
+                let zeroed;
+                let row = match row {
+                    SyncedRow::Voiceprint(v) if v.meta().deleted => {
+                        zeroed = SyncedRow::Voiceprint(Voiceprint::from_stored(
+                            v.id(),
+                            *v.meta(),
+                            v.person_id(),
+                            v.model().clone(),
+                            vec![0.0; v.base_sum().len()],
+                            v.base_count(),
+                            v.base_speech_ms(),
+                        ));
+                        &zeroed
+                    }
+                    other => other,
+                };
                 {
                     let sp = tx.conn.savepoint()?;
                     match crate::repo::put_synced(&sp, row) {
@@ -852,12 +1020,16 @@ impl Store {
                     out.meetings.insert(m);
                 }
                 out.people |= matches!(row, SyncedRow::Person(_));
+                if matches!(row, SyncedRow::Voiceprint(v) if v.meta().deleted) && print_was_live {
+                    out.biometrics_forgotten += 1;
+                }
                 if let SyncedRow::Person(p) = row
                     && p.meta.deleted
                     && person_was_live
                 {
                     out.biometrics_forgotten +=
-                        crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?;
+                        crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?
+                            .total();
                 }
             }
             converge(tx, hlc, clock, &mut out)?;

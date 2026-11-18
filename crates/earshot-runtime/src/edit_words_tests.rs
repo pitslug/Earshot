@@ -99,7 +99,8 @@ fn edit_word_list_is_the_dictionary_then_saved_names_without_repeats() {
             name: "Vantrel Oskarine".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     crate::my_voice::set_my_name(&svc, "Tamsin Brevik").unwrap();
     // Dictionary first; a saved name's word that repeats one in another case is dropped;
     // people by name; the user's own name once they set one.

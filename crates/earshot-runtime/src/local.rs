@@ -603,7 +603,7 @@ pub(crate) fn on_off(text: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -692,7 +692,7 @@ mod tests {
 
     /// Lines of production code in `src` (items under `#[cfg(test)]` and test-only files
     /// left out).
-    fn production_lines(src: &str) -> Vec<(usize, String)> {
+    pub(crate) fn production_lines(src: &str) -> Vec<(usize, String)> {
         let mut out = Vec::new();
         let mut skipping = false;
         let mut depth: i64 = 0;
@@ -783,7 +783,7 @@ mod tests {
     /// The production source files of a crate: from `src/lib.rs` and `src/main.rs` through
     /// every module declaration not under `#[cfg(test)]`, so a test-only file is left out by
     /// how it is declared, not by its name.
-    fn production_files(krate: &std::path::Path) -> Vec<std::path::PathBuf> {
+    pub(crate) fn production_files(krate: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut todo: Vec<std::path::PathBuf> = ["lib.rs", "main.rs"]
             .iter()
             .map(|r| krate.join("src").join(r))
@@ -805,7 +805,7 @@ mod tests {
 
     /// Workspace members (folder names, which are the package names) from the root
     /// manifest.
-    fn workspace_members(root: &std::path::Path) -> Vec<String> {
+    pub(crate) fn workspace_members(root: &std::path::Path) -> Vec<String> {
         let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
         let list = manifest
             .split_once("members = [")
@@ -820,7 +820,7 @@ mod tests {
     }
 
     /// `net_guard::TEST_SUPPORT_PACKAGES`, read from xtask's source (fails closed).
-    fn test_support_packages(root: &std::path::Path) -> Vec<String> {
+    pub(crate) fn test_support_packages(root: &std::path::Path) -> Vec<String> {
         let src = std::fs::read_to_string(root.join("xtask/src/net_guard.rs")).unwrap();
         let list = src
             .split_once("pub const TEST_SUPPORT_PACKAGES: &[&str] = &[")
@@ -876,6 +876,214 @@ mod tests {
              deletion sweeps them:\n{}",
             bypass.join("\n")
         );
+    }
+
+    /// The accessors of a voiceprint's stored base (docs/voice-samples.md 3.2), written split
+    /// so this file never names them.
+    const BASE_ACCESSORS: [&str; 3] = [
+        concat!("base", "_sum"),
+        concat!("base", "_count"),
+        concat!("base", "_speech_ms"),
+    ];
+
+    /// The places allowed to read a voiceprint's base: the fold, the store's rows and sync.
+    const BASE_READERS: [&str; 3] = [
+        "crates/earshot-core/src/voiceprint/",
+        "crates/earshot-store/src/repo.rs",
+        "crates/earshot-store/src/sync.rs",
+    ];
+
+    /// Every `.rs` file under `dir` (sources, tests, examples), leaving out build output.
+    fn all_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                let build_output = path.file_name().is_some_and(|n| n == "target")
+                    || path.join("CACHEDIR.TAG").exists();
+                if !build_output {
+                    all_rs_files(&path, out);
+                }
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The lines of `src` that name a base accessor.
+    fn base_reads(src: &str) -> Vec<(usize, &str)> {
+        src.lines()
+            .enumerate()
+            .filter(|(_, l)| BASE_ACCESSORS.iter().any(|a| l.contains(a)))
+            .map(|(n, l)| (n + 1, l))
+            .collect()
+    }
+
+    #[test]
+    fn voiceprint_base_is_read_only_by_the_fold() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        all_rs_files(&root.join("crates"), &mut files);
+        all_rs_files(&root.join("apps/desktop/src-tauri"), &mut files);
+        let rel = |f: &std::path::Path| {
+            f.strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        let names: Vec<String> = files.iter().map(|f| rel(f)).collect();
+        for reached in [
+            "crates/earshot-core/src/voiceprint/sample.rs",
+            "crates/earshot-store/src/repo.rs",
+            "crates/earshot-runtime/examples/vp_readout.rs",
+            "crates/earshot-onnx/tests/voiceprint_calibration.rs",
+            "apps/desktop/src-tauri/src/detail.rs",
+        ] {
+            assert!(
+                names.iter().any(|n| n == reached),
+                "the scan reaches {reached}"
+            );
+        }
+        let mut found = Vec::new();
+        for (f, name) in files.iter().zip(&names) {
+            if BASE_READERS.iter().any(|r| name.starts_with(r)) {
+                continue;
+            }
+            let src = std::fs::read_to_string(f).unwrap();
+            for (n, line) in base_reads(&src) {
+                found.push(format!("{name}:{n}: {}", line.trim()));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "read a voiceprint through voiceprint::effective or live_prints, never its stored \
+             base:\n{}",
+            found.join("\n")
+        );
+    }
+
+    /// The lines of `src` that fold a print over no samples (`effective(.., &[])`), which
+    /// would read a print as its base alone while samples are stored (T12.77b2).
+    /// Calls are matched across lines (rustfmt wraps long ones); each hit is reported at the
+    /// line its call starts on.
+    fn folds_over_nothing(src: &str) -> Vec<(usize, &str)> {
+        let mut out: Vec<(usize, &str)> = Vec::new();
+        for (i, _) in src.match_indices("effective(") {
+            let args_start = i + "effective(".len();
+            let mut depth = 1usize;
+            let mut end = None;
+            for (j, c) in src[args_start..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(args_start + j);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(end) = end else { continue };
+            let args: String = src[args_start..end]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            if args.trim_end_matches(',').ends_with(",&[]") {
+                let n = src[..i].matches('\n').count();
+                let line = src.lines().nth(n).unwrap_or("");
+                if out.last().is_none_or(|(m, _)| *m != n + 1) {
+                    out.push((n + 1, line));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn voiceprint_effective_is_never_folded_over_no_samples_in_shipped_code() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let skip = test_support_packages(&root);
+        let mut files = Vec::new();
+        for krate in workspace_members(&root)
+            .iter()
+            .filter(|m| m.as_str() != "xtask" && !skip.contains(m))
+        {
+            let dir = root.join("crates").join(krate);
+            if dir.join("src").exists() {
+                files.extend(production_files(&dir));
+            }
+        }
+        files.extend(production_files(&root.join("apps/desktop/src-tauri")));
+        for reached in ["sample.rs", "post/mod.rs", "my_voice.rs", "detail.rs"] {
+            assert!(
+                files
+                    .iter()
+                    .any(|f| f.to_string_lossy().replace('\\', "/").ends_with(reached)),
+                "the scan reaches {reached}"
+            );
+        }
+        assert!(
+            !files.iter().any(|f| f.ends_with("sample_tests.rs")),
+            "test-only files are left out"
+        );
+        let mut found = Vec::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap();
+            let lines: String = production_lines(&src)
+                .into_iter()
+                .map(|(_, l)| l + "\n")
+                .collect();
+            for (n, line) in folds_over_nothing(&lines) {
+                found.push(format!("{}:{n}: {}", f.display(), line.trim()));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "fold a print with its stored samples (voiceprint::live_prints, live_prints_of), \
+             never over none:\n{}",
+            found.join("\n")
+        );
+    }
+
+    #[test]
+    fn voiceprint_effective_scan_finds_a_fold_over_nothing_and_passes_real_folds() {
+        assert_eq!(
+            folds_over_nothing("let a = 1;\nlet e = voiceprint::effective(&v, &[]).count();\n"),
+            vec![(2, "let e = voiceprint::effective(&v, &[]).count();")]
+        );
+        assert!(folds_over_nothing("let e = effective(&v, &samples);\n").is_empty());
+        assert!(
+            folds_over_nothing("pub fn effective(print: &Voiceprint, samples: &[S]) -> E {\n")
+                .is_empty()
+        );
+        assert!(folds_over_nothing("let e = fold(&v, &samples, &[]);\n").is_empty());
+        // A call rustfmt wrapped over several lines, with a trailing comma.
+        let wrapped = "let a = 1;\nlet e = voiceprint::effective(\n    &a_long_print_name,\n    &[],\n)\n.count();\n";
+        assert_eq!(
+            folds_over_nothing(wrapped),
+            vec![(2, "let e = voiceprint::effective(")]
+        );
+        assert!(
+            folds_over_nothing("let e = effective(\n    &v,\n    &samples_of(v.id()),\n);\n")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn voiceprint_base_scan_finds_a_read_and_passes_the_fold_names() {
+        let read = format!(
+            "let s = v.{}();\nlet e = effective(&v, &[]);\n",
+            BASE_ACCESSORS[0]
+        );
+        assert_eq!(base_reads(&read), vec![(1, read.lines().next().unwrap())]);
+        assert!(base_reads("let e = effective(&v, &[]).sum();\nv.meta().deleted\n").is_empty());
+        for a in BASE_ACCESSORS {
+            assert_eq!(base_reads(&format!("x.{a}()")).len(), 1, "{a}");
+        }
     }
 
     #[test]

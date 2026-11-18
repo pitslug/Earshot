@@ -7,7 +7,8 @@
 //!   model (sync class opt-in, D6). Embeddings of other models are never compared with it.
 //! - [`VoiceprintRepo`]: storage trait; [`InMemoryVoiceprintRepo`] for tests (SQLite lives in
 //!   `earshot-store`).
-//! - [`enroll`], [`enroll_me`]: create or update a voiceprint (running centroid update).
+//! - [`enroll`], [`enroll_me`]: record an enrolment as voice samples of a person's voiceprint
+//!   (created with a zero base when there is none).
 //! - [`match_embedding`]: open-set identification: the best-scoring person (cosine
 //!   similarity to the voiceprint centroid) if the score reaches the threshold, otherwise
 //!   "unknown".
@@ -17,10 +18,20 @@
 //!
 //! Running centroid: a voiceprint keeps the sum of its unit-length embeddings and their count;
 //! its centroid is the normalised sum, so every enrolment embedding has equal weight and an
-//! update is O(dimension).
+//! update is O(dimension). What is scored is the effective print ([`effective`]): the stored
+//! base plus the print's live [`VoiceprintSample`]s (docs/voice-samples.md).
 
+mod sample;
+#[cfg(test)]
+mod sample_tests;
 #[cfg(test)]
 mod tests;
+
+pub use sample::{
+    Effective, MAX_EMBEDDING_DIM, MAX_SAMPLE_SPEECH_MS, SAMPLE_NORM_TOLERANCE, SampleOrigin,
+    SampleRecord, VoiceprintSample, admissible, effective, enroll, erase_samples, live_prints,
+    live_prints_of, saved_before_samples, take_back, unit_vector,
+};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -52,6 +63,8 @@ pub enum VoiceprintError {
     NoEmbeddings,
     /// No open-set threshold has been calibrated for this embedding model.
     NoThreshold(EmbeddingModelId),
+    /// A voice sample that fails its check (docs/voice-samples.md 2.1).
+    InvalidSample(String),
     /// Storage failure.
     Repo(String),
 }
@@ -74,6 +87,7 @@ impl fmt::Display for VoiceprintError {
                     "no open-set threshold calibrated for embedding model {m}"
                 )
             }
+            VoiceprintError::InvalidSample(m) => write!(f, "voice sample: {m}"),
             VoiceprintError::Repo(m) => write!(f, "voiceprint storage: {m}"),
         }
     }
@@ -161,22 +175,24 @@ impl Person {
 
 /// One person's voiceprint for one embedding model: the running centroid of their
 /// enrolment embeddings.
+///
+/// The stored `sum`, `count` and `speech_ms` are the untracked base (docs/voice-samples.md
+/// 3.1): enrolments recorded before voice samples existed. What a print scores with is its
+/// effective print, the base plus its live [`VoiceprintSample`]s ([`effective`],
+/// [`live_prints`]); only the fold, the store and sync decode read the base (`base_*`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Voiceprint {
-    /// Row id.
-    pub id: EntityId,
-    /// Sync metadata.
-    pub meta: SyncMeta,
-    /// The person.
-    pub person_id: EntityId,
-    /// The embedding model; only embeddings of this exact model are compared.
-    pub model: EmbeddingModelId,
-    /// Sum of the unit-length enrolment embeddings.
-    pub sum: Vec<f32>,
-    /// Number of embeddings in `sum`.
-    pub count: u32,
-    /// Speech behind the embeddings (milliseconds).
-    pub speech_ms: u64,
+    id: EntityId,
+    meta: SyncMeta,
+    person_id: EntityId,
+    // The embedding model; only embeddings of this exact model are compared.
+    model: EmbeddingModelId,
+    // Sum of the unit-length enrolment embeddings of the base.
+    sum: Vec<f32>,
+    // Number of embeddings in `sum`.
+    count: u32,
+    // Speech behind the base embeddings (milliseconds).
+    speech_ms: u64,
 }
 
 impl SyncClass for Voiceprint {
@@ -210,48 +226,69 @@ fn unit(v: &[f32]) -> Option<Vec<f32>> {
 }
 
 impl Voiceprint {
-    /// The unit-length centroid (normalised sum of the enrolment embeddings).
+    /// A voiceprint row as stored (the store's row reader and tests); `sum`, `count` and
+    /// `speech_ms` are its base.
     #[must_use]
-    pub fn centroid(&self) -> Option<Embedding> {
-        unit(&self.sum).map(|v| Embedding::new(self.model.clone(), v))
-    }
-
-    /// Running centroid update: adds unit-length copies of `embeddings` (all of this
-    /// voiceprint's model and dimension) and `speech`.
-    ///
-    /// # Errors
-    /// [`VoiceprintError::Embedding`] for another model, another dimension or an invalid
-    /// vector; nothing is changed then.
-    pub fn add<C: Clock + ?Sized>(
-        &mut self,
-        embeddings: &[Embedding],
-        speech: Duration,
-        hlc: &mut Hlc,
-        clock: &C,
-    ) -> Result<(), VoiceprintError> {
-        let units = check_embeddings(embeddings, &self.model, Some(self.sum.len()))?;
-        for u in &units {
-            for (s, x) in self.sum.iter_mut().zip(u) {
-                *s += x;
-            }
+    pub fn from_stored(
+        id: EntityId,
+        meta: SyncMeta,
+        person_id: EntityId,
+        model: EmbeddingModelId,
+        sum: Vec<f32>,
+        count: u32,
+        speech_ms: u64,
+    ) -> Self {
+        Voiceprint {
+            id,
+            meta,
+            person_id,
+            model,
+            sum,
+            count,
+            speech_ms,
         }
-        self.count += units.len() as u32;
-        self.speech_ms += speech.as_millis() as u64;
-        self.meta.touch(hlc, clock);
-        Ok(())
     }
 
-    /// Cosine similarity of `e` to the centroid.
-    ///
-    /// # Errors
-    /// [`DiarError::ModelMismatch`] (wrapped) if `e` comes from another model: such
-    /// embeddings are never compared; [`DiarError::Shape`] for another dimension or an
-    /// invalid centroid.
-    pub fn score(&self, e: &Embedding) -> Result<f32, VoiceprintError> {
-        let c = self
-            .centroid()
-            .ok_or_else(|| DiarError::Shape("voiceprint centroid is invalid".to_owned()))?;
-        Ok(c.cosine_similarity(e)?)
+    /// Row id.
+    #[must_use]
+    pub fn id(&self) -> EntityId {
+        self.id
+    }
+
+    /// Sync metadata.
+    #[must_use]
+    pub fn meta(&self) -> &SyncMeta {
+        &self.meta
+    }
+
+    /// The person.
+    #[must_use]
+    pub fn person_id(&self) -> EntityId {
+        self.person_id
+    }
+
+    /// The embedding model; only embeddings of this exact model are compared.
+    #[must_use]
+    pub fn model(&self) -> &EmbeddingModelId {
+        &self.model
+    }
+
+    /// The stored base sum (store and sync only; everything else reads [`effective`]).
+    #[must_use]
+    pub fn base_sum(&self) -> &[f32] {
+        &self.sum
+    }
+
+    /// The stored base count (store and sync only).
+    #[must_use]
+    pub fn base_count(&self) -> u32 {
+        self.count
+    }
+
+    /// The stored base speech in milliseconds (store and sync only).
+    #[must_use]
+    pub fn base_speech_ms(&self) -> u64 {
+        self.speech_ms
     }
 }
 
@@ -322,6 +359,44 @@ pub trait VoiceprintRepo {
     /// # Errors
     /// [`VoiceprintError::Repo`] on storage failure.
     fn put_voiceprint(&mut self, voiceprint: Voiceprint) -> Result<(), VoiceprintError>;
+    /// The live voice samples of `model`, in creation order (`meta.created_at`, then id). A
+    /// sample tombstone keeps no body, so it matches no key and only its own id finds it
+    /// ([`VoiceprintRepo::sample`]); the same holds for every keyed sample read.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples(&self, model: &EmbeddingModelId) -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The live samples of the voiceprint `print`, in creation order.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples_of(&self, print: EntityId) -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The live samples written for `person` (their `person_id`, not following merges), in
+    /// creation order.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples_of_person(&self, person: EntityId)
+    -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The live samples from the voice `speaker` of `meeting`, in creation order.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples_from(
+        &self,
+        meeting: EntityId,
+        speaker: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The sample with `id`, a tombstone included.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn sample(&self, id: EntityId) -> Result<Option<VoiceprintSample>, VoiceprintError>;
+    /// Inserts or replaces a sample (by id).
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn put_sample(&mut self, sample: VoiceprintSample) -> Result<(), VoiceprintError>;
 }
 
 /// In-memory [`VoiceprintRepo`] (tests, and the core pipeline before storage exists).
@@ -329,6 +404,21 @@ pub trait VoiceprintRepo {
 pub struct InMemoryVoiceprintRepo {
     persons: BTreeMap<EntityId, Person>,
     voiceprints: BTreeMap<EntityId, Voiceprint>,
+    samples: BTreeMap<EntityId, VoiceprintSample>,
+}
+
+impl InMemoryVoiceprintRepo {
+    /// The live samples for which `keep` holds, in creation order.
+    fn samples_where(&self, keep: impl Fn(&VoiceprintSample) -> bool) -> Vec<VoiceprintSample> {
+        let mut out: Vec<VoiceprintSample> = self
+            .samples
+            .values()
+            .filter(|s| !s.is_erased() && keep(s))
+            .cloned()
+            .collect();
+        out.sort_by_key(|s| (s.meta().created_at, s.id()));
+        out
+    }
 }
 
 impl InMemoryVoiceprintRepo {
@@ -368,6 +458,33 @@ impl VoiceprintRepo for InMemoryVoiceprintRepo {
     }
     fn put_voiceprint(&mut self, voiceprint: Voiceprint) -> Result<(), VoiceprintError> {
         self.voiceprints.insert(voiceprint.id, voiceprint);
+        Ok(())
+    }
+    fn samples(&self, model: &EmbeddingModelId) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples_where(|s| s.model() == Some(model)))
+    }
+    fn samples_of(&self, print: EntityId) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples_where(|s| s.voiceprint_id() == Some(print)))
+    }
+    fn samples_of_person(
+        &self,
+        person: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples_where(|s| s.person_id() == Some(person)))
+    }
+    fn samples_from(
+        &self,
+        meeting: EntityId,
+        speaker: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        let origin = SampleOrigin::Meeting { meeting, speaker };
+        Ok(self.samples_where(|s| s.origin() == Some(origin)))
+    }
+    fn sample(&self, id: EntityId) -> Result<Option<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples.get(&id).cloned())
+    }
+    fn put_sample(&mut self, sample: VoiceprintSample) -> Result<(), VoiceprintError> {
+        self.samples.insert(sample.id(), sample);
         Ok(())
     }
 }
@@ -467,10 +584,36 @@ pub fn identity_of<R: VoiceprintRepo + ?Sized>(
     Ok(identity)
 }
 
-/// Deletes (tombstones, vector zeroed) every voiceprint of the identity `person`
-/// ([`identity_of`]): its own and those of every person merged into it, directly or through
-/// a chain, since those match as `person` (biometric data is deletable per person, PLAN.md
-/// 3.9). Deletion is per identity, not per row. Returns how many voiceprints were deleted.
+/// What [`forget_voiceprints`] erased.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Forgotten {
+    /// Voiceprints tombstoned with their vector zeroed.
+    pub voiceprints: usize,
+    /// Voice samples tombstoned (no body left).
+    pub samples: usize,
+}
+
+impl Forgotten {
+    /// Every biometric row erased: what decides a checkpoint and what is shown.
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.voiceprints + self.samples
+    }
+}
+
+impl std::ops::AddAssign for Forgotten {
+    fn add_assign(&mut self, other: Self) {
+        self.voiceprints += other.voiceprints;
+        self.samples += other.samples;
+    }
+}
+
+/// Deletes every voiceprint of the identity `person` ([`identity_of`]): its own and those of
+/// every person merged into it, directly or through a chain, since those match as `person`
+/// (biometric data is deletable per person, PLAN.md 3.9). A print is tombstoned with its
+/// vector zeroed; a voice sample is tombstoned with no body left, every live sample written
+/// for a person of the identity or adding to one of its prints (docs/voice-samples.md 8).
+/// Deletion is per identity, not per row.
 ///
 /// # Errors
 /// Storage errors.
@@ -479,20 +622,29 @@ pub fn forget_voiceprints<R: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
     person: EntityId,
     hlc: &mut Hlc,
     clock: &C,
-) -> Result<usize, VoiceprintError> {
+) -> Result<Forgotten, VoiceprintError> {
     let identity = identity_of(repo, person)?;
-    let mut n = 0;
-    for id in identity {
+    let mut out = Forgotten::default();
+    let mut samples: BTreeMap<EntityId, VoiceprintSample> = BTreeMap::new();
+    for &id in &identity {
+        for s in repo.samples_of_person(id)? {
+            samples.insert(s.id(), s);
+        }
         for mut v in repo.voiceprints_of(id)? {
+            for s in repo.samples_of(v.id)? {
+                samples.insert(s.id(), s);
+            }
             if !v.meta.deleted {
                 v.meta.mark_deleted(hlc, clock);
                 v.sum.fill(0.0);
                 repo.put_voiceprint(v)?;
-                n += 1;
+                out.voiceprints += 1;
             }
         }
     }
-    Ok(n)
+    let ids: Vec<EntityId> = samples.into_keys().collect();
+    out.samples = erase_samples(repo, &ids, hlc, clock)?;
+    Ok(out)
 }
 
 /// Enrolment settings.
@@ -509,71 +661,6 @@ impl Default for EnrolmentConfig {
             min_new_speech: Duration::from_secs(10),
         }
     }
-}
-
-/// Adds `embeddings` (from `speech` of the person's audio) to `person`'s live voiceprint for
-/// their model, creating it if there is none. Returns the voiceprint id.
-///
-/// # Errors
-/// [`VoiceprintError::UnknownPerson`] if the person is not live,
-/// [`VoiceprintError::NotEnoughSpeech`] for a new voiceprint with too little speech,
-/// [`VoiceprintError::Embedding`] for mixed models, dimensions or invalid vectors.
-pub fn enroll<Repo, C, R>(
-    repo: &mut Repo,
-    person: EntityId,
-    embeddings: &[Embedding],
-    speech: Duration,
-    config: &EnrolmentConfig,
-    stamp: &mut Stamp<'_, C, R>,
-) -> Result<EntityId, VoiceprintError>
-where
-    Repo: VoiceprintRepo + ?Sized,
-    C: Clock + ?Sized,
-    R: Rng + ?Sized,
-{
-    if !repo.person(person)?.is_some_and(|p| p.is_live()) {
-        return Err(VoiceprintError::UnknownPerson(person));
-    }
-    let model = embeddings
-        .first()
-        .ok_or(VoiceprintError::NoEmbeddings)?
-        .model
-        .clone();
-    let existing = repo
-        .voiceprints_of(person)?
-        .into_iter()
-        .find(|v| v.model == model && !v.meta.deleted);
-    if let Some(mut v) = existing {
-        v.add(embeddings, speech, stamp.hlc, stamp.clock)?;
-        let id = v.id;
-        repo.put_voiceprint(v)?;
-        return Ok(id);
-    }
-    if speech < config.min_new_speech {
-        return Err(VoiceprintError::NotEnoughSpeech {
-            needed: config.min_new_speech,
-            got: speech,
-        });
-    }
-    let units = check_embeddings(embeddings, &model, None)?;
-    let dim = units[0].len();
-    let mut sum = vec![0.0f32; dim];
-    for u in &units {
-        for (s, x) in sum.iter_mut().zip(u) {
-            *s += x;
-        }
-    }
-    let (id, meta) = stamp.new_row();
-    repo.put_voiceprint(Voiceprint {
-        id,
-        meta,
-        person_id: person,
-        model,
-        sum,
-        count: units.len() as u32,
-        speech_ms: speech.as_millis() as u64,
-    })?;
-    Ok(id)
 }
 
 /// The user's name until they give one.
@@ -617,10 +704,10 @@ where
         .min_by_key(|p| p.id))
 }
 
-/// "Me" enrolment: enrols `embeddings` for the user's person ([`me_person`]). Returns the
-/// person and voiceprint ids. Every check (the embeddings, and the speech a first voiceprint
-/// needs) runs before the "Me" person is created, so a refused first enrolment writes
-/// nothing.
+/// "Me" enrolment: enrols `embeddings` for the user's person ([`me_person`]) as samples from
+/// `origin`. Returns the person and voiceprint ids. Every check (the embeddings, and the speech
+/// a first voiceprint needs) runs before the "Me" person is created, so a refused first
+/// enrolment writes nothing.
 ///
 /// # Errors
 /// As [`enroll`].
@@ -628,6 +715,7 @@ pub fn enroll_me<Repo, C, R>(
     repo: &mut Repo,
     embeddings: &[Embedding],
     speech: Duration,
+    origin: SampleOrigin,
     config: &EnrolmentConfig,
     stamp: &mut Stamp<'_, C, R>,
 ) -> Result<(EntityId, EntityId), VoiceprintError>
@@ -642,10 +730,10 @@ where
         .model;
     check_embeddings(embeddings, model, None)?;
     let has_print = match existing_me(repo)? {
-        Some(me) => repo
-            .voiceprints_of(me.id)?
-            .iter()
-            .any(|v| &v.model == model && !v.meta.deleted),
+        Some(me) => match sample::enrolment_print(repo, me.id, model)? {
+            Some(v) => sample::effective_of(repo, &v, &[])?.count() > 0,
+            None => false,
+        },
         None => false,
     };
     if !has_print && speech < config.min_new_speech {
@@ -655,7 +743,7 @@ where
         });
     }
     let me = me_person(repo, stamp)?;
-    let vp = enroll(repo, me.id, embeddings, speech, config, stamp)?;
+    let vp = enroll(repo, me.id, embeddings, speech, origin, config, stamp)?;
     Ok((me.id, vp))
 }
 
@@ -684,13 +772,14 @@ pub struct MatchReport {
     /// The open-set decision.
     pub outcome: MatchOutcome,
     /// Live voiceprints of the model skipped because their centroid is invalid (zero or
-    /// non-finite) or their dimension differs from the embedding's.
+    /// non-finite) or their dimension differs from the embedding's. A print with an
+    /// effective count of 0 holds no voice and is neither scored nor counted here.
     pub skipped_invalid: usize,
 }
 
 /// Open-set identification of `embedding` against the live voiceprints of its own model
 /// (other models are never compared). Each voiceprint scores the cosine similarity to its
-/// centroid; a merged person scores as the person it was merged into; the best person is
+/// effective centroid; a merged person scores as the person it was merged into; the best person is
 /// `Known` if its score is at least `threshold`. Ties go to the smaller person id. A stored
 /// voiceprint that cannot be scored is skipped ([`match_embedding_with_report`] counts them).
 ///
@@ -736,14 +825,14 @@ pub fn match_embedding_with_margin<Repo: VoiceprintRepo + ?Sized>(
     }
     let mut best: BTreeMap<EntityId, f32> = BTreeMap::new();
     let mut skipped_invalid = 0;
-    for v in repo.voiceprints(&embedding.model)? {
-        if v.meta.deleted || v.model != embedding.model {
+    for (v, eff) in live_prints(repo, &embedding.model)? {
+        if eff.count() == 0 {
             continue;
         }
         let Some(person) = resolve_person(repo, v.person_id)? else {
             continue;
         };
-        let Ok(s) = v.score(embedding) else {
+        let Ok(s) = eff.score(embedding) else {
             skipped_invalid += 1;
             continue;
         };

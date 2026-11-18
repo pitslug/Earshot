@@ -50,6 +50,7 @@ impl World {
             person,
             e,
             Duration::from_secs(secs),
+            SampleOrigin::Own,
             &EnrolmentConfig::default(),
             &mut stamp(&self.clock, &mut self.hlc, &mut self.rng),
         )
@@ -80,22 +81,34 @@ fn voiceprint_running_centroid_is_the_normalised_mean_of_unit_embeddings() {
     let vp = w
         .enroll(p, &[emb(&[3.0, 0.0]), emb(&[0.0, 0.5])], 12)
         .unwrap();
-    let v = w.repo.voiceprints_of(p).unwrap().remove(0);
+    let (v, e) = live_prints_of(&w.repo, p).unwrap().remove(0);
     assert_eq!(v.id, vp);
-    assert_eq!((v.count, v.speech_ms), (2, 12_000));
-    let c = v.centroid().unwrap().vector;
+    assert_eq!((e.count(), e.speech_ms()), (2, 12_000));
+    assert_eq!((v.count, v.speech_ms), (0, 0), "the base is never added to");
+    let c = e.centroid().unwrap().vector;
     let h = std::f32::consts::FRAC_1_SQRT_2;
     assert!((c[0] - h).abs() < 1e-6 && (c[1] - h).abs() < 1e-6, "{c:?}");
     // Update: the same voiceprint grows, and the centroid moves to the mean of all three.
     let created = v.meta.updated_at;
     let again = w.enroll(p, &[emb(&[1.0, 0.0])], 2).unwrap();
     assert_eq!(again, vp, "an update never creates a second voiceprint");
-    let v = w.repo.voiceprints_of(p).unwrap().remove(0);
-    assert_eq!((v.count, v.speech_ms), (3, 14_000));
-    let c = v.centroid().unwrap().vector;
+    let (v, e) = live_prints_of(&w.repo, p).unwrap().remove(0);
+    assert_eq!((e.count(), e.speech_ms()), (3, 14_000));
+    let c = e.centroid().unwrap().vector;
     let n = (4.0f32 + 1.0).sqrt();
     assert!((c[0] - 2.0 / n).abs() < 1e-6 && (c[1] - 1.0 / n).abs() < 1e-6);
-    assert!(v.meta.updated_at > created, "updates are stamped");
+    assert_eq!(v.meta.updated_at, created, "the print row is written once");
+    let stamps: Vec<_> = w
+        .repo
+        .samples_of(vp)
+        .unwrap()
+        .iter()
+        .map(|s| s.meta().created_at)
+        .collect();
+    assert!(
+        stamps.len() == 3 && stamps[2] > created,
+        "updates are stamped samples"
+    );
 }
 
 #[test]
@@ -150,18 +163,15 @@ fn voiceprint_models_are_versioned_and_never_compared() {
         MatchOutcome::Unknown { best: None }
     );
     // Scoring across models is an error, not a number.
-    let v1 = w.repo.voiceprints(&model()).unwrap().remove(0);
+    let (_, v1) = live_prints(&w.repo, &model()).unwrap().remove(0);
     assert!(matches!(
         v1.score(&e2),
         Err(VoiceprintError::Embedding(DiarError::ModelMismatch { .. }))
     ));
-    // Adding another model's embedding to a voiceprint is refused.
-    let mut v1b = v1.clone();
-    assert!(
-        v1b.add(&[e2], Duration::from_secs(1), &mut w.hlc, &w.clock)
-            .is_err()
-    );
-    assert_eq!(v1b, v1);
+    // Enrolling another model's embedding beside this one's is refused, writing nothing.
+    let before = w.repo.samples_of_person(p).unwrap();
+    assert!(w.enroll(p, &[emb(&[1.0, 0.0]), e2], 10).is_err());
+    assert_eq!(w.repo.samples_of_person(p).unwrap(), before);
 }
 
 #[test]
@@ -218,7 +228,9 @@ fn voiceprint_merged_persons_match_as_their_target_and_deleted_prints_are_ignore
     assert!(merge_persons(&mut w.repo, keep, keep, &mut w.hlc, &w.clock).is_err());
     // Forgetting tombstones the voiceprint (vector cleared) and it no longer matches.
     assert_eq!(
-        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock).unwrap(),
+        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock)
+            .unwrap()
+            .voiceprints,
         1
     );
     let v = w.repo.voiceprints_of(dup).unwrap().remove(0);
@@ -228,7 +240,9 @@ fn voiceprint_merged_persons_match_as_their_target_and_deleted_prints_are_ignore
         MatchOutcome::Unknown { best: None }
     );
     assert_eq!(
-        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock).unwrap(),
+        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock)
+            .unwrap()
+            .total(),
         0
     );
 }
@@ -254,7 +268,14 @@ fn voiceprint_forgetting_a_merge_target_forgets_every_merged_identity() {
     assert_eq!(resolve_person(&w.repo, phone).unwrap().unwrap().id, dee);
 
     let n = forget_voiceprints(&mut w.repo, dee, &mut w.hlc, &w.clock).unwrap();
-    assert_eq!(n, 3, "Dee's own print and both merged prints");
+    assert_eq!(
+        n,
+        Forgotten {
+            voiceprints: 3,
+            samples: 3
+        },
+        "Dee's own print and both merged prints, with their samples"
+    );
     for id in [laptop, phone, dee] {
         let v = w.repo.voiceprints_of(id).unwrap().remove(0);
         assert!(v.meta.deleted && v.sum.iter().all(|&x| x == 0.0), "{id:?}");
@@ -285,14 +306,17 @@ fn voiceprint_invalid_rows_are_skipped_not_fatal() {
     let mut w = World::new();
     let (a, b) = (w.person("A"), w.person("B"));
     w.enroll(a, &[emb(&[1.0, 0.0])], 10).unwrap();
-    w.enroll(b, &[emb(&[0.0, 1.0])], 10).unwrap();
-    // Corrupt B's stored row (zero sum, not tombstoned) and add a wrong-dimension row.
-    let mut vb = w.repo.voiceprints_of(b).unwrap().remove(0);
-    vb.sum.fill(0.0);
+    // A corrupt row for B (a count but a zero sum, not tombstoned) and a wrong-dimension row.
+    let mut vb = w.repo.voiceprints_of(a).unwrap().remove(0);
+    vb.id = EntityId::from_bytes([8; 16]);
+    vb.person_id = b;
+    vb.sum = vec![0.0, 0.0];
+    vb.count = 2;
     w.repo.put_voiceprint(vb.clone()).unwrap();
     let mut wide = w.repo.voiceprints_of(a).unwrap().remove(0);
     wide.id = EntityId::from_bytes([9; 16]);
     wide.sum = vec![1.0, 0.0, 0.0];
+    wide.count = 1;
     w.repo.put_voiceprint(wide).unwrap();
     let m = match_embedding_with_report(&w.repo, &emb(&[1.0, 0.1]), 0.5).unwrap();
     assert!(matches!(m.outcome, MatchOutcome::Known { person, .. } if person == a));
@@ -325,6 +349,7 @@ fn voiceprint_me_enrolment_creates_one_me_and_reuses_it() {
         &mut w.repo,
         &[emb(&[1.0, 0.0])],
         Duration::from_secs(3),
+        SampleOrigin::Own,
         &cfg,
         &mut stamp(&w.clock, &mut w.hlc, &mut w.rng),
     );
@@ -338,6 +363,7 @@ fn voiceprint_me_enrolment_creates_one_me_and_reuses_it() {
         &mut w.repo,
         &[emb(&[1.0, 0.0])],
         Duration::from_secs(10),
+        SampleOrigin::Own,
         &cfg,
         &mut stamp(&w.clock, &mut w.hlc, &mut w.rng),
     )
@@ -350,13 +376,14 @@ fn voiceprint_me_enrolment_creates_one_me_and_reuses_it() {
         &mut w.repo,
         &[emb(&[0.9, 0.1])],
         Duration::from_secs(2),
+        SampleOrigin::Own,
         &cfg,
         &mut stamp(&w.clock, &mut w.hlc, &mut w.rng),
     )
     .unwrap();
     assert_eq!((me2, vp2), (me, vp));
     assert_eq!(w.repo.persons().unwrap().len(), 1);
-    assert_eq!(w.repo.voiceprints_of(me).unwrap()[0].count, 2);
+    assert_eq!(live_prints_of(&w.repo, me).unwrap()[0].1.count(), 2);
 }
 
 #[test]

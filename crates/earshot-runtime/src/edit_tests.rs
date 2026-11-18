@@ -238,7 +238,8 @@ fn edit_link_speaker_to_a_new_or_existing_person() {
             name: " Alice Jones ".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     let row = speaker(&svc, a, "Alice Jones");
     assert_eq!(row.person_id, Some(person));
     assert_eq!(
@@ -247,7 +248,9 @@ fn edit_link_speaker_to_a_new_or_existing_person() {
     );
     // Linking again writes nothing.
     assert_eq!(
-        link_speaker(&svc, a, alice_a, &PersonChoice::Existing(person)).unwrap(),
+        link_speaker(&svc, a, alice_a, &PersonChoice::Existing(person))
+            .unwrap()
+            .person,
         person
     );
     assert_eq!(speaker(&svc, a, "Alice Jones").meta, row.meta);
@@ -260,7 +263,9 @@ fn edit_link_speaker_to_a_new_or_existing_person() {
         merge_persons(store, dup, person, hlc, &*clock).unwrap();
     }
     assert_eq!(
-        link_speaker(&svc, b, alice_b, &PersonChoice::Existing(dup)).unwrap(),
+        link_speaker(&svc, b, alice_b, &PersonChoice::Existing(dup))
+            .unwrap()
+            .person,
         person
     );
     assert_eq!(speaker(&svc, b, "Alice Jones").person_id, Some(person));
@@ -557,12 +562,13 @@ fn calibrated(any: bool) -> PostConfig {
 
 /// The live voiceprint count of `person` (the number of centroids added).
 fn print_count(svc: &Services, person: EntityId) -> Option<u32> {
-    svc.store()
-        .voiceprints_of(person)
+    let db = svc.store();
+    let store: &earshot_store::Store = &db;
+    earshot_core::voiceprint::live_prints_of(store, person)
         .unwrap()
         .into_iter()
-        .find(|v| !v.meta.deleted)
-        .map(|v| v.count)
+        .next()
+        .map(|(_, e)| e.count())
 }
 
 /// Links `speaker` to `person` without the edit checks (data as an older build or a sync
@@ -601,7 +607,8 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     let any = calibrated(true);
 
     // Refusals write nothing: the second speaker has no person, "Me" is the user, and so is
@@ -651,12 +658,12 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
     assert_eq!(person, dana);
     let prints = svc.store().voiceprints_of(dana).unwrap();
     assert_eq!(prints.len(), 1);
-    assert_eq!(prints[0].id, voiceprint);
-    assert_eq!(prints[0].count, 1);
-    assert_eq!(prints[0].model.as_str(), "level@1");
+    assert_eq!(prints[0].id(), voiceprint);
+    assert_eq!(print_count(&svc, dana), Some(1));
+    assert_eq!(prints[0].model().as_str(), "level@1");
     // A repeat adds nothing.
     let again = remember_voices_with(&svc, m, &[remote[0].id], &any).unwrap();
-    assert_eq!(again[0].1, Remembered::AlreadyEnrolled);
+    assert_eq!(again[0].1, Remembered::AlreadySaved);
     assert_eq!(print_count(&svc, dana), Some(1));
     let listed = list_persons(&svc).unwrap();
     let info = |id| listed.iter().find(|p| p.id == id).unwrap().clone();
@@ -665,13 +672,19 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
 
     // Forgetting: no live voiceprint, vector zeroed, the meeting's centroid entry gone.
     assert!(identity_speakers(&svc, m).contains(&remote[0].id));
-    assert_eq!(forget_person_voices(&svc, dana).unwrap(), 1);
-    let prints = svc.store().voiceprints_of(dana).unwrap();
-    assert!(
-        prints
-            .iter()
-            .all(|v| v.meta.deleted && v.sum.iter().all(|x| *x == 0.0))
+    assert_eq!(
+        forget_person_voices(&svc, dana).unwrap(),
+        2,
+        "the print and its sample"
     );
+    let prints = svc.store().voiceprints_of(dana).unwrap();
+    assert!(prints.iter().all(|v| {
+        v.meta().deleted
+            && earshot_core::voiceprint::effective(v, &[])
+                .sum()
+                .iter()
+                .all(|x| *x == 0.0)
+    }));
     assert!(!identity_speakers(&svc, m).contains(&remote[0].id));
     assert!(!list_persons(&svc).unwrap().iter().any(|p| p.has_voiceprint));
     assert_eq!(forget_person_voices(&svc, dana).unwrap(), 0);
@@ -699,7 +712,8 @@ fn edit_remove_person_unnames_their_speakers_and_refuses_the_user() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     remember_voices_with(&svc, m, &[s], &calibrated(true)).unwrap();
     assert_eq!(print_count(&svc, dana), Some(1));
 
@@ -733,7 +747,8 @@ fn edit_remove_person_unnames_their_speakers_and_refuses_the_user() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     assert_ne!(again, dana);
 
     let me = new_person(&svc, "Me", true, 346);
@@ -779,11 +794,14 @@ fn edit_remember_mark_is_cleared_by_a_new_person_and_by_a_new_final_pass() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     remember_voices_with(&svc, m, &[s], &any).unwrap();
     assert_eq!(print_count(&svc, dana), Some(1));
     // The voice was someone else: linked again, it can be remembered for them.
-    let dee = link_speaker(&svc, m, s, &PersonChoice::New { name: "Dee".into() }).unwrap();
+    let dee = link_speaker(&svc, m, s, &PersonChoice::New { name: "Dee".into() })
+        .unwrap()
+        .person;
     let r = remember_voices_with(&svc, m, &[s], &any).unwrap();
     assert!(
         matches!(r[0].1, Remembered::Enrolled { person, .. } if person == dee),
@@ -791,20 +809,22 @@ fn edit_remember_mark_is_cleared_by_a_new_person_and_by_a_new_final_pass() {
     );
     assert_eq!(
         print_count(&svc, dana),
-        Some(1),
-        "dana's print is not touched"
+        Some(0),
+        "linking the voice to Dee took its sample back from Dana (the print row stays)"
     );
     assert_eq!(
         remember_voices_with(&svc, m, &[s], &any).unwrap()[0].1,
-        Remembered::AlreadyEnrolled
+        Remembered::AlreadySaved
     );
-    // A new final pass writes a new centroid, not yet remembered.
+    // A new final pass of the same audio gives the same centroid: the voice's sample is
+    // still this centroid, so it is still saved, never counted twice (docs/voice-samples.md
+    // 5.3; a different centroid replaces the sample, see the samples tests).
     let cancel = CancelToken::new();
     retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
     assert_eq!(speaker(&svc, m, "Dee").id, s, "the linked row is continued");
     let r = remember_voices_with(&svc, m, &[s], &any).unwrap();
-    assert!(matches!(r[0].1, Remembered::Enrolled { .. }), "{r:?}");
-    assert_eq!(print_count(&svc, dee), Some(2));
+    assert_eq!(r[0].1, Remembered::AlreadySaved, "{r:?}");
+    assert_eq!(print_count(&svc, dee), Some(1));
 }
 
 #[test]
@@ -837,12 +857,16 @@ fn edit_link_keeps_the_user_to_the_me_row() {
     assert!(!list_persons(&svc).unwrap().iter().any(|p| p.name == "Sam"));
     assert_eq!(speaker(&svc, m, "Alice").person_id, None);
     assert_eq!(
-        link_speaker(&svc, m, me, &PersonChoice::Existing(user)).unwrap(),
+        link_speaker(&svc, m, me, &PersonChoice::Existing(user))
+            .unwrap()
+            .person,
         user
     );
     assert_eq!(speaker(&svc, m, "Casey").id, me);
     assert_eq!(
-        link_speaker(&svc, m, alice, &PersonChoice::Existing(bob)).unwrap(),
+        link_speaker(&svc, m, alice, &PersonChoice::Existing(bob))
+            .unwrap()
+            .person,
         bob
     );
 }
@@ -977,6 +1001,7 @@ fn edit_list_persons_counts_a_merged_persons_voiceprint() {
             dup,
             &[e],
             Duration::from_secs(20),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             &mut stamp,
         )
@@ -1231,3 +1256,11 @@ mod words_tests;
 /// T12.82: a naming change and the summary.
 #[path = "edit_names_tests.rs"]
 mod names_tests;
+
+/// T12.77b5: voice samples taken back by the user's speaker edits.
+#[path = "edit_samples_tests.rs"]
+mod samples_tests;
+
+/// T12.77b5: the scan that keeps speaker person changes on `set_row_person`.
+#[path = "edit_scan_tests.rs"]
+mod scan_tests;

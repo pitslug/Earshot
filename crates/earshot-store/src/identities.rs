@@ -80,9 +80,10 @@ pub struct SpeakerIdentity {
     #[serde(default)]
     pub user_edited: bool,
     /// This centroid was added to the linked person's voiceprint (a voice the user saved,
-    /// `earshot_runtime::edit::save_voice`), so it is not added again. A final pass
-    /// writes every entry it computes with a new centroid as not enrolled; linking the row to
-    /// another person clears it. Added within version 2 with a `false` default (also for
+    /// `earshot_runtime::edit::save_voice`), so it is not added again. Since voice samples
+    /// (T12.77b) nothing sets it: it is the frozen marker of a save made before samples
+    /// existed, carried by a final pass to the same voice of the same person and cleared by
+    /// linking the row to another person. Added within version 2 with a `false` default (also for
     /// version 1 records): earlier version-2 readers ignore the unknown field (no
     /// `deny_unknown_fields`), so the version stays 2 and records written by either build stay
     /// readable, with names carried, by both. A bump would only make earlier builds drop the
@@ -168,14 +169,14 @@ pub fn decode(bytes: &[u8]) -> StoredIdentities {
 /// voiceprints ([`earshot_core::voiceprint::forget_voiceprints`]) and its speaker centroids
 /// in every meeting's record ([`forget_identity`] over
 /// [`earshot_core::voiceprint::identity_of`]). The one path for both
-/// [`crate::Store::forget_voiceprints`] and [`crate::Store::remove_person`]. Returns how many voiceprints were forgotten; the
-/// caller checkpoints after the commit.
+/// [`crate::Store::forget_voiceprints`] and [`crate::Store::remove_person`]. Returns how many
+/// voiceprints and voice samples were forgotten; the caller checkpoints after the commit.
 pub(crate) fn forget_identity_biometrics<C: Clock + ?Sized>(
     tx: &mut StoreTx<'_>,
     person: EntityId,
     hlc: &mut Hlc,
     clock: &C,
-) -> Result<usize, StoreError> {
+) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
     let storage = |e: earshot_core::voiceprint::VoiceprintError| {
         StoreError::Repo(RepoError::Storage(e.to_string()))
     };

@@ -147,8 +147,16 @@ pub type WorkerWriter =
     std::sync::Arc<dyn Fn() -> Option<crate::offload::WriterKind> + Send + Sync>;
 
 /// The sync client of one device: the relay at the stored address and the device's vault.
+/// What a push holds back in this build: live voiceprints and voice samples, since every
+/// enrolment writes samples (T12.77b6; docs/voice-samples.md 7.1). T12.77b8 removes it.
+pub const PUSH_HOLD: PushHold = PushHold::Samples;
+
+pub use earshot_store::PushHold;
+
 pub struct SyncClient {
     services: Services,
+    /// [`PUSH_HOLD`]; tests drive it on ([`SyncClient::with_push_hold`]).
+    hold: PushHold,
     vault: std::sync::Arc<dyn SyncVault>,
     relay: Relay,
     device: DeviceId,
@@ -173,6 +181,35 @@ impl std::fmt::Debug for SyncClient {
     }
 }
 
+/// One push page under `hold` (docs/voice-samples.md 7.1): the ordinary outbox rows, and with
+/// [`PushHold::Samples`] the outbox's voiceprint tombstones too, read even when the ordinary
+/// page is empty, oldest `updated_at` first. What it can return is what
+/// `Store::outbox_len_held` counts.
+pub(super) fn page_under(
+    store: &earshot_store::Store,
+    limit: usize,
+    recording: &[EntityId],
+    kinds: SyncKinds,
+    hold: PushHold,
+) -> Result<Vec<SyncedRow>, earshot_store::StoreError> {
+    match hold {
+        PushHold::Off => store.outbox_except(limit, recording, kinds),
+        PushHold::Samples => {
+            let others = SyncKinds {
+                voiceprints: false,
+                ..kinds
+            };
+            let mut rows = store.outbox_except(limit, recording, others)?;
+            if kinds.voiceprints {
+                rows.extend(store.outbox_tombstones("voiceprint", limit)?);
+                rows.sort_by_key(|r| r.meta().updated_at);
+                rows.truncate(limit);
+            }
+            Ok(rows)
+        }
+    }
+}
+
 /// The sealed row of any synced table.
 fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
     match row {
@@ -187,6 +224,7 @@ fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
         SyncedRow::Folder(r) => seal_row(keys, r),
         SyncedRow::SummaryRequest(r) => seal_row(keys, r),
         SyncedRow::DictionaryWord(r) => seal_row(keys, r),
+        SyncedRow::VoiceprintSample(r) => seal_row(keys, r),
     }
 }
 
@@ -266,6 +304,7 @@ impl SyncClient {
         let relay = Relay::new(address, std::sync::Arc::clone(&services.clock))?;
         Ok(Self {
             services,
+            hold: PUSH_HOLD,
             vault,
             relay,
             device,
@@ -275,6 +314,19 @@ impl SyncClient {
             model_place: None,
             changes: None,
         })
+    }
+
+    /// The push hold this client sends under (what its waiting count must count).
+    #[must_use]
+    pub fn hold(&self) -> PushHold {
+        self.hold
+    }
+
+    /// This client with a push hold other than [`PUSH_HOLD`] (tests).
+    #[cfg(test)]
+    pub(crate) fn with_push_hold(mut self, hold: PushHold) -> Self {
+        self.hold = hold;
+        self
     }
 
     /// The client for the relay at `address` rather than the stored one: the summary worker
@@ -518,10 +570,13 @@ impl SyncClient {
                 return Ok(());
             }
             let recording = self.services.recording_meetings();
-            let mut rows = self
-                .services
-                .store()
-                .outbox_except(PUSH_PAGE, &recording, kinds)?;
+            let mut rows = page_under(
+                &self.services.store(),
+                PUSH_PAGE,
+                &recording,
+                kinds,
+                self.hold,
+            )?;
             if rows.is_empty() {
                 return Ok(());
             }

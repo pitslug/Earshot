@@ -26,8 +26,8 @@ use earshot_core::diar::{Embedding, EmbeddingModelId, SpeakerRole};
 use earshot_core::identity::EntityId;
 use earshot_core::model::{Meeting, MeetingRepo, Speaker};
 use earshot_core::voiceprint::{
-    InMemoryVoiceprintRepo, Person, Voiceprint, VoiceprintRepo, calibrated_margin,
-    calibrated_threshold, resolve_person,
+    InMemoryVoiceprintRepo, Person, SampleOrigin, Voiceprint, VoiceprintRepo, VoiceprintSample,
+    calibrated_margin, calibrated_threshold, effective, live_prints, resolve_person,
 };
 use earshot_runtime::post::voice_match;
 use earshot_store::ReadOnlyStore;
@@ -79,6 +79,10 @@ struct Voice {
     runner_up: Option<f32>,
     /// Whether the best person is the voice's own.
     best_is_own: bool,
+    /// The leave-out is approximate: a voice saved before samples (T12.77b) has no sample of
+    /// its own, so its centroid is subtracted from the print. With a live sample from the
+    /// voice the leave-out is exact (the print folded without that sample).
+    approximate: bool,
     shipped: Named,
     picked: Named,
 }
@@ -193,6 +197,7 @@ fn unit(v: &[f32]) -> Option<Vec<f32>> {
 fn without_enrolment(
     persons: &[Person],
     prints: &[Voiceprint],
+    samples: &[VoiceprintSample],
     owner: EntityId,
     linked: EntityId,
     centroid: &Embedding,
@@ -201,35 +206,62 @@ fn without_enrolment(
     let mut prints = prints.to_vec();
     // Enrolment wrote to the person the row was linked to; a later merge moves nothing, so
     // the print is the linked person's or, failing that, the owner's.
+    let holds = |p: &Voiceprint, person: EntityId| {
+        !p.meta().deleted && p.person_id() == person && effective(p, samples).sum().len() == u.len()
+    };
     let at = prints
         .iter()
-        .position(|p| !p.meta.deleted && p.person_id == linked && p.sum.len() == u.len())
-        .or_else(|| {
-            prints
-                .iter()
-                .position(|p| !p.meta.deleted && p.person_id == owner && p.sum.len() == u.len())
-        })?;
-    let p = &mut prints[at];
-    if p.count == 0 {
+        .position(|p| holds(p, linked))
+        .or_else(|| prints.iter().position(|p| holds(p, owner)))?;
+    // The effective print, with the enrolment taken out (approximately: a voice saved
+    // before samples has no sample of its own to leave out). The rebuilt print carries the
+    // whole effective state, so the print's samples stay out of the snapshot.
+    let p = &prints[at];
+    let e = effective(p, samples);
+    let folded = p.id();
+    if e.count() == 0 {
         return None;
     }
-    for (s, x) in p.sum.iter_mut().zip(&u) {
+    let mut sum = e.sum().to_vec();
+    for (s, x) in sum.iter_mut().zip(&u) {
         *s -= x;
     }
-    p.count -= 1;
-    if p.count == 0 {
+    let count = e.count() - 1;
+    if count == 0 {
         prints.remove(at);
+    } else {
+        prints[at] = Voiceprint::from_stored(
+            p.id(),
+            *p.meta(),
+            p.person_id(),
+            p.model().clone(),
+            sum,
+            count,
+            e.speech_ms(),
+        );
     }
-    Some(snapshot(persons, &prints))
+    let rest: Vec<VoiceprintSample> = samples
+        .iter()
+        .filter(|s| s.voiceprint_id() != Some(folded))
+        .cloned()
+        .collect();
+    Some(snapshot(persons, &prints, &rest))
 }
 
-fn snapshot(persons: &[Person], prints: &[Voiceprint]) -> InMemoryVoiceprintRepo {
+fn snapshot(
+    persons: &[Person],
+    prints: &[Voiceprint],
+    samples: &[VoiceprintSample],
+) -> InMemoryVoiceprintRepo {
     let mut s = InMemoryVoiceprintRepo::new();
     for p in persons {
         let _ = s.put_person(p.clone());
     }
     for v in prints {
         let _ = s.put_voiceprint(v.clone());
+    }
+    for v in samples {
+        let _ = s.put_sample(v.clone());
     }
     s
 }
@@ -240,17 +272,14 @@ fn person_scores(
     e: &Embedding,
 ) -> Result<BTreeMap<EntityId, f32>, String> {
     let mut out = BTreeMap::new();
-    for v in repo
-        .voiceprints(&e.model)
-        .map_err(|_| "reading voiceprints")?
-    {
-        if v.meta.deleted {
+    for (v, eff) in live_prints(repo, &e.model).map_err(|_| "reading voiceprints")? {
+        if eff.count() == 0 {
             continue;
         }
-        let Some(p) = resolve_person(repo, v.person_id).map_err(|_| "resolving a person")? else {
+        let Some(p) = resolve_person(repo, v.person_id()).map_err(|_| "resolving a person")? else {
             continue;
         };
-        let Ok(s) = v.score(e) else { continue };
+        let Ok(s) = eff.score(e) else { continue };
         let x = out.entry(p.id).or_insert(f32::NEG_INFINITY);
         *x = x.max(s);
     }
@@ -272,7 +301,14 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
         .filter(|m| !m.meta.deleted)
         .collect();
     meetings.sort_by_key(|m| (m.started_unix_ms, m.id));
-    let mut model: Option<(EmbeddingModelId, f32, f32, Vec<Voiceprint>)> = None;
+    type ModelRows = (
+        EmbeddingModelId,
+        f32,
+        f32,
+        Vec<Voiceprint>,
+        Vec<VoiceprintSample>,
+    );
+    let mut model: Option<ModelRows> = None;
     let mut voices = Vec::new();
     let mut skipped = Skipped::default();
     for (mk, m) in meetings.iter().enumerate() {
@@ -315,14 +351,18 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
                 let prints = store
                     .voiceprints(&c.model)
                     .map_err(|_| "reading voiceprints")?;
+                let samples = store
+                    .samples(&c.model)
+                    .map_err(|_| "reading voice samples")?;
                 model = Some((
                     c.model.clone(),
                     threshold,
                     calibrated_margin(&c.model).unwrap_or(0.0),
                     prints,
+                    samples,
                 ));
             }
-            let Some((_, threshold, margin, prints)) = model.as_ref() else {
+            let Some((_, threshold, margin, prints, samples)) = model.as_ref() else {
                 continue;
             };
             // Who the voice is: a marked "Me" row is the user; else the linked person.
@@ -338,14 +378,43 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
                     .map(|p| p.id),
                 None => None,
             };
+            // The voice's own live samples in its owner's identity (docs/voice-samples.md 4).
+            let origin = SampleOrigin::Meeting {
+                meeting: m.id,
+                speaker: row.id,
+            };
+            let mut own: Vec<EntityId> = Vec::new();
+            for s in samples.iter().filter(|s| s.origin() == Some(origin)) {
+                let person = match s.person_id() {
+                    Some(p) => resolve_person(store, p)
+                        .map_err(|_| "resolving a person")?
+                        .map(|p| p.id),
+                    None => None,
+                };
+                if owner.is_some() && person == owner {
+                    own.push(s.id());
+                }
+            }
             let kind = match owner {
                 None => Kind::NoName,
-                Some(_) if me_row || entry.enrolled || entry.edited(row) => Kind::Confirmed,
+                Some(_) if me_row || !own.is_empty() || entry.enrolled || entry.edited(row) => {
+                    Kind::Confirmed
+                }
                 Some(_) => Kind::Unconfirmed,
             };
+            let mut approximate = false;
             let repo = match (kind, entry.enrolled, owner, linked) {
+                (Kind::Confirmed, _, Some(_), _) if !own.is_empty() => {
+                    let rest: Vec<VoiceprintSample> = samples
+                        .iter()
+                        .filter(|s| !own.contains(&s.id()))
+                        .cloned()
+                        .collect();
+                    snapshot(&persons, prints, &rest)
+                }
                 (Kind::Confirmed, true, Some(o), Some(l)) => {
-                    match without_enrolment(&persons, prints, o, l, c) {
+                    approximate = true;
+                    match without_enrolment(&persons, prints, samples, o, l, c) {
                         Some(r) => r,
                         None => {
                             skipped.leave_out_not_found += 1;
@@ -353,7 +422,7 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
                         }
                     }
                 }
-                _ => snapshot(&persons, prints),
+                _ => snapshot(&persons, prints, samples),
             };
             let scores = person_scores(&repo, c)?;
             let mut ranked: Vec<(EntityId, f32)> = scores.iter().map(|(p, s)| (*p, *s)).collect();
@@ -378,12 +447,13 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
                 best: ranked.first().map(|r| r.1),
                 runner_up: ranked.get(1).map(|r| r.1),
                 best_is_own: owner.is_some() && ranked.first().map(|r| r.0) == owner,
+                approximate,
                 shipped: name(*threshold)?,
                 picked: name(PICKED_THRESHOLD)?,
             });
         }
     }
-    let (shipped_threshold, margin) = model.map_or((f32::NAN, f32::NAN), |(_, t, m, _)| (t, m));
+    let (shipped_threshold, margin) = model.map_or((f32::NAN, f32::NAN), |(_, t, m, _, _)| (t, m));
     Ok(Readout {
         shipped_threshold,
         margin,
@@ -411,6 +481,10 @@ fn summary(r: &Readout) -> serde_json::Value {
         "voices": {
             "confirmed": of(Kind::Confirmed),
             "confirmed_scorable": v.iter().filter(|x| scorable(x)).count(),
+            "confirmed_left_out_approximately": v
+                .iter()
+                .filter(|x| scorable(x) && x.approximate)
+                .count(),
             "unconfirmed": of(Kind::Unconfirmed),
             "no_name": of(Kind::NoName),
         },
@@ -579,6 +653,7 @@ mod tests {
                 p,
                 e,
                 std::time::Duration::from_secs(30),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut s,
             )
@@ -716,6 +791,111 @@ mod tests {
         assert_eq!(by("m2", Kind::Unconfirmed).len(), 1);
         assert_eq!(by("m1", Kind::NoName).len(), 1);
         let _ = b.alex;
+        assert!(
+            r.voices
+                .iter()
+                .all(|v| v.approximate == (v.label == saved.label))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T12.77b3: a voice saved as a sample is confirmed by the sample alone (no marker, no
+    /// edit), and its leave-out is exact: the print folded without that sample.
+    #[test]
+    fn vp_readout_a_voice_saved_as_a_sample_is_confirmed_and_left_out_exactly() {
+        use earshot_core::voiceprint::{SampleOrigin, enroll};
+        let dir = temp("sample");
+        let db = dir.join("earshot.db");
+        let mut store = Store::open(&db).unwrap();
+        let mut w = World::new();
+        let mut vs = VpStamp {
+            clock: &w.clock,
+            hlc: &mut w.hlc,
+            rng: &mut w.rng,
+        };
+        let casey = Person::new("Casey Invented", false, &mut vs);
+        store.put_person(casey.clone()).unwrap();
+        let config = EnrolmentConfig::default();
+        let long = std::time::Duration::from_secs(30);
+        enroll(
+            &mut store,
+            casey.id,
+            &[voice(1, 0.0)],
+            long,
+            SampleOrigin::Own,
+            &config,
+            &mut vs,
+        )
+        .unwrap();
+        let mut st = Stamp {
+            clock: &w.clock,
+            hlc: &mut w.hlc,
+            rng: &mut w.rng,
+        };
+        let m = Meeting::new(
+            "An invented call",
+            1_800_000_000_001,
+            0,
+            Template::General,
+            &mut st,
+        );
+        store.put_meeting(m.clone()).unwrap();
+        let row = Speaker::new(
+            m.id,
+            SpeakerRole::Remote,
+            "Casey Invented",
+            Some(casey.id),
+            &mut st,
+        );
+        store.put_speaker(row.clone()).unwrap();
+        let saved = voice(1, 30.0);
+        let mut vs = VpStamp {
+            clock: &w.clock,
+            hlc: &mut w.hlc,
+            rng: &mut w.rng,
+        };
+        let origin = SampleOrigin::Meeting {
+            meeting: m.id,
+            speaker: row.id,
+        };
+        enroll(
+            &mut store,
+            casey.id,
+            std::slice::from_ref(&saved),
+            long,
+            origin,
+            &config,
+            &mut vs,
+        )
+        .unwrap();
+        let rec = IdentityRecord {
+            speakers: vec![SpeakerIdentity {
+                speaker: row.id,
+                track: TrackId::Reference,
+                centroid: saved,
+                given_name: row.display_name.clone(),
+                given_person: row.person_id,
+                given_stamp: Some(row.meta.updated_at),
+                user_edited: false,
+                enrolled: false,
+                ignored: false,
+            }],
+        };
+        store
+            .set_local_value(&record_key(m.id), &encode(&rec))
+            .unwrap();
+        drop(store);
+        let r = readout(&ReadOnlyStore::open(&db).unwrap()).unwrap();
+        assert_eq!(r.voices.len(), 1);
+        let v = &r.voices[0];
+        assert_eq!(v.kind, Kind::Confirmed);
+        assert!(!v.approximate);
+        // Only the clean sample is left: the own score is cos 30 degrees exactly as folded.
+        let own = v.own_score.unwrap();
+        assert!(
+            (own - 30.0_f64.to_radians().cos() as f32).abs() < 1e-6,
+            "{own}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -728,6 +908,7 @@ mod tests {
             best: own,
             runner_up: None,
             best_is_own: true,
+            approximate: false,
             shipped,
             picked,
         }

@@ -11,7 +11,7 @@ use earshot_core::diar::EmbeddingModelId;
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, ManualClock, SyncMeta};
 use earshot_core::model::{ClockDomain, Meeting, MeetingRepo, Track};
 use earshot_core::prompt::Template;
-use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintRepo};
+use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintRepo, effective};
 use earshot_store::{
     ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, SyncKinds, SyncedRow,
 };
@@ -404,15 +404,15 @@ fn store_sync_stamp_far_ahead_and_unreadable_rows_are_held() {
 }
 
 fn voiceprint(n: u8, person: u8, updated: HlcTimestamp) -> Voiceprint {
-    Voiceprint {
-        id: id(n),
-        meta: meta(updated),
-        person_id: id(person),
-        model: EmbeddingModelId::new("invented-model"),
-        sum: vec![0.5; 4],
-        count: 1,
-        speech_ms: 5_000,
-    }
+    Voiceprint::from_stored(
+        id(n),
+        meta(updated),
+        id(person),
+        EmbeddingModelId::new("invented-model"),
+        vec![0.5; 4],
+        1,
+        5_000,
+    )
 }
 
 fn person(n: u8, deleted: bool, updated: HlcTimestamp) -> Person {
@@ -632,8 +632,11 @@ fn store_sync_person_deleted_elsewhere_forgets_their_voice_here() {
     assert_eq!(a.written, 1);
     assert_eq!(a.biometrics_forgotten, 1);
     let v = &e.store.voiceprints_of(id(1)).unwrap()[0];
-    assert!(v.meta.deleted);
-    assert!(v.sum.iter().all(|x| *x == 0.0), "the print is zeroed");
+    assert!(v.meta().deleted);
+    assert!(
+        effective(v, &[]).sum().iter().all(|x| *x == 0.0),
+        "the print is zeroed"
+    );
     // Control: a live person arriving forgets nothing.
     let mut e = env("sync-person-live");
     e.store
@@ -647,7 +650,7 @@ fn store_sync_person_deleted_elsewhere_forgets_their_voice_here() {
         &rules(false),
     );
     assert_eq!(a.biometrics_forgotten, 0);
-    assert!(!e.store.voiceprints_of(id(3)).unwrap()[0].meta.deleted);
+    assert!(!e.store.voiceprints_of(id(3)).unwrap()[0].meta().deleted);
 }
 
 #[test]
@@ -705,7 +708,7 @@ fn store_sync_tombstone_of_a_person_never_seen_here_is_kept_and_forgets_nothing(
     assert_eq!((a.written, a.biometrics_forgotten), (1, 0));
     assert!(e.store.person(id(7)).unwrap().unwrap().meta.deleted);
     assert!(
-        !e.store.voiceprints_of(id(5)).unwrap()[0].meta.deleted,
+        !e.store.voiceprints_of(id(5)).unwrap()[0].meta().deleted,
         "another person's print stays"
     );
     // The same tombstone again is not newer: ignored, nothing runs twice.

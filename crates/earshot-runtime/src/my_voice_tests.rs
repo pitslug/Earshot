@@ -184,11 +184,15 @@ fn my_voice_enrols_the_user_from_a_recorded_sample_and_adds_later_ones() {
         assert!(p.is_me && p.is_live());
         let prints = db.voiceprints_of(person).unwrap();
         assert_eq!(prints.len(), 1);
-        assert_eq!(prints[0].id, voiceprint);
-        assert_eq!(prints[0].model, EmbeddingModelId::new(MODEL));
-        // The voice of scene speaker 3.
-        let best = prints[0]
-            .sum
+        assert_eq!(prints[0].id(), voiceprint);
+        assert_eq!(prints[0].model(), &EmbeddingModelId::new(MODEL));
+        // The voice of scene speaker 3 (the print folded with its samples).
+        let store: &earshot_store::Store = &db;
+        let (_, folded) = earshot_core::voiceprint::live_prints_of(store, person)
+            .unwrap()
+            .remove(0);
+        let best = folded
+            .sum()
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.total_cmp(b.1))
@@ -312,17 +316,26 @@ fn my_voice_forget_zeroes_and_tombstones_every_voiceprint_of_the_user() {
     else {
         panic!("not enrolled")
     };
-    assert_eq!(forget_my_voice(&svc).unwrap(), 1);
+    assert_eq!(
+        forget_my_voice(&svc).unwrap(),
+        2,
+        "the print and its one sample"
+    );
     assert_eq!(my_voice(&svc).unwrap(), MyVoice::default());
     let db = svc.store();
     let v = db
         .voiceprints_of(person)
         .unwrap()
         .into_iter()
-        .find(|v| v.id == voiceprint)
+        .find(|v| v.id() == voiceprint)
         .unwrap();
-    assert!(v.meta.deleted);
-    assert!(v.sum.iter().all(|x| *x == 0.0));
+    assert!(v.meta().deleted);
+    assert!(
+        earshot_core::voiceprint::effective(&v, &[])
+            .sum()
+            .iter()
+            .all(|x| *x == 0.0)
+    );
     // The person stays (persons are kept), and can be enrolled again.
     assert!(db.person(person).unwrap().unwrap().is_me);
     drop(db);
@@ -393,6 +406,7 @@ fn my_voice_forget_forgets_every_person_marked_as_the_user_at_once() {
             p.id,
             &[centroid],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             stamp,
         )
@@ -401,12 +415,20 @@ fn my_voice_forget_forgets_every_person_marked_as_the_user_at_once() {
     })
     .unwrap();
     assert_eq!(my_voice(&svc).unwrap().voiceprints, 2);
-    assert_eq!(forget_my_voice(&svc).unwrap(), 2);
+    assert_eq!(
+        forget_my_voice(&svc).unwrap(),
+        4,
+        "two prints and their samples"
+    );
     assert_eq!(my_voice(&svc).unwrap(), MyVoice::default());
     let db = svc.store();
     for p in [first, second] {
         for v in db.voiceprints_of(p).unwrap() {
-            assert!(v.meta.deleted && v.sum.iter().all(|x| *x == 0.0));
+            let zero = earshot_core::voiceprint::effective(&v, &[])
+                .sum()
+                .iter()
+                .all(|x| *x == 0.0);
+            assert!(v.meta().deleted && zero);
         }
     }
 }
@@ -511,4 +533,69 @@ fn my_voice_renaming_yourself_marks_a_summary_that_used_your_name() {
     set_my_name(&svc, "casey").unwrap();
     assert!(!named(meetings[0]).summary_out_of_date(), "put back");
     assert!(!named(meetings[1]).summary_out_of_date());
+}
+
+/// T12.77b2: a print created with a zero base holds its voice only in stored samples; every
+/// reader (your voice, has-voiceprint, the People list) folds them, so it reads as a voice.
+#[test]
+fn my_voice_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
+    use earshot_core::voiceprint::{SampleOrigin, Voiceprint, VoiceprintSample};
+    let dir = TempDir::new("my-voice-samples");
+    let (svc, _) = services(&dir);
+    let print = crate::edit::write(&svc, |tx, stamp| {
+        let p = earshot_core::voiceprint::Person::new("Me", true, stamp);
+        tx.put_person(p.clone()).map_err(RuntimeError::Voiceprint)?;
+        let id = earshot_core::identity::EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+        let v = Voiceprint::from_stored(
+            id,
+            meta,
+            p.id,
+            EmbeddingModelId::new(MODEL),
+            vec![0.0; DIM],
+            0,
+            0,
+        );
+        tx.put_voiceprint(v.clone())
+            .map_err(RuntimeError::Voiceprint)?;
+        Ok(v)
+    })
+    .unwrap();
+    let has_voice = |svc: &Services| {
+        let db = svc.store();
+        let store: &earshot_store::Store = &db;
+        crate::edit::user_has_voiceprint(store)
+    };
+    // Empty: no voice anywhere.
+    assert_eq!(my_voice(&svc).unwrap().voiceprints, 0);
+    assert!(!has_voice(&svc).unwrap());
+    let listed = |svc: &Services| {
+        crate::edit::list_persons(svc)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == print.person_id())
+            .unwrap()
+            .has_voiceprint
+    };
+    assert!(!listed(&svc));
+
+    crate::edit::write(&svc, |tx, stamp| {
+        let mut v = vec![0.0; DIM];
+        v[3] = 1.0;
+        let s = VoiceprintSample::new(&print, &v, 11_000, SampleOrigin::Own, stamp)
+            .map_err(RuntimeError::Voiceprint)?;
+        tx.put_sample(s).map_err(RuntimeError::Voiceprint)
+    })
+    .unwrap();
+    let mine = my_voice(&svc).unwrap();
+    assert_eq!(
+        (mine.voiceprints, mine.speech),
+        (1, Duration::from_millis(11_000))
+    );
+    assert!(has_voice(&svc).unwrap());
+    assert!(listed(&svc));
+    // T12.77b3: forgetting counts the sample with the print, and leaves no voice.
+    assert_eq!(forget_my_voice(&svc).unwrap(), 2);
+    assert_eq!(my_voice(&svc).unwrap().voiceprints, 0);
+    assert!(svc.store().samples_of(print.id()).unwrap().is_empty());
 }

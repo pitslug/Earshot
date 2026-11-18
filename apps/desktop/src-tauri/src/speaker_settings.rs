@@ -189,7 +189,7 @@ pub fn set_timing(
     speakers_view(services, laptop)
 }
 
-/// Forgets the user's voice; returns how many voiceprints were forgotten.
+/// Forgets the user's voice; returns how many voiceprints and voice samples were forgotten.
 ///
 /// # Errors
 /// Store errors (`store`, retryable when the deletion is committed but the checkpoint was
@@ -580,7 +580,7 @@ pub fn cancel_voice_sample(voice: tauri::State<'_, VoiceJobs>) {
     voice.cancel();
 }
 
-/// Forgets the user's voice; returns how many voiceprints were forgotten.
+/// Forgets the user's voice; returns how many voiceprints and voice samples were forgotten.
 #[tauri::command]
 #[specta::specta]
 pub async fn forget_my_voice(

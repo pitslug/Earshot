@@ -35,7 +35,8 @@ use earshot_core::diar::{
 };
 use earshot_core::identity::EntityId;
 use earshot_core::voiceprint::{
-    DEFAULT_ME_NAME, VoiceprintError, VoiceprintRepo, enroll_me, identity_of, me_person,
+    DEFAULT_ME_NAME, VoiceprintError, VoiceprintRepo, enroll_me, identity_of, live_prints_of,
+    me_person,
 };
 
 use crate::post::PostConfig;
@@ -265,6 +266,7 @@ pub fn enrol_my_voice<S: SpeakerSegmenter, E: SpeakerEmbedder>(
             tx,
             std::slice::from_ref(&main.centroid),
             main.speech,
+            earshot_core::voiceprint::SampleOrigin::Own,
             &config.enrolment,
             stamp,
         ) {
@@ -350,10 +352,10 @@ pub fn my_voice(services: &Services) -> Result<MyVoice, RuntimeError> {
             out.name = Some(p.display_name.clone());
         }
         for id in identity_of(store, p.id).map_err(RuntimeError::Voiceprint)? {
-            for v in store.voiceprints_of(id).map_err(RuntimeError::Voiceprint)? {
-                if !v.meta.deleted {
+            for (_, e) in live_prints_of(store, id).map_err(RuntimeError::Voiceprint)? {
+                if e.count() > 0 {
                     out.voiceprints += 1;
-                    out.speech += Duration::from_millis(v.speech_ms);
+                    out.speech += Duration::from_millis(e.speech_ms());
                 }
             }
         }
@@ -364,7 +366,8 @@ pub fn my_voice(services: &Services) -> Result<MyVoice, RuntimeError> {
 /// Forgets every voiceprint of every person marked as the user (live or not, and everyone
 /// merged into them) in one store transaction (`Store::forget_voiceprints_of`: zeroed,
 /// tombstoned, then one truncating checkpoint), so either all of them are forgotten or none.
-/// Returns how many were forgotten. A checkpoint blocked by another connection after the
+/// Returns how many voiceprints and voice samples were forgotten. A checkpoint blocked by
+/// another connection after the
 /// commit (`StoreError::Busy`) still counts as forgotten: the deletion is committed.
 ///
 /// # Errors
@@ -385,9 +388,18 @@ pub fn forget_my_voice(services: &Services) -> Result<usize, RuntimeError> {
         for &person in &mine {
             for id in identity_of(store, person).map_err(RuntimeError::Voiceprint)? {
                 for v in store.voiceprints_of(id).map_err(RuntimeError::Voiceprint)? {
-                    if !v.meta.deleted {
-                        live.insert(v.id);
+                    if !v.meta().deleted {
+                        live.insert(v.id());
                     }
+                    for s in store.samples_of(v.id()).map_err(RuntimeError::Voiceprint)? {
+                        live.insert(s.id());
+                    }
+                }
+                for s in store
+                    .samples_of_person(id)
+                    .map_err(RuntimeError::Voiceprint)?
+                {
+                    live.insert(s.id());
                 }
             }
         }
@@ -398,7 +410,7 @@ pub fn forget_my_voice(services: &Services) -> Result<usize, RuntimeError> {
     }
     let (store, hlc) = db.parts();
     match store.forget_voiceprints_of(&mine, hlc, &*clock) {
-        Ok(n) => Ok(n),
+        Ok(n) => Ok(n.total()),
         Err(earshot_store::StoreError::Busy(_)) => Ok(live),
         Err(e) => Err(e.into()),
     }

@@ -142,6 +142,7 @@ export function failureText(e: unknown): string {
 export function savedText(name: string, outcome: RememberOutcome): string {
   switch (outcome) {
     case "Remembered":
+    case "Replaced":
       return `Saved ${name}. Later meetings will recognise this voice.`;
     case "AlreadyRemembered":
       return `Saved ${name}. This voice was already remembered from this meeting.`;

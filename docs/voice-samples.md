@@ -125,7 +125,7 @@ Not held to it, by decision: a final pass on any computer that tombstones or ren
 
 ### 5.2 `enrolled` is a frozen pre-samples marker
 
-`SpeakerIdentity::enrolled` (device-local, `crates/earshot-store/src/identities.rs`) means only "this voice was saved on this computer before samples existed (untracked)". From 0.4.0 nothing writes `enrolled = true`. It is reset to `false` only where today's code already resets it (`link_in` to another person, `mark_me`, `unmark_me`, and the final pass writing a new entry). It is read only through `voiceprint::saved_before_samples` (the marker, no live sample, and `Effective::has_base()`), the one predicate behind the pre-samples guard of 5.3 step 1 and the `saved_before_samples` flag of 6.1. It never makes a voice with a live sample read as unsaved, or one without as saved, on its own.
+`SpeakerIdentity::enrolled` (device-local, `crates/earshot-store/src/identities.rs`) means only "this voice was saved on this computer before samples existed (untracked)". From 0.4.0 nothing writes `enrolled = true`. It is reset to `false` only where today's code already resets it (`link_in` to another person, `mark_me`, `unmark_me`, and the final pass writing a new entry). It is read only through `voiceprint::saved_before_samples` (the marker, no live sample, and `Effective::has_base()`), the one predicate behind the pre-samples guard of 5.3 step 1 and the `saved_before_samples` flag of 6.1. It never makes a voice with a live sample read as unsaved, or one without as saved, on its own. One edge is accepted (2026-11-18): "Not" on a pre-0.4.0 saved voice keeps the marker, a later relink to the same person clears it (`link_in`), and a Save after that counts that pre-0.4.0 meeting twice (its base and a new sample); recording the marker's person could not help existing markers, and keeping the marker on any relink would answer `AlreadySaved` for a different person.
 
 ### 5.3 Save and re-save
 
@@ -234,7 +234,7 @@ Migration 9 in `crates/earshot-store/src/schema.rs`: `CREATE TABLE voiceprint_sa
 
 ## 10. Copy
 
-Result fields carry counts and flags; the words live in the UI (`packages/ui/src/detail/`), in a case table `fixtures/ui/voice_sample_copy_cases.json` read by the UI test and by a Rust test that pins `since` (the version in the copy) to be no later than the workspace version. `{name}` and `{other}` are filled with a function replacer (a name can hold `$&`).
+Result fields carry counts and flags; the words live in the UI (`packages/ui/src/detail/`), in a case table `fixtures/ui/voice_sample_copy_cases.json` read by the UI test and by a Rust test that pins `since` (the version in the copy, 0.4.0) to be at least the workspace version, so it can never name a release already past; T12.77b8, which merges only with the release bump, pins it equal to the workspace version. `{name}` and `{other}` are filled with a function replacer (a name can hold `$&`).
 
 | Case | Text |
 |---|---|
@@ -246,7 +246,7 @@ Result fields carry counts and flags; the words live in the UI (`packages/ui/src
 | This is me, `taken_back > 0` | "Marked as you. This meeting's voice is no longer part of {name}'s saved voice." |
 | Merge, `samples_taken_back > 0` | "Merged. The merged voice is no longer part of {name}'s saved voice: save the voice again to add it." |
 
-Only the decision-5 text is agreed; the rest are proposals. This table, with the tooltip below, is the one list the owner reviews when T12.77b7 starts; nothing earlier ships these words. The "Not <name>" tooltip (`notThisPersonHint`, `SpeakersPanel.tsx`) says "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of {name}'s saved voice." when a live sample exists, today's text otherwise. The page-name guard (`page_names_tests.rs`, `pageNames.test.ts`) gets a source-pinning case for "People page".
+The owner agreed this table and the tooltip below as written (2026-11-18, T12.77b7). The "Not <name>" tooltip (`notThisPersonHint`, `SpeakersPanel.tsx`) says "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of {name}'s saved voice." when a live sample exists, today's text otherwise. The page-name guard (`page_names_tests.rs`, `pageNames.test.ts`) gets a source-pinning case for "People page".
 
 ## 11. Privacy
 

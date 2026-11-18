@@ -235,6 +235,9 @@ export interface MockIpcData {
   /** What remembering a voice saved with `saveVoice` did, per speaker (default
    * `Remembered`). */
   rememberOutcomes?: Record<string, RememberOutcome>;
+  /** Speakers whose voice was saved on this computer before voice samples existed: "Not"
+   * says it stays in the person's saved voice (T12.77b7). */
+  savedBeforeSamples?: string[];
   /** Called with every edit and job request (`["renameSpeaker", meeting, ...]`). */
   onCall?: (call: unknown[]) => void;
   /** Where an update stands when the app opens (default: nothing asked), and a refusal of install. */
@@ -654,13 +657,24 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
     }
     const linkedTo = person;
+    // A voice saved here as a sample for someone else stops being theirs (T12.77b5).
+    const was = card.person?.id ?? null;
+    takenBack = card.voice_saved_here && was !== person.id ? 1 : 0;
     // The person is in one more meeting when no other voice here was theirs (`list_persons`).
     if (choice.kind === "Existing" && !detailOf(meeting).speakers.some((s) => s.person?.id === linkedTo.id)) {
       linkedTo.meetings += 1;
     }
     update(meeting, (d) => linked(d, speaker, linkedTo));
+    if (takenBack > 0) {
+      update(meeting, (d) => ({
+        ...d,
+        speakers: d.speakers.map((s) => (s.id === speaker ? { ...s, voice_saved_here: false } : s)),
+      }));
+    }
     return person.id;
   };
+  // What the last `linkIn` took back (the runtime's `TakenBack`).
+  let takenBack = 0;
   const deletionAsk = (meeting: string): DeleteAsk => {
     if (live !== null && live.row.id === meeting) return "Recording";
     const job = jobs.get(meeting);
@@ -1206,9 +1220,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           "Your own row cannot be merged away. Merge the other speaker into it instead.",
         );
       }
+      const samples_taken_back = speakerOf(d, merge).voice_saved_here ? 1 : 0;
       update(meeting, (x) => merged(x, keep, merge));
+      return { samples_taken_back };
     },
-    linkSpeaker: async (meeting, speaker, choice) => linkIn(meeting, speaker, choice, "linkSpeaker"),
+    linkSpeaker: async (meeting, speaker, choice) => {
+      const person = linkIn(meeting, speaker, choice, "linkSpeaker");
+      return { person, taken_back: takenBack };
+    },
     saveVoice: async (meeting, speaker, choice) => {
       const card = speakerOf(detailOf(meeting), speaker);
       const user = persons.find((p) => p.is_me);
@@ -1218,18 +1237,22 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         fail("me_voice", "Your own voice is set up in Settings, not from a meeting.");
       }
       const person = linkIn(meeting, speaker, choice, "saveVoice");
+      const taken_back = takenBack;
       const outcome = data.rememberOutcomes?.[speaker] ?? ("Remembered" as const);
-      if (outcome === "Remembered") {
+      if (outcome === "Remembered" || outcome === "Replaced") {
         const p = persons.find((x) => x.id === person);
         if (p) p.has_voiceprint = true;
         update(meeting, (x) => ({
           ...x,
           speakers: x.speakers.map((s) =>
-            s.id === speaker && s.person ? { ...s, person: { ...s.person, has_voiceprint: true } } : s,
+            s.id === speaker && s.person
+              ? { ...s, person: { ...s.person, has_voiceprint: true }, voice_saved_here: true }
+              : s,
           ),
         }));
       }
-      return { person, outcome };
+      const moved = taken_back > 0 && (outcome === "Remembered" || outcome === "Replaced");
+      return { person, outcome, taken_back, moved };
     },
     ignoreSpeaker: async (meeting, speaker) => {
       call("ignoreSpeaker", meeting, speaker);
@@ -1264,7 +1287,12 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the meeting, then ignore it.",
         );
       }
+      const result = {
+        taken_back: card.voice_saved_here ? 1 : 0,
+        saved_before_samples: !card.voice_saved_here && (data.savedBeforeSamples ?? []).includes(speaker),
+      };
       update(meeting, (x) => notThisPersonVoice(x, speaker));
+      return result;
     },
     markMe: async (meeting, speaker) => {
       call("markMe", meeting, speaker);
@@ -1293,8 +1321,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         persons.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
       }
       const me = user;
+      const taken_back = speakerOf(d, speaker).voice_saved_here ? 1 : 0;
       update(meeting, (x) => markedMe(x, speaker, me));
-      return namedAfterMe().map((p) => ({ ...p }));
+      return { offers: namedAfterMe().map((p) => ({ ...p })), taken_back };
     },
     mergeIntoMe: async (person) => {
       call("mergeIntoMe", person);

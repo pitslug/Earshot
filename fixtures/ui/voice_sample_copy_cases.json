@@ -1,0 +1,12 @@
+{
+  "_comment": "Voice sample copy (T12.77b7, docs/voice-samples.md section 10), agreed by the owner. The UI fills {name} (the person whose saved voice lost this meeting's voice) and {other} (the person it is linked or saved to now) with a function replacer, and {since} with since: the Earshot release that started recording each saved voice as a sample. The desktop pins since to be at least the workspace version and each text to the design's table; the release bump pins it equal.",
+  "since": "0.4.0",
+  "not_taken_back": "Unlinked. This meeting's voice is no longer part of {name}'s saved voice.",
+  "not_saved_before_samples": "Unlinked. This voice was saved before Earshot {since}, so it stays part of {name}'s saved voice. To start their voice over, remove them on the People page.",
+  "not_otherwise": "Unlinked.",
+  "save_moved": "Saved for {other}. This meeting's voice is no longer part of {name}'s saved voice.",
+  "linked_away": "Linked to {other}. This meeting's voice is no longer part of {name}'s saved voice.",
+  "marked_me": "Marked as you. This meeting's voice is no longer part of {name}'s saved voice.",
+  "merged": "Merged. The merged voice is no longer part of {name}'s saved voice: save the voice again to add it.",
+  "not_hint_saved": "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of {name}'s saved voice."
+}

@@ -15,6 +15,7 @@ use super::*;
 use crate::local::DeviceRecord;
 use crate::services::{MeetingJob, Services};
 use crate::testutil::{TempDir, meeting, services};
+use engine::{PUSH_HOLD, PushHold};
 
 const SECRET: &str = "an-invented-setup-secret-for-tests";
 
@@ -2016,15 +2017,15 @@ fn sync_waiting_leaves_out_voiceprints_while_their_switch_is_off() {
         let p = Person::new("Someone invented", false, &mut stamp);
         let vid = earshot_core::identity::EntityId::generate(stamp.clock, &mut *stamp.rng);
         let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
-        let v = Voiceprint {
-            id: vid,
+        let v = Voiceprint::from_stored(
+            vid,
             meta,
-            person_id: p.id,
-            model: earshot_core::diar::EmbeddingModelId::new("invented-model"),
-            sum: vec![0.5; 4],
-            count: 1,
-            speech_ms: 5_000,
-        };
+            p.id,
+            earshot_core::diar::EmbeddingModelId::new("invented-model"),
+            vec![0.5; 4],
+            1,
+            5_000,
+        );
         store.put_person(p).unwrap();
         store.put_voiceprint(v).unwrap();
     }
@@ -2619,4 +2620,455 @@ fn dictionary_sync_an_edit_holds_the_store_lock_from_its_read_to_its_write() {
     assert_eq!(words(&a), ["Velmora"]);
     // Once the edit has committed, the lock is free for an apply.
     assert!(!a.svc.store_is_held());
+}
+
+/// A person and a voiceprint of theirs written on `dev` (an enrolment of today's shape).
+fn print_on(
+    dev: &Device,
+    seed: u64,
+) -> (
+    earshot_core::identity::EntityId,
+    earshot_core::identity::EntityId,
+) {
+    use earshot_core::voiceprint::{Person, Voiceprint};
+    use rand_core::SeedableRng;
+    let clock = Arc::clone(&dev.svc.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+    let mut db = dev.svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = earshot_core::model::Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let p = Person::new("An invented colleague", false, &mut stamp);
+    let vid = earshot_core::identity::EntityId::generate(stamp.clock, &mut *stamp.rng);
+    let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+    let v = Voiceprint::from_stored(
+        vid,
+        meta,
+        p.id,
+        earshot_core::diar::EmbeddingModelId::new("invented-model"),
+        vec![0.5; 4],
+        1,
+        5_000,
+    );
+    store.put_person(p.clone()).unwrap();
+    store.put_voiceprint(v).unwrap();
+    (p.id, vid)
+}
+
+/// What an older build that still had the print does: writes it live again, later.
+fn write_print_live_again(dev: &Device, print: earshot_core::identity::EntityId) {
+    let clock = Arc::clone(&dev.svc.clock);
+    let mut db = dev.svc.store();
+    let (store, hlc) = db.parts();
+    let v = store
+        .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id() == print)
+        .unwrap();
+    assert!(!v.meta().deleted, "still live there");
+    let mut meta = *v.meta();
+    meta.touch(hlc, &*clock);
+    let again = earshot_core::voiceprint::Voiceprint::from_stored(
+        v.id(),
+        meta,
+        v.person_id(),
+        v.model().clone(),
+        vec![0.5; 4],
+        1,
+        5_000,
+    );
+    store.put_voiceprint(again).unwrap();
+}
+
+fn print_state(dev: &Device, print: earshot_core::identity::EntityId) -> (bool, bool) {
+    let v = dev
+        .svc
+        .store()
+        .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id() == print)
+        .unwrap();
+    let zero = earshot_core::voiceprint::effective(&v, &[])
+        .sum()
+        .iter()
+        .all(|x| *x == 0.0);
+    (v.meta().deleted, zero)
+}
+
+/// T12.77b3 (docs/voice-samples.md 7.4, traced sequence 1): a Forget here, then a computer
+/// that still had the print writes it live with a later stamp. The live copy arrives, the
+/// tombstone stays and is stamped again, the next push is accepted and the other computer
+/// applies it.
+#[test]
+fn sync_a_forgotten_voiceprint_stays_forgotten_when_a_later_live_copy_arrives() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    // Seeding prints in today's shape, and an older build's live copy: sent with no hold.
+    let (ca, cb) = (
+        a.client().with_push_hold(PushHold::Off),
+        b.client().with_push_hold(PushHold::Off),
+    );
+    let (person, print) = print_on(&a, 41);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (false, false), "B has the print");
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    // The forgetting computer runs this build: its Forget and re-stamps go under the hold.
+    let ca = a.client();
+    assert_eq!(ca.hold(), PUSH_HOLD);
+    ca.tick().unwrap();
+    // B writes it live afterwards by its own clock and pushes first: the relay keeps it.
+    b.clock.advance_ms(5_000);
+    write_print_live_again(&b, print);
+    cb.tick().unwrap();
+    // A refuses the live copy and stamps its tombstone again; the next tick sends it.
+    ca.tick().unwrap();
+    assert_eq!(
+        print_state(&a, print),
+        (true, true),
+        "the Forget stays on A"
+    );
+    let r = ca.tick().unwrap();
+    assert_eq!(r.superseded, 0, "{r:?}");
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (true, true), "B applies the Forget");
+    ca.tick().unwrap();
+    assert_eq!(print_state(&a, print), (true, true));
+}
+
+/// T12.77b3 (7.4): a tombstone pushed while the relay holds a later live copy is answered
+/// superseded; the pull brings the live copy, finality stamps the tombstone again, and the
+/// next push wins.
+#[test]
+fn sync_a_superseded_voiceprint_tombstone_wins_on_the_next_push() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    // Seeding prints in today's shape, and an older build's live copy: sent with no hold.
+    let (ca, cb) = (
+        a.client().with_push_hold(PushHold::Off),
+        b.client().with_push_hold(PushHold::Off),
+    );
+    let (person, print) = print_on(&a, 42);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    // The forgetting computer runs this build: its Forget and re-stamps go under the hold.
+    let ca = a.client();
+    assert_eq!(ca.hold(), PUSH_HOLD);
+    // Before A pushes, B writes the print live later and pushes it.
+    b.clock.advance_ms(5_000);
+    write_print_live_again(&b, print);
+    cb.tick().unwrap();
+    let r = ca.tick().unwrap();
+    assert!(
+        r.superseded >= 1,
+        "the relay holds a later live copy: {r:?}"
+    );
+    assert_eq!(
+        print_state(&a, print),
+        (true, true),
+        "the Forget stays on A"
+    );
+    let r = ca.tick().unwrap();
+    assert!(r.pushed >= 1 && r.superseded == 0, "{r:?}");
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (true, true));
+}
+
+/// T12.77b3 (7.4, traced sequence 2): a print tombstone pulled while this computer holds
+/// samples of that print erases them in the same apply.
+#[test]
+fn sync_a_pulled_voiceprint_tombstone_erases_this_computers_samples_of_it() {
+    use earshot_core::voiceprint::{SampleOrigin, Voiceprint, VoiceprintSample};
+    use rand_core::SeedableRng;
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    // Seeding prints in today's shape, and an older build's live copy: sent with no hold.
+    let (ca, cb) = (
+        a.client().with_push_hold(PushHold::Off),
+        b.client().with_push_hold(PushHold::Off),
+    );
+    let (person, print) = print_on(&a, 43);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    // B holds two samples of that print. B's next tick also sends them (no hold in this
+    // build); a computer of this build holds a pulled sample as an entity it does not read.
+    let samples: Vec<VoiceprintSample> = {
+        let clock = Arc::clone(&b.svc.clock);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(44);
+        let mut db = b.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = earshot_core::model::Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let v: Voiceprint = store
+            .voiceprints_of(person)
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id() == print)
+            .unwrap();
+        let mut out = Vec::new();
+        for x in [[1.0f32, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]] {
+            let s = VoiceprintSample::new(&v, &x, 2_000, SampleOrigin::Own, &mut stamp).unwrap();
+            store.put_sample(s.clone()).unwrap();
+            out.push(s);
+        }
+        out
+    };
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    // The forgetting computer runs this build: its Forget and re-stamps go under the hold.
+    let ca = a.client();
+    assert_eq!(ca.hold(), PUSH_HOLD);
+    ca.tick().unwrap();
+    b.clock.advance_ms(1_000);
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (true, true));
+    let db = b.svc.store();
+    assert!(db.samples_of(print).unwrap().is_empty());
+    for s in &samples {
+        assert!(db.sample(s.id()).unwrap().unwrap().is_erased());
+    }
+}
+
+/// Rows for the push hold tests on `dev`: a live print with two samples of it, and a second
+/// person's print forgotten (a tombstone). Returns (live print, forgotten print).
+fn held_rows_on(
+    dev: &Device,
+) -> (
+    earshot_core::identity::EntityId,
+    earshot_core::identity::EntityId,
+) {
+    use earshot_core::voiceprint::{SampleOrigin, VoiceprintSample};
+    use rand_core::SeedableRng;
+    let (_, live) = print_on(dev, 51);
+    let (gone_person, gone) = print_on(dev, 52);
+    {
+        let clock = Arc::clone(&dev.svc.clock);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(53);
+        let mut db = dev.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = earshot_core::model::Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let v = store
+            .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id() == live)
+            .unwrap();
+        for x in [[1.0f32, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]] {
+            let s = VoiceprintSample::new(&v, &x, 1_000, SampleOrigin::Own, &mut stamp).unwrap();
+            store.put_sample(s).unwrap();
+        }
+    }
+    dev.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&dev.svc, gone_person).unwrap();
+    (live, gone)
+}
+
+fn holds_print(dev: &Device, print: earshot_core::identity::EntityId) -> Option<bool> {
+    dev.svc
+        .store()
+        .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id() == print)
+        .map(|v| v.meta().deleted)
+}
+
+/// T12.77b4 (docs/voice-samples.md 7.1): with the hold on, a tick holding samples, a live
+/// print and a print tombstone sends only the tombstone (and the person rows, an ordinary
+/// kind); the live print and every sample wait in the outbox, and the other computer reads
+/// what came at the vault's format without holding anything.
+#[test]
+fn sync_the_push_hold_sends_print_tombstones_and_keeps_live_prints_and_samples() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let (live, gone) = held_rows_on(&a);
+    let ca = a.client().with_push_hold(PushHold::Samples);
+    let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
+    let waiting = a
+        .svc
+        .store()
+        .outbox_len_held(&[], kinds, PushHold::Samples)
+        .unwrap();
+    let r = ca.tick().unwrap();
+    assert_eq!(
+        u64::try_from(r.pushed + r.superseded).unwrap(),
+        waiting,
+        "the waiting count is what a tick sends: {r:?}"
+    );
+    assert_eq!(
+        a.svc
+            .store()
+            .outbox_len_held(&[], kinds, PushHold::Samples)
+            .unwrap(),
+        0,
+        "nothing sendable is left"
+    );
+    // Held, not lost: the live print and both samples are still queued.
+    let queued = a.svc.store().outbox(1_000).unwrap();
+    let tables: Vec<&str> = queued.iter().map(|r| r.table()).collect();
+    assert_eq!(
+        tables.iter().filter(|t| **t == "voiceprint_sample").count(),
+        2
+    );
+    assert!(queued.iter().any(|r| r.id() == live));
+    assert!(!queued.iter().any(|r| r.id() == gone), "the tombstone went");
+    let rb = b.client().tick().unwrap();
+    assert_eq!(rb.held, 0, "nothing the other computer cannot read: {rb:?}");
+    assert_eq!(holds_print(&b, gone), Some(true), "the Forget arrived");
+    assert_eq!(holds_print(&b, live), None, "the live print waits");
+}
+
+/// T12.77b4: a tick whose only sendable row is a print tombstone pushes it (the tombstone
+/// read runs even when the ordinary page is empty).
+#[test]
+fn sync_the_push_hold_sends_a_print_tombstone_that_is_the_only_row() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let (person, print) = print_on(&a, 54);
+    let ca = a.client().with_push_hold(PushHold::Off);
+    ca.tick().unwrap();
+    b.client().tick().unwrap();
+    assert_eq!(holds_print(&b, print), Some(false));
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    let ca = a.client().with_push_hold(PushHold::Samples);
+    let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
+    let off = SyncKinds {
+        voiceprints: false,
+        ..kinds
+    };
+    assert_eq!(
+        a.svc.store().outbox_len_except(&[], off).unwrap(),
+        0,
+        "no ordinary row waits"
+    );
+    let r = ca.tick().unwrap();
+    assert_eq!(r.pushed, 1, "{r:?}");
+    b.client().tick().unwrap();
+    assert_eq!(holds_print(&b, print), Some(true));
+}
+
+/// T12.77b4: with the hold off every row goes as before, and the waiting count of a client with
+/// that hold is still what it sends. Production holds since T12.77b6.
+#[test]
+fn sync_the_push_hold_off_sends_everything_as_before() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    held_rows_on(&a);
+    assert_eq!(
+        PUSH_HOLD,
+        PushHold::Samples,
+        "on in production since T12.77b6"
+    );
+    let client = a.client().with_push_hold(PushHold::Off);
+    let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
+    let store_count = |hold| a.svc.store().outbox_len_held(&[], kinds, hold).unwrap();
+    assert_eq!(
+        store_count(PushHold::Off),
+        a.svc.store().outbox_len_except(&[], kinds).unwrap()
+    );
+    let waiting = sync_overview_held(&a.svc, &*a.vault, client.hold())
+        .unwrap()
+        .waiting;
+    assert_eq!(waiting, store_count(PushHold::Off));
+    assert!(waiting > store_count(PushHold::Samples));
+    // The page's own overview counts the production hold, which a production client uses.
+    assert_eq!(a.client().hold(), PUSH_HOLD);
+    assert_eq!(
+        sync_overview(&a.svc, &*a.vault).unwrap().waiting,
+        store_count(PUSH_HOLD)
+    );
+    let r = client.tick().unwrap();
+    assert_eq!(u64::try_from(r.pushed + r.superseded).unwrap(), waiting);
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
+}
+
+/// T12.77b4 review: one push page under the hold merges the ordinary rows and the print
+/// tombstones by `updated_at` and stops at the page limit; the next read goes on from there.
+/// With voiceprint sync off no tombstone joins the page.
+#[test]
+fn sync_the_push_hold_page_merges_and_truncates_at_the_limit() {
+    let dev = Device::new("sync-page");
+    let (person, print) = print_on(&dev, 61);
+    {
+        // Everything so far is sent: only what follows is waiting.
+        let mut db = dev.svc.store();
+        let rows = db.outbox(1_000).unwrap();
+        let sent: Vec<_> = rows
+            .iter()
+            .map(|r| (r.table(), r.id(), r.meta().updated_at))
+            .collect();
+        db.outbox_sent(&sent).unwrap();
+    }
+    // An ordinary row, then (later) a print tombstone.
+    dev.clock.advance_ms(1_000);
+    let m = meeting(&dev.svc, "Earlier", 62);
+    dev.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&dev.svc, person).unwrap();
+    let on = SyncKinds::ALL;
+    let page = |kinds| {
+        engine::page_under(&dev.svc.store(), 1, &[], kinds, PushHold::Samples)
+            .unwrap()
+            .iter()
+            .map(|r| (r.table(), r.id()))
+            .collect::<Vec<_>>()
+    };
+    let first = page(on);
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].0, "meeting",
+        "the older ordinary row first: {first:?}"
+    );
+    assert_eq!(first[0].1, m);
+    // Progress: once the meeting's rows are sent, the tombstone comes next.
+    {
+        let mut db = dev.svc.store();
+        let rows = db.outbox(1_000).unwrap();
+        let sent: Vec<_> = rows
+            .iter()
+            .filter(|r| r.table() != "voiceprint")
+            .map(|r| (r.table(), r.id(), r.meta().updated_at))
+            .collect();
+        db.outbox_sent(&sent).unwrap();
+    }
+    assert_eq!(page(on), vec![("voiceprint", print)]);
+    // With voiceprint sync off the tombstone stays out of the page.
+    let off = SyncKinds {
+        voiceprints: false,
+        ..on
+    };
+    assert!(page(off).is_empty());
+    assert_eq!(
+        dev.svc
+            .store()
+            .outbox_len_held(&[], off, PushHold::Samples)
+            .unwrap(),
+        0
+    );
 }

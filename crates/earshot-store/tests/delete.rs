@@ -97,6 +97,7 @@ fn enrolled(store: &mut Store, w: &mut World, name: &str, is_me: bool, seed: f32
         p.id,
         &[Embedding::new(EmbeddingModelId::new("test-model@1"), v)],
         Duration::from_secs(12),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut w.stamp(),
     )
@@ -122,7 +123,11 @@ fn speaker(store: &mut Store, w: &mut World, meeting: EntityId, person: &Person)
 }
 
 fn vector_bytes(store: &Store, person: EntityId) -> Vec<u8> {
-    let sum = store.voiceprints_of(person).unwrap()[0].sum.clone();
+    // The print folded with its samples: the enrolled vector, as stored in its sample.
+    let sum = earshot_core::voiceprint::live_prints_of(store, person).unwrap()[0]
+        .1
+        .sum()
+        .to_vec();
     sum[10..16].iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
@@ -267,7 +272,7 @@ fn store_delete_meeting_leaves_no_row_file_or_local_value_of_it() {
     for p in [&ada, &bob, &me] {
         assert!(store.person(p.id).unwrap().unwrap().is_live(), "{p:?}");
         assert!(
-            !store.voiceprints_of(p.id).unwrap()[0].meta.deleted,
+            !store.voiceprints_of(p.id).unwrap()[0].meta().deleted,
             "{p:?}"
         );
     }
@@ -404,7 +409,7 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
         })
         .unwrap();
     assert!(store.person(dee.id).unwrap().unwrap().is_live());
-    assert!(!store.voiceprints_of(dee.id).unwrap()[0].meta.deleted);
+    assert!(!store.voiceprints_of(dee.id).unwrap()[0].meta().deleted);
     assert_eq!(
         store
             .local_value(&record_key(m2.id))
@@ -421,14 +426,15 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
         PersonRemoval {
             persons_removed: 1,
             voiceprints_forgotten: 1,
+            samples_forgotten: 1,
             speakers_unnamed: 1,
         }
     );
     let gone = store.person(dee.id).unwrap().unwrap();
     assert!(gone.meta.deleted && gone.display_name.is_empty());
     assert!(store.person(cy.id).unwrap().unwrap().is_live());
-    assert!(store.voiceprints_of(dee.id).unwrap()[0].meta.deleted);
-    assert!(!store.voiceprints_of(cy.id).unwrap()[0].meta.deleted);
+    assert!(store.voiceprints_of(dee.id).unwrap()[0].meta().deleted);
+    assert!(!store.voiceprints_of(cy.id).unwrap()[0].meta().deleted);
 
     let rows = store.speakers(m2.id).unwrap();
     let row = |id: EntityId| rows.iter().find(|s| s.id == id).unwrap();
@@ -488,6 +494,7 @@ fn store_remove_person_takes_everyone_merged_into_them() {
         PersonRemoval {
             persons_removed: 2,
             voiceprints_forgotten: 2,
+            samples_forgotten: 2,
             speakers_unnamed: 1,
         }
     );

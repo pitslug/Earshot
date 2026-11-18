@@ -917,3 +917,95 @@ pub fn dictionary_repo<R: MeetingRepo + DictionaryRepo>(make: impl Fn() -> R) {
     super::delete_meeting(&mut repo, m.id, &mut f.hlc, &f.clock).unwrap();
     assert_eq!(repo.dictionary_words().unwrap(), before);
 }
+
+/// Voice samples (T12.77b2, docs/voice-samples.md 4): written and read back bit for bit,
+/// found by model, print, person and meeting voice in creation order, replaced by id, and a
+/// tombstone (no body) found only by its own id.
+///
+/// # Panics
+/// On any violation.
+pub fn voiceprint_sample_repo<R: crate::voiceprint::VoiceprintRepo>(make: impl Fn() -> R) {
+    use crate::diar::EmbeddingModelId;
+    use crate::voiceprint::{SampleRecord, Voiceprint, VoiceprintSample};
+
+    let mut f = Rows::new();
+    let mut repo = make();
+    let model = EmbeddingModelId::new("contract-model@1");
+    let other = EmbeddingModelId::new("contract-model@2");
+    let (ada, bea) = (f.id(), f.id());
+    let print = |f: &mut Rows, person, model: &EmbeddingModelId| {
+        Voiceprint::from_stored(f.id(), f.meta(), person, model.clone(), vec![0.0; 3], 0, 0)
+    };
+    let p1 = print(&mut f, ada, &model);
+    let p2 = print(&mut f, bea, &other);
+    let (meeting, speaker, speaker2) = (f.id(), f.id(), f.id());
+    // Values that need every bit of an f32, of unit length.
+    let x = 0.1f32.next_up();
+    let z = (1.0 - x * x - 0.25).sqrt();
+    let vector = vec![x, -0.5, z];
+    let sample = |f: &mut Rows, p: &Voiceprint, origin: Option<(EntityId, EntityId)>| {
+        VoiceprintSample::from_stored(SampleRecord {
+            id: f.id(),
+            meta: f.meta(),
+            voiceprint_id: Some(p.id()),
+            person_id: Some(p.person_id()),
+            model: Some(p.model().clone()),
+            vector: vector.clone(),
+            speech_ms: Some(4_321),
+            meeting_id: origin.map(|o| o.0),
+            speaker_id: origin.map(|o| o.1),
+        })
+        .unwrap()
+    };
+    let a = sample(&mut f, &p1, Some((meeting, speaker)));
+    let b = sample(&mut f, &p1, None);
+    let c = sample(&mut f, &p2, Some((meeting, speaker2)));
+    // The largest id but the earliest creation: reads go by `created_at`, not id.
+    let early = {
+        let mut r = SampleRecord::from(sample(&mut f, &p1, None));
+        r.meta.created_at.wall_ms = a.meta().created_at.wall_ms - 1;
+        r.meta.updated_at = r.meta.created_at;
+        VoiceprintSample::from_stored(r).unwrap()
+    };
+    assert!(early.id() > c.id() && early.meta().created_at < a.meta().created_at);
+    let first = vec![early.id(), a.id(), b.id()];
+    let rest = vec![early.id(), b.id()];
+    assert_eq!(repo.sample(a.id()).unwrap(), None);
+    assert!(repo.samples(&model).unwrap().is_empty());
+    // Written in the other order: reads are in creation order.
+    for s in [&c, &b, &a, &early] {
+        repo.put_sample(s.clone()).unwrap();
+    }
+    let ids = |v: Vec<VoiceprintSample>| v.iter().map(VoiceprintSample::id).collect::<Vec<_>>();
+    assert_eq!(repo.sample(a.id()).unwrap().as_ref(), Some(&a));
+    let back = repo.sample(a.id()).unwrap().unwrap();
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(back.vector().unwrap()), bits(&vector), "bit for bit");
+    assert_eq!(ids(repo.samples(&model).unwrap()), first.clone());
+    assert_eq!(ids(repo.samples(&other).unwrap()), vec![c.id()]);
+    assert_eq!(ids(repo.samples_of(p1.id()).unwrap()), first.clone());
+    assert_eq!(ids(repo.samples_of(p2.id()).unwrap()), vec![c.id()]);
+    assert_eq!(ids(repo.samples_of_person(ada).unwrap()), first.clone());
+    assert_eq!(ids(repo.samples_of_person(bea).unwrap()), vec![c.id()]);
+    assert_eq!(
+        ids(repo.samples_from(meeting, speaker).unwrap()),
+        vec![a.id()]
+    );
+    assert_eq!(
+        ids(repo.samples_from(meeting, speaker2).unwrap()),
+        vec![c.id()]
+    );
+    assert!(repo.samples_from(speaker, meeting).unwrap().is_empty());
+
+    // A tombstone replaces the row by id and leaves every keyed read.
+    let mut meta = f.meta();
+    meta.created_at = a.meta().created_at;
+    meta.deleted = true;
+    let gone = VoiceprintSample::erased(a.id(), meta).unwrap();
+    repo.put_sample(gone.clone()).unwrap();
+    assert_eq!(repo.sample(a.id()).unwrap().as_ref(), Some(&gone));
+    assert_eq!(ids(repo.samples(&model).unwrap()), rest.clone());
+    assert_eq!(ids(repo.samples_of(p1.id()).unwrap()), rest.clone());
+    assert_eq!(ids(repo.samples_of_person(ada).unwrap()), rest.clone());
+    assert!(repo.samples_from(meeting, speaker).unwrap().is_empty());
+}
