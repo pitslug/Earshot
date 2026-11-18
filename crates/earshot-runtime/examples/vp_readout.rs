@@ -26,8 +26,8 @@ use earshot_core::diar::{Embedding, EmbeddingModelId, SpeakerRole};
 use earshot_core::identity::EntityId;
 use earshot_core::model::{Meeting, MeetingRepo, Speaker};
 use earshot_core::voiceprint::{
-    InMemoryVoiceprintRepo, Person, Voiceprint, VoiceprintRepo, calibrated_margin,
-    calibrated_threshold, effective, live_prints, resolve_person,
+    InMemoryVoiceprintRepo, Person, Voiceprint, VoiceprintRepo, VoiceprintSample,
+    calibrated_margin, calibrated_threshold, effective, live_prints, resolve_person,
 };
 use earshot_runtime::post::voice_match;
 use earshot_store::ReadOnlyStore;
@@ -193,6 +193,7 @@ fn unit(v: &[f32]) -> Option<Vec<f32>> {
 fn without_enrolment(
     persons: &[Person],
     prints: &[Voiceprint],
+    samples: &[VoiceprintSample],
     owner: EntityId,
     linked: EntityId,
     centroid: &Embedding,
@@ -202,15 +203,18 @@ fn without_enrolment(
     // Enrolment wrote to the person the row was linked to; a later merge moves nothing, so
     // the print is the linked person's or, failing that, the owner's.
     let holds = |p: &Voiceprint, person: EntityId| {
-        !p.meta().deleted && p.person_id() == person && effective(p, &[]).sum().len() == u.len()
+        !p.meta().deleted && p.person_id() == person && effective(p, samples).sum().len() == u.len()
     };
     let at = prints
         .iter()
         .position(|p| holds(p, linked))
         .or_else(|| prints.iter().position(|p| holds(p, owner)))?;
-    // The effective print (no samples are stored yet), with the enrolment taken out.
+    // The effective print, with the enrolment taken out (approximately: a voice saved
+    // before samples has no sample of its own to leave out). The rebuilt print carries the
+    // whole effective state, so the print's samples stay out of the snapshot.
     let p = &prints[at];
-    let e = effective(p, &[]);
+    let e = effective(p, samples);
+    let folded = p.id();
     if e.count() == 0 {
         return None;
     }
@@ -232,16 +236,28 @@ fn without_enrolment(
             e.speech_ms(),
         );
     }
-    Some(snapshot(persons, &prints))
+    let rest: Vec<VoiceprintSample> = samples
+        .iter()
+        .filter(|s| s.voiceprint_id() != Some(folded))
+        .cloned()
+        .collect();
+    Some(snapshot(persons, &prints, &rest))
 }
 
-fn snapshot(persons: &[Person], prints: &[Voiceprint]) -> InMemoryVoiceprintRepo {
+fn snapshot(
+    persons: &[Person],
+    prints: &[Voiceprint],
+    samples: &[VoiceprintSample],
+) -> InMemoryVoiceprintRepo {
     let mut s = InMemoryVoiceprintRepo::new();
     for p in persons {
         let _ = s.put_person(p.clone());
     }
     for v in prints {
         let _ = s.put_voiceprint(v.clone());
+    }
+    for v in samples {
+        let _ = s.put_sample(v.clone());
     }
     s
 }
@@ -281,7 +297,14 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
         .filter(|m| !m.meta.deleted)
         .collect();
     meetings.sort_by_key(|m| (m.started_unix_ms, m.id));
-    let mut model: Option<(EmbeddingModelId, f32, f32, Vec<Voiceprint>)> = None;
+    type ModelRows = (
+        EmbeddingModelId,
+        f32,
+        f32,
+        Vec<Voiceprint>,
+        Vec<VoiceprintSample>,
+    );
+    let mut model: Option<ModelRows> = None;
     let mut voices = Vec::new();
     let mut skipped = Skipped::default();
     for (mk, m) in meetings.iter().enumerate() {
@@ -324,14 +347,18 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
                 let prints = store
                     .voiceprints(&c.model)
                     .map_err(|_| "reading voiceprints")?;
+                let samples = store
+                    .samples(&c.model)
+                    .map_err(|_| "reading voice samples")?;
                 model = Some((
                     c.model.clone(),
                     threshold,
                     calibrated_margin(&c.model).unwrap_or(0.0),
                     prints,
+                    samples,
                 ));
             }
-            let Some((_, threshold, margin, prints)) = model.as_ref() else {
+            let Some((_, threshold, margin, prints, samples)) = model.as_ref() else {
                 continue;
             };
             // Who the voice is: a marked "Me" row is the user; else the linked person.
@@ -354,7 +381,7 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
             };
             let repo = match (kind, entry.enrolled, owner, linked) {
                 (Kind::Confirmed, true, Some(o), Some(l)) => {
-                    match without_enrolment(&persons, prints, o, l, c) {
+                    match without_enrolment(&persons, prints, samples, o, l, c) {
                         Some(r) => r,
                         None => {
                             skipped.leave_out_not_found += 1;
@@ -362,7 +389,7 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
                         }
                     }
                 }
-                _ => snapshot(&persons, prints),
+                _ => snapshot(&persons, prints, samples),
             };
             let scores = person_scores(&repo, c)?;
             let mut ranked: Vec<(EntityId, f32)> = scores.iter().map(|(p, s)| (*p, *s)).collect();
@@ -392,7 +419,7 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
             });
         }
     }
-    let (shipped_threshold, margin) = model.map_or((f32::NAN, f32::NAN), |(_, t, m, _)| (t, m));
+    let (shipped_threshold, margin) = model.map_or((f32::NAN, f32::NAN), |(_, t, m, _, _)| (t, m));
     Ok(Readout {
         shipped_threshold,
         margin,

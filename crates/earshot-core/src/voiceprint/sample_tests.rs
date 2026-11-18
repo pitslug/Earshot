@@ -504,3 +504,65 @@ fn voiceprint_live_prints_leave_out_tombstones_and_other_models() {
     want.sort();
     assert_eq!(of, want);
 }
+
+#[test]
+fn voiceprint_in_memory_repo_passes_the_sample_contract() {
+    crate::model::repo_contract::voiceprint_sample_repo(InMemoryVoiceprintRepo::new);
+}
+
+#[test]
+fn voiceprint_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
+    let (clock, mut hlc, mut rng, mut repo) = world();
+    let mut stamp = Stamp {
+        clock: &clock,
+        hlc: &mut hlc,
+        rng: &mut rng,
+    };
+    let me = Person::new(DEFAULT_ME_NAME, true, &mut stamp);
+    repo.put_person(me.clone()).unwrap();
+    let (id, meta) = stamp.new_row();
+    let print = Voiceprint::from_stored(id, meta, me.id, model(), vec![0.0, 0.0], 0, 0);
+    repo.put_voiceprint(print.clone()).unwrap();
+    let e = Embedding::new(model(), vec![0.0, 1.0]);
+    // Empty: no voice, needs new speech.
+    assert_eq!(
+        match_embedding(&repo, &e, 0.5).unwrap(),
+        MatchOutcome::Unknown { best: None }
+    );
+    let short = Duration::from_secs(1);
+    let config = EnrolmentConfig::default();
+    assert!(admissible(&repo, me.id, std::slice::from_ref(&e), short, &config, &[]).is_err());
+
+    let s =
+        VoiceprintSample::new(&print, &[0.0, 3.0], 7_000, SampleOrigin::Own, &mut stamp).unwrap();
+    repo.put_sample(s.clone()).unwrap();
+    let (_, eff) = live_prints_of(&repo, me.id).unwrap().pop().unwrap();
+    assert_eq!(
+        (eff.count(), eff.speech_ms(), eff.has_base()),
+        (1, 7_000, false)
+    );
+    let (_, by_model) = live_prints(&repo, &model()).unwrap().pop().unwrap();
+    assert_eq!(by_model, eff);
+    assert!(matches!(
+        match_embedding(&repo, &e, 0.5).unwrap(),
+        MatchOutcome::Known { person, .. } if person == me.id
+    ));
+    // It holds a voice now, so an update needs no new speech; leaving its own sample out
+    // judges it empty again.
+    assert_eq!(
+        admissible(&repo, me.id, std::slice::from_ref(&e), short, &config, &[]),
+        Ok(())
+    );
+    assert!(
+        admissible(
+            &repo,
+            me.id,
+            std::slice::from_ref(&e),
+            short,
+            &config,
+            &[s.id()]
+        )
+        .is_err()
+    );
+    assert!(enroll_me(&mut repo, &[e], short, &config, &mut stamp).is_ok());
+}

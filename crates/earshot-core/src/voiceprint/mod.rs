@@ -382,6 +382,44 @@ pub trait VoiceprintRepo {
     /// # Errors
     /// [`VoiceprintError::Repo`] on storage failure.
     fn put_voiceprint(&mut self, voiceprint: Voiceprint) -> Result<(), VoiceprintError>;
+    /// The live voice samples of `model`, in creation order (`meta.created_at`, then id). A
+    /// sample tombstone keeps no body, so it matches no key and only its own id finds it
+    /// ([`VoiceprintRepo::sample`]); the same holds for every keyed sample read.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples(&self, model: &EmbeddingModelId) -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The live samples of the voiceprint `print`, in creation order.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples_of(&self, print: EntityId) -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The live samples written for `person` (their `person_id`, not following merges), in
+    /// creation order.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples_of_person(&self, person: EntityId)
+    -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The live samples from the voice `speaker` of `meeting`, in creation order.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn samples_from(
+        &self,
+        meeting: EntityId,
+        speaker: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError>;
+    /// The sample with `id`, a tombstone included.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn sample(&self, id: EntityId) -> Result<Option<VoiceprintSample>, VoiceprintError>;
+    /// Inserts or replaces a sample (by id).
+    ///
+    /// # Errors
+    /// [`VoiceprintError::Repo`] on storage failure.
+    fn put_sample(&mut self, sample: VoiceprintSample) -> Result<(), VoiceprintError>;
 }
 
 /// In-memory [`VoiceprintRepo`] (tests, and the core pipeline before storage exists).
@@ -389,6 +427,21 @@ pub trait VoiceprintRepo {
 pub struct InMemoryVoiceprintRepo {
     persons: BTreeMap<EntityId, Person>,
     voiceprints: BTreeMap<EntityId, Voiceprint>,
+    samples: BTreeMap<EntityId, VoiceprintSample>,
+}
+
+impl InMemoryVoiceprintRepo {
+    /// The live samples for which `keep` holds, in creation order.
+    fn samples_where(&self, keep: impl Fn(&VoiceprintSample) -> bool) -> Vec<VoiceprintSample> {
+        let mut out: Vec<VoiceprintSample> = self
+            .samples
+            .values()
+            .filter(|s| !s.is_erased() && keep(s))
+            .cloned()
+            .collect();
+        out.sort_by_key(|s| (s.meta().created_at, s.id()));
+        out
+    }
 }
 
 impl InMemoryVoiceprintRepo {
@@ -428,6 +481,33 @@ impl VoiceprintRepo for InMemoryVoiceprintRepo {
     }
     fn put_voiceprint(&mut self, voiceprint: Voiceprint) -> Result<(), VoiceprintError> {
         self.voiceprints.insert(voiceprint.id, voiceprint);
+        Ok(())
+    }
+    fn samples(&self, model: &EmbeddingModelId) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples_where(|s| s.model() == Some(model)))
+    }
+    fn samples_of(&self, print: EntityId) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples_where(|s| s.voiceprint_id() == Some(print)))
+    }
+    fn samples_of_person(
+        &self,
+        person: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples_where(|s| s.person_id() == Some(person)))
+    }
+    fn samples_from(
+        &self,
+        meeting: EntityId,
+        speaker: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        let origin = SampleOrigin::Meeting { meeting, speaker };
+        Ok(self.samples_where(|s| s.origin() == Some(origin)))
+    }
+    fn sample(&self, id: EntityId) -> Result<Option<VoiceprintSample>, VoiceprintError> {
+        Ok(self.samples.get(&id).cloned())
+    }
+    fn put_sample(&mut self, sample: VoiceprintSample) -> Result<(), VoiceprintError> {
+        self.samples.insert(sample.id(), sample);
         Ok(())
     }
 }

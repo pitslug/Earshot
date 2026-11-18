@@ -20,7 +20,7 @@ use earshot_core::model::{
     DictionaryWord, Folder, Meeting, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
     SummaryRequest, Track,
 };
-use earshot_core::voiceprint::{Person, Voiceprint};
+use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintSample};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{Store, StoreError, StoreTx};
@@ -55,6 +55,10 @@ pub enum SyncedRow {
     SummaryRequest(SummaryRequest),
     /// `dictionary_word` (synced only while the device's Dictionary switch is on, T11.3e).
     DictionaryWord(DictionaryWord),
+    /// `voiceprint_sample` (an opt-in kind with voiceprints, T12.77b2). Not decoded from the
+    /// wire until sample sync is turned on (T12.77b8): a pulled sample row is held as
+    /// [`HoldReason::Format`].
+    VoiceprintSample(VoiceprintSample),
 }
 
 macro_rules! each {
@@ -71,6 +75,7 @@ macro_rules! each {
             SyncedRow::Folder($r) => $e,
             SyncedRow::SummaryRequest($r) => $e,
             SyncedRow::DictionaryWord($r) => $e,
+            SyncedRow::VoiceprintSample($r) => $e,
         }
     };
 }
@@ -98,7 +103,7 @@ impl SyncedRow {
     }
 
     /// The meeting it belongs to: its own id for a meeting, `None` for people, voiceprints,
-    /// folders and Dictionary words.
+    /// voice samples (never held for their meeting), folders and Dictionary words.
     #[must_use]
     pub fn meeting(&self) -> Option<EntityId> {
         match self {
@@ -109,9 +114,11 @@ impl SyncedRow {
             Self::Note(r) => Some(r.meeting_id),
             Self::Summary(r) => Some(r.meeting_id),
             Self::SummaryRequest(r) => Some(r.meeting_id),
-            Self::Person(_) | Self::Voiceprint(_) | Self::Folder(_) | Self::DictionaryWord(_) => {
-                None
-            }
+            Self::Person(_)
+            | Self::Voiceprint(_)
+            | Self::VoiceprintSample(_)
+            | Self::Folder(_)
+            | Self::DictionaryWord(_) => None,
         }
     }
 
@@ -251,7 +258,7 @@ impl SyncKinds {
     #[must_use]
     pub fn syncs(self, table: &str) -> bool {
         match table {
-            "voiceprint" => self.voiceprints,
+            "voiceprint" | "voiceprint_sample" => self.voiceprints,
             "dictionary_word" => self.dictionary,
             _ => true,
         }

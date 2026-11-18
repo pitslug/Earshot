@@ -237,6 +237,67 @@ fn post_unreadable_echo_locks_are_reported_once_and_the_pass_still_stores() {
     );
 }
 
+/// T12.77b2: "Alice" with a zero-base print whose voice is only a stored sample of scene
+/// speaker `k`; the final pass's snapshot copies the samples, so she is named.
+#[test]
+fn post_final_pass_names_a_voice_held_only_in_stored_samples() {
+    use earshot_core::voiceprint::{SampleOrigin, Voiceprint, VoiceprintSample};
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = {
+        let clock = ManualClock::new(1_760_000_000_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(2);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = Stamp {
+            clock: &clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let alice = Person::new("Alice", false, &mut stamp);
+        store.put_person(alice.clone()).unwrap();
+        let id = EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+        let dim = centroid(1).len();
+        let print = Voiceprint::from_stored(
+            id,
+            meta,
+            alice.id,
+            EmbeddingModelId::new(MODEL),
+            vec![0.0; dim],
+            0,
+            0,
+        );
+        store.put_voiceprint(print.clone()).unwrap();
+        let s = VoiceprintSample::new(&print, &centroid(1), 20_000, SampleOrigin::Own, &mut stamp)
+            .unwrap();
+        store.put_sample(s).unwrap();
+        alice.id
+    };
+    let (mic_audio, them_audio) = scene();
+    let mut post = PostProcessor::new(
+        transcriber(),
+        FakeSegmenter::segmentation_3_0(),
+        embedder(),
+        config(),
+    )
+    .unwrap();
+    let input = PostInput {
+        echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
+        meeting,
+        tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+    };
+    let mut rng = ChaCha8Rng::seed_from_u64(3);
+    let outcome = post
+        .run(&svc, input, &mut rng, &CancelToken::new())
+        .unwrap();
+    assert_eq!(outcome.speakers[1].display_name, "Alice");
+    assert_eq!(outcome.speakers[1].person, Some(alice));
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+}
+
 #[test]
 fn post_final_pass_diarises_names_and_stores_speakers() {
     let dir = TempDir::new();

@@ -2478,7 +2478,8 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
     warnings: &mut Vec<PostWarning>,
 ) -> Result<Vec<Naming>, RuntimeError> {
     let vp = RuntimeError::Voiceprint;
-    // One read of the persons and this model's voiceprints for all speakers.
+    // One read of the persons and this model's voiceprints and voice samples for all
+    // speakers.
     let mut snapshot = InMemoryVoiceprintRepo::new();
     let persons = repo.persons().map_err(vp)?;
     for p in &persons {
@@ -2486,6 +2487,9 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
     }
     for v in repo.voiceprints(model).map_err(vp)? {
         snapshot.put_voiceprint(v).map_err(vp)?;
+    }
+    for s in repo.samples(model).map_err(vp)? {
+        snapshot.put_sample(s).map_err(vp)?;
     }
     let is_me = |id: EntityId| persons.iter().any(|p| p.id == id && p.is_me);
 

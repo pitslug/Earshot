@@ -8,7 +8,9 @@ use earshot_core::model::{
     FolderRepo, Meeting, MeetingRepo, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
     SummaryRequest, SummaryRequestRepo, Track, TranscriptPass, VaultPath,
 };
-use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintError, VoiceprintRepo};
+use earshot_core::voiceprint::{
+    Person, SampleRecord, Voiceprint, VoiceprintError, VoiceprintRepo, VoiceprintSample,
+};
 use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, Row, params_from_iter};
 use serde::Serialize;
@@ -978,6 +980,138 @@ fn put_voiceprint(c: &Connection, v: &Voiceprint) -> Result<(), RepoError> {
     Ok(())
 }
 
+// ---- voiceprint_sample (T12.77b2) ----
+
+const VOICEPRINT_SAMPLE: [&str; 7] = [
+    "voiceprint_id",
+    "person_id",
+    "model",
+    "vector",
+    "speech_ms",
+    "meeting_id",
+    "speaker_id",
+];
+
+/// A stored sample through the one check (`VoiceprintSample::from_stored`): a live row that
+/// fails it is an error, never skipped.
+fn voiceprint_sample_row(r: &Row<'_>) -> rusqlite::Result<VoiceprintSample> {
+    let bytes: Vec<u8> = r.get(REST + 3)?;
+    let (chunks, rest) = bytes.as_chunks::<4>();
+    if !rest.is_empty() {
+        return Err(conv_err(
+            REST + 3,
+            Type::Blob,
+            BadValue(format!("voice sample vector of {} bytes", bytes.len())),
+        ));
+    }
+    let speech_ms = match r.get::<_, Option<i64>>(REST + 4)? {
+        None => None,
+        Some(_) => Some(get_u64(r, REST + 4)?),
+    };
+    let record = SampleRecord {
+        id: get_id(r, 0)?,
+        meta: get_meta(r, 1)?,
+        voiceprint_id: get_opt_id(r, REST)?,
+        person_id: get_opt_id(r, REST + 1)?,
+        model: r
+            .get::<_, Option<String>>(REST + 2)?
+            .map(EmbeddingModelId::new),
+        vector: chunks.iter().map(|b| f32::from_le_bytes(*b)).collect(),
+        speech_ms,
+        meeting_id: get_opt_id(r, REST + 5)?,
+        speaker_id: get_opt_id(r, REST + 6)?,
+    };
+    VoiceprintSample::from_stored(record)
+        .map_err(|e| conv_err(REST + 3, Type::Blob, BadValue(e.to_string())))
+}
+
+/// Live samples matching `filter` (a `WHERE` condition on `?1`, `?2`), in creation order.
+fn samples_where(
+    c: &Connection,
+    filter: &str,
+    p: &[Value],
+) -> Result<Vec<VoiceprintSample>, RepoError> {
+    let tail = format!(
+        "WHERE deleted = 0 AND {filter} ORDER BY created_wall, created_logical, created_node, id"
+    );
+    let sql = select_sql("voiceprint_sample", &synced_cols(&VOICEPRINT_SAMPLE), &tail);
+    query(c, &sql, p, voiceprint_sample_row)
+}
+
+fn put_voiceprint_sample(c: &Connection, s: &VoiceprintSample) -> Result<(), RepoError> {
+    let r = SampleRecord::from(s.clone());
+    let bytes: Vec<u8> = r.vector.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let vals = synced_values(
+        r.id,
+        &r.meta,
+        vec![
+            opt_id(r.voiceprint_id),
+            opt_id(r.person_id),
+            opt_text(r.model.as_ref().map(EmbeddingModelId::as_str)),
+            Value::Blob(bytes),
+            r.speech_ms.map_or(Ok(Value::Null), int)?,
+            opt_id(r.meeting_id),
+            opt_id(r.speaker_id),
+        ],
+    )?;
+    exec(
+        c,
+        &upsert_sql("voiceprint_sample", &synced_cols(&VOICEPRINT_SAMPLE), "id"),
+        &vals,
+    )?;
+    Ok(())
+}
+
+/// The sample reads of [`VoiceprintRepo`], shared by the store, its transaction and the
+/// read-only store.
+mod sample_reads {
+    use super::*;
+
+    pub(super) fn samples(
+        c: &Connection,
+        model: &EmbeddingModelId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        samples_where(c, "model = ?1", &[text(model.as_str())]).map_err(vp_err)
+    }
+    pub(super) fn samples_of(
+        c: &Connection,
+        print: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        samples_where(c, "voiceprint_id = ?1", &[id_value(print)]).map_err(vp_err)
+    }
+    pub(super) fn samples_of_person(
+        c: &Connection,
+        person: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        samples_where(c, "person_id = ?1", &[id_value(person)]).map_err(vp_err)
+    }
+    pub(super) fn samples_from(
+        c: &Connection,
+        meeting: EntityId,
+        speaker: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        samples_where(
+            c,
+            "meeting_id = ?1 AND speaker_id = ?2",
+            &[id_value(meeting), id_value(speaker)],
+        )
+        .map_err(vp_err)
+    }
+    pub(super) fn sample(
+        c: &Connection,
+        id: EntityId,
+    ) -> Result<Option<VoiceprintSample>, VoiceprintError> {
+        let sql = select_sql(
+            "voiceprint_sample",
+            &synced_cols(&VOICEPRINT_SAMPLE),
+            "WHERE id = ?1",
+        );
+        Ok(query(c, &sql, &[id_value(id)], voiceprint_sample_row)
+            .map_err(vp_err)?
+            .pop())
+    }
+}
+
 // ---- sync (T11.1b) ----
 
 /// The row `id` of the synced `table`, tombstones included; `None` when absent or for a
@@ -1020,6 +1154,9 @@ pub(crate) fn synced_by_id(
         "dictionary_word" => query(c, &sql(&DICTIONARY_WORD), &p, dictionary_word_row)?
             .pop()
             .map(R::DictionaryWord),
+        "voiceprint_sample" => query(c, &sql(&VOICEPRINT_SAMPLE), &p, voiceprint_sample_row)?
+            .pop()
+            .map(R::VoiceprintSample),
         _ => None,
     })
 }
@@ -1040,6 +1177,7 @@ pub(crate) fn put_synced(c: &Connection, row: &crate::sync::SyncedRow) -> Result
         R::Folder(f) => put_folder(c, f),
         R::SummaryRequest(s) => put_summary_request(c, s),
         R::DictionaryWord(w) => put_dictionary_word(c, w),
+        R::VoiceprintSample(s) => put_voiceprint_sample(c, s),
     }
 }
 
@@ -1185,6 +1323,37 @@ macro_rules! impl_repos {
             fn put_voiceprint(&mut self, voiceprint: Voiceprint) -> Result<(), VoiceprintError> {
                 put_voiceprint(&self.conn, &voiceprint).map_err(vp_err)
             }
+            fn samples(
+                &self,
+                model: &EmbeddingModelId,
+            ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+                sample_reads::samples(&self.conn, model)
+            }
+            fn samples_of(
+                &self,
+                print: EntityId,
+            ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+                sample_reads::samples_of(&self.conn, print)
+            }
+            fn samples_of_person(
+                &self,
+                person: EntityId,
+            ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+                sample_reads::samples_of_person(&self.conn, person)
+            }
+            fn samples_from(
+                &self,
+                meeting: EntityId,
+                speaker: EntityId,
+            ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+                sample_reads::samples_from(&self.conn, meeting, speaker)
+            }
+            fn sample(&self, id: EntityId) -> Result<Option<VoiceprintSample>, VoiceprintError> {
+                sample_reads::sample(&self.conn, id)
+            }
+            fn put_sample(&mut self, sample: VoiceprintSample) -> Result<(), VoiceprintError> {
+                put_voiceprint_sample(&self.conn, &sample).map_err(vp_err)
+            }
         }
     };
 }
@@ -1265,6 +1434,31 @@ impl VoiceprintRepo for ReadOnlyStore {
         voiceprints_where(&self.conn, "person_id", id_value(person)).map_err(vp_err)
     }
     fn put_voiceprint(&mut self, _voiceprint: Voiceprint) -> Result<(), VoiceprintError> {
+        Err(vp_err(read_only()))
+    }
+    fn samples(&self, model: &EmbeddingModelId) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        sample_reads::samples(&self.conn, model)
+    }
+    fn samples_of(&self, print: EntityId) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        sample_reads::samples_of(&self.conn, print)
+    }
+    fn samples_of_person(
+        &self,
+        person: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        sample_reads::samples_of_person(&self.conn, person)
+    }
+    fn samples_from(
+        &self,
+        meeting: EntityId,
+        speaker: EntityId,
+    ) -> Result<Vec<VoiceprintSample>, VoiceprintError> {
+        sample_reads::samples_from(&self.conn, meeting, speaker)
+    }
+    fn sample(&self, id: EntityId) -> Result<Option<VoiceprintSample>, VoiceprintError> {
+        sample_reads::sample(&self.conn, id)
+    }
+    fn put_sample(&mut self, _sample: VoiceprintSample) -> Result<(), VoiceprintError> {
         Err(vp_err(read_only()))
     }
 }

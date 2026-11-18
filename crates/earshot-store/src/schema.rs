@@ -327,8 +327,46 @@ CREATE TRIGGER dictionary_word_sync_update AFTER UPDATE ON dictionary_word BEGIN
 END;
 ";
 
+/// Migration 9: voice samples (T12.77b2, docs/voice-samples.md 2 and 9), one synced row per
+/// enrolled embedding with its own outbox triggers, no backfill. A tombstone keeps only its id
+/// and sync metadata: every body column NULL and the vector empty, exactly when `deleted`
+/// (the `CHECK`). No foreign keys: a sample outlives its meeting and may arrive before its print.
+const V9: &str = "
+CREATE TABLE voiceprint_sample (
+    id BLOB PRIMARY KEY NOT NULL, {META},
+    voiceprint_id BLOB,
+    person_id BLOB,
+    model TEXT,
+    vector BLOB NOT NULL,
+    speech_ms INTEGER,
+    meeting_id BLOB,
+    speaker_id BLOB,
+    CHECK (
+        (deleted = 1 AND voiceprint_id IS NULL AND person_id IS NULL AND model IS NULL
+            AND length(vector) = 0 AND speech_ms IS NULL AND meeting_id IS NULL
+            AND speaker_id IS NULL)
+        OR (deleted = 0 AND voiceprint_id IS NOT NULL AND person_id IS NOT NULL
+            AND model IS NOT NULL AND length(vector) > 0 AND speech_ms IS NOT NULL
+            AND (meeting_id IS NULL) = (speaker_id IS NULL))
+    )
+) STRICT;
+CREATE INDEX voiceprint_sample_print ON voiceprint_sample(voiceprint_id);
+CREATE INDEX voiceprint_sample_person ON voiceprint_sample(person_id);
+CREATE INDEX voiceprint_sample_model ON voiceprint_sample(model);
+CREATE INDEX voiceprint_sample_origin ON voiceprint_sample(meeting_id, speaker_id);
+
+CREATE TRIGGER voiceprint_sample_sync_insert AFTER INSERT ON voiceprint_sample BEGIN
+    INSERT INTO sync_outbox SELECT 'voiceprint_sample', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'voiceprint_sample' AND id = NEW.id);
+END;
+CREATE TRIGGER voiceprint_sample_sync_update AFTER UPDATE ON voiceprint_sample BEGIN
+    INSERT INTO sync_outbox SELECT 'voiceprint_sample', NEW.id
+        WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE tbl = 'voiceprint_sample' AND id = NEW.id);
+END;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
-pub(crate) const SYNCED_TABLES: [&str; 11] = [
+pub(crate) const SYNCED_TABLES: [&str; 12] = [
     "meeting",
     "track",
     "speaker",
@@ -340,11 +378,12 @@ pub(crate) const SYNCED_TABLES: [&str; 11] = [
     "folder",
     "summary_request",
     "dictionary_word",
+    "voiceprint_sample",
 ];
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3, V4, V5, V6, V7, V8]
+    [V1, V2, V3, V4, V5, V6, V7, V8, V9]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -366,6 +405,7 @@ mod tests {
         "964bd0e4d3a4bb7e505659731a7dea0a1774269734863714d7a23c4af756b466",
         "2cf8b62638de4aab2956a78789c81bf374546f49e81e882a4215d1aebdadbd1d",
         "a8f780ef2d07563a4eddfb9f7d9c50f0f82cd141f41b1251447c85085f6a82ec",
+        "f10864a9858e63a54c715b4f181c53658c756f8b247de4b70b5f4e46e2ab2af4",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -544,6 +584,71 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 7);
+    }
+
+    /// The committed schema-8 fixture (`tests/data/schema_v8.sql`, used by
+    /// `tests/voiceprint_sample.rs`) creates exactly the objects migrations 1 to 8 create, so the
+    /// voice sample migration (9) is tested on a real schema-8 database.
+    #[test]
+    fn store_samples_v8_fixture_has_exactly_the_schema_of_migrations_1_to_8() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v8.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..8] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(want.iter().any(|o| o.1 == "dictionary_word"), "{want:?}");
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 8);
+    }
+
+    /// A voice sample row holds a body exactly when it is live (migration 9's `CHECK`): a
+    /// tombstone with a vector, or a live row without its print, is refused by SQLite itself.
+    #[test]
+    fn store_voice_sample_check_refuses_a_body_on_a_tombstone_and_none_on_a_live_row() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        for m in super::migrations() {
+            c.execute_batch(&m).unwrap();
+        }
+        let insert = |n: u8, deleted: i64, print: Option<Vec<u8>>, vector: Vec<u8>| {
+            c.execute(
+                "INSERT INTO voiceprint_sample VALUES (?1, 1, 0, x'00', 1, 0, x'00', ?2, x'00', \
+                 ?3, ?3, ?4, ?5, ?6, NULL, NULL)",
+                rusqlite::params![
+                    vec![n; 16],
+                    deleted,
+                    print.clone(),
+                    print.as_ref().map(|_| "m@1"),
+                    vector,
+                    print.as_ref().map(|_| 5_i64),
+                ],
+            )
+        };
+        let id = Some(vec![9u8; 16]);
+        assert!(
+            insert(1, 0, id.clone(), vec![0, 0, 128, 63]).is_ok(),
+            "live"
+        );
+        assert!(insert(2, 1, None, Vec::new()).is_ok(), "tombstone");
+        assert!(
+            insert(3, 1, None, vec![0, 0, 128, 63]).is_err(),
+            "tombstone vector"
+        );
+        assert!(insert(4, 1, id, Vec::new()).is_err(), "tombstone body");
+        assert!(
+            insert(5, 0, None, vec![0, 0, 128, 63]).is_err(),
+            "live without print"
+        );
+        assert!(
+            insert(6, 0, Some(vec![9; 16]), Vec::new()).is_err(),
+            "live empty vector"
+        );
     }
 
     /// Every synced table has its insert and update trigger feeding `sync_outbox`, and no

@@ -187,6 +187,7 @@ fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
         SyncedRow::Folder(r) => seal_row(keys, r),
         SyncedRow::SummaryRequest(r) => seal_row(keys, r),
         SyncedRow::DictionaryWord(r) => seal_row(keys, r),
+        SyncedRow::VoiceprintSample(r) => seal_row(keys, r),
     }
 }
 

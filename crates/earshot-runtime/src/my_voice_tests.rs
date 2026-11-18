@@ -521,3 +521,64 @@ fn my_voice_renaming_yourself_marks_a_summary_that_used_your_name() {
     assert!(!named(meetings[0]).summary_out_of_date(), "put back");
     assert!(!named(meetings[1]).summary_out_of_date());
 }
+
+/// T12.77b2: a print created with a zero base holds its voice only in stored samples; every
+/// reader (your voice, has-voiceprint, the People list) folds them, so it reads as a voice.
+#[test]
+fn my_voice_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
+    use earshot_core::voiceprint::{SampleOrigin, Voiceprint, VoiceprintSample};
+    let dir = TempDir::new("my-voice-samples");
+    let (svc, _) = services(&dir);
+    let print = crate::edit::write(&svc, |tx, stamp| {
+        let p = earshot_core::voiceprint::Person::new("Me", true, stamp);
+        tx.put_person(p.clone()).map_err(RuntimeError::Voiceprint)?;
+        let id = earshot_core::identity::EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+        let v = Voiceprint::from_stored(
+            id,
+            meta,
+            p.id,
+            EmbeddingModelId::new(MODEL),
+            vec![0.0; DIM],
+            0,
+            0,
+        );
+        tx.put_voiceprint(v.clone())
+            .map_err(RuntimeError::Voiceprint)?;
+        Ok(v)
+    })
+    .unwrap();
+    let has_voice = |svc: &Services| {
+        let db = svc.store();
+        let store: &earshot_store::Store = &db;
+        crate::edit::user_has_voiceprint(store)
+    };
+    // Empty: no voice anywhere.
+    assert_eq!(my_voice(&svc).unwrap().voiceprints, 0);
+    assert!(!has_voice(&svc).unwrap());
+    let listed = |svc: &Services| {
+        crate::edit::list_persons(svc)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == print.person_id())
+            .unwrap()
+            .has_voiceprint
+    };
+    assert!(!listed(&svc));
+
+    crate::edit::write(&svc, |tx, stamp| {
+        let mut v = vec![0.0; DIM];
+        v[3] = 1.0;
+        let s = VoiceprintSample::new(&print, &v, 11_000, SampleOrigin::Own, stamp)
+            .map_err(RuntimeError::Voiceprint)?;
+        tx.put_sample(s).map_err(RuntimeError::Voiceprint)
+    })
+    .unwrap();
+    let mine = my_voice(&svc).unwrap();
+    assert_eq!(
+        (mine.voiceprints, mine.speech),
+        (1, Duration::from_millis(11_000))
+    );
+    assert!(has_voice(&svc).unwrap());
+    assert!(listed(&svc));
+}

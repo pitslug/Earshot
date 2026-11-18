@@ -497,8 +497,9 @@ pub(super) fn fold(
     out
 }
 
-/// The live voiceprints of `model` with their effective state. Prints with an effective count
-/// of 0 are included: callers that score or count voices leave them out.
+/// The live voiceprints of `model` with their effective state, folding the stored samples
+/// of the model. Prints with an effective count of 0 are included: callers that score or count
+/// voices leave them out.
 ///
 /// # Errors
 /// Storage errors.
@@ -506,19 +507,20 @@ pub fn live_prints<Repo: VoiceprintRepo + ?Sized>(
     repo: &Repo,
     model: &EmbeddingModelId,
 ) -> Result<Vec<(Voiceprint, Effective)>, VoiceprintError> {
+    let samples = repo.samples(model)?;
     Ok(repo
         .voiceprints(model)?
         .into_iter()
         .filter(|v| !v.meta.deleted && &v.model == model)
         .map(|v| {
-            let e = effective(&v, &[]);
+            let e = fold(&v, &samples, &[]);
             (v, e)
         })
         .collect())
 }
 
 /// The live voiceprints of `person` (any model, not following merges) with their effective
-/// state, as [`live_prints`].
+/// state, folding each print's stored samples, as [`live_prints`].
 ///
 /// # Errors
 /// Storage errors.
@@ -526,15 +528,14 @@ pub fn live_prints_of<Repo: VoiceprintRepo + ?Sized>(
     repo: &Repo,
     person: EntityId,
 ) -> Result<Vec<(Voiceprint, Effective)>, VoiceprintError> {
-    Ok(repo
-        .voiceprints_of(person)?
+    repo.voiceprints_of(person)?
         .into_iter()
         .filter(|v| !v.meta.deleted)
         .map(|v| {
-            let e = effective(&v, &[]);
-            (v, e)
+            let e = fold(&v, &repo.samples_of(v.id)?, &[]);
+            Ok((v, e))
         })
-        .collect())
+        .collect()
 }
 
 /// Every check [`super::enroll`] makes, without writing: `person` live, the embeddings of one
@@ -559,15 +560,17 @@ pub fn admissible<Repo: VoiceprintRepo + ?Sized>(
         .first()
         .ok_or(VoiceprintError::NoEmbeddings)?
         .model;
-    // Samples are not stored yet (T12.77b2 folds them), so the fold sees none.
-    let existing = repo
+    let existing = match repo
         .voiceprints_of(person)?
         .into_iter()
         .find(|v| &v.model == model && !v.meta.deleted)
-        .map(|v| {
-            let e = fold(&v, &[], excluding);
-            (v.sum.len(), e.count)
-        });
+    {
+        Some(v) => {
+            let e = fold(&v, &repo.samples_of(v.id)?, excluding);
+            Some((v.sum.len(), e.count))
+        }
+        None => None,
+    };
     match existing {
         Some((dim, count)) if count > 0 => {
             check_embeddings(embeddings, model, Some(dim))?;

@@ -964,6 +964,82 @@ mod tests {
         );
     }
 
+    /// The lines of `src` that fold a print over no samples (`effective(.., &[])`), which
+    /// would read a print as its base alone while samples are stored (T12.77b2).
+    fn folds_over_nothing(src: &str) -> Vec<(usize, &str)> {
+        src.lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                l.match_indices("effective(").any(|(i, _)| {
+                    let call = &l[i..];
+                    let end = call.find(')').map_or(call.len(), |e| e + 1);
+                    call[..end].contains("&[])")
+                })
+            })
+            .map(|(n, l)| (n + 1, l))
+            .collect()
+    }
+
+    #[test]
+    fn voiceprint_effective_is_never_folded_over_no_samples_in_shipped_code() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let skip = test_support_packages(&root);
+        let mut files = Vec::new();
+        for krate in workspace_members(&root)
+            .iter()
+            .filter(|m| m.as_str() != "xtask" && !skip.contains(m))
+        {
+            let dir = root.join("crates").join(krate);
+            if dir.join("src").exists() {
+                files.extend(production_files(&dir));
+            }
+        }
+        files.extend(production_files(&root.join("apps/desktop/src-tauri")));
+        for reached in ["sample.rs", "post/mod.rs", "my_voice.rs", "detail.rs"] {
+            assert!(
+                files
+                    .iter()
+                    .any(|f| f.to_string_lossy().replace('\\', "/").ends_with(reached)),
+                "the scan reaches {reached}"
+            );
+        }
+        assert!(
+            !files.iter().any(|f| f.ends_with("sample_tests.rs")),
+            "test-only files are left out"
+        );
+        let mut found = Vec::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap();
+            let lines: String = production_lines(&src)
+                .into_iter()
+                .map(|(_, l)| l + "\n")
+                .collect();
+            for (n, line) in folds_over_nothing(&lines) {
+                found.push(format!("{}:{n}: {}", f.display(), line.trim()));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "fold a print with its stored samples (voiceprint::live_prints, live_prints_of), \
+             never over none:\n{}",
+            found.join("\n")
+        );
+    }
+
+    #[test]
+    fn voiceprint_effective_scan_finds_a_fold_over_nothing_and_passes_real_folds() {
+        assert_eq!(
+            folds_over_nothing("let a = 1;\nlet e = voiceprint::effective(&v, &[]).count();\n"),
+            vec![(2, "let e = voiceprint::effective(&v, &[]).count();")]
+        );
+        assert!(folds_over_nothing("let e = effective(&v, &samples);\n").is_empty());
+        assert!(
+            folds_over_nothing("pub fn effective(print: &Voiceprint, samples: &[S]) -> E {\n")
+                .is_empty()
+        );
+        assert!(folds_over_nothing("let e = fold(&v, &samples, &[]);\n").is_empty());
+    }
+
     #[test]
     fn voiceprint_base_scan_finds_a_read_and_passes_the_fold_names() {
         let read = format!(
