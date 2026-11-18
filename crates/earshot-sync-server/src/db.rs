@@ -439,14 +439,24 @@ impl Db {
     }
 
     /// Rows with a sequence above `after`, ascending: at most `limit` rows and at most
-    /// `max_bytes` of bodies (always at least one row when there is one).
+    /// `max_bytes` of bodies (always at least one row when there is one). `None` when
+    /// `caller_format` is below the vault's: checked in the one read transaction that reads the
+    /// rows, so a push raising the format (which commits with its rows) is seen whole or not at
+    /// all.
     pub(crate) fn pull(
-        &self,
+        &mut self,
+        caller_format: u32,
         after: u64,
         limit: u32,
         max_bytes: usize,
-    ) -> Result<PullResponse, DbError> {
-        let mut st = self.0.prepare(
+    ) -> Result<Option<PullResponse>, DbError> {
+        let tx = self.0.transaction()?;
+        let vault_format: u32 =
+            tx.query_row("SELECT format FROM vault WHERE id = 1", [], |r| r.get(0))?;
+        if caller_format < vault_format {
+            return Ok(None);
+        }
+        let mut st = tx.prepare(
             "SELECT seq, key, wall_ms, logical, node, body FROM row
              WHERE seq > ?1 ORDER BY seq LIMIT ?2",
         )?;
@@ -471,11 +481,14 @@ impl Db {
                 body: B64(body),
             });
         }
-        Ok(PullResponse {
+        drop(q);
+        drop(st);
+        tx.commit()?;
+        Ok(Some(PullResponse {
             rows,
             more,
-            vault_format: self.vault_format()?,
-        })
+            vault_format,
+        }))
     }
 
     /// Stores `device`'s presence blob, received at `now`.

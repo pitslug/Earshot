@@ -414,14 +414,19 @@ fn caller(relay: &Relay, headers: &HeaderMap) -> Result<[u8; 16], Fail> {
         .ok_or_else(|| ErrorWord::UnknownDevice.into())
 }
 
-/// The format the caller names in [`FORMAT_HEADER`]; `update_needed` when it is below the
-/// vault's.
-fn check_format(relay: &Relay, headers: &HeaderMap) -> Result<u32, Fail> {
-    let format: u32 = headers
+/// The format the caller names in [`FORMAT_HEADER`].
+fn format_header(headers: &HeaderMap) -> Result<u32, Fail> {
+    Ok(headers
         .get(FORMAT_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse().ok())
-        .ok_or(ErrorWord::BadRequest)?;
+        .ok_or(ErrorWord::BadRequest)?)
+}
+
+/// The format the caller names in [`FORMAT_HEADER`]; `update_needed` when it is below the
+/// vault's.
+fn check_format(relay: &Relay, headers: &HeaderMap) -> Result<u32, Fail> {
+    let format = format_header(headers)?;
     if format < relay.db().vault_format()? {
         return Err(ErrorWord::UpdateNeeded.into());
     }
@@ -597,11 +602,15 @@ async fn pull(
     query: Result<Query<PullQuery>, QueryRejection>,
 ) -> Answer<PullResponse> {
     caller(&relay, &headers)?;
-    check_format(&relay, &headers)?;
+    let format = format_header(&headers)?;
     let Query(q) = query.map_err(|_| ErrorWord::BadRequest)?;
     let limit = q.limit.unwrap_or(PULL_DEFAULT).clamp(1, PULL_MAX);
-    let page = relay.db().pull(q.after, limit, MAX_REQUEST)?;
-    Ok(Json(page))
+    // The format is checked in the same read as the rows (T12.77b8): a push that raises the
+    // vault's format commits with its rows, so a device below it never receives one of them.
+    match relay.db().pull(format, q.after, limit, MAX_REQUEST)? {
+        Some(page) => Ok(Json(page)),
+        None => Err(ErrorWord::UpdateNeeded.into()),
+    }
 }
 
 async fn put_presence(

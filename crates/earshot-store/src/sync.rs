@@ -55,9 +55,8 @@ pub enum SyncedRow {
     SummaryRequest(SummaryRequest),
     /// `dictionary_word` (synced only while the device's Dictionary switch is on, T11.3e).
     DictionaryWord(DictionaryWord),
-    /// `voiceprint_sample` (an opt-in kind with voiceprints, T12.77b2). Not decoded from the
-    /// wire until sample sync is turned on (T12.77b8): a pulled sample row is held as
-    /// [`HoldReason::Format`].
+    /// `voiceprint_sample` (an opt-in kind with voiceprints, T12.77b2; on the wire since
+    /// T12.77b8).
     VoiceprintSample(VoiceprintSample),
 }
 
@@ -153,6 +152,9 @@ impl SyncedRow {
             "folder" => Self::Folder(v(record)?),
             "summary_request" => Self::SummaryRequest(v(record)?),
             "dictionary_word" => Self::DictionaryWord(v(record)?),
+            // Through `VoiceprintSample::from_stored`: a live row that fails its check does not
+            // decode (held as `Format`), a tombstone keeps no body.
+            "voiceprint_sample" => Self::VoiceprintSample(v(record)?),
             _ => return Ok(None),
         }))
     }
@@ -205,6 +207,10 @@ pub struct Incoming {
     pub body: Vec<u8>,
     /// The decoded row; `None` for a row this build cannot read ([`HoldReason::Format`]).
     pub row: Option<SyncedRow>,
+    /// The envelope's entity name when the row opened, even if its record did not decode
+    /// (`None` for a newer format): a row of a kind switched off is skipped by it before it
+    /// could be held (docs/voice-samples.md 7.2).
+    pub entity: Option<String>,
 }
 
 impl std::fmt::Debug for Incoming {
@@ -236,15 +242,13 @@ pub struct Held {
     pub reason: HoldReason,
 }
 
-/// What a push holds back until voice samples sync (T12.77b4, docs/voice-samples.md 7.1).
-/// Removed when sample sync is turned on (T12.77b8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PushHold {
-    /// Nothing held: every row of a kind switched on goes.
-    Off,
-    /// Live voiceprints and every voice sample row wait in the outbox; voiceprint tombstones
-    /// (the same shape in every build) still go, when voiceprints sync.
-    Samples,
+/// One page of the outbox ([`Store::outbox_page`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutboxPage {
+    /// Rows to push, oldest `updated_at` first.
+    pub rows: Vec<SyncedRow>,
+    /// Queued rows that could not be read: left queued and reported, never sent.
+    pub unreadable: usize,
 }
 
 /// The opt-in kinds this device syncs (docs/sync.md section 9): a row of a kind switched off
@@ -419,6 +423,109 @@ fn withdrawal(
     }
 }
 
+/// Whether the person `id`, followed through `merged_into`, ends at a tombstoned person
+/// (`Some(true)`), a live one (`Some(false)`), or at nobody known here or a loop (`None`).
+fn ends_deleted(tx: &StoreTx<'_>, id: EntityId) -> Result<Option<bool>, StoreError> {
+    let mut seen = Vec::new();
+    let mut cur = id;
+    loop {
+        if seen.contains(&cur) {
+            return Ok(None);
+        }
+        seen.push(cur);
+        let Some(SyncedRow::Person(p)) = crate::repo::synced_by_id(&tx.conn, "person", cur)? else {
+            return Ok(None);
+        };
+        if p.meta.deleted {
+            return Ok(Some(true));
+        }
+        match p.merged_into {
+            Some(next) => cur = next,
+            None => return Ok(Some(false)),
+        }
+    }
+}
+
+/// Rule 3a of [`converge`]: live prints and samples of a person tombstoned here are erased,
+/// prints zeroed and tombstoned, samples by id in SQL (a damaged row is erased too).
+fn dead_person_repair<C: Clock + ?Sized>(
+    tx: &StoreTx<'_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    out: &mut Applied,
+) -> Result<(), StoreError> {
+    let samples: Vec<([u8; 16], [u8; 16])> = {
+        let mut st = tx.conn.prepare(
+            "SELECT id, person_id FROM voiceprint_sample WHERE deleted = 0 AND person_id IS NOT NULL",
+        )?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?
+    };
+    for (id, person) in samples {
+        if ends_deleted(tx, EntityId::from_bytes(person))? == Some(true) {
+            erase_sample_by_id(tx, hlc, clock, id)?;
+            out.biometrics_forgotten += 1;
+            out.people = true;
+        }
+    }
+    let prints: Vec<([u8; 16], [u8; 16])> = {
+        let mut st = tx
+            .conn
+            .prepare("SELECT id, person_id FROM voiceprint WHERE deleted = 0")?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?
+    };
+    for (id, person) in prints {
+        if ends_deleted(tx, EntityId::from_bytes(person))? != Some(true) {
+            continue;
+        }
+        let Some(SyncedRow::Voiceprint(v)) =
+            crate::repo::synced_by_id(&tx.conn, "voiceprint", EntityId::from_bytes(id))?
+        else {
+            continue;
+        };
+        let mut meta = *v.meta();
+        meta.mark_deleted(hlc, clock);
+        let gone = Voiceprint::from_stored(
+            v.id(),
+            meta,
+            v.person_id(),
+            v.model().clone(),
+            vec![0.0; v.base_sum().len()],
+            v.base_count(),
+            v.base_speech_ms(),
+        );
+        crate::repo::put_synced(&tx.conn, &SyncedRow::Voiceprint(gone))?;
+        out.biometrics_forgotten += 1;
+        out.people = true;
+    }
+    Ok(())
+}
+
+/// Erases the voice sample `id` in place by SQL (body cleared, vector empty, a new stamp), so a
+/// row this build cannot read is erased too.
+fn erase_sample_by_id<C: Clock + ?Sized>(
+    tx: &StoreTx<'_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    id: [u8; 16],
+) -> Result<(), StoreError> {
+    let at = hlc.now(clock);
+    tx.conn.execute(
+        "UPDATE voiceprint_sample SET deleted = 1, voiceprint_id = NULL, person_id = NULL, \
+         model = NULL, vector = x'', speech_ms = NULL, meeting_id = NULL, speaker_id = NULL, \
+         updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+         WHERE id = ?4 AND deleted = 0",
+        params![
+            i64_of(at.wall_ms)?,
+            at.logical,
+            &at.node.as_uuid().as_bytes()[..],
+            &id[..],
+        ],
+    )?;
+    Ok(())
+}
+
 /// The rules that keep devices converged (docs/sync-spec.md section 7), run inside
 /// [`Store::apply_remote`]'s transaction after its writes. Each depends only on synced rows,
 /// so every device settles on the same rows whatever order pages arrive in. Each repair points
@@ -495,6 +602,10 @@ fn converge<C: Clock + ?Sized>(
             out.meetings.insert(replaced.meeting_id);
         }
     }
+    // Rule 3a: no live voiceprint or voice sample of a person tombstoned here, directly or at
+    // the end of a `merged_into` chain (docs/voice-samples.md 7.4). A person not known here,
+    // or a chain that loops, leaves the row alone.
+    dead_person_repair(tx, hlc, clock, out)?;
     // Rule 3: no live voice sample of a print tombstoned here (docs/voice-samples.md 7.4).
     let dead: Vec<[u8; 16]> = {
         let mut st = tx.conn.prepare(
@@ -506,19 +617,7 @@ fn converge<C: Clock + ?Sized>(
     // Erased by id in SQL, never read back first: a damaged live row (one `from_stored`
     // refuses) is erased too and cannot abort the page.
     for id in dead {
-        let at = hlc.now(clock);
-        tx.conn.execute(
-            "UPDATE voiceprint_sample SET deleted = 1, voiceprint_id = NULL, person_id = NULL, \
-             model = NULL, vector = x'', speech_ms = NULL, meeting_id = NULL, speaker_id = NULL, \
-             updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
-             WHERE id = ?4 AND deleted = 0",
-            params![
-                i64_of(at.wall_ms)?,
-                at.logical,
-                &at.node.as_uuid().as_bytes()[..],
-                &id[..],
-            ],
-        )?;
+        erase_sample_by_id(tx, hlc, clock, id)?;
         out.biometrics_forgotten += 1;
         out.people = true;
     }
@@ -549,7 +648,23 @@ impl Store {
         meetings: &[EntityId],
         kinds: SyncKinds,
     ) -> Result<Vec<SyncedRow>, StoreError> {
+        Ok(self.outbox_page(limit, meetings, kinds)?.rows)
+    }
+
+    /// [`Store::outbox_except`], also counting the queued rows that could not be read (a damaged
+    /// voice sample row): they stay queued and are left out of the page, so one damaged row
+    /// never stops every push; the push reports them.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_page(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        kinds: SyncKinds,
+    ) -> Result<OutboxPage, StoreError> {
         let mut rows = Vec::new();
+        let mut unreadable = 0;
         let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
         let skip: Vec<Vec<u8>> = meetings
             .iter()
@@ -585,16 +700,16 @@ impl Store {
                 .query_map(values.as_slice(), |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
             for id in ids {
-                if let Some(row) =
-                    crate::repo::synced_by_id(&self.conn, table, EntityId::from_bytes(id))?
-                {
-                    rows.push(row);
+                match crate::repo::synced_by_id(&self.conn, table, EntityId::from_bytes(id)) {
+                    Ok(Some(row)) => rows.push(row),
+                    Ok(None) => {}
+                    Err(_) => unreadable += 1,
                 }
             }
         }
         rows.sort_by_key(|r| r.meta().updated_at);
         rows.truncate(limit);
-        Ok(rows)
+        Ok(OutboxPage { rows, unreadable })
     }
 
     /// Queues every synced row to be sent and drops every held row, in one transaction: for a
@@ -629,78 +744,6 @@ impl Store {
             .conn
             .query_row("SELECT count(*) FROM sync_outbox", [], |r| r.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
-    }
-
-    /// Up to `limit` tombstones of `table` waiting in the outbox, oldest `updated_at` first
-    /// (the voiceprint tombstones a [`PushHold::Samples`] push still sends).
-    ///
-    /// # Errors
-    /// Store errors; [`StoreError::Repo`] for a table that is not synced.
-    pub fn outbox_tombstones(
-        &self,
-        table: &str,
-        limit: usize,
-    ) -> Result<Vec<SyncedRow>, StoreError> {
-        if !SYNCED_TABLES.contains(&table) {
-            return Err(StoreError::Repo(RepoError::Storage(format!(
-                "{table} is not a synced table"
-            ))));
-        }
-        let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
-        let sql = format!(
-            "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id \
-             WHERE o.tbl = ?1 AND r.deleted = 1 \
-             ORDER BY r.updated_wall, r.updated_logical, r.updated_node LIMIT ?2"
-        );
-        let ids: Vec<[u8; 16]> = {
-            let mut st = self.conn.prepare(&sql)?;
-            st.query_map(params![table, limit_sql], |r| r.get(0))?
-                .collect::<Result<_, _>>()?
-        };
-        let mut rows = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(row) =
-                crate::repo::synced_by_id(&self.conn, table, EntityId::from_bytes(id))?
-            {
-                rows.push(row);
-            }
-        }
-        Ok(rows)
-    }
-
-    /// What a push sends under `hold` with the same exclusions, counted: the one waiting count,
-    /// read by the push's paging and by the Sync page, so held rows never show as behind. With
-    /// [`PushHold::Off`] it is [`Store::outbox_len_except`]; with [`PushHold::Samples`] the
-    /// rows of every other kind plus the voiceprint tombstones (when voiceprints sync).
-    ///
-    /// # Errors
-    /// Store errors.
-    pub fn outbox_len_held(
-        &self,
-        meetings: &[EntityId],
-        kinds: SyncKinds,
-        hold: PushHold,
-    ) -> Result<u64, StoreError> {
-        match hold {
-            PushHold::Off => self.outbox_len_except(meetings, kinds),
-            PushHold::Samples => {
-                let others = SyncKinds {
-                    voiceprints: false,
-                    ..kinds
-                };
-                let mut n = self.outbox_len_except(meetings, others)?;
-                if kinds.voiceprints {
-                    let t: i64 = self.conn.query_row(
-                        "SELECT count(*) FROM sync_outbox o JOIN voiceprint r ON r.id = o.id \
-                         WHERE o.tbl = 'voiceprint' AND r.deleted = 1",
-                        [],
-                        |r| r.get(0),
-                    )?;
-                    n += u64::try_from(t).unwrap_or(0);
-                }
-                Ok(n)
-            }
-        }
     }
 
     /// How many rows [`Store::outbox_except`] would send with the same exclusions: what a
@@ -841,6 +884,13 @@ impl Store {
             let mut out = Applied::default();
             for inc in page {
                 let Some(row) = &inc.row else {
+                    // A kind switched off is skipped before anything is held, whether or not
+                    // its record decodes: a device that never syncs it keeps nothing of it.
+                    if inc.entity.as_deref().is_some_and(|e| !rules.kinds.syncs(e)) {
+                        unhold(tx, inc)?;
+                        out.skipped += 1;
+                        continue;
+                    }
                     hold(tx, inc, HoldReason::Format)?;
                     out.hold(HoldReason::Format);
                     continue;
@@ -923,6 +973,29 @@ impl Store {
                     unhold(tx, inc)?;
                     continue;
                 }
+                // A voice sample's erasure is final too: a live copy never brings an erased
+                // voice back (docs/voice-samples.md 7.4).
+                if let (
+                    Some(SyncedRow::VoiceprintSample(here)),
+                    SyncedRow::VoiceprintSample(there),
+                ) = (&local, row)
+                    && here.is_erased()
+                    && !there.is_erased()
+                {
+                    let _ = hlc.observe(inc.stamp, clock);
+                    if here.meta().updated_at < row.meta().updated_at {
+                        let mut meta = *here.meta();
+                        meta.touch(hlc, clock);
+                        let again = VoiceprintSample::erased(here.id(), meta)
+                            .map_err(|e| StoreError::Repo(RepoError::Storage(e.to_string())))?;
+                        crate::repo::put_synced(&tx.conn, &SyncedRow::VoiceprintSample(again))?;
+                        out.deletions_kept += 1;
+                    } else {
+                        out.ignored += 1;
+                    }
+                    unhold(tx, inc)?;
+                    continue;
+                }
                 // A summary request's withdrawal is final (docs/sync-spec.md section 10.1).
                 if let (Some(SyncedRow::SummaryRequest(here)), SyncedRow::SummaryRequest(there)) =
                     (&local, row)
@@ -976,6 +1049,8 @@ impl Store {
                 };
                 let print_was_live =
                     matches!(&local, Some(SyncedRow::Voiceprint(v)) if !v.meta().deleted);
+                let sample_was_live =
+                    matches!(&local, Some(SyncedRow::VoiceprintSample(s)) if !s.is_erased());
                 // A pulled print tombstone is stored with its vector zeroed, whatever it holds.
                 let zeroed;
                 let row = match row {
@@ -1019,8 +1094,28 @@ impl Store {
                 if let Some(m) = row.meeting() {
                     out.meetings.insert(m);
                 }
-                out.people |= matches!(row, SyncedRow::Person(_));
+                // Persons, prints and samples decide names and saved voices in any meeting.
+                out.people |= matches!(
+                    row,
+                    SyncedRow::Person(_) | SyncedRow::Voiceprint(_) | SyncedRow::VoiceprintSample(_)
+                );
+                // A sample names its meeting; a tombstone (no body) the meeting of the sample it
+                // erased here.
+                for s in [Some(row), local.as_ref()].into_iter().flatten() {
+                    if let SyncedRow::VoiceprintSample(s) = s
+                        && let Some(earshot_core::voiceprint::SampleOrigin::Meeting {
+                            meeting,
+                            ..
+                        }) = s.origin()
+                    {
+                        out.meetings.insert(meeting);
+                    }
+                }
                 if matches!(row, SyncedRow::Voiceprint(v) if v.meta().deleted) && print_was_live {
+                    out.biometrics_forgotten += 1;
+                }
+                if matches!(row, SyncedRow::VoiceprintSample(s) if s.is_erased()) && sample_was_live
+                {
                     out.biometrics_forgotten += 1;
                 }
                 if let SyncedRow::Person(p) = row

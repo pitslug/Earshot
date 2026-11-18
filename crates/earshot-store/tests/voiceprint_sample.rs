@@ -176,7 +176,7 @@ fn store_voiceprint_sample_read_only_reads_and_refuses_writes() {
 }
 
 #[test]
-fn store_voiceprint_sample_rows_are_opt_in_with_voiceprints_and_never_decoded_yet() {
+fn store_voiceprint_sample_rows_are_opt_in_with_voiceprints_and_decode_checked() {
     let p = empty_print(2, id(1));
     let s = sample(3, T0 + 2, &p, vec![1.0, 0.0, 0.0]);
     let row = SyncedRow::VoiceprintSample(s.clone());
@@ -190,12 +190,19 @@ fn store_voiceprint_sample_rows_are_opt_in_with_voiceprints_and_never_decoded_ye
     };
     assert!(!off.syncs("voiceprint_sample"));
     assert!(SyncKinds::ALL.syncs("voiceprint_sample"));
-    // Sample sync is not on yet (T12.77b8): a pulled sample row is an entity this build does
-    // not read, so it is held, never applied.
+    // Sample sync is on (T12.77b8): a pulled sample decodes through its checks, and one that
+    // fails them is not a row this build reads (the caller holds it).
     let record = serde_json::to_value(&s).unwrap();
     assert_eq!(
-        SyncedRow::decode("voiceprint_sample", record).unwrap(),
-        None
+        SyncedRow::decode("voiceprint_sample", record.clone()).unwrap(),
+        Some(row)
+    );
+    let mut bad = record;
+    bad["vector"] = serde_json::json!([3.0, 0.0, 0.0]);
+    assert!(
+        SyncedRow::decode("voiceprint_sample", bad)
+            .unwrap_or(None)
+            .is_none()
     );
 }
 
@@ -294,46 +301,49 @@ fn store_voiceprint_sample_schema_v8_database_gains_the_sample_table() {
     );
 }
 
-/// T12.77b4: the outbox's voiceprint tombstones, read alone, and the one waiting count under
-/// the push hold.
+/// T12.77b8: a live sample row that cannot be read stays queued and is counted, never sent
+/// and never stopping the rows around it.
 #[test]
-fn store_voiceprint_sample_push_hold_counts_and_tombstone_reads() {
-    use earshot_store::PushHold;
-    let mut store = Store::open_in_memory().unwrap();
+fn store_voiceprint_sample_a_damaged_queued_row_is_counted_and_the_rest_still_read() {
+    let dir = TempDir::new("sample-damaged-outbox");
+    let path = dir.path().join("earshot.db");
     let ada = person(1);
-    store.put_person(ada.clone()).unwrap();
-    let live = empty_print(2, ada.id);
-    store.put_voiceprint(live.clone()).unwrap();
-    let mut gone =
-        Voiceprint::from_stored(id(5), meta(T0 + 6), ada.id, model(), vec![0.0; 3], 0, 0);
-    let mut m = *gone.meta();
-    m.deleted = true;
-    gone = Voiceprint::from_stored(gone.id(), m, ada.id, model(), vec![0.0; 3], 0, 0);
-    store.put_voiceprint(gone.clone()).unwrap();
-    store
-        .put_sample(sample(3, T0 + 2, &live, vec![1.0, 0.0, 0.0]))
+    let p = empty_print(2, ada.id);
+    let good = sample(3, T0 + 2, &p, vec![1.0, 0.0, 0.0]);
+    let bad = sample(4, T0 + 3, &p, vec![0.0, 1.0, 0.0]);
+    {
+        let mut store = Store::open(&path).unwrap();
+        store.put_person(ada.clone()).unwrap();
+        store.put_voiceprint(p.clone()).unwrap();
+        store.put_sample(good.clone()).unwrap();
+        store.put_sample(bad.clone()).unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        let two: Vec<u8> = [2.0f32, 0.0, 0.0]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        c.execute(
+            "UPDATE voiceprint_sample SET vector = ?1 WHERE id = ?2",
+            rusqlite::params![two, bad.id().as_uuid().as_bytes().to_vec()],
+        )
         .unwrap();
-    let tombs = store.outbox_tombstones("voiceprint", 100).unwrap();
-    assert_eq!(tombs, vec![SyncedRow::Voiceprint(gone)]);
-    assert!(store.outbox_tombstones("voiceprint", 0).unwrap().is_empty());
-    assert!(store.outbox_tombstones("not_a_table", 10).is_err());
-    let on = SyncKinds::ALL;
+    }
+    let store = Store::open(&path).unwrap();
+    let page = store.outbox_page(100, &[], SyncKinds::ALL).unwrap();
+    assert_eq!(page.unreadable, 1);
+    assert_eq!(page.rows.len(), 3, "person, print and the readable sample");
+    assert!(page.rows.contains(&SyncedRow::VoiceprintSample(good)));
+    assert_eq!(
+        store.outbox_except(100, &[], SyncKinds::ALL).unwrap(),
+        page.rows
+    );
+    // Still queued: it counts as waiting until it is repaired or erased.
+    assert_eq!(store.outbox_len_except(&[], SyncKinds::ALL).unwrap(), 4);
     let off = SyncKinds {
         voiceprints: false,
         dictionary: true,
     };
-    // Off: as today. Held: the person row plus the one tombstone; switched off: the person.
-    assert_eq!(
-        store.outbox_len_held(&[], on, PushHold::Off).unwrap(),
-        store.outbox_len_except(&[], on).unwrap()
-    );
-    assert_eq!(store.outbox_len_except(&[], on).unwrap(), 4);
-    assert_eq!(
-        store.outbox_len_held(&[], on, PushHold::Samples).unwrap(),
-        2
-    );
-    assert_eq!(
-        store.outbox_len_held(&[], off, PushHold::Samples).unwrap(),
-        1
-    );
+    assert_eq!(store.outbox_page(100, &[], off).unwrap().unreadable, 0);
 }

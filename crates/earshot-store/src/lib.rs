@@ -47,7 +47,7 @@ pub use flac::{
 pub use fsutil::total_memory;
 pub use layout::DataDir;
 pub use sync::{
-    AfterApply, Applied, ApplyRules, Held, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, PushHold,
+    AfterApply, Applied, ApplyRules, Held, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, OutboxPage,
     SyncKinds, SyncedRow,
 };
 pub use versioned::{encode_versioned, split_version};

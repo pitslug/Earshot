@@ -88,6 +88,7 @@ fn incoming(seq: u64, row: SyncedRow) -> Incoming {
         seq,
         stamp,
         body: vec![0xA5; 40],
+        entity: Some(row.table().into()),
         row: Some(row),
     }
 }
@@ -390,6 +391,7 @@ fn store_sync_stamp_far_ahead_and_unreadable_rows_are_held() {
         stamp: at(T0, 0, THERE),
         body: vec![1, 2, 3],
         row: None,
+        entity: None,
     };
     let a = e.apply(&[newer], &rules(false));
     assert_eq!(a.held, held(1, HoldReason::Format));

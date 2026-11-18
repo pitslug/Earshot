@@ -522,3 +522,95 @@ fn worker_join_refuses_an_unwritable_vault_before_taking_the_code() {
     join(&wsvc, &good, offer.code()).unwrap();
     assert!(good.key_file.is_file() && good.token_file.is_file());
 }
+
+/// T12.77b8 (docs/voice-samples.md 7.2): voiceprint sync is refused on a worker, so pulled
+/// voice rows (persons' prints and samples, valid or malformed) are skipped before any hold:
+/// nothing stored, nothing waiting in `sync_pending`.
+#[test]
+fn worker_skips_voice_rows_before_any_hold() {
+    use earshot_core::diar::EmbeddingModelId;
+    use earshot_core::identity::SyncMeta;
+    use earshot_core::voiceprint::{
+        Person, SampleOrigin, Voiceprint, VoiceprintRepo, VoiceprintSample,
+    };
+    let dir = TempDir::new("voice-rows");
+    let relay = relay(&dir);
+    let asker = Asker::new(&dir.0);
+    set_up_first_device(&asker.svc, &*asker.vault, &relay.url(), SECRET).unwrap();
+    set_sync_voiceprints(&asker.svc, true).unwrap();
+    let model = EmbeddingModelId::new("invented-model");
+    {
+        let clock = Arc::clone(&asker.svc.clock);
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        let mut db = asker.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let p = Person::new("An invented colleague", false, &mut stamp);
+        let id = EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = SyncMeta::new(stamp.hlc, stamp.clock);
+        let v = Voiceprint::from_stored(id, meta, p.id, model.clone(), vec![0.0; 4], 0, 0);
+        let s = VoiceprintSample::new(
+            &v,
+            &[1.0, 0.0, 0.0, 0.0],
+            2_000,
+            SampleOrigin::Own,
+            &mut stamp,
+        )
+        .unwrap();
+        store.put_person(p).unwrap();
+        store.put_voiceprint(v).unwrap();
+        store.put_sample(s).unwrap();
+    }
+    asker.client().tick().unwrap();
+
+    let endpoint = Url::parse("http://llama:8080/v1").unwrap();
+    let config = worker_config(&dir.0, &relay.url(), &endpoint);
+    let wsvc = open_services(&config.data).unwrap();
+    let offer =
+        offer_pairing_code(&asker.svc, Arc::clone(&asker.vault) as Arc<dyn SyncVault>).unwrap();
+    join(&wsvc, &config, offer.code()).unwrap();
+    let remote = |url: &Url| Place::Remote { url: url.clone() };
+    let worker = Worker::open_with(wsvc.clone(), config, Arc::new(remote)).unwrap();
+    let r = worker.client().unwrap().tick().unwrap();
+    assert_eq!(r.held, 0, "{r:?}");
+    {
+        let db = wsvc.store();
+        assert!(db.voiceprints(&model).unwrap().is_empty());
+        assert!(db.samples(&model).unwrap().is_empty());
+        assert!(db.held_rows().unwrap().is_empty());
+    }
+    // A malformed sample (opened, its record failing the check) is skipped the same way, by
+    // the worker's own settings.
+    let kinds = earshot_runtime::sync::sync_settings(&wsvc.store())
+        .unwrap()
+        .kinds();
+    let inc = earshot_store::Incoming {
+        key: [0x5c; 16],
+        seq: 1,
+        stamp: earshot_core::identity::HlcTimestamp {
+            wall_ms: T0,
+            logical: 0,
+            node: DeviceId::from_bytes([0x33; 16]),
+        },
+        body: vec![1, 2, 3],
+        entity: Some("voiceprint_sample".into()),
+        row: None,
+    };
+    let free = |_: EntityId| false;
+    let rules = earshot_store::ApplyRules {
+        kinds,
+        leased: &free,
+        now_ms: T0,
+        after: None,
+    };
+    let clock = Arc::clone(&wsvc.clock);
+    let mut db = wsvc.store();
+    let (store, hlc) = db.parts();
+    let a = store.apply_remote(&[inc], &rules, hlc, &*clock).unwrap();
+    assert_eq!((a.skipped, a.held), (1, [0; 4]), "{a:?}");
+    assert!(store.held_rows().unwrap().is_empty());
+}

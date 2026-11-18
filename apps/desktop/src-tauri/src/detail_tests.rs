@@ -1839,6 +1839,23 @@ fn detail_voice_sample_copy_names_a_release_not_yet_past() {
     assert!(version_parts("0.3.11") < version_parts("0.4.0"));
 }
 
+/// The release that first wrote voice samples (T12.77b8 merges only with its version bump).
+const SAMPLES_RELEASE: &str = "0.4.0";
+
+/// T12.77b8: `since` names the release that first wrote samples. With the test above (never a
+/// release already past), that pins it equal to the workspace version at the 0.4.0 bump, and
+/// leaves later releases naming the one that changed how voices are saved. Before the bump
+/// (0.3.11) only the release name is checked.
+#[test]
+fn detail_voice_sample_copy_since_is_the_release_that_wrote_samples() {
+    let since = voice_copy()["since"].as_str().unwrap().to_owned();
+    assert_eq!(since, SAMPLES_RELEASE);
+    let workspace = env!("CARGO_PKG_VERSION");
+    if version_parts(workspace) == version_parts(SAMPLES_RELEASE) {
+        assert_eq!(since, workspace);
+    }
+}
+
 #[test]
 fn detail_voice_sample_copy_is_the_agreed_table_word_for_word() {
     let doc = include_str!("../../../../docs/voice-samples.md");
