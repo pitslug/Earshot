@@ -16,7 +16,7 @@ use earshot_core::model::{
     Speaker, Stamp, Track, TranscriptPass, VaultPath, repo_contract,
 };
 use earshot_core::prompt::Template;
-use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, enroll};
+use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, effective, enroll};
 use earshot_store::{AudioProvenance, DataDir, MeetingDeletion, PersonRemoval, Store, StoreError};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -122,7 +122,10 @@ fn speaker(store: &mut Store, w: &mut World, meeting: EntityId, person: &Person)
 }
 
 fn vector_bytes(store: &Store, person: EntityId) -> Vec<u8> {
-    let sum = store.voiceprints_of(person).unwrap()[0].sum.clone();
+    // No samples are stored, so the effective sum is the stored vector.
+    let sum = effective(&store.voiceprints_of(person).unwrap()[0], &[])
+        .sum()
+        .to_vec();
     sum[10..16].iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
@@ -267,7 +270,7 @@ fn store_delete_meeting_leaves_no_row_file_or_local_value_of_it() {
     for p in [&ada, &bob, &me] {
         assert!(store.person(p.id).unwrap().unwrap().is_live(), "{p:?}");
         assert!(
-            !store.voiceprints_of(p.id).unwrap()[0].meta.deleted,
+            !store.voiceprints_of(p.id).unwrap()[0].meta().deleted,
             "{p:?}"
         );
     }
@@ -404,7 +407,7 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
         })
         .unwrap();
     assert!(store.person(dee.id).unwrap().unwrap().is_live());
-    assert!(!store.voiceprints_of(dee.id).unwrap()[0].meta.deleted);
+    assert!(!store.voiceprints_of(dee.id).unwrap()[0].meta().deleted);
     assert_eq!(
         store
             .local_value(&record_key(m2.id))
@@ -427,8 +430,8 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
     let gone = store.person(dee.id).unwrap().unwrap();
     assert!(gone.meta.deleted && gone.display_name.is_empty());
     assert!(store.person(cy.id).unwrap().unwrap().is_live());
-    assert!(store.voiceprints_of(dee.id).unwrap()[0].meta.deleted);
-    assert!(!store.voiceprints_of(cy.id).unwrap()[0].meta.deleted);
+    assert!(store.voiceprints_of(dee.id).unwrap()[0].meta().deleted);
+    assert!(!store.voiceprints_of(cy.id).unwrap()[0].meta().deleted);
 
     let rows = store.speakers(m2.id).unwrap();
     let row = |id: EntityId| rows.iter().find(|s| s.id == id).unwrap();

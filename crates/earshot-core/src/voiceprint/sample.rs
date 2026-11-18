@@ -1,0 +1,548 @@
+//! Voice samples and the effective print (T12.77b, docs/voice-samples.md 2 and 3).
+//!
+//! A [`VoiceprintSample`] records one enrolled embedding: the print it adds to, that print's
+//! person, the unit vector, the speech behind it and the meeting voice it came from. A print's
+//! effective sum ([`effective`]) is its stored base plus its live samples in
+//! `(meta.created_at, id)` order, so taking one sample back restores the print exactly.
+
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+use super::{EnrolmentConfig, Voiceprint, VoiceprintError, VoiceprintRepo, check_embeddings, unit};
+use crate::diar::{DiarError, Embedding, EmbeddingModelId};
+use crate::identity::{Clock, EntityId, SyncClass, SyncMeta, SyncSerialize, SyncableOptInClass};
+use crate::voiceprint::Stamp;
+use rand_core::Rng;
+use std::time::Duration;
+
+/// The largest embedding dimension a sample may hold (CAM++ is 512). 4096 values printed at
+/// full JSON length stay inside the sync envelope's plaintext limit.
+pub const MAX_EMBEDDING_DIM: usize = 4096;
+
+/// The most speech one sample may record (24 h, within SQLite's `INTEGER`). Writers clamp to
+/// it.
+pub const MAX_SAMPLE_SPEECH_MS: u64 = 86_400_000;
+
+/// How far a live sample's Euclidean norm may be from 1.
+pub const SAMPLE_NORM_TOLERANCE: f32 = 1e-3;
+
+/// Where a sample's voice came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleOrigin {
+    /// A voice of a meeting: the meeting and its speaker row.
+    Meeting {
+        /// The meeting.
+        meeting: EntityId,
+        /// Its speaker row.
+        speaker: EntityId,
+    },
+    /// The user's own voice sample ("Your voice").
+    Own,
+}
+
+/// A sample row as stored or sent: every field, the body ones empty for a tombstone. The one
+/// input of [`VoiceprintSample::from_stored`] and the sample's wire shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SampleRecord {
+    /// Row id.
+    pub id: EntityId,
+    /// Sync metadata.
+    pub meta: SyncMeta,
+    /// The print it adds to (`None` for a tombstone).
+    pub voiceprint_id: Option<EntityId>,
+    /// That print's person when written (`None` for a tombstone).
+    pub person_id: Option<EntityId>,
+    /// The embedding model (`None` for a tombstone).
+    pub model: Option<EmbeddingModelId>,
+    /// The unit vector (empty for a tombstone).
+    pub vector: Vec<f32>,
+    /// Speech behind it in milliseconds (`None` for a tombstone).
+    pub speech_ms: Option<u64>,
+    /// The meeting it came from (`None` for "Your voice" and a tombstone).
+    pub meeting_id: Option<EntityId>,
+    /// The meeting's speaker row (set exactly when `meeting_id` is).
+    pub speaker_id: Option<EntityId>,
+}
+
+// Fields visible to the voiceprint module only (its tests build a sample no check accepts).
+#[derive(Clone, PartialEq)]
+pub(super) struct SampleBody {
+    voiceprint_id: EntityId,
+    person_id: EntityId,
+    model: EmbeddingModelId,
+    pub(super) vector: Vec<f32>,
+    speech_ms: u64,
+    meeting_id: Option<EntityId>,
+    speaker_id: Option<EntityId>,
+}
+
+/// One enrolled embedding of a voiceprint (docs/voice-samples.md 2). Written once, never
+/// changed while live; its only later write is the tombstone, which keeps nothing but its id
+/// and sync metadata. Built only through [`VoiceprintSample::new`],
+/// [`VoiceprintSample::erased`] and [`VoiceprintSample::from_stored`], all checked.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(into = "SampleRecord", try_from = "SampleRecord")]
+pub struct VoiceprintSample {
+    id: EntityId,
+    meta: SyncMeta,
+    // `None` exactly when `meta.deleted` (a tombstone).
+    pub(super) body: Option<SampleBody>,
+}
+
+impl fmt::Debug for VoiceprintSample {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never the vector (biometric data).
+        let mut d = f.debug_struct("VoiceprintSample");
+        d.field("id", &self.id).field("meta", &self.meta);
+        if let Some(b) = &self.body {
+            d.field("model", &b.model).field("dim", &b.vector.len());
+        }
+        d.finish()
+    }
+}
+
+impl SyncClass for VoiceprintSample {
+    type Class = SyncableOptInClass;
+}
+
+impl SyncSerialize for VoiceprintSample {
+    const ENTITY: &'static str = "voiceprint_sample";
+    fn sync_id(&self) -> EntityId {
+        self.id
+    }
+    fn sync_meta(&self) -> &SyncMeta {
+        &self.meta
+    }
+}
+
+impl From<VoiceprintSample> for SampleRecord {
+    fn from(s: VoiceprintSample) -> Self {
+        let (voiceprint_id, person_id, model, vector, speech_ms, meeting_id, speaker_id) =
+            match s.body {
+                Some(b) => (
+                    Some(b.voiceprint_id),
+                    Some(b.person_id),
+                    Some(b.model),
+                    b.vector,
+                    Some(b.speech_ms),
+                    b.meeting_id,
+                    b.speaker_id,
+                ),
+                None => (None, None, None, Vec::new(), None, None, None),
+            };
+        SampleRecord {
+            id: s.id,
+            meta: s.meta,
+            voiceprint_id,
+            person_id,
+            model,
+            vector,
+            speech_ms,
+            meeting_id,
+            speaker_id,
+        }
+    }
+}
+
+impl TryFrom<SampleRecord> for VoiceprintSample {
+    type Error = VoiceprintError;
+    fn try_from(r: SampleRecord) -> Result<Self, Self::Error> {
+        VoiceprintSample::from_stored(r)
+    }
+}
+
+fn invalid(why: impl Into<String>) -> VoiceprintError {
+    VoiceprintError::InvalidSample(why.into())
+}
+
+/// The one check every sample passes (docs/voice-samples.md 2.1). A tombstone is accepted
+/// whatever its record holds and keeps no body.
+fn check(r: SampleRecord) -> Result<VoiceprintSample, VoiceprintError> {
+    if r.meta.deleted {
+        return Ok(VoiceprintSample {
+            id: r.id,
+            meta: r.meta,
+            body: None,
+        });
+    }
+    let (Some(voiceprint_id), Some(person_id), Some(model), Some(speech_ms)) =
+        (r.voiceprint_id, r.person_id, r.model, r.speech_ms)
+    else {
+        return Err(invalid(
+            "a live sample lacks its print, person, model or speech",
+        ));
+    };
+    let dim = r.vector.len();
+    if dim == 0 || dim > MAX_EMBEDDING_DIM {
+        return Err(invalid(format!(
+            "sample dimension {dim} outside 1 to {MAX_EMBEDDING_DIM}"
+        )));
+    }
+    if r.vector.iter().any(|x| !x.is_finite()) {
+        return Err(invalid("sample vector is not finite"));
+    }
+    let norm = r
+        .vector
+        .iter()
+        .map(|&x| f64::from(x) * f64::from(x))
+        .sum::<f64>()
+        .sqrt();
+    if (norm - 1.0).abs() > f64::from(SAMPLE_NORM_TOLERANCE) {
+        return Err(invalid("sample vector is not of unit length"));
+    }
+    if speech_ms > MAX_SAMPLE_SPEECH_MS {
+        return Err(invalid("sample speech above the limit"));
+    }
+    if r.meeting_id.is_some() != r.speaker_id.is_some() {
+        return Err(invalid("sample meeting and speaker must be set together"));
+    }
+    Ok(VoiceprintSample {
+        id: r.id,
+        meta: r.meta,
+        body: Some(SampleBody {
+            voiceprint_id,
+            person_id,
+            model,
+            vector: r.vector,
+            speech_ms,
+            meeting_id: r.meeting_id,
+            speaker_id: r.speaker_id,
+        }),
+    })
+}
+
+impl VoiceprintSample {
+    /// A new live sample adding `vector` (made unit length here) and `speech_ms` (clamped to
+    /// [`MAX_SAMPLE_SPEECH_MS`]) to `print`, from `origin`.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::InvalidSample`] when the vector fails the check (wrong dimension,
+    /// not finite, all zeros) or differs from the print's model or dimension.
+    pub fn new<C: Clock + ?Sized, R: Rng + ?Sized>(
+        print: &Voiceprint,
+        vector: &[f32],
+        speech_ms: u64,
+        origin: SampleOrigin,
+        stamp: &mut Stamp<'_, C, R>,
+    ) -> Result<Self, VoiceprintError> {
+        if vector.len() != print.sum.len() {
+            return Err(invalid("sample dimension differs from its print"));
+        }
+        let vector = unit(vector).ok_or_else(|| invalid("sample vector is not finite or zero"))?;
+        let (meeting_id, speaker_id) = match origin {
+            SampleOrigin::Meeting { meeting, speaker } => (Some(meeting), Some(speaker)),
+            SampleOrigin::Own => (None, None),
+        };
+        let (id, meta) = stamp.new_row();
+        check(SampleRecord {
+            id,
+            meta,
+            voiceprint_id: Some(print.id),
+            person_id: Some(print.person_id),
+            model: Some(print.model.clone()),
+            vector,
+            speech_ms: Some(speech_ms.min(MAX_SAMPLE_SPEECH_MS)),
+            meeting_id,
+            speaker_id,
+        })
+    }
+
+    /// The tombstone of sample `id`: only its id and `meta`, which must be marked deleted.
+    ///
+    /// # Errors
+    /// [`VoiceprintError::InvalidSample`] if `meta` is not a tombstone's.
+    pub fn erased(id: EntityId, meta: SyncMeta) -> Result<Self, VoiceprintError> {
+        if !meta.deleted {
+            return Err(invalid("an erased sample must be marked deleted"));
+        }
+        check(SampleRecord {
+            id,
+            meta,
+            voiceprint_id: None,
+            person_id: None,
+            model: None,
+            vector: Vec::new(),
+            speech_ms: None,
+            meeting_id: None,
+            speaker_id: None,
+        })
+    }
+
+    /// A sample as stored or pulled, through the one check (docs/voice-samples.md 2.1).
+    ///
+    /// # Errors
+    /// [`VoiceprintError::InvalidSample`] for a live record that fails it.
+    pub fn from_stored(record: SampleRecord) -> Result<Self, VoiceprintError> {
+        check(record)
+    }
+
+    /// Row id.
+    #[must_use]
+    pub fn id(&self) -> EntityId {
+        self.id
+    }
+
+    /// Sync metadata.
+    #[must_use]
+    pub fn meta(&self) -> &SyncMeta {
+        &self.meta
+    }
+
+    /// True for a tombstone (it has no body).
+    #[must_use]
+    pub fn is_erased(&self) -> bool {
+        self.body.is_none()
+    }
+
+    /// The print it adds to (`None` for a tombstone).
+    #[must_use]
+    pub fn voiceprint_id(&self) -> Option<EntityId> {
+        self.body.as_ref().map(|b| b.voiceprint_id)
+    }
+
+    /// The print's person when it was written (`None` for a tombstone).
+    #[must_use]
+    pub fn person_id(&self) -> Option<EntityId> {
+        self.body.as_ref().map(|b| b.person_id)
+    }
+
+    /// The embedding model (`None` for a tombstone).
+    #[must_use]
+    pub fn model(&self) -> Option<&EmbeddingModelId> {
+        self.body.as_ref().map(|b| &b.model)
+    }
+
+    /// The unit vector (`None` for a tombstone).
+    #[must_use]
+    pub fn vector(&self) -> Option<&[f32]> {
+        self.body.as_ref().map(|b| b.vector.as_slice())
+    }
+
+    /// The speech it adds in milliseconds (`None` for a tombstone).
+    #[must_use]
+    pub fn speech_ms(&self) -> Option<u64> {
+        self.body.as_ref().map(|b| b.speech_ms)
+    }
+
+    /// Where its voice came from (`None` for a tombstone).
+    #[must_use]
+    pub fn origin(&self) -> Option<SampleOrigin> {
+        self.body
+            .as_ref()
+            .map(|b| match (b.meeting_id, b.speaker_id) {
+                (Some(meeting), Some(speaker)) => SampleOrigin::Meeting { meeting, speaker },
+                _ => SampleOrigin::Own,
+            })
+    }
+}
+
+/// A print's effective state: its stored base plus its live samples ([`effective`]). The one
+/// thing matching, enrolment checks and the app read about a print.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effective {
+    model: EmbeddingModelId,
+    sum: Vec<f32>,
+    count: u32,
+    speech_ms: u64,
+    skipped: usize,
+    base_count: u32,
+}
+
+impl Effective {
+    /// The unit-length centroid (normalised effective sum), or `None` when the sum is zero or
+    /// not finite.
+    #[must_use]
+    pub fn centroid(&self) -> Option<Embedding> {
+        unit(&self.sum).map(|v| Embedding::new(self.model.clone(), v))
+    }
+
+    /// Cosine similarity of `e` to the centroid.
+    ///
+    /// # Errors
+    /// [`DiarError::ModelMismatch`] (wrapped) if `e` comes from another model: such
+    /// embeddings are never compared; [`DiarError::Shape`] for another dimension or an
+    /// invalid centroid.
+    pub fn score(&self, e: &Embedding) -> Result<f32, VoiceprintError> {
+        let c = self
+            .centroid()
+            .ok_or_else(|| DiarError::Shape("voiceprint centroid is invalid".to_owned()))?;
+        Ok(c.cosine_similarity(e)?)
+    }
+
+    /// True when the print holds enrolments from before samples existed (a non-zero base).
+    #[must_use]
+    pub fn has_base(&self) -> bool {
+        self.base_count > 0
+    }
+
+    /// The embedding model.
+    #[must_use]
+    pub fn model(&self) -> &EmbeddingModelId {
+        &self.model
+    }
+
+    /// The effective sum of unit embeddings.
+    #[must_use]
+    pub fn sum(&self) -> &[f32] {
+        &self.sum
+    }
+
+    /// Embeddings behind it (base plus live samples, saturating). A print with count 0 holds
+    /// no voice: it is not scored and reads as no voiceprint.
+    #[must_use]
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// Speech behind it in milliseconds (base plus live samples, saturating).
+    #[must_use]
+    pub fn speech_ms(&self) -> u64 {
+        self.speech_ms
+    }
+
+    /// Live samples of the print left out because they cannot add to it (another model or
+    /// dimension, a non-finite vector, or another person).
+    #[must_use]
+    pub fn skipped(&self) -> usize {
+        self.skipped
+    }
+}
+
+/// `print`'s effective state: the stored base plus each live sample of that print among
+/// `samples`, in `(meta.created_at, id)` order whatever the input order, the vector added in
+/// plain f32 and count and speech saturating (docs/voice-samples.md 3.1). Samples of other
+/// prints and tombstones are ignored; samples of another model or dimension, non-finite ones
+/// and ones of another person are skipped and counted. Every device with the same rows gets
+/// the same sum bit for bit.
+#[must_use]
+pub fn effective(print: &Voiceprint, samples: &[VoiceprintSample]) -> Effective {
+    fold(print, samples, &[])
+}
+
+/// [`effective`] with the samples in `excluding` left out.
+pub(super) fn fold(
+    print: &Voiceprint,
+    samples: &[VoiceprintSample],
+    excluding: &[EntityId],
+) -> Effective {
+    let mut mine: Vec<(&VoiceprintSample, &SampleBody)> = samples
+        .iter()
+        .filter(|s| !s.meta.deleted && !excluding.contains(&s.id))
+        .filter_map(|s| s.body.as_ref().map(|b| (s, b)))
+        .filter(|(_, b)| b.voiceprint_id == print.id)
+        .collect();
+    mine.sort_by_key(|(s, _)| (s.meta.created_at, s.id));
+    let mut out = Effective {
+        model: print.model.clone(),
+        sum: print.sum.clone(),
+        count: print.count,
+        speech_ms: print.speech_ms,
+        skipped: 0,
+        base_count: print.count,
+    };
+    for (_, b) in mine {
+        if b.model != print.model
+            || b.vector.len() != out.sum.len()
+            || b.vector.iter().any(|x| !x.is_finite())
+            || b.person_id != print.person_id
+        {
+            out.skipped += 1;
+            continue;
+        }
+        for (s, x) in out.sum.iter_mut().zip(&b.vector) {
+            *s += x;
+        }
+        out.count = out.count.saturating_add(1);
+        out.speech_ms = out.speech_ms.saturating_add(b.speech_ms);
+    }
+    out
+}
+
+/// The live voiceprints of `model` with their effective state. Prints with an effective count
+/// of 0 are included: callers that score or count voices leave them out.
+///
+/// # Errors
+/// Storage errors.
+pub fn live_prints<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    model: &EmbeddingModelId,
+) -> Result<Vec<(Voiceprint, Effective)>, VoiceprintError> {
+    Ok(repo
+        .voiceprints(model)?
+        .into_iter()
+        .filter(|v| !v.meta.deleted && &v.model == model)
+        .map(|v| {
+            let e = effective(&v, &[]);
+            (v, e)
+        })
+        .collect())
+}
+
+/// The live voiceprints of `person` (any model, not following merges) with their effective
+/// state, as [`live_prints`].
+///
+/// # Errors
+/// Storage errors.
+pub fn live_prints_of<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    person: EntityId,
+) -> Result<Vec<(Voiceprint, Effective)>, VoiceprintError> {
+    Ok(repo
+        .voiceprints_of(person)?
+        .into_iter()
+        .filter(|v| !v.meta.deleted)
+        .map(|v| {
+            let e = effective(&v, &[]);
+            (v, e)
+        })
+        .collect())
+}
+
+/// Every check [`super::enroll`] makes, without writing: `person` live, the embeddings of one
+/// model and dimension and valid, and, for a print with an effective count of 0 or none yet,
+/// at least `config.min_new_speech`. The samples in `excluding` are left out of the effective
+/// count (a re-save judges the voice without its own earlier sample).
+///
+/// # Errors
+/// As [`super::enroll`].
+pub fn admissible<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    person: EntityId,
+    embeddings: &[Embedding],
+    speech: Duration,
+    config: &EnrolmentConfig,
+    excluding: &[EntityId],
+) -> Result<(), VoiceprintError> {
+    if !repo.person(person)?.is_some_and(|p| p.is_live()) {
+        return Err(VoiceprintError::UnknownPerson(person));
+    }
+    let model = &embeddings
+        .first()
+        .ok_or(VoiceprintError::NoEmbeddings)?
+        .model;
+    // Samples are not stored yet (T12.77b2 folds them), so the fold sees none.
+    let existing = repo
+        .voiceprints_of(person)?
+        .into_iter()
+        .find(|v| &v.model == model && !v.meta.deleted)
+        .map(|v| {
+            let e = fold(&v, &[], excluding);
+            (v.sum.len(), e.count)
+        });
+    match existing {
+        Some((dim, count)) if count > 0 => {
+            check_embeddings(embeddings, model, Some(dim))?;
+        }
+        other => {
+            if speech < config.min_new_speech {
+                return Err(VoiceprintError::NotEnoughSpeech {
+                    needed: config.min_new_speech,
+                    got: speech,
+                });
+            }
+            check_embeddings(embeddings, model, other.map(|(dim, _)| dim))?;
+        }
+    }
+    Ok(())
+}

@@ -13,13 +13,13 @@ help: the trait `SyncSerialize` is not implemented for `RawPcm`
    | ^^^^^^^^^^^^^
    = help: the following other types implement trait `SyncSerialize`:
              DictionaryWord
-             Meeting
              Person
              SegmentRow
              Speaker
              Summary
              SummaryRequest
              Track
+             Voiceprint
            and $N others
 note: required by a bound in `sync_envelope`
   --> src/identity/sync.rs
@@ -40,13 +40,13 @@ help: the trait `SyncSerialize` is not implemented for `RawPcm`
    | ^^^^^^^^^^^^^
    = help: the following other types implement trait `SyncSerialize`:
              DictionaryWord
-             Meeting
              Person
              SegmentRow
              Speaker
              Summary
              SummaryRequest
              Track
+             Voiceprint
            and $N others
 note: required by a bound in `SyncEnvelope`
   --> src/identity/sync.rs

@@ -317,7 +317,7 @@ fn post_final_pass_diarises_names_and_stores_speakers() {
     // "Me" was enrolled (22 s of mic speech) and is now recognised.
     let vp = outcome.enrolled_me.expect("Me enrolled");
     let prints = store.voiceprints_of(me.person.unwrap()).unwrap();
-    assert!(prints.iter().any(|p| p.id == vp));
+    assert!(prints.iter().any(|p| p.id() == vp));
     let probe = earshot_core::diar::Embedding::new(EmbeddingModelId::new(MODEL), centroid(0));
     assert!(matches!(
         match_embedding(&**store, &probe, 0.5).unwrap(),
@@ -2465,13 +2465,15 @@ fn post_echo_users_voiceprint_beats_a_louder_colleague() {
     let prints = store.voiceprints_of(user).unwrap();
     let stored = prints
         .iter()
-        .find(|p| p.id == vp)
+        .find(|p| p.id() == vp)
         .expect("the user's print");
     let user_voice =
         earshot_core::diar::Embedding::new(EmbeddingModelId::new(CAMPPLUS_ID), centroid(0));
     // The print adds the Me centroid to the earlier enrolment: still the user's voice (a
     // colleague's centroid would pull it to 0.7).
-    let centroid_now = stored.centroid().expect("a centroid");
+    let centroid_now = earshot_core::voiceprint::effective(stored, &[])
+        .centroid()
+        .expect("a centroid");
     assert!(centroid_now.cosine_similarity(&user_voice).unwrap() > 0.9);
 }
 

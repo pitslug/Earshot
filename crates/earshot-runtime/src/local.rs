@@ -878,6 +878,105 @@ mod tests {
         );
     }
 
+    /// The accessors of a voiceprint's stored base (docs/voice-samples.md 3.2), written split
+    /// so this file never names them.
+    const BASE_ACCESSORS: [&str; 3] = [
+        concat!("base", "_sum"),
+        concat!("base", "_count"),
+        concat!("base", "_speech_ms"),
+    ];
+
+    /// The places allowed to read a voiceprint's base: the fold, the store's rows and sync.
+    const BASE_READERS: [&str; 3] = [
+        "crates/earshot-core/src/voiceprint/",
+        "crates/earshot-store/src/repo.rs",
+        "crates/earshot-store/src/sync.rs",
+    ];
+
+    /// Every `.rs` file under `dir` (sources, tests, examples), leaving out build output.
+    fn all_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                let build_output = path.file_name().is_some_and(|n| n == "target")
+                    || path.join("CACHEDIR.TAG").exists();
+                if !build_output {
+                    all_rs_files(&path, out);
+                }
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The lines of `src` that name a base accessor.
+    fn base_reads(src: &str) -> Vec<(usize, &str)> {
+        src.lines()
+            .enumerate()
+            .filter(|(_, l)| BASE_ACCESSORS.iter().any(|a| l.contains(a)))
+            .map(|(n, l)| (n + 1, l))
+            .collect()
+    }
+
+    #[test]
+    fn voiceprint_base_is_read_only_by_the_fold() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        all_rs_files(&root.join("crates"), &mut files);
+        all_rs_files(&root.join("apps/desktop/src-tauri"), &mut files);
+        let rel = |f: &std::path::Path| {
+            f.strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        let names: Vec<String> = files.iter().map(|f| rel(f)).collect();
+        for reached in [
+            "crates/earshot-core/src/voiceprint/sample.rs",
+            "crates/earshot-store/src/repo.rs",
+            "crates/earshot-runtime/examples/vp_readout.rs",
+            "crates/earshot-onnx/tests/voiceprint_calibration.rs",
+            "apps/desktop/src-tauri/src/detail.rs",
+        ] {
+            assert!(
+                names.iter().any(|n| n == reached),
+                "the scan reaches {reached}"
+            );
+        }
+        let mut found = Vec::new();
+        for (f, name) in files.iter().zip(&names) {
+            if BASE_READERS.iter().any(|r| name.starts_with(r)) {
+                continue;
+            }
+            let src = std::fs::read_to_string(f).unwrap();
+            for (n, line) in base_reads(&src) {
+                found.push(format!("{name}:{n}: {}", line.trim()));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "read a voiceprint through voiceprint::effective or live_prints, never its stored \
+             base:\n{}",
+            found.join("\n")
+        );
+    }
+
+    #[test]
+    fn voiceprint_base_scan_finds_a_read_and_passes_the_fold_names() {
+        let read = format!(
+            "let s = v.{}();\nlet e = effective(&v, &[]);\n",
+            BASE_ACCESSORS[0]
+        );
+        assert_eq!(base_reads(&read), vec![(1, read.lines().next().unwrap())]);
+        assert!(base_reads("let e = effective(&v, &[]).sum();\nv.meta().deleted\n").is_empty());
+        for a in BASE_ACCESSORS {
+            assert_eq!(base_reads(&format!("x.{a}()")).len(), 1, "{a}");
+        }
+    }
+
     #[test]
     fn local_scan_follows_module_declarations_and_leaves_test_modules_out() {
         let lib = std::path::Path::new("/k/src/lib.rs");

@@ -35,7 +35,8 @@ use earshot_core::diar::{
 };
 use earshot_core::identity::EntityId;
 use earshot_core::voiceprint::{
-    DEFAULT_ME_NAME, VoiceprintError, VoiceprintRepo, enroll_me, identity_of, me_person,
+    DEFAULT_ME_NAME, VoiceprintError, VoiceprintRepo, enroll_me, identity_of, live_prints_of,
+    me_person,
 };
 
 use crate::post::PostConfig;
@@ -350,10 +351,10 @@ pub fn my_voice(services: &Services) -> Result<MyVoice, RuntimeError> {
             out.name = Some(p.display_name.clone());
         }
         for id in identity_of(store, p.id).map_err(RuntimeError::Voiceprint)? {
-            for v in store.voiceprints_of(id).map_err(RuntimeError::Voiceprint)? {
-                if !v.meta.deleted {
+            for (_, e) in live_prints_of(store, id).map_err(RuntimeError::Voiceprint)? {
+                if e.count() > 0 {
                     out.voiceprints += 1;
-                    out.speech += Duration::from_millis(v.speech_ms);
+                    out.speech += Duration::from_millis(e.speech_ms());
                 }
             }
         }
@@ -385,8 +386,8 @@ pub fn forget_my_voice(services: &Services) -> Result<usize, RuntimeError> {
         for &person in &mine {
             for id in identity_of(store, person).map_err(RuntimeError::Voiceprint)? {
                 for v in store.voiceprints_of(id).map_err(RuntimeError::Voiceprint)? {
-                    if !v.meta.deleted {
-                        live.insert(v.id);
+                    if !v.meta().deleted {
+                        live.insert(v.id());
                     }
                 }
             }

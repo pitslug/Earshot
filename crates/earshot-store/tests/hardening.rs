@@ -14,7 +14,7 @@ use earshot_core::model::{
     ClockDomain, Meeting, MeetingRepo, Note, Stamp, Track, TranscriptPass, live_segments,
 };
 use earshot_core::prompt::Template;
-use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, enroll};
+use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, effective, enroll};
 use earshot_store::{
     AudioProvenance, DataDir, ORPHAN_GRACE_MS, RetentionPolicy, Store, run_retention,
 };
@@ -175,7 +175,10 @@ fn store_forget_voiceprints_leaves_no_trace_on_disk() {
         &mut w.stamp(),
     )
     .unwrap();
-    let sum = store.voiceprints_of(ada.id).unwrap()[0].sum.clone();
+    // No samples are stored, so the effective sum is the stored vector.
+    let sum = effective(&store.voiceprints_of(ada.id).unwrap()[0], &[])
+        .sum()
+        .to_vec();
     let needle: Vec<u8> = sum[10..16].iter().flat_map(|x| x.to_le_bytes()).collect();
     assert!(
         on_disk(&db, &needle),
@@ -213,7 +216,10 @@ fn store_forgotten_voiceprints_do_not_outlive_the_session_when_a_reader_blocks()
         &mut w.stamp(),
     )
     .unwrap();
-    let sum = store.voiceprints_of(ada.id).unwrap()[0].sum.clone();
+    // No samples are stored, so the effective sum is the stored vector.
+    let sum = effective(&store.voiceprints_of(ada.id).unwrap()[0], &[])
+        .sum()
+        .to_vec();
     let needle: Vec<u8> = sum[10..16].iter().flat_map(|x| x.to_le_bytes()).collect();
     // Fold the enrolment into the main file so the vector sits in a database page.
     store.checkpoint().unwrap();
@@ -234,7 +240,7 @@ fn store_forgotten_voiceprints_do_not_outlive_the_session_when_a_reader_blocks()
         "retries are brief"
     );
     assert!(
-        store.voiceprints_of(ada.id).unwrap()[0].meta.deleted,
+        store.voiceprints_of(ada.id).unwrap()[0].meta().deleted,
         "deletion committed"
     );
     assert!(

@@ -83,7 +83,7 @@ fn voiceprint_running_centroid_is_the_normalised_mean_of_unit_embeddings() {
     let v = w.repo.voiceprints_of(p).unwrap().remove(0);
     assert_eq!(v.id, vp);
     assert_eq!((v.count, v.speech_ms), (2, 12_000));
-    let c = v.centroid().unwrap().vector;
+    let c = effective(&v, &[]).centroid().unwrap().vector;
     let h = std::f32::consts::FRAC_1_SQRT_2;
     assert!((c[0] - h).abs() < 1e-6 && (c[1] - h).abs() < 1e-6, "{c:?}");
     // Update: the same voiceprint grows, and the centroid moves to the mean of all three.
@@ -92,7 +92,7 @@ fn voiceprint_running_centroid_is_the_normalised_mean_of_unit_embeddings() {
     assert_eq!(again, vp, "an update never creates a second voiceprint");
     let v = w.repo.voiceprints_of(p).unwrap().remove(0);
     assert_eq!((v.count, v.speech_ms), (3, 14_000));
-    let c = v.centroid().unwrap().vector;
+    let c = effective(&v, &[]).centroid().unwrap().vector;
     let n = (4.0f32 + 1.0).sqrt();
     assert!((c[0] - 2.0 / n).abs() < 1e-6 && (c[1] - 1.0 / n).abs() < 1e-6);
     assert!(v.meta.updated_at > created, "updates are stamped");
@@ -152,7 +152,7 @@ fn voiceprint_models_are_versioned_and_never_compared() {
     // Scoring across models is an error, not a number.
     let v1 = w.repo.voiceprints(&model()).unwrap().remove(0);
     assert!(matches!(
-        v1.score(&e2),
+        effective(&v1, &[]).score(&e2),
         Err(VoiceprintError::Embedding(DiarError::ModelMismatch { .. }))
     ));
     // Adding another model's embedding to a voiceprint is refused.

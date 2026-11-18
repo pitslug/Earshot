@@ -27,7 +27,7 @@ use earshot_core::identity::EntityId;
 use earshot_core::model::{Meeting, MeetingRepo, Speaker};
 use earshot_core::voiceprint::{
     InMemoryVoiceprintRepo, Person, Voiceprint, VoiceprintRepo, calibrated_margin,
-    calibrated_threshold, resolve_person,
+    calibrated_threshold, effective, live_prints, resolve_person,
 };
 use earshot_runtime::post::voice_match;
 use earshot_store::ReadOnlyStore;
@@ -201,24 +201,36 @@ fn without_enrolment(
     let mut prints = prints.to_vec();
     // Enrolment wrote to the person the row was linked to; a later merge moves nothing, so
     // the print is the linked person's or, failing that, the owner's.
+    let holds = |p: &Voiceprint, person: EntityId| {
+        !p.meta().deleted && p.person_id() == person && effective(p, &[]).sum().len() == u.len()
+    };
     let at = prints
         .iter()
-        .position(|p| !p.meta.deleted && p.person_id == linked && p.sum.len() == u.len())
-        .or_else(|| {
-            prints
-                .iter()
-                .position(|p| !p.meta.deleted && p.person_id == owner && p.sum.len() == u.len())
-        })?;
-    let p = &mut prints[at];
-    if p.count == 0 {
+        .position(|p| holds(p, linked))
+        .or_else(|| prints.iter().position(|p| holds(p, owner)))?;
+    // The effective print (no samples are stored yet), with the enrolment taken out.
+    let p = &prints[at];
+    let e = effective(p, &[]);
+    if e.count() == 0 {
         return None;
     }
-    for (s, x) in p.sum.iter_mut().zip(&u) {
+    let mut sum = e.sum().to_vec();
+    for (s, x) in sum.iter_mut().zip(&u) {
         *s -= x;
     }
-    p.count -= 1;
-    if p.count == 0 {
+    let count = e.count() - 1;
+    if count == 0 {
         prints.remove(at);
+    } else {
+        prints[at] = Voiceprint::from_stored(
+            p.id(),
+            *p.meta(),
+            p.person_id(),
+            p.model().clone(),
+            sum,
+            count,
+            e.speech_ms(),
+        );
     }
     Some(snapshot(persons, &prints))
 }
@@ -240,17 +252,14 @@ fn person_scores(
     e: &Embedding,
 ) -> Result<BTreeMap<EntityId, f32>, String> {
     let mut out = BTreeMap::new();
-    for v in repo
-        .voiceprints(&e.model)
-        .map_err(|_| "reading voiceprints")?
-    {
-        if v.meta.deleted {
+    for (v, eff) in live_prints(repo, &e.model).map_err(|_| "reading voiceprints")? {
+        if eff.count() == 0 {
             continue;
         }
-        let Some(p) = resolve_person(repo, v.person_id).map_err(|_| "resolving a person")? else {
+        let Some(p) = resolve_person(repo, v.person_id()).map_err(|_| "resolving a person")? else {
             continue;
         };
-        let Ok(s) = v.score(e) else { continue };
+        let Ok(s) = eff.score(e) else { continue };
         let x = out.entry(p.id).or_insert(f32::NEG_INFINITY);
         *x = x.max(s);
     }

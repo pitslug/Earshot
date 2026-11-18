@@ -2016,15 +2016,15 @@ fn sync_waiting_leaves_out_voiceprints_while_their_switch_is_off() {
         let p = Person::new("Someone invented", false, &mut stamp);
         let vid = earshot_core::identity::EntityId::generate(stamp.clock, &mut *stamp.rng);
         let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
-        let v = Voiceprint {
-            id: vid,
+        let v = Voiceprint::from_stored(
+            vid,
             meta,
-            person_id: p.id,
-            model: earshot_core::diar::EmbeddingModelId::new("invented-model"),
-            sum: vec![0.5; 4],
-            count: 1,
-            speech_ms: 5_000,
-        };
+            p.id,
+            earshot_core::diar::EmbeddingModelId::new("invented-model"),
+            vec![0.5; 4],
+            1,
+            5_000,
+        );
         store.put_person(p).unwrap();
         store.put_voiceprint(v).unwrap();
     }

@@ -184,11 +184,11 @@ fn my_voice_enrols_the_user_from_a_recorded_sample_and_adds_later_ones() {
         assert!(p.is_me && p.is_live());
         let prints = db.voiceprints_of(person).unwrap();
         assert_eq!(prints.len(), 1);
-        assert_eq!(prints[0].id, voiceprint);
-        assert_eq!(prints[0].model, EmbeddingModelId::new(MODEL));
+        assert_eq!(prints[0].id(), voiceprint);
+        assert_eq!(prints[0].model(), &EmbeddingModelId::new(MODEL));
         // The voice of scene speaker 3.
-        let best = prints[0]
-            .sum
+        let best = earshot_core::voiceprint::effective(&prints[0], &[])
+            .sum()
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.total_cmp(b.1))
@@ -319,10 +319,15 @@ fn my_voice_forget_zeroes_and_tombstones_every_voiceprint_of_the_user() {
         .voiceprints_of(person)
         .unwrap()
         .into_iter()
-        .find(|v| v.id == voiceprint)
+        .find(|v| v.id() == voiceprint)
         .unwrap();
-    assert!(v.meta.deleted);
-    assert!(v.sum.iter().all(|x| *x == 0.0));
+    assert!(v.meta().deleted);
+    assert!(
+        earshot_core::voiceprint::effective(&v, &[])
+            .sum()
+            .iter()
+            .all(|x| *x == 0.0)
+    );
     // The person stays (persons are kept), and can be enrolled again.
     assert!(db.person(person).unwrap().unwrap().is_me);
     drop(db);
@@ -406,7 +411,11 @@ fn my_voice_forget_forgets_every_person_marked_as_the_user_at_once() {
     let db = svc.store();
     for p in [first, second] {
         for v in db.voiceprints_of(p).unwrap() {
-            assert!(v.meta.deleted && v.sum.iter().all(|x| *x == 0.0));
+            let zero = earshot_core::voiceprint::effective(&v, &[])
+                .sum()
+                .iter()
+                .all(|x| *x == 0.0);
+            assert!(v.meta().deleted && zero);
         }
     }
 }

@@ -23,7 +23,7 @@ use earshot_core::diar::{Diarization, Diarizer, Embedding, SpeakerEmbedder};
 use earshot_core::identity::{DeviceId, EntityId, Hlc, ManualClock};
 use earshot_core::metrics::der::Turn;
 use earshot_core::voiceprint::{
-    InMemoryVoiceprintRepo, Person, Stamp, VoiceprintRepo, enroll, match_embedding,
+    InMemoryVoiceprintRepo, Person, Stamp, VoiceprintRepo, enroll, live_prints_of, match_embedding,
 };
 use earshot_runtime::backends::{Accelerator, ModelDir, init_onnx, load_diarisation};
 use earshot_runtime::post::PostConfig;
@@ -477,11 +477,10 @@ fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>
                 let scores = persons
                     .iter()
                     .map(|(g, ps, id)| {
-                        let v = repo
-                            .voiceprints_of(*id)
+                        let (_, v) = live_prints_of(&repo, *id)
                             .unwrap_or_else(|e| fail(e))
                             .into_iter()
-                            .find(|v| !v.meta.deleted)
+                            .next()
                             .unwrap_or_else(|| fail("an enrolled person has no voiceprint"));
                         (
                             g.clone(),

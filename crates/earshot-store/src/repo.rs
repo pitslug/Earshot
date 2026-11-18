@@ -909,15 +909,15 @@ fn voiceprint_row(r: &Row<'_>) -> rusqlite::Result<Voiceprint> {
             BadValue(format!("voiceprint vector of {} bytes", bytes.len())),
         ));
     }
-    Ok(Voiceprint {
-        id: get_id(r, 0)?,
-        meta: get_meta(r, 1)?,
-        person_id: get_id(r, REST)?,
-        model: EmbeddingModelId::new(model),
-        sum: chunks.iter().map(|b| f32::from_le_bytes(*b)).collect(),
-        count: r.get(REST + 3)?,
-        speech_ms: get_u64(r, REST + 4)?,
-    })
+    Ok(Voiceprint::from_stored(
+        get_id(r, 0)?,
+        get_meta(r, 1)?,
+        get_id(r, REST)?,
+        EmbeddingModelId::new(model),
+        chunks.iter().map(|b| f32::from_le_bytes(*b)).collect(),
+        r.get(REST + 3)?,
+        get_u64(r, REST + 4)?,
+    ))
 }
 
 fn vp_err(e: RepoError) -> VoiceprintError {
@@ -958,16 +958,16 @@ fn voiceprints_where(c: &Connection, filter: &str, p: Value) -> Result<Vec<Voice
 }
 
 fn put_voiceprint(c: &Connection, v: &Voiceprint) -> Result<(), RepoError> {
-    let bytes: Vec<u8> = v.sum.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let bytes: Vec<u8> = v.base_sum().iter().flat_map(|x| x.to_le_bytes()).collect();
     let vals = synced_values(
-        v.id,
-        &v.meta,
+        v.id(),
+        v.meta(),
         vec![
-            id_value(v.person_id),
-            text(v.model.as_str()),
+            id_value(v.person_id()),
+            text(v.model().as_str()),
             Value::Blob(bytes),
-            Value::Integer(i64::from(v.count)),
-            int(v.speech_ms)?,
+            Value::Integer(i64::from(v.base_count())),
+            int(v.base_speech_ms())?,
         ],
     )?;
     exec(

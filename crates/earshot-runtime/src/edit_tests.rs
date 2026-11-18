@@ -561,8 +561,8 @@ fn print_count(svc: &Services, person: EntityId) -> Option<u32> {
         .voiceprints_of(person)
         .unwrap()
         .into_iter()
-        .find(|v| !v.meta.deleted)
-        .map(|v| v.count)
+        .find(|v| !v.meta().deleted)
+        .map(|v| earshot_core::voiceprint::effective(&v, &[]).count())
 }
 
 /// Links `speaker` to `person` without the edit checks (data as an older build or a sync
@@ -651,9 +651,12 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
     assert_eq!(person, dana);
     let prints = svc.store().voiceprints_of(dana).unwrap();
     assert_eq!(prints.len(), 1);
-    assert_eq!(prints[0].id, voiceprint);
-    assert_eq!(prints[0].count, 1);
-    assert_eq!(prints[0].model.as_str(), "level@1");
+    assert_eq!(prints[0].id(), voiceprint);
+    assert_eq!(
+        earshot_core::voiceprint::effective(&prints[0], &[]).count(),
+        1
+    );
+    assert_eq!(prints[0].model().as_str(), "level@1");
     // A repeat adds nothing.
     let again = remember_voices_with(&svc, m, &[remote[0].id], &any).unwrap();
     assert_eq!(again[0].1, Remembered::AlreadyEnrolled);
@@ -667,11 +670,13 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
     assert!(identity_speakers(&svc, m).contains(&remote[0].id));
     assert_eq!(forget_person_voices(&svc, dana).unwrap(), 1);
     let prints = svc.store().voiceprints_of(dana).unwrap();
-    assert!(
-        prints
-            .iter()
-            .all(|v| v.meta.deleted && v.sum.iter().all(|x| *x == 0.0))
-    );
+    assert!(prints.iter().all(|v| {
+        v.meta().deleted
+            && earshot_core::voiceprint::effective(v, &[])
+                .sum()
+                .iter()
+                .all(|x| *x == 0.0)
+    }));
     assert!(!identity_speakers(&svc, m).contains(&remote[0].id));
     assert!(!list_persons(&svc).unwrap().iter().any(|p| p.has_voiceprint));
     assert_eq!(forget_person_voices(&svc, dana).unwrap(), 0);

@@ -10,7 +10,8 @@ use earshot_core::identity::{DeviceId, Hlc, ManualClock};
 use earshot_core::model::{MeetingRepo, repo_contract};
 use earshot_core::prompt::Template;
 use earshot_core::voiceprint::{
-    EnrolmentConfig, Person, Stamp, VoiceprintRepo, enroll, forget_voiceprints, merge_persons,
+    EnrolmentConfig, Person, Stamp, VoiceprintRepo, effective, enroll, forget_voiceprints,
+    merge_persons,
 };
 use earshot_store::{SCHEMA_VERSION, Store, StoreError};
 use rand_chacha::ChaCha8Rng;
@@ -217,8 +218,8 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
     assert_eq!(vps.len(), 2);
     let a = store.voiceprints_of(ada.id).unwrap();
     assert_eq!(a.len(), 1);
-    assert_eq!(a[0].count, 2);
-    assert_eq!(a[0].speech_ms, 12_000);
+    assert_eq!(effective(&a[0], &[]).count(), 2);
+    assert_eq!(effective(&a[0], &[]).speech_ms(), 12_000);
     assert_eq!(
         store.person(dup.id).unwrap().unwrap().merged_into,
         Some(ada.id)
@@ -229,8 +230,11 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
     drop(store);
     let store = Store::open(&path).unwrap();
     for v in store.voiceprints(&model).unwrap() {
-        assert!(v.meta.deleted, "tombstoned after reopen");
-        assert!(v.sum.iter().all(|&x| x == 0.0), "vector zeroed on disk");
+        assert!(v.meta().deleted, "tombstoned after reopen");
+        assert!(
+            effective(&v, &[]).sum().iter().all(|&x| x == 0.0),
+            "vector zeroed on disk"
+        );
     }
 }
 
@@ -277,11 +281,11 @@ fn store_forget_voiceprints_of_several_persons_forgets_all_of_them_at_once() {
     let store = Store::open(&path).unwrap();
     for p in &people {
         for v in store.voiceprints_of(*p).unwrap() {
-            assert!(v.meta.deleted && v.sum.iter().all(|&x| x == 0.0));
+            assert!(v.meta().deleted && effective(&v, &[]).sum().iter().all(|&x| x == 0.0));
         }
     }
     assert!(
-        !store.voiceprints_of(other.id).unwrap()[0].meta.deleted,
+        !store.voiceprints_of(other.id).unwrap()[0].meta().deleted,
         "others are kept"
     );
 }

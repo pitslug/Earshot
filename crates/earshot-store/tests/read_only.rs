@@ -154,7 +154,7 @@ fn read_only_open_reads_persons_voiceprints_and_local_values_and_refuses_their_w
         assert_eq!(ro.person(person.id).unwrap(), Some(person.clone()));
         let prints = ro.voiceprints(&model).unwrap();
         assert_eq!(prints.len(), 1);
-        assert_eq!(prints[0].id, print);
+        assert_eq!(prints[0].id(), print);
         assert_eq!(ro.voiceprints_of(person.id).unwrap(), prints);
         assert!(
             ro.voiceprints(&EmbeddingModelId::new("another@0"))

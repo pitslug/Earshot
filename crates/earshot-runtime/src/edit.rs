@@ -77,7 +77,7 @@ use earshot_core::summary::SummaryV1;
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{
     DEFAULT_ME_NAME, Person, VoiceprintError, VoiceprintRepo, enroll, existing_me, identity_of,
-    me_person, merge_persons, resolve_person,
+    live_prints_of, me_person, merge_persons, resolve_person,
 };
 use earshot_store::{StoreTx, first_free_speaker_name};
 use rand_core::Rng;
@@ -1362,7 +1362,7 @@ pub fn resolved_person<R: VoiceprintRepo + ?Sized>(
 }
 
 /// Whether the user (every `is_me` person and everyone merged into them) has a live
-/// voiceprint of any model.
+/// voiceprint of any model holding a voice (an effective count above 0).
 ///
 /// # Errors
 /// Store errors.
@@ -1372,11 +1372,10 @@ pub fn user_has_voiceprint<R: VoiceprintRepo + ?Sized>(repo: &R) -> Result<bool,
             continue;
         }
         for id in identity_of(repo, p.id).map_err(voiceprint_err)? {
-            if repo
-                .voiceprints_of(id)
+            if live_prints_of(repo, id)
                 .map_err(voiceprint_err)?
                 .iter()
-                .any(|v| !v.meta.deleted)
+                .any(|(_, e)| e.count() > 0)
             {
                 return Ok(true);
             }
@@ -1695,11 +1694,10 @@ pub fn list_persons_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>, R
             .collect();
         let mut has_voiceprint = false;
         for id in identity {
-            if repo
-                .voiceprints_of(id)
+            if live_prints_of(repo, id)
                 .map_err(voiceprint_err)?
                 .iter()
-                .any(|v| !v.meta.deleted)
+                .any(|(_, e)| e.count() > 0)
             {
                 has_voiceprint = true;
                 break;
