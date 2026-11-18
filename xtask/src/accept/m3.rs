@@ -3,8 +3,9 @@
 //! The work runs in a release build of the `diar_eval` example of `earshot-runtime`, built
 //! first and then spawned directly under the deadline. It runs the production speaker setup
 //! on the CPU (as the final pass does: pyannote segmentation-3.0 and CAM++ through
-//! `backends::load_diarisation`, `PostConfig` with the dev-clean calibrated clustering and
-//! voiceprint thresholds); every metric definition is in that example's module docs. It
+//! `backends::load_diarisation`, `PostConfig` with the dev-clean calibrated clustering
+//! threshold and, since T12.75, the AMI dev voiceprint naming threshold); every metric
+//! definition is in that example's module docs. It
 //! prints JSON with exactly one entry per threshold id of M3.
 //!
 //! This runner does not take the example's headline numbers on trust: it recomputes every
@@ -31,7 +32,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 use earshot_core::diar::EmbeddingModelId;
 use earshot_core::diar::cluster::calibrated_cluster_threshold;
-use earshot_core::voiceprint::{calibrated_margin, calibrated_threshold};
+use earshot_core::voiceprint::{calibrated_margin, naming_threshold};
 use serde_json::Value;
 
 use super::{Check, Ctx, Measurement, RunOutput};
@@ -240,7 +241,7 @@ pub fn evaluate(json: &Value) -> Result<RunOutput> {
     let margin = num(json, "voiceprint_margin", "report")? as f32;
     let want_margin = calibrated_margin(&id).unwrap_or(0.0);
     let want_cluster = calibrated_cluster_threshold(&id);
-    let want_vp = calibrated_threshold(&id).ok();
+    let want_vp = naming_threshold(&id).ok();
     let sessions = json["placement"]
         .as_array()
         .context("diar_eval: no placement")?;
@@ -270,7 +271,7 @@ pub fn evaluate(json: &Value) -> Result<RunOutput> {
         format!("{model}: used {cluster}, calibrated {want_cluster:?}"),
     ));
     checks.push(Check::new(
-        "voiceprint threshold is the dev-clean calibration for the embedding model",
+        "voiceprint threshold is the naming threshold for the embedding model",
         want_vp == Some(vp),
         format!("{model}: used {vp}, calibrated {want_vp:?}"),
     ));
@@ -652,7 +653,7 @@ mod tests {
                  "kind": "cpu", "fully_on_requested": true}
             ],
             "cluster_threshold": f64::from(earshot_core::diar::cluster::CAMPPLUS_DEV_CLEAN_CLUSTER_THRESHOLD),
-            "voiceprint_threshold": f64::from(earshot_core::voiceprint::CAMPPLUS_DEV_CLEAN_THRESHOLD),
+            "voiceprint_threshold": f64::from(earshot_core::voiceprint::CAMPPLUS_MEETING_THRESHOLD),
             "voiceprint_margin": f64::from(earshot_core::voiceprint::CAMPPLUS_MEETING_MARGIN),
             "ami": ami,
             "synthetic": {"der_percent": 10.0, "speakers": [1, 2], "scenes": scenes},
@@ -958,7 +959,7 @@ mod tests {
         j["voiceprint_threshold"] = json!(0.4);
         assert_eq!(
             failing(&j),
-            ["voiceprint threshold is the dev-clean calibration for the embedding model"]
+            ["voiceprint threshold is the naming threshold for the embedding model"]
         );
         let mut j = sample();
         j["voiceprint_margin"] = json!(0.0);

@@ -8,7 +8,10 @@
 //! The data, measures, candidates and rule are `docs/voiceprint-meetings.md`, committed before
 //! this tool was written and before any run. Dev data only: AMI dev series meetings of fixture
 //! set `ami-dev` (enrolment from each series' first meeting, trials on its second and third).
-//! Nothing here changes a shipped threshold. No word text, name or speaker identity is printed
+//! Nothing here changes a shipped threshold. T12.75 adds one line, selecting nothing: the
+//! naming rule shipped since then (`PostConfig::naming_threshold` with the margin) beside the
+//! rule before it (the dev-clean 0.462 with the margin), judged on the same trials
+//! (docs/voiceprint-naming.md). No word text, name or speaker identity is printed
 //! or written: speakers are compared by identity inside the tool only.
 
 #[path = "cluster_sweep_parts/ami.rs"]
@@ -369,21 +372,40 @@ fn main() {
         }
     }
     let models = models.unwrap_or_else(|| fail("--models is required"));
-    let (report, pick_b, shipped_margin) = measure(&models, &fixtures_dir());
+    let (report, picks, shipped_margin) = measure(&models, &fixtures_dir());
     let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
     if let Some(out) = &out {
         std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
     }
-    // The shipped margin must be what the rule picks here (the reproduction check).
-    if pick_b.unwrap_or(0.0) != shipped_margin {
+    // The shipped margin and naming threshold must be what the rule picks here (the
+    // reproduction checks; the threshold since T12.75).
+    if picks.b.unwrap_or(0.0) != shipped_margin {
         fail(format!(
-            "the rule picks margin {pick_b:?}, the shipped margin is {shipped_margin}"
+            "the rule picks margin {:?}, the shipped margin is {shipped_margin}",
+            picks.b
+        ));
+    }
+    // The grid holds 0.40 + 0.02 k in f32, so compare within rounding.
+    if !picks
+        .a
+        .is_some_and(|t| (t - earshot_core::voiceprint::CAMPPLUS_MEETING_THRESHOLD).abs() < 1e-4)
+    {
+        fail(format!(
+            "the rule picks threshold {:?}, the naming threshold is {}",
+            picks.a,
+            earshot_core::voiceprint::CAMPPLUS_MEETING_THRESHOLD
         ));
     }
 }
 
-/// The whole measurement of the rule doc: the report, B's pick and the shipped margin.
-fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>, f32) {
+/// What the rule picks: candidate A's threshold and candidate B's margin.
+struct Picks {
+    a: Option<f32>,
+    b: Option<f32>,
+}
+
+/// The whole measurement of the rule doc: the report, the picks and the shipped margin.
+fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Picks, f32) {
     let meetings_xml: String =
         std::fs::read(fixtures.join("ami/annotations/corpusResources/meetings.xml"))
             .unwrap_or_else(|e| fail(format!("meetings.xml: {e}")))
@@ -401,9 +423,14 @@ fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>
         .clustering_threshold(&model)
         .unwrap_or_else(|e| fail(e));
     config.clustering.unassigned_floor = post.unassigned_floor(&model).unwrap_or_else(|e| fail(e));
-    let shipped_threshold = post
-        .voiceprint_threshold(&model)
-        .unwrap_or_else(|e| fail(e));
+    // T12.67's "shipped" rule is the dev-clean threshold it judged (0.462); since T12.75 the
+    // final pass names at `naming_threshold`, reported separately below.
+    let shipped_threshold = earshot_core::voiceprint::CAMPPLUS_DEV_CLEAN_THRESHOLD;
+    if post.voiceprint_threshold(&model).ok() != Some(shipped_threshold) {
+        fail("the same-voice threshold is not the dev-clean calibration T12.67 judged");
+    }
+    let naming_threshold = post.naming_threshold(&model).unwrap_or_else(|e| fail(e));
+    let margin = post.voiceprint_margin(&model);
     let mut diarizer = Diarizer::new(segmenter, embedder, config).unwrap_or_else(|e| fail(e));
 
     let mut diarize = |meeting: &str| -> (Diarization, ami::Reference, BTreeMap<String, String>) {
@@ -615,6 +642,17 @@ fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>
         line(format!("B m={m:.2}"), o);
     }
     line("C".into(), &c);
+    // T12.75, selecting nothing: the naming rule before and since.
+    let before = judge(&trials, Rule::Margin(shipped_threshold, margin), &enrolled);
+    let since = judge(&trials, Rule::Margin(naming_threshold, margin), &enrolled);
+    line(
+        format!("T12.75 before t={shipped_threshold:.3} m={margin:.2}"),
+        &before,
+    );
+    line(
+        format!("T12.75 since t={naming_threshold:.3} m={margin:.2}"),
+        &since,
+    );
     println!(
         "rule: shipped meets the requirement {shipped_meets}; A picks {pick_a:?}; B picks {pick_b:?}; C passes {c_passes} (right removed {right_removed}, wrong removed {wrong_removed})"
     );
@@ -638,6 +676,13 @@ fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>
         })).collect::<Vec<_>>(),
         "c": { "known": outcome_json(&c.0), "unknown": outcome_json(&c.1),
                "right_removed": right_removed, "wrong_removed": wrong_removed },
+        "t12_75": {
+            "margin": margin,
+            "before": { "threshold": shipped_threshold,
+                        "known": outcome_json(&before.0), "unknown": outcome_json(&before.1) },
+            "since": { "threshold": naming_threshold,
+                       "known": outcome_json(&since.0), "unknown": outcome_json(&since.1) },
+        },
         "verdict": {
             "shipped_meets_requirement": shipped_meets,
             "a_pick": pick_a,
@@ -646,7 +691,14 @@ fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>
         },
     });
     let shipped_margin = earshot_core::voiceprint::calibrated_margin(&model).unwrap_or(0.0);
-    (report, pick_b, shipped_margin)
+    (
+        report,
+        Picks {
+            a: pick_a,
+            b: pick_b,
+        },
+        shipped_margin,
+    )
 }
 
 #[cfg(test)]
@@ -801,12 +853,20 @@ mod tests {
     #[test]
     #[ignore = "needs fixture set ami-dev and the speaker models, about 15 minutes in release: cargo test --release -p earshot-runtime --example vp_meetings -- --ignored"]
     fn vp_meetings_the_rule_still_picks_the_shipped_margin() {
-        // T12.67 step 4: the margin is reproduced by the rule on the dev meetings.
+        // T12.67 step 4: the margin is reproduced by the rule on the dev meetings; since
+        // T12.75 also candidate A's threshold, the naming threshold.
         let data = earshot_store::DataDir::from_local_app_data()
             .unwrap_or_else(|| panic!("no LOCALAPPDATA"));
         let models = ModelDir::from_env(&data);
-        let (_, pick, shipped) = measure(&models, &fixtures_dir());
-        assert_eq!(pick, Some(shipped));
+        let (_, picks, shipped) = measure(&models, &fixtures_dir());
+        assert_eq!(picks.b, Some(shipped));
         assert_eq!(shipped, earshot_core::voiceprint::CAMPPLUS_MEETING_MARGIN);
+        assert!(
+            picks.a.is_some_and(
+                |t| (t - earshot_core::voiceprint::CAMPPLUS_MEETING_THRESHOLD).abs() < 1e-4
+            ),
+            "A picks {:?}",
+            picks.a
+        );
     }
 }

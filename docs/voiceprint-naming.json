@@ -1,0 +1,966 @@
+{
+  "a": [
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.4000000059604645,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 11,
+        "wrong_rate": 0.275
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.42000001668930054,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 9,
+        "wrong_rate": 0.225
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.4399999976158142,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 8,
+        "wrong_rate": 0.2
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.46000000834465027,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 8,
+        "wrong_rate": 0.2
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.461961030960083,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 8,
+        "wrong_rate": 0.2
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.48000001907348633,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 7,
+        "wrong_rate": 0.175
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.5,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 6,
+        "wrong_rate": 0.15
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.5199999809265137,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 3,
+        "wrong_rate": 0.075
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.5400000214576721,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 3,
+        "wrong_rate": 0.075
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "threshold": 0.5600000023841858,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      },
+      "threshold": 0.5799999833106995,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.6000000238418579,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.6200000047683716,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.6399999856948853,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.6599999666213989,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.6800000071525574,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.699999988079071,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.7200000286102295,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.7400000095367432,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.7599999904632568,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.7799999713897705,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "threshold": 0.7999999523162842,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    }
+  ],
+  "b": [
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "margin": 0.0,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 8,
+        "wrong_rate": 0.2
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "margin": 0.019999999552965164,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 5,
+        "wrong_rate": 0.125
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 2,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 2,
+        "wrong_rate": 0.05
+      },
+      "margin": 0.03999999910593033,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 3,
+        "wrong_rate": 0.075
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      },
+      "margin": 0.05999999865889549,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 3,
+        "wrong_rate": 0.075
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      },
+      "margin": 0.07999999821186066,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      },
+      "margin": 0.09999999403953552,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "margin": 0.11999999731779099,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "margin": 0.14000000059604645,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "margin": 0.1599999964237213,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "margin": 0.17999999225139618,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    },
+    {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      },
+      "margin": 0.19999998807907104,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    }
+  ],
+  "c": {
+    "known": {
+      "correct": 38,
+      "miss": 0,
+      "miss_rate": 0.0,
+      "mixed_events": 2,
+      "owner_enrolled": 38,
+      "split_events": 0,
+      "trials": 40,
+      "wrong": 2,
+      "wrong_rate": 0.05
+    },
+    "right_removed": 0,
+    "unknown": {
+      "correct": 0,
+      "miss": 0,
+      "miss_rate": 0.0,
+      "mixed_events": 0,
+      "owner_enrolled": 0,
+      "split_events": 0,
+      "trials": 40,
+      "wrong": 7,
+      "wrong_rate": 0.175
+    },
+    "wrong_removed": 0
+  },
+  "enrolment_meetings": [
+    "ES2003a",
+    "ES2011a",
+    "IS1008a",
+    "TS3004a",
+    "TS3006a"
+  ],
+  "model": "campplus-en-voxceleb@357a834f702b",
+  "not_enrolled": 1,
+  "persons": 19,
+  "reference_speakers": 40,
+  "rule": "docs/voiceprint-meetings.md",
+  "shipped": {
+    "known": {
+      "correct": 38,
+      "miss": 0,
+      "miss_rate": 0.0,
+      "mixed_events": 2,
+      "owner_enrolled": 38,
+      "split_events": 0,
+      "trials": 40,
+      "wrong": 2,
+      "wrong_rate": 0.05
+    },
+    "unknown": {
+      "correct": 0,
+      "miss": 0,
+      "miss_rate": 0.0,
+      "mixed_events": 1,
+      "owner_enrolled": 0,
+      "split_events": 0,
+      "trials": 40,
+      "wrong": 8,
+      "wrong_rate": 0.2
+    }
+  },
+  "shipped_threshold": 0.461961030960083,
+  "t12_75": {
+    "before": {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      },
+      "threshold": 0.461961030960083,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      }
+    },
+    "margin": 0.07999999821186066,
+    "since": {
+      "known": {
+        "correct": 38,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 1,
+        "owner_enrolled": 38,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 1,
+        "wrong_rate": 0.025
+      },
+      "threshold": 0.5600000023841858,
+      "unknown": {
+        "correct": 0,
+        "miss": 0,
+        "miss_rate": 0.0,
+        "mixed_events": 0,
+        "owner_enrolled": 0,
+        "split_events": 0,
+        "trials": 40,
+        "wrong": 0,
+        "wrong_rate": 0.0
+      }
+    }
+  },
+  "test_meetings": [
+    "ES2003b",
+    "ES2003c",
+    "ES2011b",
+    "ES2011c",
+    "IS1008b",
+    "IS1008c",
+    "TS3004b",
+    "TS3004c",
+    "TS3006b",
+    "TS3006c"
+  ],
+  "trials": 40,
+  "verdict": {
+    "a_pick": 0.5600000023841858,
+    "b_pick": 0.07999999821186066,
+    "c_passes": false,
+    "shipped_meets_requirement": false
+  }
+}

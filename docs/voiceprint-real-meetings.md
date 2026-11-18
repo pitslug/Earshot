@@ -48,3 +48,5 @@ The tool prints counts and bands only. Its per-voice report (scores, labels `m<k
 - No voice of any kind scores between 0.462 and 0.56 against its best person: the best scores are 0.29, 0.37 and then 0.71 to 0.86 (and 1.00). On this data the threshold choice changes no name.
 - 3 no-name voices score 0.82 to 0.85 against a stored person and are named under both settings; 2 more (0.71, 0.86) best match the user's identity and stay unnamed, as the final pass does for a voice that is not a Me row.
 - Verdict by the rule: step 1 fails (1 confirmed, scorable voice; 10 needed). Re-run after more call voices are named.
+
+Later (T12.75, 2026-11-18): naming now uses 0.56 (`voiceprint::naming_threshold`), so the shipped setting S above is the rule before T12.75; `vp_readout` still scores S as written here. See `voiceprint-naming.md`.

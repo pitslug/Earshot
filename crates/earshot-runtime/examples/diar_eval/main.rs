@@ -14,8 +14,8 @@
 //! pass, T6.11) with `backends::speaker_threads` ONNX threads, the core `Diarizer` with
 //! `PostConfig::default().diarization` and the clustering threshold the final pass uses
 //! (`PostConfig::clustering_threshold`: the dev-clean calibration keyed by the embedder's
-//! exact model id), and the voiceprint threshold the final pass uses
-//! (`PostConfig::voiceprint_threshold`, dev-clean calibration). Nothing is tuned here. The
+//! exact model id), and the voiceprint naming threshold the final pass uses
+//! (`PostConfig::naming_threshold`, AMI dev meetings since T12.75). Nothing is tuned here. The
 //! backend is proven by ONNX Runtime's node placement of both sessions.
 //!
 //! Definitions (PLAN.md 4.0 and 4.2, fixed before the first measurement):
@@ -56,7 +56,7 @@
 //!   `enrol` utterance (>= 10 s per speaker) whole and enrols them with core
 //!   `voiceprint::enroll` (`EnrolmentConfig::default()`); test clips are the centre 2.5 s of
 //!   each of a speaker's 3 `test` utterances. Each clip is matched open-set with core
-//!   `voiceprint::match_embedding_with_margin` at the calibrated threshold and margin
+//!   `voiceprint::match_embedding_with_margin` at the naming threshold and margin
 //!   (`PostConfig::voiceprint_margin`, T12.67), as production matches.
 //!   `vp.top1` = enrolled speakers' clips matched `Known` as their own person / all enrolled
 //!   speakers' clips (a correct best match below the threshold is a miss); the closed-set
@@ -790,9 +790,7 @@ fn main() {
     let cluster_threshold = post
         .clustering_threshold(&model)
         .unwrap_or_else(|e| fail(e));
-    let vp_threshold = post
-        .voiceprint_threshold(&model)
-        .unwrap_or_else(|e| fail(e));
+    let vp_threshold = post.naming_threshold(&model).unwrap_or_else(|e| fail(e));
     let vp_margin = post.voiceprint_margin(&model);
     let mut config = post.diarization.clone();
     config.clustering.threshold = cluster_threshold;

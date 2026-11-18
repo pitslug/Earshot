@@ -80,6 +80,7 @@ fn config() -> PostConfig {
             .with(EmbeddingModelId::new(MODEL), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
+        naming_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
         voiceprint_margins: ModelThresholds::new(),
         enroll_me: true,
         enrolment: EnrolmentConfig::default(),
@@ -516,6 +517,7 @@ fn post_without_calibration_is_an_error_at_construction() {
     ));
     let missing_voiceprint = PostConfig {
         voiceprint_thresholds: ModelThresholds::new(),
+        naming_thresholds: ModelThresholds::new(),
         voiceprint_margins: ModelThresholds::new(),
         ..config()
     };
@@ -538,6 +540,15 @@ fn post_without_calibration_is_an_error_at_construction() {
     assert!(
         defaults.voiceprint_threshold(&campp).is_ok(),
         "from the core calibration"
+    );
+    // T12.75: naming needs the stricter meeting threshold; same-voice checks keep dev-clean.
+    assert_eq!(
+        defaults.naming_threshold(&campp).unwrap(),
+        earshot_core::voiceprint::CAMPPLUS_MEETING_THRESHOLD
+    );
+    assert_eq!(
+        defaults.voiceprint_threshold(&campp).unwrap(),
+        earshot_core::voiceprint::CAMPPLUS_DEV_CLEAN_THRESHOLD
     );
     let clustering = defaults.clustering_threshold(&campp).unwrap();
     assert_eq!(
@@ -1442,6 +1453,7 @@ fn post_round_trip_from_a_live_session_through_flac() {
         clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
+        naming_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
         voiceprint_margins: ModelThresholds::new(),
         ..PostConfig::default()
     };
@@ -1597,6 +1609,7 @@ fn post_in_room_session_stores_one_track_and_names_me_by_voiceprint_only() {
                 clustering_thresholds: ModelThresholds::new().with(model.clone(), 0.704_565_5),
                 unassigned_floors: ModelThresholds::new().with(model.clone(), -1.0),
                 voiceprint_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
+                naming_thresholds: ModelThresholds::new().with(model.clone(), 0.5),
                 voiceprint_margins: ModelThresholds::new(),
                 enroll_me: false,
                 ..PostConfig::default()
@@ -1961,6 +1974,7 @@ fn echo_config(model: &str) -> PostConfig {
             .with(EmbeddingModelId::new(model), 0.704_565_5),
         unassigned_floors: ModelThresholds::new().with(EmbeddingModelId::new(model), -1.0),
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(model), 0.5),
+        naming_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(model), 0.5),
         voiceprint_margins: ModelThresholds::new(),
         enroll_me: false,
         ..config()
@@ -4187,6 +4201,92 @@ fn post_a_voice_close_to_two_people_is_named_only_with_a_clear_margin() {
     assert_eq!(
         defaults.voiceprint_margin(&EmbeddingModelId::new("unknown@1")),
         0.0
+    );
+}
+
+#[test]
+fn post_a_voice_is_named_only_at_the_naming_threshold() {
+    // T12.75: the far-end voice of scene speaker 1 scores about 0.95 against Blair, the only
+    // stored person. At a naming threshold of 0.5 it is Blair; at 0.97 it stays "Speaker N",
+    // though the same-voice threshold (0.5) would accept it: naming reads only its own.
+    let run = |naming: f32| {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let blair = {
+            let clock = ManualClock::new(1_760_000_000_000);
+            let mut rng = ChaCha8Rng::seed_from_u64(78);
+            let mut db = svc.store();
+            let (store, hlc) = db.parts();
+            let mut stamp = Stamp {
+                clock: &clock,
+                hlc,
+                rng: &mut rng,
+            };
+            let p = Person::new("Blair", false, &mut stamp);
+            store.put_person(p.clone()).unwrap();
+            let mut v = centroid(1);
+            v[1] = 0.95;
+            v[7] = 0.31;
+            let e = earshot_core::diar::Embedding::new(EmbeddingModelId::new(MODEL), v);
+            enroll(
+                &mut *store,
+                p.id,
+                &[e],
+                Duration::from_secs(20),
+                &EnrolmentConfig::default(),
+                &mut stamp,
+            )
+            .unwrap();
+            p.id
+        };
+        let (meeting, mic, them) = meeting_rows(&svc);
+        let (mic_audio, them_audio) = scene();
+        let config = config();
+        assert_eq!(
+            config
+                .voiceprint_threshold(&EmbeddingModelId::new(MODEL))
+                .unwrap(),
+            0.5
+        );
+        let mut post = PostProcessor::new(
+            transcriber(),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            PostConfig {
+                naming_thresholds: ModelThresholds::new()
+                    .with(EmbeddingModelId::new(MODEL), naming),
+                ..config
+            },
+        )
+        .unwrap();
+        let outcome = post
+            .run(
+                &svc,
+                PostInput {
+                    echo_locks: Vec::new(),
+                    echo_locks_unreadable: false,
+                    meeting,
+                    tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+                },
+                &mut ChaCha8Rng::seed_from_u64(96),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        let far: Vec<(String, Option<EntityId>)> = outcome
+            .speakers
+            .iter()
+            .filter(|s| s.role == SpeakerRole::Remote)
+            .map(|s| (s.display_name.clone(), s.person))
+            .collect();
+        (far, blair)
+    };
+    let (far, blair) = run(0.5);
+    assert!(far.contains(&("Blair".to_owned(), Some(blair))), "{far:?}");
+    let (far, _) = run(0.97);
+    assert!(far.iter().all(|(_, p)| p.is_none()), "{far:?}");
+    assert!(
+        far.iter().all(|(n, _)| n.starts_with("Speaker ")),
+        "{far:?}"
     );
 }
 

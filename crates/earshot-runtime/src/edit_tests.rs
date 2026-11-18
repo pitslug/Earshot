@@ -549,6 +549,8 @@ fn calibrated(any: bool) -> PostConfig {
     PostConfig {
         voiceprint_thresholds: crate::post::ModelThresholds::new()
             .with(earshot_core::diar::EmbeddingModelId::new("level@1"), 0.5),
+        naming_thresholds: crate::post::ModelThresholds::new()
+            .with(earshot_core::diar::EmbeddingModelId::new("level@1"), 0.5),
         enrolment: if any {
             EnrolmentConfig {
                 min_new_speech: Duration::ZERO,

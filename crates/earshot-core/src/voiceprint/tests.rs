@@ -441,6 +441,33 @@ fn voiceprint_thresholds_exist_only_for_calibrated_models() {
 }
 
 #[test]
+fn voiceprint_naming_threshold_is_stricter_than_the_same_voice_threshold() {
+    // T12.75: naming a voice after a stored person needs 0.56 (AMI dev meetings); the
+    // same-voice threshold stays the dev-clean calibration.
+    let campplus = EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b");
+    assert_eq!(naming_threshold(&campplus), Ok(CAMPPLUS_MEETING_THRESHOLD));
+    assert_eq!(CAMPPLUS_MEETING_THRESHOLD, 0.56);
+    assert_eq!(
+        calibrated_threshold(&campplus),
+        Ok(CAMPPLUS_DEV_CLEAN_THRESHOLD)
+    );
+    assert!(CAMPPLUS_MEETING_THRESHOLD > CAMPPLUS_DEV_CLEAN_THRESHOLD);
+    // Every model with a naming threshold has a same-voice one, and the naming one is never
+    // the looser of the two.
+    for c in CALIBRATED_NAMING_THRESHOLDS {
+        let same = calibrated_threshold(&EmbeddingModelId::new(c.model)).unwrap();
+        assert!(c.threshold >= same, "{}", c.model);
+        assert!(c.source.contains("AMI dev"), "{}", c.model);
+        assert!(!c.source.contains("test-clean"), "{}", c.model);
+    }
+    let changed = EmbeddingModelId::new("campplus-en-voxceleb@000000000000");
+    assert_eq!(
+        naming_threshold(&changed),
+        Err(VoiceprintError::NoThreshold(changed))
+    );
+}
+
+#[test]
 fn voiceprint_margin_names_the_best_person_only_clear_of_the_runner_up() {
     // T12.67: A and B both above the threshold; a voice between them is named only when its
     // best person beats the runner-up by the margin. With no runner-up no margin is needed,

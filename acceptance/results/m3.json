@@ -1,9 +1,9 @@
 {
   "milestone": "m3",
   "requested_backend": null,
-  "timestamp": "2026-11-18T01:34:12Z",
-  "host": "x86_64-pc-windows-msvc",
-  "commit": "4c81bb4-dirty",
+  "timestamp": "2026-11-18T03:02:55Z",
+  "host": "aarch64-pc-windows-msvc",
+  "commit": "8093437-dirty",
   "backends": [
     "cpu"
   ],
@@ -38,11 +38,11 @@
       "op": "<=",
       "threshold": 25.0,
       "unit": "%",
-      "value": 11.552724130023028,
+      "value": 11.48103649783834,
       "passed": null,
       "backend": "cpu",
       "pass": true,
-      "reason": "11.552724130023028 <= 25"
+      "reason": "11.48103649783834 <= 25"
     },
     {
       "id": "dia.der_ami_sdm",
@@ -62,11 +62,11 @@
       "op": "<=",
       "threshold": 5.0,
       "unit": "%",
-      "value": 1.6666666666666667,
+      "value": 0.0,
       "passed": null,
       "backend": "cpu",
       "pass": true,
-      "reason": "1.6666666666666667 <= 5"
+      "reason": "0 <= 5"
     },
     {
       "id": "vp.top1",
@@ -88,9 +88,9 @@
       "detail": "campplus-en-voxceleb@357a834f702b: used 0.68, calibrated Some(0.68)"
     },
     {
-      "name": "voiceprint threshold is the dev-clean calibration for the embedding model",
+      "name": "voiceprint threshold is the naming threshold for the embedding model",
       "pass": true,
-      "detail": "campplus-en-voxceleb@357a834f702b: used 0.46196103, calibrated Some(0.46196103)"
+      "detail": "campplus-en-voxceleb@357a834f702b: used 0.56, calibrated Some(0.56)"
     },
     {
       "name": "voiceprint margin is the one chosen for the embedding model (T12.67)",
@@ -100,12 +100,12 @@
     {
       "name": "speaker models on the CPU (ONNX Runtime node placement)",
       "pass": true,
-      "detail": "segmentation pyannote-segmentation-3.0@220ad67ca923, 4 ONNX threads (32 cores); segmentation: \"requested cpu, placed: CPUExecutionProvider=49\"; embedding: \"requested cpu, placed: CPUExecutionProvider=1614\""
+      "detail": "segmentation pyannote-segmentation-3.0@220ad67ca923, 3 ONNX threads (12 cores); segmentation: \"requested cpu, placed: CPUExecutionProvider=49\"; embedding: \"requested cpu, placed: CPUExecutionProvider=1621\""
     },
     {
       "name": "dia.der_ami_ihm per meeting (ihm_mix; only_words RTTM, UEM, 0.25 s collar)",
       "pass": true,
-      "detail": "corpus DER 11.55% over 1177.3 s; IS1009a: DER 12.26% (missed 5.90%, false alarm 2.37%, confusion 4.00%) over 513.6 s scored, 4 speakers found of 4 (audio ami/audio/IS1009a.Mix-Headset.wav); ES2004a: DER 11.00% (missed 8.39%, false alarm 1.53%, confusion 1.09%) over 663.7 s scored, 4 speakers found of 4 (audio ami/audio/ES2004a.Mix-Headset.wav)"
+      "detail": "corpus DER 11.48% over 1177.3 s; IS1009a: DER 12.10% (missed 5.90%, false alarm 2.37%, confusion 3.83%) over 513.6 s scored, 4 speakers found of 4 (audio ami/audio/IS1009a.Mix-Headset.wav); ES2004a: DER 11.00% (missed 8.39%, false alarm 1.53%, confusion 1.09%) over 663.7 s scored, 4 speakers found of 4 (audio ami/audio/ES2004a.Mix-Headset.wav)"
     },
     {
       "name": "dia.der_ami_sdm per meeting (sdm; only_words RTTM, UEM, 0.25 s collar)",
@@ -125,7 +125,7 @@
     {
       "name": "vp.* tallies (test-clean, 2 folds of 20 enrolled / 20 unknown, 2.5 s clips)",
       "pass": true,
-      "detail": "threshold 0.46196103; enrolled clips matched to their own person 120/120, to another person 0, rejected as unknown 0 (closed-set top-1 120/120); unknown clips accepted 2/120; folds 0: enrolled [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729] unknown [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555]; 1: enrolled [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555] unknown [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729]"
+      "detail": "threshold 0.56; enrolled clips matched to their own person 120/120, to another person 0, rejected as unknown 0 (closed-set top-1 120/120); unknown clips accepted 0/120; folds 0: enrolled [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729] unknown [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555]; 1: enrolled [4077,4446,4507,4970,4992,5105,5142,5639,5683,6829,6930,7021,7127,7176,7729,8224,8230,8455,8463,8555] unknown [61,121,237,260,672,908,1089,1188,1221,1284,1320,1580,1995,2094,2300,2830,2961,3570,3575,3729]"
     }
   ],
   "pass": true

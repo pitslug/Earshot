@@ -90,7 +90,8 @@
 //!    remote speakers on the loopback), also when only one of them is processed now;
 //!    [`in_person`] for a single-track meeting, on that track.
 //! 4. **Naming**: stored voiceprints are loaded once and every speaker's centroid is
-//!    matched against them ([`match_embedding_with_margin`]: the calibrated threshold and,
+//!    matched against them ([`match_embedding_with_margin`]: the naming threshold,
+//!    [`PostConfig::naming_threshold`], stricter than the same-voice one since T12.75, and,
 //!    since T12.67, a margin over the runner-up person, [`PostConfig::voiceprint_margin`]).
 //!    A known person gives the
 //!    speaker their name. Among several mic voices ([`SpeakerRole::Local`], or the
@@ -197,6 +198,7 @@ use earshot_core::pipeline::FinalPassRequest;
 use earshot_core::voiceprint::{
     EnrolmentConfig, InMemoryVoiceprintRepo, MatchOutcome, VoiceprintError, VoiceprintRepo,
     calibrated_margin, calibrated_threshold, enroll_me, match_embedding_with_margin, me_person,
+    naming_threshold,
 };
 use earshot_store::read_flac;
 use rand_core::Rng;
@@ -278,6 +280,9 @@ pub struct PostConfig {
     /// Voiceprint match thresholds that override the core calibration (tests, a newly
     /// calibrated model). Default: empty.
     pub voiceprint_thresholds: ModelThresholds,
+    /// Thresholds for naming a voice after a stored person that override the core choice
+    /// (tests, a newly measured model, T12.75). Default: empty.
+    pub naming_thresholds: ModelThresholds,
     /// Voiceprint margins over the runner-up person that override the core choice (tests, a
     /// newly measured model, T12.67). Default: empty.
     pub voiceprint_margins: ModelThresholds,
@@ -304,6 +309,7 @@ impl Default for PostConfig {
             clustering_thresholds: ModelThresholds::new(),
             unassigned_floors: ModelThresholds::new(),
             voiceprint_thresholds: ModelThresholds::new(),
+            naming_thresholds: ModelThresholds::new(),
             voiceprint_margins: ModelThresholds::new(),
             enroll_me: false,
             enrolment: EnrolmentConfig::default(),
@@ -322,6 +328,26 @@ impl PostConfig {
             return Ok(t);
         }
         calibrated_threshold(model).map_err(|e| match e {
+            VoiceprintError::NoThreshold(model) => RuntimeError::Uncalibrated {
+                purpose: Calibration::Voiceprint,
+                model,
+            },
+            other => RuntimeError::Voiceprint(other),
+        })
+    }
+
+    /// The threshold a voice must reach to be named after a stored person (T12.75): an
+    /// override, else the core choice ([`naming_threshold`]). Stricter than
+    /// [`PostConfig::voiceprint_threshold`], the same-voice threshold that carries a meeting's
+    /// own speakers across re-runs and drives the echo checks.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Uncalibrated`] if neither has one.
+    pub fn naming_threshold(&self, model: &EmbeddingModelId) -> Result<f32, RuntimeError> {
+        if let Some(t) = self.naming_thresholds.get(model) {
+            return Ok(t);
+        }
+        naming_threshold(model).map_err(|e| match e {
             VoiceprintError::NoThreshold(model) => RuntimeError::Uncalibrated {
                 purpose: Calibration::Voiceprint,
                 model,
@@ -734,6 +760,8 @@ pub struct PostProcessor<T, S, E> {
     /// time as the first ([`PostProcessor::with_second_diarizer`], T6.12).
     second: Option<Diarizer<S, E>>,
     voiceprint_threshold: f32,
+    /// The threshold for naming a voice after a stored person (step 4, T12.75).
+    naming_threshold: f32,
     config: PostConfig,
     /// Decode each track in VAD speech pieces (T6.16); `None` decodes the whole track in one
     /// call. Production always sets it ([`crate::backends::post_processor`]).
@@ -1087,6 +1115,7 @@ where
         let clustering = config.clustering_threshold(&model)?;
         let floor = config.unassigned_floor(&model)?;
         let voiceprint_threshold = config.voiceprint_threshold(&model)?;
+        let naming_threshold = config.naming_threshold(&model)?;
         let mut diarization = config.diarization.clone();
         diarization.clustering.threshold = clustering;
         diarization.clustering.unassigned_floor = floor;
@@ -1097,6 +1126,7 @@ where
             diarizer,
             second: None,
             voiceprint_threshold,
+            naming_threshold,
             config,
             pieces: None,
             speaker_threads: None,
@@ -1425,6 +1455,7 @@ where
 
         // 4-5. Naming and persistence in one transaction.
         let threshold = self.voiceprint_threshold;
+        let naming = self.naming_threshold;
         let margin = self.config.voiceprint_margin(&model);
         let config = &self.config;
         let meeting = input.meeting;
@@ -1496,7 +1527,7 @@ where
                 &*tx,
                 &mut meeting_diar,
                 &model,
-                threshold,
+                naming,
                 margin,
                 &mut warnings,
             )?;

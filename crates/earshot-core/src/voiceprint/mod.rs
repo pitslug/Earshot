@@ -895,7 +895,28 @@ pub const CALIBRATED_THRESHOLDS: &[CalibratedThreshold] = &[CalibratedThreshold 
 /// The CAM++ VoxCeleb threshold from the dev-clean calibration (see
 /// [`CALIBRATED_THRESHOLDS`]). Dev-clean at this value: unknown false accepts 3/120 (2.5%),
 /// known clips top-1 120/120, top-1 and accepted 119/120.
+///
+/// This is the same-voice threshold (re-run carrying of a meeting's own speakers, the echo
+/// checks, the user's own voice sample). Naming a voice after a stored person uses the
+/// stricter [`naming_threshold`] since T12.75.
 pub const CAMPPLUS_DEV_CLEAN_THRESHOLD: f32 = 0.461_961_03;
+
+/// Thresholds for naming a voice after a stored person, chosen on dev meeting audio for one
+/// exact embedding model (T12.75). Stricter than the same-voice threshold because a wrong name
+/// costs the user more than "Speaker N": they can merge two voices but cannot split one.
+pub const CALIBRATED_NAMING_THRESHOLDS: &[CalibratedThreshold] = &[CalibratedThreshold {
+    model: "campplus-en-voxceleb@357a834f702b",
+    threshold: CAMPPLUS_MEETING_THRESHOLD,
+    source: "T12.67 rule candidate A (docs/voiceprint-meetings.md): AMI dev series, enrolled \
+             from each first meeting's diarised centroids, 40 voices of the second and third \
+             meetings; the lowest threshold on 0.40-0.80 step 0.02 above 0.462 with false \
+             accepts <= 5% in both conditions; adopted by the owner 2026-11-18 (T12.75, \
+             docs/voiceprint-naming.md)",
+}];
+
+/// The CAM++ VoxCeleb naming threshold (see [`CALIBRATED_NAMING_THRESHOLDS`]). With the 0.08
+/// margin on the T12.67 AMI dev trials: docs/voiceprint-naming.md.
+pub const CAMPPLUS_MEETING_THRESHOLD: f32 = 0.56;
 
 /// A margin over the runner-up person ([`match_embedding_with_margin`]) chosen on dev meeting
 /// audio for one exact embedding model (T12.67).
@@ -938,13 +959,29 @@ pub fn calibrated_margin(model: &EmbeddingModelId) -> Option<f32> {
         .map(|c| c.margin)
 }
 
-/// The calibrated open-set threshold for `model`.
+/// The calibrated open-set same-voice threshold for `model` (dev-clean,
+/// [`CALIBRATED_THRESHOLDS`]): whether two embeddings are one voice. Naming a voice after a
+/// stored person uses [`naming_threshold`].
 ///
 /// # Errors
 /// [`VoiceprintError::NoThreshold`] if `model` has none (a new or changed model must be
 /// calibrated on dev data first).
 pub fn calibrated_threshold(model: &EmbeddingModelId) -> Result<f32, VoiceprintError> {
     CALIBRATED_THRESHOLDS
+        .iter()
+        .find(|c| c.model == model.as_str())
+        .map(|c| c.threshold)
+        .ok_or_else(|| VoiceprintError::NoThreshold(model.clone()))
+}
+
+/// The threshold a voice must reach to be named after a stored person (T12.75,
+/// [`CALIBRATED_NAMING_THRESHOLDS`]).
+///
+/// # Errors
+/// [`VoiceprintError::NoThreshold`] if `model` has none (a model without a naming threshold
+/// names nobody: it must be measured on dev meeting audio first).
+pub fn naming_threshold(model: &EmbeddingModelId) -> Result<f32, VoiceprintError> {
+    CALIBRATED_NAMING_THRESHOLDS
         .iter()
         .find(|c| c.model == model.as_str())
         .map(|c| c.threshold)
