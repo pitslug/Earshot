@@ -76,6 +76,8 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -336,23 +338,50 @@ pub(crate) struct TestHooks {
     /// Set by the session when, every worker finished, the echo filter still held a mic final
     /// (T12.12d): the end of the meeting releases it.
     pub(crate) held_at_end: Option<Arc<AtomicBool>>,
-    /// Set by the preview thread once it has sent [`FromPreview::Done`], its last act (T12.83).
-    /// When given, [`PreviewThread::finish`] first waits for it (at most [`DONE_GUARD`], then
-    /// panics) after setting the stop, so a test of what a below-normal thread does is never
-    /// judged on whether a saturated host gave it time within the end wait; the end wait itself
-    /// then runs unchanged, with `Done` already queued. For a session with one preview thread:
-    /// every thread started from the same previews shares the flag.
-    pub(crate) done_sent: Option<Arc<AtomicBool>>,
-    /// A starved thread (T12.83): when given, the thread holds `Done` until this is set, which
-    /// [`PreviewThread::finish`] does only after its end wait, or before waiting for
-    /// [`Self::done_sent`] when that is given too. A thread that gets no time from the stop to the
-    /// end of the wait, deterministically.
-    pub(crate) hold_done: Option<Arc<AtomicBool>>,
+    /// The stop witness of a session's one preview thread (T12.83, [`StopWitness`]).
+    pub(crate) stop: Option<Arc<StopWitness>>,
 }
 
-/// How long a test hook waits for its flag ([`TestHooks::done_sent`], [`TestHooks::hold_done`]):
-/// bounds only a failing test (a below-normal thread on a saturated Windows host is boosted
-/// within seconds).
+/// What a test sees of a preview thread's stop (T12.83). The thread says when it has sent
+/// [`FromPreview::Done`], its last act. Once the end-of-meeting wait of
+/// [`PreviewThread::finish`] has run out, the finish waits for that witness (at most
+/// [`DONE_GUARD`], then panics) instead of reporting the thread as left, so a test of what a
+/// below-normal thread does is never judged on whether a saturated host gave it time within the
+/// end wait. The production wait itself runs unchanged first, and stops during the meeting never
+/// use the witness. A `starved` thread holds `Done` until the end wait has run out (the finish
+/// lets it go only through [`Self::witness`] or after the wait): the failure two loaded ci runs
+/// showed, deterministically. One preview thread per witness: a second start panics.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct StopWitness {
+    starved: bool,
+    claimed: AtomicBool,
+    go: AtomicBool,
+    done_sent: AtomicBool,
+}
+
+#[cfg(test)]
+impl StopWitness {
+    /// A witness, its thread `starved` or not.
+    pub(crate) fn new(starved: bool) -> Arc<Self> {
+        Arc::new(Self {
+            starved,
+            ..Self::default()
+        })
+    }
+
+    /// Lets a starved thread go and waits until it has sent `Done`.
+    fn witness(&self) {
+        self.go.store(true, Ordering::SeqCst);
+        wait_for_hook(
+            &self.done_sent,
+            "the preview thread never sent Done after the stop",
+        );
+    }
+}
+
+/// How long a test hook waits for its flag ([`StopWitness`]): bounds only a failing test (a
+/// below-normal thread on a saturated Windows host is boosted within seconds).
 #[cfg(test)]
 const DONE_GUARD: Duration = Duration::from_secs(600);
 
@@ -620,13 +649,15 @@ impl PreviewWork {
             let _ = self.out.send(FromPreview::Off(why));
         }
         #[cfg(test)]
-        if let Some(go) = &self.previews.test_hooks.hold_done {
-            wait_for_hook(go, "the session never let the held preview thread go");
+        if let Some(stop) = &self.previews.test_hooks.stop
+            && stop.starved
+        {
+            wait_for_hook(&stop.go, "the session never let the held preview thread go");
         }
         let _ = self.out.send(FromPreview::Done);
         #[cfg(test)]
-        if let Some(sent) = &self.previews.test_hooks.done_sent {
-            sent.store(true, Ordering::SeqCst);
+        if let Some(stop) = &self.previews.test_hooks.stop {
+            stop.done_sent.store(true, Ordering::SeqCst);
         }
     }
 
@@ -1006,6 +1037,13 @@ impl PreviewThread {
         let (out, from) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let decode = Arc::new(Mutex::new(CancelToken::new()));
+        #[cfg(test)]
+        if let Some(stop) = &previews.test_hooks.stop {
+            assert!(
+                !stop.claimed.swap(true, Ordering::SeqCst),
+                "a StopWitness serves one preview thread"
+            );
+        }
         report.lock().unwrap_or_else(PoisonError::into_inner).track = Some(track);
         let busy = PIPELINE_RATE.frames_for(REAL_DECODE_QUEUE) as u64;
         let fell_behind = PIPELINE_RATE.frames_for(previews.fell_behind) as u64;
@@ -1073,6 +1111,28 @@ impl PreviewThread {
         Some(words)
     }
 
+    /// Whether the thread is done once the end wait has run out: never in the app. In a test with
+    /// a [`StopWitness`], at the end of the meeting only, the witness decides (T12.83).
+    fn past_the_end_wait(&self, at: StopAt, gave_up: &mut Option<PreviewRefusal>) -> bool {
+        #[cfg(test)]
+        if at == StopAt::MeetingEnd
+            && let Some(stop) = &self.previews.test_hooks.stop
+        {
+            stop.witness();
+            loop {
+                match self.from.try_recv() {
+                    Ok(FromPreview::Done) | Err(TryRecvError::Disconnected) => return true,
+                    Ok(FromPreview::Off(why)) => *gave_up = Some(why),
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => break,
+                }
+            }
+        }
+        #[cfg(not(test))]
+        let _ = (at, gave_up);
+        false
+    }
+
     fn finish(mut self, wait: Duration, at: StopAt) -> PreviewReport {
         self.stop.store(true, Ordering::Release);
         self.decode
@@ -1080,14 +1140,7 @@ impl PreviewThread {
             .unwrap_or_else(PoisonError::into_inner)
             .cancel();
         #[cfg(test)]
-        let hooks = self.previews.test_hooks.clone();
-        #[cfg(test)]
-        if let Some(sent) = &hooks.done_sent {
-            if let Some(go) = &hooks.hold_done {
-                go.store(true, Ordering::SeqCst);
-            }
-            wait_for_hook(sent, "the preview thread never sent Done after the stop");
-        }
+        let stop = self.previews.test_hooks.stop.clone();
         let until = Instant::now() + wait;
         // A decode in progress ends on its own: this never makes the end of a meeting wait longer.
         let mut gave_up = None;
@@ -1098,13 +1151,13 @@ impl PreviewThread {
                 // A thread that gave up before it saw the stop keeps its own reason.
                 Ok(FromPreview::Off(why)) => gave_up = Some(why),
                 Ok(_) => {}
-                Err(RecvTimeoutError::Timeout) => break false,
+                Err(RecvTimeoutError::Timeout) => break self.past_the_end_wait(at, &mut gave_up),
             }
         };
         // A held thread is let go once the wait is over (it then ends on its own, unjoined).
         #[cfg(test)]
-        if let Some(go) = &hooks.hold_done {
-            go.store(true, Ordering::SeqCst);
+        if let Some(stop) = &stop {
+            stop.go.store(true, Ordering::SeqCst);
         }
         let crashed = done
             && self
