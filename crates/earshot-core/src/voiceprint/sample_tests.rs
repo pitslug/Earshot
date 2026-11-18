@@ -195,6 +195,18 @@ fn voiceprint_sample_debug_never_prints_the_vector() {
         assert!(!text.contains(&x.to_string()), "{text}");
     }
     assert!(!text.contains("vector"), "{text}");
+
+    // Nor the record the sample is stored and sent as.
+    let r = SampleRecord::from(s.clone());
+    let text = format!("{r:?}");
+    assert!(
+        text.contains("dim: 2") && text.contains("speech_ms"),
+        "{text}"
+    );
+    for x in s.vector().unwrap() {
+        assert!(!text.contains(&x.to_string()), "{text}");
+    }
+    assert!(!text.contains("vector"), "{text}");
 }
 
 #[test]
@@ -314,9 +326,9 @@ fn voiceprint_effective_skips_samples_it_cannot_add_and_counts_them() {
         .map(|r| VoiceprintSample::from_stored(r).unwrap())
         .collect();
     // A non-finite vector cannot pass the check; the fold still survives one.
-    let mut nan = sample(13, 4, &p, &[0.0, 1.0], 1);
-    nan.body.as_mut().unwrap().vector[0] = f32::NAN;
-    samples.push(nan);
+    let nan = record(13, 4, &p, vec![f32::NAN, 1.0], 1);
+    assert!(VoiceprintSample::from_stored(nan.clone()).is_err());
+    samples.push(VoiceprintSample::unchecked_for_test(nan));
     let e = effective(&p, &samples);
     assert_eq!(e.skipped(), 4);
     assert_eq!((e.count(), e.speech_ms()), (1, 1000));

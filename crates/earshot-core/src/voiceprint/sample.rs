@@ -43,7 +43,7 @@ pub enum SampleOrigin {
 
 /// A sample row as stored or sent: every field, the body ones empty for a tombstone. The one
 /// input of [`VoiceprintSample::from_stored`] and the sample's wire shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SampleRecord {
     /// Row id.
     pub id: EntityId,
@@ -65,13 +65,29 @@ pub struct SampleRecord {
     pub speaker_id: Option<EntityId>,
 }
 
-// Fields visible to the voiceprint module only (its tests build a sample no check accepts).
+impl fmt::Debug for SampleRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never the vector (biometric data).
+        f.debug_struct("SampleRecord")
+            .field("id", &self.id)
+            .field("meta", &self.meta)
+            .field("voiceprint_id", &self.voiceprint_id)
+            .field("person_id", &self.person_id)
+            .field("model", &self.model)
+            .field("dim", &self.vector.len())
+            .field("speech_ms", &self.speech_ms)
+            .field("meeting_id", &self.meeting_id)
+            .field("speaker_id", &self.speaker_id)
+            .finish()
+    }
+}
+
 #[derive(Clone, PartialEq)]
-pub(super) struct SampleBody {
+struct SampleBody {
     voiceprint_id: EntityId,
     person_id: EntityId,
     model: EmbeddingModelId,
-    pub(super) vector: Vec<f32>,
+    vector: Vec<f32>,
     speech_ms: u64,
     meeting_id: Option<EntityId>,
     speaker_id: Option<EntityId>,
@@ -87,7 +103,7 @@ pub struct VoiceprintSample {
     id: EntityId,
     meta: SyncMeta,
     // `None` exactly when `meta.deleted` (a tombstone).
-    pub(super) body: Option<SampleBody>,
+    body: Option<SampleBody>,
 }
 
 impl fmt::Debug for VoiceprintSample {
@@ -213,6 +229,28 @@ fn check(r: SampleRecord) -> Result<VoiceprintSample, VoiceprintError> {
 }
 
 impl VoiceprintSample {
+    /// Tests only: a live sample from `record` with no check at all, so the fold can be shown
+    /// to survive a row no checked constructor would build (a non-finite vector).
+    #[cfg(test)]
+    pub(super) fn unchecked_for_test(r: SampleRecord) -> Self {
+        let body = (|| {
+            Some(SampleBody {
+                voiceprint_id: r.voiceprint_id?,
+                person_id: r.person_id?,
+                model: r.model?,
+                vector: r.vector,
+                speech_ms: r.speech_ms?,
+                meeting_id: r.meeting_id,
+                speaker_id: r.speaker_id,
+            })
+        })();
+        VoiceprintSample {
+            id: r.id,
+            meta: r.meta,
+            body,
+        }
+    }
+
     /// A new live sample adding `vector` (made unit length here) and `speech_ms` (clamped to
     /// [`MAX_SAMPLE_SPEECH_MS`]) to `print`, from `origin`.
     ///
