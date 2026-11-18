@@ -58,6 +58,15 @@ Also reported, selecting nothing: each item's embeddings, and the found speakers
 - Few AMI participants speak only in short turns, so A tests whether the candidates add merges or extras on ordinary meetings more than whether they find a quiet talker. S finds talkers, but its scenes are under the cap, so C's effect on a quiet talker in a long meeting is seen only on A.
 - The hierarchy over every embedding costs time about the square of the count (about 6.7 times the work at 2592 embeddings as at 1000); this measures no timing.
 
+## The owner's meetings (informational, never selecting)
+
+Added at the owner's request (2026-11-18) after the dev run had started and before any of its results or any private run were seen. Nothing here is an input to the rule above.
+
+- **Data.** A copy of the owner's `earshot.db` made into `fixtures/private/real-meetings/<run>/` (git-ignored) by the `store_parts/copy.rs` rule and opened read-only; recordings are read in place and never written. Every live meeting whose recording is still on disk: the reference (far-end) track of a call, the mic track of a meeting in the room. Tracks are labelled `m1`, `m2`, ... in start order; no id, title or name is printed or written.
+- **Pipeline.** As above: the production final-pass diarisation on the CPU, model outputs recorded once and replayed, the replayed baseline equal to the direct run, the four candidates.
+- **Measures**, per track and candidate: embeddings, speakers found, and how the baseline's speakers are split or joined (for each candidate speaker, the baseline speakers it takes speech from). For the call that raised T12.75 only, its far-end lines in four groups inferred from the owner's corrections and a per-line voice check (a private file in the run folder; inferred, not verified): per candidate, how each group's lines spread over the found speakers. Each candidate speaker's turn times are written inside the run folder only, so the owner can listen to them later.
+- **Use.** None selects. If the rule picks a candidate, these tracks are shown to the owner before any production task, and a split or merge the owner rejects on them is reported with it.
+
 ## Result
 
 (Filled after the run.)
