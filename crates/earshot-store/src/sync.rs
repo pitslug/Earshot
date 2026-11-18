@@ -236,6 +236,17 @@ pub struct Held {
     pub reason: HoldReason,
 }
 
+/// What a push holds back until voice samples sync (T12.77b4, docs/voice-samples.md 7.1).
+/// Removed when sample sync is turned on (T12.77b8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushHold {
+    /// Nothing held: every row of a kind switched on goes.
+    Off,
+    /// Live voiceprints and every voice sample row wait in the outbox; voiceprint tombstones
+    /// (the same shape in every build) still go, when voiceprints sync.
+    Samples,
+}
+
 /// The opt-in kinds this device syncs (docs/sync.md section 9): a row of a kind switched off
 /// is neither pushed nor applied here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -615,6 +626,78 @@ impl Store {
             .conn
             .query_row("SELECT count(*) FROM sync_outbox", [], |r| r.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+
+    /// Up to `limit` tombstones of `table` waiting in the outbox, oldest `updated_at` first
+    /// (the voiceprint tombstones a [`PushHold::Samples`] push still sends).
+    ///
+    /// # Errors
+    /// Store errors; [`StoreError::Repo`] for a table that is not synced.
+    pub fn outbox_tombstones(
+        &self,
+        table: &str,
+        limit: usize,
+    ) -> Result<Vec<SyncedRow>, StoreError> {
+        if !SYNCED_TABLES.contains(&table) {
+            return Err(StoreError::Repo(RepoError::Storage(format!(
+                "{table} is not a synced table"
+            ))));
+        }
+        let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
+        let sql = format!(
+            "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id \
+             WHERE o.tbl = ?1 AND r.deleted = 1 \
+             ORDER BY r.updated_wall, r.updated_logical, r.updated_node LIMIT ?2"
+        );
+        let ids: Vec<[u8; 16]> = {
+            let mut st = self.conn.prepare(&sql)?;
+            st.query_map(params![table, limit_sql], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(row) =
+                crate::repo::synced_by_id(&self.conn, table, EntityId::from_bytes(id))?
+            {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// What a push sends under `hold` with the same exclusions, counted: the one waiting count,
+    /// read by the push's paging and by the Sync page, so held rows never show as behind. With
+    /// [`PushHold::Off`] it is [`Store::outbox_len_except`]; with [`PushHold::Samples`] the
+    /// rows of every other kind plus the voiceprint tombstones (when voiceprints sync).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_len_held(
+        &self,
+        meetings: &[EntityId],
+        kinds: SyncKinds,
+        hold: PushHold,
+    ) -> Result<u64, StoreError> {
+        match hold {
+            PushHold::Off => self.outbox_len_except(meetings, kinds),
+            PushHold::Samples => {
+                let others = SyncKinds {
+                    voiceprints: false,
+                    ..kinds
+                };
+                let mut n = self.outbox_len_except(meetings, others)?;
+                if kinds.voiceprints {
+                    let t: i64 = self.conn.query_row(
+                        "SELECT count(*) FROM sync_outbox o JOIN voiceprint r ON r.id = o.id \
+                         WHERE o.tbl = 'voiceprint' AND r.deleted = 1",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    n += u64::try_from(t).unwrap_or(0);
+                }
+                Ok(n)
+            }
+        }
     }
 
     /// How many rows [`Store::outbox_except`] would send with the same exclusions: what a

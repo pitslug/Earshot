@@ -293,3 +293,47 @@ fn store_voiceprint_sample_schema_v8_database_gains_the_sample_table() {
             .contains(&SyncedRow::VoiceprintSample(s))
     );
 }
+
+/// T12.77b4: the outbox's voiceprint tombstones, read alone, and the one waiting count under
+/// the push hold.
+#[test]
+fn store_voiceprint_sample_push_hold_counts_and_tombstone_reads() {
+    use earshot_store::PushHold;
+    let mut store = Store::open_in_memory().unwrap();
+    let ada = person(1);
+    store.put_person(ada.clone()).unwrap();
+    let live = empty_print(2, ada.id);
+    store.put_voiceprint(live.clone()).unwrap();
+    let mut gone =
+        Voiceprint::from_stored(id(5), meta(T0 + 6), ada.id, model(), vec![0.0; 3], 0, 0);
+    let mut m = *gone.meta();
+    m.deleted = true;
+    gone = Voiceprint::from_stored(gone.id(), m, ada.id, model(), vec![0.0; 3], 0, 0);
+    store.put_voiceprint(gone.clone()).unwrap();
+    store
+        .put_sample(sample(3, T0 + 2, &live, vec![1.0, 0.0, 0.0]))
+        .unwrap();
+    let tombs = store.outbox_tombstones("voiceprint", 100).unwrap();
+    assert_eq!(tombs, vec![SyncedRow::Voiceprint(gone)]);
+    assert!(store.outbox_tombstones("voiceprint", 0).unwrap().is_empty());
+    assert!(store.outbox_tombstones("not_a_table", 10).is_err());
+    let on = SyncKinds::ALL;
+    let off = SyncKinds {
+        voiceprints: false,
+        dictionary: true,
+    };
+    // Off: as today. Held: the person row plus the one tombstone; switched off: the person.
+    assert_eq!(
+        store.outbox_len_held(&[], on, PushHold::Off).unwrap(),
+        store.outbox_len_except(&[], on).unwrap()
+    );
+    assert_eq!(store.outbox_len_except(&[], on).unwrap(), 4);
+    assert_eq!(
+        store.outbox_len_held(&[], on, PushHold::Samples).unwrap(),
+        2
+    );
+    assert_eq!(
+        store.outbox_len_held(&[], off, PushHold::Samples).unwrap(),
+        1
+    );
+}

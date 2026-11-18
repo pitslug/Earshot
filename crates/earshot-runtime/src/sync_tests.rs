@@ -15,6 +15,7 @@ use super::*;
 use crate::local::DeviceRecord;
 use crate::services::{MeetingJob, Services};
 use crate::testutil::{TempDir, meeting, services};
+use engine::{PUSH_HOLD, PushHold};
 
 const SECRET: &str = "an-invented-setup-secret-for-tests";
 
@@ -2822,4 +2823,154 @@ fn sync_a_pulled_voiceprint_tombstone_erases_this_computers_samples_of_it() {
     for s in &samples {
         assert!(db.sample(s.id()).unwrap().unwrap().is_erased());
     }
+}
+
+/// Rows for the push hold tests on `dev`: a live print with two samples of it, and a second
+/// person's print forgotten (a tombstone). Returns (live print, forgotten print).
+fn held_rows_on(
+    dev: &Device,
+) -> (
+    earshot_core::identity::EntityId,
+    earshot_core::identity::EntityId,
+) {
+    use earshot_core::voiceprint::{SampleOrigin, VoiceprintSample};
+    use rand_core::SeedableRng;
+    let (_, live) = print_on(dev, 51);
+    let (gone_person, gone) = print_on(dev, 52);
+    {
+        let clock = Arc::clone(&dev.svc.clock);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(53);
+        let mut db = dev.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = earshot_core::model::Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let v = store
+            .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id() == live)
+            .unwrap();
+        for x in [[1.0f32, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]] {
+            let s = VoiceprintSample::new(&v, &x, 1_000, SampleOrigin::Own, &mut stamp).unwrap();
+            store.put_sample(s).unwrap();
+        }
+    }
+    dev.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&dev.svc, gone_person).unwrap();
+    (live, gone)
+}
+
+fn holds_print(dev: &Device, print: earshot_core::identity::EntityId) -> Option<bool> {
+    dev.svc
+        .store()
+        .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id() == print)
+        .map(|v| v.meta().deleted)
+}
+
+/// T12.77b4 (docs/voice-samples.md 7.1): with the hold on, a tick holding samples, a live
+/// print and a print tombstone sends only the tombstone (and the person rows, an ordinary
+/// kind); the live print and every sample wait in the outbox, and the other computer reads
+/// what came at the vault's format without holding anything.
+#[test]
+fn sync_the_push_hold_sends_print_tombstones_and_keeps_live_prints_and_samples() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let (live, gone) = held_rows_on(&a);
+    let ca = a.client().with_push_hold(PushHold::Samples);
+    let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
+    let waiting = a
+        .svc
+        .store()
+        .outbox_len_held(&[], kinds, PushHold::Samples)
+        .unwrap();
+    let r = ca.tick().unwrap();
+    assert_eq!(
+        u64::try_from(r.pushed + r.superseded).unwrap(),
+        waiting,
+        "the waiting count is what a tick sends: {r:?}"
+    );
+    assert_eq!(
+        a.svc
+            .store()
+            .outbox_len_held(&[], kinds, PushHold::Samples)
+            .unwrap(),
+        0,
+        "nothing sendable is left"
+    );
+    // Held, not lost: the live print and both samples are still queued.
+    let queued = a.svc.store().outbox(1_000).unwrap();
+    let tables: Vec<&str> = queued.iter().map(|r| r.table()).collect();
+    assert_eq!(
+        tables.iter().filter(|t| **t == "voiceprint_sample").count(),
+        2
+    );
+    assert!(queued.iter().any(|r| r.id() == live));
+    assert!(!queued.iter().any(|r| r.id() == gone), "the tombstone went");
+    let rb = b.client().tick().unwrap();
+    assert_eq!(rb.held, 0, "nothing the other computer cannot read: {rb:?}");
+    assert_eq!(holds_print(&b, gone), Some(true), "the Forget arrived");
+    assert_eq!(holds_print(&b, live), None, "the live print waits");
+}
+
+/// T12.77b4: a tick whose only sendable row is a print tombstone pushes it (the tombstone
+/// read runs even when the ordinary page is empty).
+#[test]
+fn sync_the_push_hold_sends_a_print_tombstone_that_is_the_only_row() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let (person, print) = print_on(&a, 54);
+    let ca = a.client().with_push_hold(PushHold::Off);
+    ca.tick().unwrap();
+    b.client().tick().unwrap();
+    assert_eq!(holds_print(&b, print), Some(false));
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    let ca = a.client().with_push_hold(PushHold::Samples);
+    let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
+    let off = SyncKinds {
+        voiceprints: false,
+        ..kinds
+    };
+    assert_eq!(
+        a.svc.store().outbox_len_except(&[], off).unwrap(),
+        0,
+        "no ordinary row waits"
+    );
+    let r = ca.tick().unwrap();
+    assert_eq!(r.pushed, 1, "{r:?}");
+    b.client().tick().unwrap();
+    assert_eq!(holds_print(&b, print), Some(true));
+}
+
+/// T12.77b4: with the hold off (production until T12.77b6) every row goes as before, and the
+/// waiting count is still what a tick sends.
+#[test]
+fn sync_the_push_hold_off_sends_everything_as_before() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    held_rows_on(&a);
+    assert_eq!(PUSH_HOLD, PushHold::Off, "off in production until T12.77b6");
+    let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
+    let store_count = |hold| a.svc.store().outbox_len_held(&[], kinds, hold).unwrap();
+    assert_eq!(
+        store_count(PushHold::Off),
+        a.svc.store().outbox_len_except(&[], kinds).unwrap()
+    );
+    let waiting = sync_overview(&a.svc, &*a.vault).unwrap().waiting;
+    assert_eq!(waiting, store_count(PushHold::Off));
+    assert!(waiting > store_count(PushHold::Samples));
+    let r = a.client().tick().unwrap();
+    assert_eq!(u64::try_from(r.pushed + r.superseded).unwrap(), waiting);
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
 }

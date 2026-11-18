@@ -628,7 +628,7 @@ pub fn sync_overview(
         status: sync_status(&store)?,
         // What the push would send now: a recording's rows and switched-off kinds are not
         // behind.
-        waiting: store.outbox_len_except(&recording, settings.kinds())?,
+        waiting: store.outbox_len_held(&recording, settings.kinds(), engine::PUSH_HOLD)?,
         held: u64::try_from(store.held_rows()?.len()).unwrap_or(u64::MAX),
         settings,
     })
