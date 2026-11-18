@@ -336,6 +336,34 @@ pub(crate) struct TestHooks {
     /// Set by the session when, every worker finished, the echo filter still held a mic final
     /// (T12.12d): the end of the meeting releases it.
     pub(crate) held_at_end: Option<Arc<AtomicBool>>,
+    /// Set by the preview thread once it has sent [`FromPreview::Done`], its last act (T12.83).
+    /// When given, [`PreviewThread::finish`] first waits for it (at most [`DONE_GUARD`], then
+    /// panics) after setting the stop, so a test of what a below-normal thread does is never
+    /// judged on whether a saturated host gave it time within the end wait; the end wait itself
+    /// then runs unchanged, with `Done` already queued. For a session with one preview thread:
+    /// every thread started from the same previews shares the flag.
+    pub(crate) done_sent: Option<Arc<AtomicBool>>,
+    /// A starved thread (T12.83): when given, the thread holds `Done` until this is set, which
+    /// [`PreviewThread::finish`] does only after its end wait, or before waiting for
+    /// [`Self::done_sent`] when that is given too. A thread that gets no time from the stop to the
+    /// end of the wait, deterministically.
+    pub(crate) hold_done: Option<Arc<AtomicBool>>,
+}
+
+/// How long a test hook waits for its flag ([`TestHooks::done_sent`], [`TestHooks::hold_done`]):
+/// bounds only a failing test (a below-normal thread on a saturated Windows host is boosted
+/// within seconds).
+#[cfg(test)]
+const DONE_GUARD: Duration = Duration::from_secs(600);
+
+/// Waits for `flag`, at most [`DONE_GUARD`], then panics with `what`.
+#[cfg(test)]
+fn wait_for_hook(flag: &AtomicBool, what: &str) {
+    let limit = Instant::now() + DONE_GUARD;
+    while !flag.load(Ordering::SeqCst) {
+        assert!(Instant::now() < limit, "{what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Lowers the preview thread's priority ([`LivePreviews::background`]).
@@ -591,7 +619,15 @@ impl PreviewWork {
         if let Err(why) = self.decode_until_stopped() {
             let _ = self.out.send(FromPreview::Off(why));
         }
+        #[cfg(test)]
+        if let Some(go) = &self.previews.test_hooks.hold_done {
+            wait_for_hook(go, "the session never let the held preview thread go");
+        }
         let _ = self.out.send(FromPreview::Done);
+        #[cfg(test)]
+        if let Some(sent) = &self.previews.test_hooks.done_sent {
+            sent.store(true, Ordering::SeqCst);
+        }
     }
 
     fn decode_until_stopped(&self) -> Result<(), PreviewRefusal> {
@@ -1043,6 +1079,15 @@ impl PreviewThread {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .cancel();
+        #[cfg(test)]
+        let hooks = self.previews.test_hooks.clone();
+        #[cfg(test)]
+        if let Some(sent) = &hooks.done_sent {
+            if let Some(go) = &hooks.hold_done {
+                go.store(true, Ordering::SeqCst);
+            }
+            wait_for_hook(sent, "the preview thread never sent Done after the stop");
+        }
         let until = Instant::now() + wait;
         // A decode in progress ends on its own: this never makes the end of a meeting wait longer.
         let mut gave_up = None;
@@ -1056,6 +1101,11 @@ impl PreviewThread {
                 Err(RecvTimeoutError::Timeout) => break false,
             }
         };
+        // A held thread is let go once the wait is over (it then ends on its own, unjoined).
+        #[cfg(test)]
+        if let Some(go) = &hooks.hold_done {
+            go.store(true, Ordering::SeqCst);
+        }
         let crashed = done
             && self
                 .thread

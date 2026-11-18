@@ -2204,16 +2204,65 @@ fn live_preview_a_crash_and_a_fell_behind_stop_in_one_look_report_the_crash() {
     ignore = "below-normal threads exist only on Windows; elsewhere the refusal is tested"
 )]
 fn live_preview_on_a_background_thread_runs_and_reports_no_failure() {
+    let (report, done) = background_run(false, true);
+    assert_eq!(report.off, None, "{report:?}");
+    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+    assert!(done, "the thread reached its stop point");
+}
+
+/// T12.83: a below-normal thread starved from the stop to the end of the wait (a saturated host;
+/// here a gate holds its `Done` until the session lets it go) still runs and reports no failure
+/// when the session waits for the thread's own witness that it has stopped.
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "below-normal threads exist only on Windows; elsewhere the refusal is tested"
+)]
+fn live_preview_on_a_starved_background_thread_reports_no_failure_with_the_stop_witness() {
+    let (report, done) = background_run(true, true);
+    assert_eq!(report.off, None, "{report:?}");
+    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+    assert!(done, "the thread reached its stop point");
+}
+
+/// T12.83 negative control: the same starved thread without the witness is left at the end of
+/// the production end wait, the failure two loaded ci runs showed; so the witness is what the
+/// test above depends on.
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "below-normal threads exist only on Windows; elsewhere the refusal is tested"
+)]
+fn live_preview_on_a_starved_background_thread_is_left_without_the_stop_witness() {
+    let (report, _) = background_run(true, false);
+    assert_eq!(
+        report.off.as_deref(),
+        Some(PREVIEW_THREAD_LEFT),
+        "{report:?}"
+    );
+    assert_eq!(report.reason, Some(PreviewOffReason::Failed), "{report:?}");
+}
+
+/// A replay with previews on a background thread and the production end wait: `starved` holds
+/// the thread's `Done` until the session lets it go ([`TestHooks::hold_done`]), `witness` makes
+/// the session wait for the thread's stop witness ([`TestHooks::done_sent`]). Gives the report
+/// and whether the thread said it had sent `Done`.
+fn background_run(starved: bool, witness: bool) -> (PreviewReport, bool) {
     let scene = scene_of(27);
     let seen = Arc::new(Seen::default());
+    let done = Arc::new(AtomicBool::new(false));
     let config = LivePreviews {
         background: true,
+        test_hooks: TestHooks {
+            done_sent: witness.then(|| Arc::clone(&done)),
+            hold_done: starved.then(|| Arc::new(AtomicBool::new(false))),
+            ..TestHooks::default()
+        },
         ..previews(loader(&seen, marker_words))
     };
     let (_, events, ..) = run_with(&scene, Some(config), 331);
     let report = report_of(&events).expect("a report");
-    assert_eq!(report.off, None, "{report:?}");
-    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+    (report, done.load(Ordering::SeqCst))
 }
 
 /// T12.70: a preview thread that cannot lower its priority gives up before loading, with the
