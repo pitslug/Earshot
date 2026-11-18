@@ -3767,3 +3767,147 @@ fn backends_order_never_asks_whisper_on_a_processor_without_the_baseline() {
     let order = accelerator_order_with(false, true, || panic!("asked in a build without Vulkan"));
     assert!(!order.contains(&Accelerator::Vulkan), "{order:?}");
 }
+
+/// A Parakeet model: previews run on it.
+const PARAKEET: &str = "parakeet-tdt-0.6b-v2";
+/// A whisper model: previews never run on it.
+const WHISPER: &str = "large-v3-turbo-q5_0";
+
+/// T12.29: the setting the first-run wizard marks as suggested for this computer, from the whole
+/// rule a meeting runs (both sessions' backend rules and the model rule): Everyone where the first
+/// runs by default and the second is allowed, Other people only where only the first is, Off where
+/// the first does not run by default (too little or unknown memory, a backend or a model without
+/// previews).
+#[test]
+fn backends_suggested_previews_follow_the_rules_of_both_sessions() {
+    use crate::preview_settings::{PreviewChoice, PreviewSetting};
+    assert!(matches!(asr_model(WHISPER), Ok(AsrModel::Whisper(_))));
+    assert!(matches!(asr_model(PARAKEET), Ok(AsrModel::Parakeet(_))));
+    // The desktop: a card with room, plenty of memory.
+    let desktop = nvidia_machine(Some(61 * GIB), Some(16 * GIB));
+    assert_eq!(
+        suggested_previews(BackendKind::Cuda, PARAKEET, &desktop),
+        PreviewSetting::Everyone
+    );
+    let options = preview_options(BackendKind::Cuda, PARAKEET, &desktop);
+    assert_eq!(options.other_people, None);
+    assert_eq!(options.everyone, None);
+    // A card too small for a session: both run on the processor (T12.3c), still allowed.
+    let small_card = nvidia_machine(Some(32 * GIB), Some(4 * GIB));
+    assert_eq!(
+        suggested_previews(BackendKind::Cuda, PARAKEET, &small_card),
+        PreviewSetting::Everyone
+    );
+    assert_eq!(
+        suggested_previews(
+            BackendKind::Cpu,
+            PARAKEET,
+            &nvidia_machine(Some(15 * GIB), None)
+        ),
+        PreviewSetting::Everyone
+    );
+    // The Surface: the NPU runs both since T12.75.
+    let surface = npu_machine(Some(15 * GIB + GIB / 2));
+    assert_eq!(
+        suggested_previews(BackendKind::Qnn, PARAKEET, &surface),
+        PreviewSetting::Everyone
+    );
+    // Below the limit, or memory unknown: off by default, so not suggested. "Other people only"
+    // still runs there (the user's choice lifts the limit); the user's own voice does not.
+    for memory in [Some(8 * GIB), Some(PREVIEW_MIN_MEMORY - 1), None] {
+        for (kind, m) in [
+            (BackendKind::Cpu, nvidia_machine(memory, None)),
+            (BackendKind::Qnn, npu_machine(memory)),
+        ] {
+            let options = preview_options(kind, PARAKEET, &m);
+            assert_eq!(
+                options.suggested,
+                PreviewSetting::Off,
+                "{memory:?} {kind:?}"
+            );
+            assert_eq!(options.other_people, None, "{memory:?} {kind:?}");
+            assert_eq!(
+                options.everyone.map(|r| r.reason),
+                Some(PreviewOffReason::NotEnoughMemory),
+                "{memory:?} {kind:?}"
+            );
+        }
+    }
+    // A whisper model, on the processor or on a card with room, and the Vulkan backend (whisper
+    // only): previews never run, so Off is suggested and both other options are refused for the
+    // model.
+    for (kind, model) in [
+        (BackendKind::Cpu, WHISPER),
+        (BackendKind::Cuda, WHISPER),
+        (BackendKind::Vulkan, WHISPER),
+        (BackendKind::Vulkan, PARAKEET),
+    ] {
+        let options = preview_options(kind, model, &desktop);
+        assert_eq!(options.suggested, PreviewSetting::Off, "{kind:?} {model}");
+        for refused in [options.other_people, options.everyone] {
+            assert_eq!(
+                refused.map(|r| r.reason),
+                Some(PreviewOffReason::Model),
+                "{kind:?} {model}"
+            );
+        }
+    }
+    // Whatever the machine, the options are what the rules a meeting runs say, and a suggestion
+    // is something they allow: a shown suggestion runs by default, Everyone has its second
+    // session, Off is refused by default, and Other people only has no second session.
+    let mut seen = std::collections::BTreeSet::new();
+    for memory in [
+        None,
+        Some(4),
+        Some(8),
+        Some(11),
+        Some(12),
+        Some(16),
+        Some(64),
+    ] {
+        let memory = memory.map(|g| g * GIB);
+        let mut machines = vec![npu_machine(memory)];
+        for card in [None, Some(4), Some(8), Some(16)] {
+            machines.push(nvidia_machine(memory, card.map(|g| g * GIB)));
+        }
+        for m in &machines {
+            for kind in [
+                BackendKind::Cpu,
+                BackendKind::Cuda,
+                BackendKind::Qnn,
+                BackendKind::Vulkan,
+            ] {
+                for model in [PARAKEET, WHISPER] {
+                    let track = BackendInfo {
+                        kind,
+                        device: "a device".to_owned(),
+                        model: model.to_owned(),
+                    };
+                    let options = preview_options(kind, model, m);
+                    seen.insert(format!("{:?}", options.suggested));
+                    let first = preview_rule(&track, m, PreviewChoice::Automatic).err();
+                    let second = second_preview_rule(&track, m, PreviewChoice::Everyone).err();
+                    assert_eq!(
+                        options.other_people,
+                        preview_rule(&track, m, PreviewChoice::On).err()
+                    );
+                    assert_eq!(options.everyone, second);
+                    match options.suggested {
+                        PreviewSetting::Off => assert!(first.is_some(), "{kind:?} {m:?}"),
+                        PreviewSetting::OtherPeople => {
+                            assert!(first.is_none() && second.is_some(), "{kind:?} {m:?}");
+                            assert_eq!(options.other_people, None);
+                        }
+                        PreviewSetting::Everyone => {
+                            assert!(first.is_none() && second.is_none(), "{kind:?} {m:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        seen.contains("Off") && seen.contains("Everyone"),
+        "{seen:?}"
+    );
+}

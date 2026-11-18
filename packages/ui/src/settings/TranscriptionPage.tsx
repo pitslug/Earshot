@@ -12,6 +12,7 @@ import {
   RadioGroup,
   Title2,
   makeStyles,
+  mergeClasses,
   tokens,
 } from "@fluentui/react-components";
 import { useEffect, useId, useState } from "react";
@@ -21,6 +22,7 @@ import { ModelNotices, ModelsNotLoaded, NpuVersions, TranscriptionChoices } from
 import { LANGUAGES_LABEL, LanguagesPicker } from "./ModelsParts";
 import { SpeakerTimingSection } from "./PeoplePage";
 import { Section, usePageStyles } from "./parts";
+import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type ModelsPageState } from "./useModels";
 
 const useStyles = makeStyles({
@@ -29,6 +31,14 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+  },
+  option: {
+    display: "flex",
+    flexDirection: "column",
+  },
+  reason: {
+    // Under the option's label, past the radio's circle.
+    paddingLeft: tokens.spacingHorizontalXXXL,
   },
 });
 
@@ -47,11 +57,37 @@ export const PREVIEWS_OTHER_PEOPLE_EXPLAINED =
 export const PREVIEWS_EVERYONE_EXPLAINED =
   "Everyone: in a call, also for your own voice. Uses more of your computer. Without headphones, your grey words can briefly show what the other people said, until the settled text replaces them.";
 
-/** Whose provisional words meetings show: read and changed on its own, from the next meeting. */
-function PreviewsSection() {
+/** How the wizard marks the option Rust suggests for this computer (T12.29). */
+export const PREVIEWS_SUGGESTED = "suggested for this computer";
+
+/** The three options, in order, with where the app says why one is refused. */
+const PREVIEWS_OPTIONS: {
+  value: PreviewsChoice;
+  label: string;
+  refused(view: PreviewsView): string | null;
+}[] = [
+  { value: "off", label: "Off", refused: () => null },
+  { value: "other_people", label: "Other people only", refused: (v) => v.other_people_refused },
+  { value: "everyone", label: "Everyone", refused: (v) => v.everyone_refused },
+];
+
+export interface PreviewsSectionProps {
+  /** In the first-run wizard (T12.29): the option the app suggests for this computer is marked,
+   * an option the app refuses here is disabled with its reason beside it, the note shows only
+   * for the choice the app shows now, and the choice is saved on Next, not at once, and only
+   * when it differs from that choice. */
+  saveOnNext?: SaveOnNext;
+}
+
+/** Whose provisional words meetings show, from the next meeting: on the Transcription page a
+ * choice applies at once; in the wizard it waits for Next. */
+export function PreviewsSection({ saveOnNext }: PreviewsSectionProps) {
+  const wizard = saveOnNext !== undefined;
   const styles = useStyles();
   const ipc = useIpc();
   const [view, setView] = useState<PreviewsView | null>(null);
+  // The wizard's choice until Next saves it.
+  const [picked, setPicked] = useState<PreviewsChoice | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -72,35 +108,71 @@ function PreviewsSection() {
 
   const headingId = useId();
 
-  const set = async (choice: PreviewsChoice) => {
+  const set = async (choice: PreviewsChoice): Promise<boolean> => {
     setBusy(true);
     try {
       setView(await ipc.setPreviews(choice));
+      setPicked(null);
       setProblem(null);
+      return true;
     } catch (e) {
       setProblem(errorText(e));
+      return false;
     } finally {
       setBusy(false);
     }
   };
+
+  // Only a choice the user changed is sent: an untouched part stores nothing.
+  useSaveOnNext(saveOnNext, async () => {
+    if (view === null || picked === null || picked === view.choice) return true;
+    return set(picked);
+  });
+
+  const shown = picked ?? view?.choice ?? "";
+  const labelOf = (o: (typeof PREVIEWS_OPTIONS)[number]) =>
+    wizard && view?.suggested === o.value ? `${o.label} (${PREVIEWS_SUGGESTED})` : o.label;
+  const refusedOf = (o: (typeof PREVIEWS_OPTIONS)[number]) => (wizard && view !== null ? o.refused(view) : null);
+  // The app's note is about the choice it shows now: in the wizard it goes once another is picked.
+  const note = view?.note != null && (picked === null || picked === view.choice) ? view.note : null;
 
   return (
     <Section title="During a meeting">
       <Body1 id={headingId}>{PREVIEWS_HEADING}</Body1>
       <RadioGroup
         aria-labelledby={headingId}
-        value={view?.choice ?? ""}
+        value={shown}
         disabled={busy || view === null || !view.can_change}
-        onChange={(_, d) => void set(d.value as PreviewsChoice)}
+        onChange={(_, d) => {
+          const choice = d.value as PreviewsChoice;
+          if (wizard) setPicked(choice);
+          else void set(choice);
+        }}
       >
-        <Radio value="off" label="Off" />
-        <Radio value="other_people" label="Other people only" />
-        <Radio value="everyone" label="Everyone" />
+        {PREVIEWS_OPTIONS.map((o) => {
+          const refused = refusedOf(o);
+          return (
+            <div key={o.value} className={styles.option}>
+              <Radio
+                value={o.value}
+                label={labelOf(o)}
+                // Only a refused option names these: any value given here, even undefined, would
+                // replace the group's own disabled.
+                {...(refused !== null ? { disabled: true, "aria-describedby": `${headingId}-${o.value}` } : {})}
+              />
+              {refused !== null && (
+                <Caption1 id={`${headingId}-${o.value}`} className={mergeClasses(styles.muted, styles.reason)}>
+                  {refused}
+                </Caption1>
+              )}
+            </div>
+          );
+        })}
       </RadioGroup>
       <Caption1 className={styles.muted}>{PREVIEWS_EXPLAINED}</Caption1>
       <Caption1 className={styles.muted}>{PREVIEWS_OTHER_PEOPLE_EXPLAINED}</Caption1>
       <Caption1 className={styles.muted}>{PREVIEWS_EVERYONE_EXPLAINED}</Caption1>
-      {view?.note != null && <Caption1 className={styles.muted}>{view.note}</Caption1>}
+      {note !== null && <Caption1 className={styles.muted}>{note}</Caption1>}
       {problem !== null && (
         <MessageBar intent="error">
           <MessageBarBody>{problem}</MessageBarBody>

@@ -348,6 +348,48 @@ pub struct PreviewsView {
     pub note: Option<String>,
     /// A stored value this version does not know, read as automatic.
     pub unknown: Option<String>,
+    /// The choice the first-run wizard marks as suggested for this computer (T12.29), from the
+    /// whole rule a meeting runs on the next meeting's model and where it runs.
+    pub suggested: PreviewsChoice,
+    /// Why "Other people only" would show nothing on this computer (fixed copy), or none when it
+    /// runs: the wizard disables it with this beside it.
+    pub other_people_refused: Option<String>,
+    /// Why "Everyone" would not show the user's own voice on this computer (fixed copy), or none
+    /// when it does: the wizard disables it with this beside it.
+    pub everyone_refused: Option<String>,
+}
+
+/// An option refused for the next meeting's transcription model.
+pub const PREVIEW_OPTION_MODEL: &str =
+    "Not available with the transcription model this computer uses.";
+/// "Everyone" refused for want of memory.
+pub const PREVIEW_OPTION_MEMORY: &str =
+    "This computer does not have enough memory to show them for your own voice as well.";
+/// An option refused for any other reason (none today: the options are judged only by the
+/// backend, memory and model rules).
+pub const PREVIEW_OPTION_NOT_HERE: &str = "Not available on this computer.";
+
+/// What the wizard says beside an option the rules refuse (T12.29): fixed copy by kind, never the
+/// runtime's text.
+fn preview_option_copy(reason: earshot_runtime::live::PreviewOffReason) -> &'static str {
+    use earshot_runtime::live::PreviewOffReason;
+    match reason {
+        PreviewOffReason::Model => PREVIEW_OPTION_MODEL,
+        PreviewOffReason::NotEnoughMemory => PREVIEW_OPTION_MEMORY,
+        PreviewOffReason::OnBattery
+        | PreviewOffReason::CatchingUp
+        | PreviewOffReason::FellBehind
+        | PreviewOffReason::TranscriptStopped
+        | PreviewOffReason::NeedsCompiledModel
+        | PreviewOffReason::CompiledModelRefused
+        | PreviewOffReason::OffByDefault
+        | PreviewOffReason::TurnedOff
+        | PreviewOffReason::NotAsked
+        | PreviewOffReason::NotApplicable
+        | PreviewOffReason::LoadFailed
+        | PreviewOffReason::Failed
+        | PreviewOffReason::MeetingEnded => PREVIEW_OPTION_NOT_HERE,
+    }
 }
 
 fn previews_view(services: &earshot_runtime::Services) -> Result<PreviewsView, IpcError> {
@@ -371,11 +413,20 @@ fn previews_view_on(
 ) -> Result<PreviewsView, IpcError> {
     let lead = previews_lead_on(services, models, order, hardware)?;
     let page = earshot_runtime::preview_settings::preview_page(lead.choice, lead.runs_on, hardware);
+    let options =
+        earshot_runtime::preview_settings::preview_options(lead.runs_on, &lead.model, hardware);
     Ok(PreviewsView {
         choice: page.shown.into(),
         can_change: page.can_change,
         note: page.note.map(str::to_owned),
         unknown: lead.unknown,
+        suggested: options.suggested.into(),
+        other_people_refused: options
+            .other_people
+            .map(|r| preview_option_copy(r.reason).to_owned()),
+        everyone_refused: options
+            .everyone
+            .map(|r| preview_option_copy(r.reason).to_owned()),
     })
 }
 
@@ -388,6 +439,8 @@ struct PreviewsLead {
     unknown: Option<String>,
     /// Where the next meeting's transcription model runs.
     runs_on: earshot_runtime::backends::Accelerator,
+    /// The next meeting's transcription model.
+    model: String,
 }
 
 /// The stored choice and where the next meeting's transcription model runs.
@@ -413,6 +466,7 @@ fn previews_lead_on(
         choice,
         unknown,
         runs_on: Accelerator::of(runs_on).unwrap_or(Accelerator::Cpu),
+        model: setup.choice.model,
     })
 }
 
@@ -707,5 +761,88 @@ mod tests {
         // T12.75: Everyone on the NPU with this much memory shows the user's own voice too, and
         // the page says nothing about it.
         assert_eq!(npu.note, None, "{npu:?}");
+    }
+
+    /// T12.29: the view carries the suggestion and the refused options for this computer, judged
+    /// on the next meeting's model where it runs, whatever is stored: Everyone with room for both
+    /// sessions, Off with too little memory to run them by default (the user's own voice refused
+    /// for memory), and Off with both options refused for a whisper model.
+    #[test]
+    fn previews_view_suggests_from_the_model_and_where_it_runs() {
+        use earshot_runtime::backends::{Accelerator, ModelDir};
+        use earshot_runtime::earshot_hardware::{Cpu, Hardware};
+        const GIB: u64 = 1 << 30;
+        let dir = crate::testutil::TempDir::new("previews-suggested");
+        let services = crate::testutil::services(&dir);
+        let models = ModelDir::new(dir.0.join("models"));
+        let order = [Accelerator::Cpu];
+        let machine = |memory| Hardware {
+            cpu: Cpu {
+                name: None,
+                physical_cores: Some(8),
+                logical_cores: Some(16),
+            },
+            gpus: Vec::new(),
+            npus: Vec::new(),
+            total_memory: memory,
+        };
+        let model_memory = PREVIEW_OPTION_MEMORY.to_owned();
+        let model_refused = PREVIEW_OPTION_MODEL.to_owned();
+        for (model, memory, suggested, other_people, everyone) in [
+            (
+                "parakeet-tdt-0.6b-v2",
+                Some(32 * GIB),
+                PreviewsChoice::Everyone,
+                None,
+                None,
+            ),
+            (
+                "parakeet-tdt-0.6b-v2",
+                Some(8 * GIB),
+                PreviewsChoice::Off,
+                None,
+                Some(&model_memory),
+            ),
+            (
+                "parakeet-tdt-0.6b-v2",
+                None,
+                PreviewsChoice::Off,
+                None,
+                Some(&model_memory),
+            ),
+            (
+                "small.en",
+                Some(32 * GIB),
+                PreviewsChoice::Off,
+                Some(&model_refused),
+                Some(&model_refused),
+            ),
+        ] {
+            let before = crate::models::settings_view(&services).unwrap().value;
+            crate::models::set_settings(
+                &services,
+                &crate::models::ModelSettingsValue {
+                    transcription: Some(model.into()),
+                    ..before
+                },
+            )
+            .unwrap();
+            let hw = machine(memory);
+            for stored in [PreviewsChoice::Off, PreviewsChoice::OtherPeople] {
+                store_previews(&services, stored).unwrap();
+                let view = previews_view_on(&services, &models, &order, &hw).unwrap();
+                let case = format!("{model} {memory:?} {stored:?}");
+                assert_eq!(view.suggested, suggested, "{case}");
+                assert_eq!(view.other_people_refused.as_ref(), other_people, "{case}");
+                assert_eq!(view.everyone_refused.as_ref(), everyone, "{case}");
+                assert_eq!(view.choice, stored, "{case}");
+                assert_eq!(
+                    previews_lead_on(&services, &models, &order, &hw)
+                        .unwrap()
+                        .model,
+                    model
+                );
+            }
+        }
     }
 }

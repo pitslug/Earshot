@@ -100,14 +100,31 @@ pub const NOTE_CARD_PROCESSOR: &str =
     "Your graphics card has too little memory for provisional words, so they run on the processor.";
 /// Everyone chosen, and no room for the second session.
 pub const NOTE_EVERYONE_MEMORY: &str = "This computer shows them for the other people only: it needs more memory to run them for you too.";
-/// The page for a machine whose transcription would lead with `lead`.
-#[must_use]
-pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardware) -> PreviewPage {
-    let backend = match lead {
+/// The backend the page judges a lead on.
+fn backend_of(lead: Accelerator) -> BackendKind {
+    match lead {
         Accelerator::Qnn => BackendKind::Qnn,
         Accelerator::Cuda => BackendKind::Cuda,
         Accelerator::Cpu | Accelerator::Vulkan => BackendKind::Cpu,
-    };
+    }
+}
+
+/// What each option does for a machine whose transcription would lead with `lead` and whose
+/// next meeting uses `model` (T12.29, the first-run wizard): [`crate::backends::preview_options`]
+/// on the backend the page judges.
+#[must_use]
+pub fn preview_options(
+    lead: Accelerator,
+    model: &str,
+    hardware: &Hardware,
+) -> crate::backends::PreviewOptions {
+    crate::backends::preview_options(backend_of(lead), model, hardware)
+}
+
+/// The page for a machine whose transcription would lead with `lead`.
+#[must_use]
+pub fn preview_page(choice: PreviewChoice, lead: Accelerator, hardware: &Hardware) -> PreviewPage {
+    let backend = backend_of(lead);
     // Refused even when asked for: nothing a user's choice could change. No backend a lead maps
     // to refuses "on" today (T12.12c allowed the NPU); this stays for one that would.
     let Ok(first) = preview_backend(backend, hardware, PreviewChoice::On) else {
