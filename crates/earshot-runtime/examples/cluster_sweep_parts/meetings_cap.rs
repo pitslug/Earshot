@@ -1,4 +1,4 @@
-//! The owner's meetings for T12.76 (`cluster_sweep --meetings-cap`): the section "The owner's
+//! The owner's meetings for T12.85 (`cluster_sweep --meetings-cap`): the section "The owner's
 //! meetings" of `docs/far-speakers/training-cap.md`, committed before this mode was written.
 //! Informational only: nothing here selects. Counts and times only.
 //!

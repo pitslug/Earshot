@@ -898,11 +898,11 @@ pub const CALIBRATED_THRESHOLDS: &[CalibratedThreshold] = &[CalibratedThreshold 
 ///
 /// This is the same-voice threshold (re-run carrying of a meeting's own speakers, the echo
 /// checks, the user's own voice sample). Naming a voice after a stored person uses the
-/// stricter [`naming_threshold`] since T12.75.
+/// stricter [`naming_threshold`] since T12.84.
 pub const CAMPPLUS_DEV_CLEAN_THRESHOLD: f32 = 0.461_961_03;
 
 /// Thresholds for naming a voice after a stored person, chosen on dev meeting audio for one
-/// exact embedding model (T12.75). Stricter than the same-voice threshold because a wrong name
+/// exact embedding model (T12.84). Stricter than the same-voice threshold because a wrong name
 /// costs the user more than "Speaker N": they can merge two voices but cannot split one.
 pub const CALIBRATED_NAMING_THRESHOLDS: &[CalibratedThreshold] = &[CalibratedThreshold {
     model: "campplus-en-voxceleb@357a834f702b",
@@ -910,7 +910,7 @@ pub const CALIBRATED_NAMING_THRESHOLDS: &[CalibratedThreshold] = &[CalibratedThr
     source: "T12.67 rule candidate A (docs/voiceprint-meetings.md): AMI dev series, enrolled \
              from each first meeting's diarised centroids, 40 voices of the second and third \
              meetings; the lowest threshold on 0.40-0.80 step 0.02 above 0.462 with false \
-             accepts <= 5% in both conditions; adopted by the owner 2026-11-18 (T12.75, \
+             accepts <= 5% in both conditions; adopted by the owner 2026-11-18 (T12.84, \
              docs/voiceprint-naming.md)",
 }];
 
@@ -974,7 +974,7 @@ pub fn calibrated_threshold(model: &EmbeddingModelId) -> Result<f32, VoiceprintE
         .ok_or_else(|| VoiceprintError::NoThreshold(model.clone()))
 }
 
-/// The threshold a voice must reach to be named after a stored person (T12.75,
+/// The threshold a voice must reach to be named after a stored person (T12.84,
 /// [`CALIBRATED_NAMING_THRESHOLDS`]).
 ///
 /// # Errors

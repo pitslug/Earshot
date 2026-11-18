@@ -95,7 +95,7 @@
 //!    [`in_person`] for a single-track meeting, on that track.
 //! 4. **Naming**: stored voiceprints are loaded once and every speaker's centroid is
 //!    matched against them ([`match_embedding_with_margin`]: the naming threshold,
-//!    [`PostConfig::naming_threshold`], stricter than the same-voice one since T12.75, and,
+//!    [`PostConfig::naming_threshold`], stricter than the same-voice one since T12.84, and,
 //!    since T12.67, a margin over the runner-up person, [`PostConfig::voiceprint_margin`]).
 //!    A known person gives the
 //!    speaker their name. Among several mic voices ([`SpeakerRole::Local`], or the
@@ -287,7 +287,7 @@ pub struct PostConfig {
     /// calibrated model). Default: empty.
     pub voiceprint_thresholds: ModelThresholds,
     /// Thresholds for naming a voice after a stored person that override the core choice
-    /// (tests, a newly measured model, T12.75). Default: empty.
+    /// (tests, a newly measured model, T12.84). Default: empty.
     pub naming_thresholds: ModelThresholds,
     /// Voiceprint margins over the runner-up person that override the core choice (tests, a
     /// newly measured model, T12.67). Default: empty.
@@ -346,7 +346,7 @@ impl PostConfig {
         })
     }
 
-    /// The threshold a voice must reach to be named after a stored person (T12.75): an
+    /// The threshold a voice must reach to be named after a stored person (T12.84): an
     /// override, else the core choice ([`naming_threshold`]). Stricter than
     /// [`PostConfig::voiceprint_threshold`], the same-voice threshold that carries a meeting's
     /// own speakers across re-runs and drives the echo checks.
@@ -782,7 +782,7 @@ pub struct PostProcessor<T, S, E> {
     /// time as the first ([`PostProcessor::with_second_diarizer`], T6.12).
     second: Option<Diarizer<S, E>>,
     voiceprint_threshold: f32,
-    /// The threshold for naming a voice after a stored person (step 4, T12.75).
+    /// The threshold for naming a voice after a stored person (step 4, T12.84).
     naming_threshold: f32,
     config: PostConfig,
     /// Decode each track in VAD speech pieces (T6.16); `None` decodes the whole track in one

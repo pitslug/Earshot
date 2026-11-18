@@ -442,7 +442,7 @@ fn voiceprint_thresholds_exist_only_for_calibrated_models() {
 
 #[test]
 fn voiceprint_naming_threshold_is_stricter_than_the_same_voice_threshold() {
-    // T12.75: naming a voice after a stored person needs 0.56 (AMI dev meetings); the
+    // T12.84: naming a voice after a stored person needs 0.56 (AMI dev meetings); the
     // same-voice threshold stays the dev-clean calibration.
     let campplus = EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b");
     assert_eq!(naming_threshold(&campplus), Ok(CAMPPLUS_MEETING_THRESHOLD));

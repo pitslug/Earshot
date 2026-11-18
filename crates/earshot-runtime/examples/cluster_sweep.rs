@@ -21,7 +21,7 @@
 //! added to the data: the data, measures and rule are `docs/far-speakers/short-turns.md`
 //! (module `cluster_sweep_parts/short_turns.rs`).
 //!
-//! With `--training-cap` (T12.76) the threshold, floor and regrouping grid are held and four
+//! With `--training-cap` (T12.85) the threshold, floor and regrouping grid are held and four
 //! candidates are run: today's pipeline, every embedding training, T12.66's regrouping, and
 //! both, over all fifteen AMI dev meetings, the long scenes and the short-turn scenes: the
 //! data, measures and rule are `docs/far-speakers/training-cap.md` (module

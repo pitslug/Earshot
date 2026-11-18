@@ -4,7 +4,7 @@
 //! first and then spawned directly under the deadline. It runs the production speaker setup
 //! on the CPU (as the final pass does: pyannote segmentation-3.0 and CAM++ through
 //! `backends::load_diarisation`, `PostConfig` with the dev-clean calibrated clustering
-//! threshold and, since T12.75, the AMI dev voiceprint naming threshold); every metric
+//! threshold and, since T12.84, the AMI dev voiceprint naming threshold); every metric
 //! definition is in that example's module docs. It
 //! prints JSON with exactly one entry per threshold id of M3.
 //!

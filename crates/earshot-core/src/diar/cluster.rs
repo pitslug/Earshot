@@ -298,7 +298,7 @@ pub struct CalibratedRegroup {
 pub const CALIBRATED_REGROUPS: &[CalibratedRegroup] = &[CalibratedRegroup {
     model: "campplus-en-voxceleb@357a834f702b",
     regroup: CAMPPLUS_REGROUP,
-    source: "T12.66 rule (docs/far-speakers/short-turns.md) on the five AMI dev mixes, 16              dev-clean long scenes and 10 short-turn scenes at clustering threshold 0.68: f 0.60,              d 0.80, m 8 s, plain finds 9 of 10 short-turn talkers (6 today) with no new speaker              on any long scene or AMI meeting; T12.76 (docs/far-speakers/training-cap.md)              picked it again over all fifteen AMI dev meetings, none changed",
+    source: "T12.66 rule (docs/far-speakers/short-turns.md) on the five AMI dev mixes, 16              dev-clean long scenes and 10 short-turn scenes at clustering threshold 0.68: f 0.60,              d 0.80, m 8 s, plain finds 9 of 10 short-turn talkers (6 today) with no new speaker              on any long scene or AMI meeting; T12.85 (docs/far-speakers/training-cap.md)              picked it again over all fifteen AMI dev meetings, none changed",
 }];
 
 /// The CAM++ VoxCeleb regrouping (see [`CALIBRATED_REGROUPS`]): small clusters below cosine

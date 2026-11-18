@@ -586,7 +586,7 @@ fn post_without_calibration_is_an_error_at_construction() {
         defaults.voiceprint_threshold(&campp).is_ok(),
         "from the core calibration"
     );
-    // T12.75: naming needs the stricter meeting threshold; same-voice checks keep dev-clean.
+    // T12.84: naming needs the stricter meeting threshold; same-voice checks keep dev-clean.
     assert_eq!(
         defaults.naming_threshold(&campp).unwrap(),
         earshot_core::voiceprint::CAMPPLUS_MEETING_THRESHOLD
@@ -4251,7 +4251,7 @@ fn post_a_voice_close_to_two_people_is_named_only_with_a_clear_margin() {
 
 #[test]
 fn post_a_voice_is_named_only_at_the_naming_threshold() {
-    // T12.75: the far-end voice of scene speaker 1 scores about 0.95 against Blair, the only
+    // T12.84: the far-end voice of scene speaker 1 scores about 0.95 against Blair, the only
     // stored person. At a naming threshold of 0.5 it is Blair; at 0.97 it stays "Speaker N",
     // though the same-voice threshold (0.5) would accept it: naming reads only its own.
     let run = |naming: f32| {
@@ -4278,6 +4278,7 @@ fn post_a_voice_is_named_only_at_the_naming_threshold() {
                 p.id,
                 &[e],
                 Duration::from_secs(20),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut stamp,
             )

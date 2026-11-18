@@ -1,4 +1,4 @@
-# Every moment in the speaker grouping, with and without regrouping (T12.76)
+# Every moment in the speaker grouping, with and without regrouping (T12.85)
 
 Written and committed before any measurement of this task. The data, candidates, measures and rule below are not changed after the first run; results go in the Result section only. Measurement only: nothing shipped changes, whatever the rule picks.
 
@@ -6,9 +6,9 @@ Written and committed before any measurement of this task. The data, candidates,
 
 The clustering (`earshot_core::diar::cluster`) builds its groups from at most 1000 embeddings (`ClusteringConfig::max_train_embeddings`, pyannote's `max_num_embeddings`); every other embedding is attached to the nearest final group afterwards. A long meeting has more: 1239 to 2592 on the AMI dev "a" meetings (T12.66). A voice that speaks little then has few embeddings in the sample, forms only a small cluster, and step 5 merges it into the most similar large cluster with no lower bound. T12.66's regrouping (step 6, parked as T12.74) turns such small clusters into new speakers, but its speech estimate counts only the training sample, so on a long meeting it makes a new speaker less readily.
 
-The owner's rule (T12.75, 2026-11-18): two people merged into one voice is the costly error, because the user cannot split a voice; an extra voice costs one merge in the Speakers panel. So the cost below counts a merge as several extra voices.
+The owner's rule (T12.84, 2026-11-18): two people merged into one voice is the costly error, because the user cannot split a voice; an extra voice costs one merge in the Speakers panel. So the cost below counts a merge as several extra voices.
 
-Known before writing this: T12.9, T12.65 and T12.66's results and JSON (`ami-dev-calibration.md`, `unassigned-floor.md`, `short-turns.md`), T12.67's voiceprint trials on the AMI dev "b" and "c" meetings (40 found speakers in those ten meetings, no per-meeting merge counts), and a counts-only diagnosis of the owner's call that raised T12.75 (private, never data here): there, using every embedding gave one stored talker and one unstored talker voices of their own, and adding T12.66's regrouping separated most of the four far-end voices. Nothing about the candidates below has been measured on the data below.
+Known before writing this: T12.9, T12.65 and T12.66's results and JSON (`ami-dev-calibration.md`, `unassigned-floor.md`, `short-turns.md`), T12.67's voiceprint trials on the AMI dev "b" and "c" meetings (40 found speakers in those ten meetings, no per-meeting merge counts), and a counts-only diagnosis of the owner's call that raised T12.84 (private, never data here): there, using every embedding gave one stored talker and one unstored talker voices of their own, and adding T12.66's regrouping separated most of the four far-end voices. Nothing about the candidates below has been measured on the data below.
 
 ## The data
 
@@ -64,7 +64,7 @@ Added at the owner's request (2026-11-18) after the dev run had started and befo
 
 - **Data.** A copy of the owner's `earshot.db` made into `fixtures/private/real-meetings/<run>/` (git-ignored) by the `store_parts/copy.rs` rule and opened read-only; recordings are read in place and never written. Every live meeting whose recording is still on disk: the reference (far-end) track of a call, the mic track of a meeting in the room. Tracks are labelled `m1`, `m2`, ... in start order; no id, title or name is printed or written.
 - **Pipeline.** As above: the production final-pass diarisation on the CPU, model outputs recorded once and replayed, the replayed baseline equal to the direct run, the four candidates.
-- **Measures**, per track and candidate: embeddings, speakers found, and how the baseline's speakers are split or joined (for each candidate speaker, the baseline speakers it takes speech from). For the call that raised T12.75 only, its far-end lines in four groups inferred from the owner's corrections and a per-line voice check (a private file in the run folder; inferred, not verified): per candidate, how each group's lines spread over the found speakers. Each candidate speaker's turn times are written inside the run folder only, so the owner can listen to them later.
+- **Measures**, per track and candidate: embeddings, speakers found, and how the baseline's speakers are split or joined (for each candidate speaker, the baseline speakers it takes speech from). For the call that raised T12.84 only, its far-end lines in four groups inferred from the owner's corrections and a per-line voice check (a private file in the run folder; inferred, not verified): per candidate, how each group's lines spread over the found speakers. Each candidate speaker's turn times are written inside the run folder only, so the owner can listen to them later.
 - **Use.** None selects. If the rule picks a candidate, these tracks are shown to the owner before any production task, and a split or merge the owner rejects on them is reported with it.
 
 ## Result
@@ -95,10 +95,10 @@ Run 2026-11-18 on the Surface where they were recorded, after the dev result abo
 - **A far-end track with no speech**: nothing found by any candidate.
 - **A long meeting in the room** (6197 embeddings): R changes nothing. C and CR add one extra voice of about 26 s, gathered from bits of three of the baseline's voices.
 - **The call T12.73 judged** (2209 embeddings): no candidate changes anything, as T12.73 found for R.
-- **The call that raised T12.75** (1984 embeddings, two far-end voices found today, four people by the owner's corrections, line groups inferred):
+- **The call that raised T12.84** (1984 embeddings, two far-end voices found today, four people by the owner's corrections, line groups inferred):
   - Today: one voice holds a stored talker's lines with an unstored talker's; the other holds the presenter's lines with a second stored talker's.
   - R: the first stored talker's lines leave that voice for two new voices (6 of 7 lines), which also take 4 of the presenter's 86 lines; the unstored talker keeps the old voice alone; the second stored talker stays with the presenter.
   - C: the unstored talker gets a voice of their own (9 of 12 lines); the first stored talker stays in a voice that also holds 3 of the unstored talker's and 7 of the presenter's lines.
   - CR: the second stored talker gets a voice of their own (6 of 7 lines) and the unstored talker one (9 of 12); the first stored talker is split over two voices that also hold presenter and unstored lines.
 
-On the owner's meetings R never adds a voice where there is one person and, on the call that raised the question, separates the stored talker that T12.75 could not name, at the cost of two voices for one person (one merge in the app) and a few of the presenter's lines. The cap change adds a voice to a long meeting in the room and, on that call, separates other talkers while mixing more lines between voices. This agrees with the dev pick; it is not evidence for it.
+On the owner's meetings R never adds a voice where there is one person and, on the call that raised the question, separates the stored talker that T12.84 could not name, at the cost of two voices for one person (one merge in the app) and a few of the presenter's lines. The cap change adds a voice to a long meeting in the room and, on that call, separates other talkers while mixing more lines between voices. This agrees with the dev pick; it is not evidence for it.

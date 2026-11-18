@@ -1,4 +1,4 @@
-//! Every embedding in the speaker grouping, with and without T12.66's regrouping (T12.76), for
+//! Every embedding in the speaker grouping, with and without T12.66's regrouping (T12.85), for
 //! `cluster_sweep --training-cap`: the data, candidates, measures and rule are
 //! `docs/far-speakers/training-cap.md`, committed before this module was written. Counts and
 //! times only.

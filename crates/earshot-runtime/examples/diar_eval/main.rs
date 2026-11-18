@@ -15,7 +15,7 @@
 //! `PostConfig::default().diarization` and the clustering threshold the final pass uses
 //! (`PostConfig::clustering_threshold`: the dev-clean calibration keyed by the embedder's
 //! exact model id), and the voiceprint naming threshold the final pass uses
-//! (`PostConfig::naming_threshold`, AMI dev meetings since T12.75). Nothing is tuned here. The
+//! (`PostConfig::naming_threshold`, AMI dev meetings since T12.84). Nothing is tuned here. The
 //! backend is proven by ONNX Runtime's node placement of both sessions.
 //!
 //! Definitions (PLAN.md 4.0 and 4.2, fixed before the first measurement):

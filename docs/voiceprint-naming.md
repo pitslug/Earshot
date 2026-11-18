@@ -1,4 +1,4 @@
-# Naming voices: leave a voice unnamed before guessing, keep voices apart before merging (T12.75)
+# Naming voices: leave a voice unnamed before guessing, keep voices apart before merging (T12.84)
 
 ## Why
 
@@ -25,8 +25,8 @@ One run of `vp_meetings` on the CPU (the ARM64 Surface; T12.67 ran on x64), CAM+
 
 | naming rule | FA (unknown) | W (known) | M (known) | mixed events |
 |---|---|---|---|---|
-| before T12.75: 0.462 + margin 0.08 | 0.025 (1/40) | 0.025 (1/40) | 0 (0/38) | 1 |
-| **since T12.75: 0.56 + margin 0.08** | **0 (0/40)** | 0.025 (1/40) | 0 (0/38) | 1 |
+| before T12.84: 0.462 + margin 0.08 | 0.025 (1/40) | 0.025 (1/40) | 0 (0/38) | 1 |
+| **since T12.84: 0.56 + margin 0.08** | **0 (0/40)** | 0.025 (1/40) | 0 (0/38) | 1 |
 
 False accepts do not rise (they fall by one), no stored voice is missed: the first part of the rule holds.
 
