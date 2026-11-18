@@ -3767,3 +3767,100 @@ fn backends_order_never_asks_whisper_on_a_processor_without_the_baseline() {
     let order = accelerator_order_with(false, true, || panic!("asked in a build without Vulkan"));
     assert!(!order.contains(&Accelerator::Vulkan), "{order:?}");
 }
+
+/// T12.29: the setting the first-run wizard marks as suggested for this computer, from the rules
+/// of both preview sessions: Everyone where the first runs by default and the second is allowed,
+/// Other people only where only the first is, Off where the first does not run by default (too
+/// little memory, unknown memory, or a backend without previews).
+#[test]
+fn backends_suggested_previews_follow_the_rules_of_both_sessions() {
+    use crate::preview_settings::{PreviewChoice, PreviewSetting};
+    // The desktop: a card with room, plenty of memory.
+    let desktop = nvidia_machine(Some(61 * GIB), Some(16 * GIB));
+    assert_eq!(
+        suggested_previews(BackendKind::Cuda, &desktop),
+        PreviewSetting::Everyone
+    );
+    // A card too small for a session: both run on the processor (T12.3c), still allowed.
+    let small_card = nvidia_machine(Some(32 * GIB), Some(4 * GIB));
+    assert_eq!(
+        suggested_previews(BackendKind::Cuda, &small_card),
+        PreviewSetting::Everyone
+    );
+    assert_eq!(
+        suggested_previews(BackendKind::Cpu, &nvidia_machine(Some(15 * GIB), None)),
+        PreviewSetting::Everyone
+    );
+    // The Surface: the NPU runs both since T12.75.
+    let surface = npu_machine(Some(15 * GIB + GIB / 2));
+    assert_eq!(
+        suggested_previews(BackendKind::Qnn, &surface),
+        PreviewSetting::Everyone
+    );
+    // Below the limit, or memory unknown: off by default, so not suggested.
+    for memory in [Some(8 * GIB), Some(PREVIEW_MIN_MEMORY - 1), None] {
+        assert_eq!(
+            suggested_previews(BackendKind::Cpu, &nvidia_machine(memory, None)),
+            PreviewSetting::Off,
+            "{memory:?}"
+        );
+        assert_eq!(
+            suggested_previews(BackendKind::Qnn, &npu_machine(memory)),
+            PreviewSetting::Off,
+            "{memory:?}"
+        );
+    }
+    // No previews on this backend at all.
+    for kind in [BackendKind::Vulkan, BackendKind::Fake] {
+        assert_eq!(
+            suggested_previews(kind, &desktop),
+            PreviewSetting::Off,
+            "{kind:?}"
+        );
+    }
+    // Whatever the machine, a suggestion is something the rules allow: a shown suggestion runs
+    // by default, Everyone has its second session, Off is refused by default, and Other people
+    // only has no second session.
+    let mut seen = std::collections::BTreeSet::new();
+    for memory in [
+        None,
+        Some(4),
+        Some(8),
+        Some(11),
+        Some(12),
+        Some(16),
+        Some(64),
+    ] {
+        let memory = memory.map(|g| g * GIB);
+        let mut machines = vec![npu_machine(memory)];
+        for card in [None, Some(4), Some(8), Some(16)] {
+            machines.push(nvidia_machine(memory, card.map(|g| g * GIB)));
+        }
+        for m in &machines {
+            for kind in [
+                BackendKind::Cpu,
+                BackendKind::Cuda,
+                BackendKind::Qnn,
+                BackendKind::Vulkan,
+            ] {
+                let suggested = suggested_previews(kind, m);
+                seen.insert(format!("{suggested:?}"));
+                let first = previews_refused(kind, m, PreviewChoice::Automatic);
+                let second = previews_refused_second(kind, m, PreviewChoice::Everyone);
+                match suggested {
+                    PreviewSetting::Off => assert!(first.is_some(), "{kind:?} {m:?}"),
+                    PreviewSetting::OtherPeople => {
+                        assert!(first.is_none() && second.is_some(), "{kind:?} {m:?}");
+                    }
+                    PreviewSetting::Everyone => {
+                        assert!(first.is_none() && second.is_none(), "{kind:?} {m:?}");
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        seen.contains("Off") && seen.contains("Everyone"),
+        "{seen:?}"
+    );
+}

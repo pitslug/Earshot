@@ -30,7 +30,8 @@ describe("Settings, Transcription, provisional words", () => {
   const group = async () => screen.findByRole("radiogroup", { name: PREVIEWS_HEADING });
   const radio = async (name: string) => within(await group()).getByRole("radio", { name }) as HTMLInputElement;
   const view = (choice: PreviewsChoice, can_change = true, note: string | null = null) => ({
-    previews: { choice, can_change, note, unknown: null },
+    // A suggestion the page never marks (only the first-run wizard does, T12.29).
+    previews: { choice, can_change, note, unknown: null, suggested: "everyone" as const },
   });
 
   it("offers Off, Other people only and Everyone, says what each shows, and stores a change", async () => {

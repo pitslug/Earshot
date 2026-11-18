@@ -21,6 +21,7 @@ import { SETUP_EXPLAINED } from "../settings/GeneralPage";
 import { EXPORT_EXPLAINED } from "../settings/ObsidianSection";
 import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY, remoteWarning } from "../settings/SummariesPage";
 import { SYNC_INTRO } from "../settings/SyncPage";
+import { PREVIEWS_HEADING, PREVIEWS_SUGGESTED } from "../settings/TranscriptionPage";
 import { formatSize } from "../settings/copy";
 import { openSettings, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
@@ -851,6 +852,92 @@ describe("First run wizard", () => {
   });
 
   describe("Optional extras", () => {
+    const previews = () => screen.findByRole("radiogroup", { name: PREVIEWS_HEADING });
+    const labelsOf = async () =>
+      within(await previews())
+        .getAllByRole("radio")
+        .map((r) => (r as HTMLInputElement).labels?.[0].textContent);
+    const suggested = (label: string) => `${label} (${PREVIEWS_SUGGESTED})`;
+
+    for (const machine of ["desktop", "surface"] as const) {
+      it(`offers whose words show while someone talks, the app's suggestion marked (${machine})`, async () => {
+        const s = setup({ machine });
+        await toStep(s, EXTRAS);
+        const want = (await s.ipc.previewsSettings()).suggested;
+        const labels = ["Off", "Other people only", "Everyone"];
+        const marked = labels[["off", "other_people", "everyone"].indexOf(want)];
+        await waitFor(async () =>
+          expect(await labelsOf()).toEqual(labels.map((l) => (l === marked ? suggested(l) : l))),
+        );
+        // What the app shows now stays selected: the suggestion is marked, not chosen.
+        const current = within(await previews()).getByRole("radio", { name: "Other people only" });
+        expect((current as HTMLInputElement).checked).toBe(true);
+      });
+    }
+
+    it("marks the option the app suggests, whichever it is", async () => {
+      const s = setup({
+        settings: {
+          previews: { choice: "other_people", can_change: true, note: null, unknown: null, suggested: "off" },
+        },
+      });
+      await toStep(s, EXTRAS);
+      await waitFor(async () => expect(await labelsOf()).toEqual([suggested("Off"), "Other people only", "Everyone"]));
+    });
+
+    it("Finish saves a changed choice, and nothing before it", async () => {
+      const s = setup({ machine: "desktop" });
+      const save = vi.spyOn(s.ipc, "setPreviews");
+      await toStep(s, EXTRAS);
+      await s.user.click(within(await previews()).getByRole("radio", { name: suggested("Everyone") }));
+      expect(save).not.toHaveBeenCalled();
+      expect((await s.ipc.previewsSettings()).choice).toBe("other_people");
+      await s.user.click(button("Finish"));
+      await screen.findByRole("heading", HOME);
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith("everyone");
+      expect((await s.ipc.previewsSettings()).choice).toBe("everyone");
+    });
+
+    it("stores nothing when left as it is, or when the wizard is skipped or left by Back", async () => {
+      const s = setup({ machine: "desktop" });
+      const save = vi.spyOn(s.ipc, "setPreviews");
+      await toStep(s, EXTRAS);
+      await previews();
+      await s.user.click(within(await previews()).getByRole("radio", { name: "Off" }));
+      await s.user.click(button("Back"));
+      await stepHeading(STEPS[ABOUT_ME].title);
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[EXTRAS].title);
+      await s.user.click(within(await previews()).getByRole("radio", { name: "Off" }));
+      await s.user.click(button("Skip setup"));
+      await screen.findByRole("heading", HOME);
+      expect(save).not.toHaveBeenCalled();
+      expect((await s.ipc.previewsSettings()).choice).toBe("other_people");
+    });
+
+    it("Finish with the choice untouched stores nothing", async () => {
+      const s = setup({ machine: "desktop" });
+      const save = vi.spyOn(s.ipc, "setPreviews");
+      await toStep(s, EXTRAS);
+      await previews();
+      await s.user.click(button("Finish"));
+      await screen.findByRole("heading", HOME);
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it("a refused choice stays on the step and says why", async () => {
+      const s = setup({ machine: "desktop" });
+      vi.spyOn(s.ipc, "setPreviews").mockRejectedValueOnce(new Error("The setting could not be stored."));
+      await toStep(s, EXTRAS);
+      await s.user.click(within(await previews()).getByRole("radio", { name: "Off" }));
+      await s.user.click(button("Finish"));
+      expect(await screen.findByText("The setting could not be stored.")).toBeInTheDocument();
+      expect(screen.getByText(SAVE_REFUSED_NOTE)).toBeInTheDocument();
+      await stepHeading(STEPS[EXTRAS].title);
+      expect((await s.ipc.firstRunState()).show).toBe(true);
+    });
+
     it("is two rows that open when pressed, and then Finish", async () => {
       const s = setup();
       await toStep(s, EXTRAS);

@@ -21,6 +21,7 @@ import { ModelNotices, ModelsNotLoaded, NpuVersions, TranscriptionChoices } from
 import { LANGUAGES_LABEL, LanguagesPicker } from "./ModelsParts";
 import { SpeakerTimingSection } from "./PeoplePage";
 import { Section, usePageStyles } from "./parts";
+import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type ModelsPageState } from "./useModels";
 
 const useStyles = makeStyles({
@@ -47,11 +48,32 @@ export const PREVIEWS_OTHER_PEOPLE_EXPLAINED =
 export const PREVIEWS_EVERYONE_EXPLAINED =
   "Everyone: in a call, also for your own voice. Uses more of your computer. Without headphones, your grey words can briefly show what the other people said, until the settled text replaces them.";
 
-/** Whose provisional words meetings show: read and changed on its own, from the next meeting. */
-function PreviewsSection() {
+/** How the wizard marks the option Rust suggests for this computer (T12.29). */
+export const PREVIEWS_SUGGESTED = "suggested for this computer";
+
+/** The three options, in order. */
+const PREVIEWS_OPTIONS: { value: PreviewsChoice; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "other_people", label: "Other people only" },
+  { value: "everyone", label: "Everyone" },
+];
+
+export interface PreviewsSectionProps {
+  /** In the first-run wizard: the choice is saved on Next, not at once, and only when it differs
+   * from what the app shows now. */
+  saveOnNext?: SaveOnNext;
+  /** Marks the option the app suggests for this computer (the wizard). */
+  showSuggested?: boolean;
+}
+
+/** Whose provisional words meetings show, from the next meeting: on the Transcription page a
+ * choice applies at once; in the wizard it waits for Next. */
+export function PreviewsSection({ saveOnNext, showSuggested = false }: PreviewsSectionProps) {
   const styles = useStyles();
   const ipc = useIpc();
   const [view, setView] = useState<PreviewsView | null>(null);
+  // The wizard's choice until Next saves it.
+  const [picked, setPicked] = useState<PreviewsChoice | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -72,30 +94,47 @@ function PreviewsSection() {
 
   const headingId = useId();
 
-  const set = async (choice: PreviewsChoice) => {
+  const set = async (choice: PreviewsChoice): Promise<boolean> => {
     setBusy(true);
     try {
       setView(await ipc.setPreviews(choice));
+      setPicked(null);
       setProblem(null);
+      return true;
     } catch (e) {
       setProblem(errorText(e));
+      return false;
     } finally {
       setBusy(false);
     }
   };
+
+  // Only a choice the user changed is sent: an untouched part stores nothing.
+  useSaveOnNext(saveOnNext, async () => {
+    if (view === null || picked === null || picked === view.choice) return true;
+    return set(picked);
+  });
+
+  const shown = picked ?? view?.choice ?? "";
+  const labelOf = (o: (typeof PREVIEWS_OPTIONS)[number]) =>
+    showSuggested && view?.suggested === o.value ? `${o.label} (${PREVIEWS_SUGGESTED})` : o.label;
 
   return (
     <Section title="During a meeting">
       <Body1 id={headingId}>{PREVIEWS_HEADING}</Body1>
       <RadioGroup
         aria-labelledby={headingId}
-        value={view?.choice ?? ""}
+        value={shown}
         disabled={busy || view === null || !view.can_change}
-        onChange={(_, d) => void set(d.value as PreviewsChoice)}
+        onChange={(_, d) => {
+          const choice = d.value as PreviewsChoice;
+          if (saveOnNext) setPicked(choice);
+          else void set(choice);
+        }}
       >
-        <Radio value="off" label="Off" />
-        <Radio value="other_people" label="Other people only" />
-        <Radio value="everyone" label="Everyone" />
+        {PREVIEWS_OPTIONS.map((o) => (
+          <Radio key={o.value} value={o.value} label={labelOf(o)} />
+        ))}
       </RadioGroup>
       <Caption1 className={styles.muted}>{PREVIEWS_EXPLAINED}</Caption1>
       <Caption1 className={styles.muted}>{PREVIEWS_OTHER_PEOPLE_EXPLAINED}</Caption1>

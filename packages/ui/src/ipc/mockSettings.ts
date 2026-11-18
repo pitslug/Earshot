@@ -156,6 +156,14 @@ function checkFolder(folder: string): string {
   return norm;
 }
 
+/** What `backends::suggested_previews` gives each sample machine (T12.29), as fixture data: both
+ * have more than 12 GiB of memory, so both sessions are allowed (the Surface's own voice on the
+ * NPU since T12.75). */
+export const SUGGESTED_PREVIEWS: Record<SampleMachine, PreviewsChoice> = {
+  desktop: "everyone",
+  surface: "everyone",
+};
+
 /** The Settings part of the mock `Ipc`. */
 export function createSettingsMock(
   data: SettingsMockData = {},
@@ -167,7 +175,13 @@ export function createSettingsMock(
   let speechMs = data.voiceSpeechMs ?? 0;
   let target: ObsidianSettingsValue = { vault: data.vault ?? "", folder: data.folder ?? DEFAULT_FOLDER };
   let autostart = data.startWithWindows ?? false;
-  let previews: PreviewsView = data.previews ?? { choice: "other_people", can_change: true, note: null, unknown: null };
+  let previews: PreviewsView = data.previews ?? {
+    choice: "other_people",
+    can_change: true,
+    note: null,
+    unknown: null,
+    suggested: SUGGESTED_PREVIEWS[machine],
+  };
   const listeners = new Set<(event: VoiceEvent) => void>();
   const emit = (event: VoiceEvent) => {
     for (const l of [...listeners]) l(event);

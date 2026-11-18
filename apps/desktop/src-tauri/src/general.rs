@@ -348,6 +348,9 @@ pub struct PreviewsView {
     pub note: Option<String>,
     /// A stored value this version does not know, read as automatic.
     pub unknown: Option<String>,
+    /// The choice the first-run wizard marks as suggested for this computer (T12.29), from the
+    /// rules of both preview sessions on where the next meeting's model runs.
+    pub suggested: PreviewsChoice,
 }
 
 fn previews_view(services: &earshot_runtime::Services) -> Result<PreviewsView, IpcError> {
@@ -376,6 +379,8 @@ fn previews_view_on(
         can_change: page.can_change,
         note: page.note.map(str::to_owned),
         unknown: lead.unknown,
+        suggested: earshot_runtime::preview_settings::suggested_setting(lead.runs_on, hardware)
+            .into(),
     })
 }
 
@@ -707,5 +712,48 @@ mod tests {
         // T12.75: Everyone on the NPU with this much memory shows the user's own voice too, and
         // the page says nothing about it.
         assert_eq!(npu.note, None, "{npu:?}");
+    }
+
+    /// T12.29: the view carries the suggestion for this computer, judged where the next meeting's
+    /// model runs, whatever is stored: Everyone with room for both sessions, Off with too little
+    /// memory to run them by default.
+    #[test]
+    fn previews_view_suggests_from_where_the_model_runs() {
+        use earshot_runtime::backends::{Accelerator, ModelDir};
+        use earshot_runtime::earshot_hardware::{Cpu, Hardware};
+        use earshot_runtime::preview_settings::suggested_setting;
+        const GIB: u64 = 1 << 30;
+        let dir = crate::testutil::TempDir::new("previews-suggested");
+        let services = crate::testutil::services(&dir);
+        let models = ModelDir::new(dir.0.join("models"));
+        let order = [Accelerator::Cpu];
+        let machine = |memory| Hardware {
+            cpu: Cpu {
+                name: None,
+                physical_cores: Some(8),
+                logical_cores: Some(16),
+            },
+            gpus: Vec::new(),
+            npus: Vec::new(),
+            total_memory: memory,
+        };
+        for (memory, suggested) in [
+            (Some(32 * GIB), PreviewsChoice::Everyone),
+            (Some(8 * GIB), PreviewsChoice::Off),
+            (None, PreviewsChoice::Off),
+        ] {
+            let hw = machine(memory);
+            for stored in [PreviewsChoice::Off, PreviewsChoice::OtherPeople] {
+                store_previews(&services, stored).unwrap();
+                let view = previews_view_on(&services, &models, &order, &hw).unwrap();
+                assert_eq!(view.suggested, suggested, "{memory:?} {stored:?}");
+                assert_eq!(view.choice, stored, "{memory:?}");
+                let lead = previews_lead_on(&services, &models, &order, &hw).unwrap();
+                assert_eq!(
+                    PreviewsChoice::from(suggested_setting(lead.runs_on, &hw)),
+                    suggested
+                );
+            }
+        }
     }
 }

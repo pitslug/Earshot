@@ -43,6 +43,7 @@ import {
   VoiceSection,
 } from "../settings/PeoplePage";
 import { SummaryOrderChoices } from "../settings/SummariesPage";
+import { PreviewsSection } from "../settings/TranscriptionPage";
 import { JoinWithCodeForm, SYNC_INTRO, SetUpFirstForm } from "../settings/SyncPage";
 import { formatSize } from "../settings/copy";
 import { NotLoaded, UnknownSettings, usePageStyles } from "../settings/parts";
@@ -73,7 +74,7 @@ export const STEPS = [
   },
   {
     title: "Optional extras",
-    intro: "Both are optional, and both are in Settings if you want them later.",
+    intro: "All of these are optional, and all are in Settings if you want them later.",
   },
 ] as const;
 
@@ -532,7 +533,9 @@ function ExtraRow({ title, words, children }: { title: string; words: string; ch
   );
 }
 
-/** Step 5. Tells the wizard while the check runs. */
+/** Step 5: whose words show while someone talks (the Transcription page's part, the option Rust
+ * suggests for this computer marked, saved on Next), then two rows. Tells the wizard while the
+ * check runs. */
 function OptionalExtrasStep({
   saveOnNext,
   onRunningChange,
@@ -549,6 +552,7 @@ function OptionalExtrasStep({
   }, [running, onRunningChange]);
   return (
     <>
+      <PreviewsSection saveOnNext={saveOnNext} showSuggested />
       <ExtraRow title="Obsidian" words={OBSIDIAN_ROW}>
         <ObsidianSection saveOnNext={saveOnNext} />
       </ExtraRow>

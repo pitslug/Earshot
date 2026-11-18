@@ -1826,6 +1826,11 @@ export type PreviewsView = {
 	note: string | null,
 	/**  A stored value this version does not know, read as automatic. */
 	unknown: string | null,
+	/**
+	 *  The choice the first-run wizard marks as suggested for this computer (T12.29), from the
+	 *  rules of both preview sessions on where the next meeting's model runs.
+	 */
+	suggested: PreviewsChoice,
 };
 
 /**  Which API the endpoint speaks. */

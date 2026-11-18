@@ -1488,6 +1488,26 @@ pub fn previews_refused_second(
     second_preview_backend(backend, hardware, choice).err()
 }
 
+/// The setting to suggest for a computer whose transcription runs on `backend` (T12.29, the
+/// first-run wizard), from the rules of both sessions: Off when the first session does not run by
+/// default ([`previews_refused`] with the automatic choice: too little or unknown memory, or a
+/// backend without previews), Everyone when the second is allowed as well
+/// ([`previews_refused_second`] under Everyone), else Other people only.
+#[must_use]
+pub fn suggested_previews(
+    backend: BackendKind,
+    hardware: &earshot_hardware::Hardware,
+) -> crate::preview_settings::PreviewSetting {
+    use crate::preview_settings::{PreviewChoice, PreviewSetting};
+    if previews_refused(backend, hardware, PreviewChoice::Automatic).is_some() {
+        PreviewSetting::Off
+    } else if previews_refused_second(backend, hardware, PreviewChoice::Everyone).is_none() {
+        PreviewSetting::Everyone
+    } else {
+        PreviewSetting::OtherPeople
+    }
+}
+
 /// The previews' own session of the model of a track that runs on `backend` (T9.1m): background
 /// threads, the thread budget of a live track, and nothing shared with the track. It loads where
 /// [`preview_backend`] says: the track's backend, or the CPU beside a card too small for it
