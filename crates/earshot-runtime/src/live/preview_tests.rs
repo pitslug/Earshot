@@ -14,7 +14,7 @@ use super::queue_tests::{Scene, by_kind, factory_of, held_config, held_gates, sc
 use super::*;
 use crate::live::preview::{
     COVERED_SLACK, FELL_BEHIND_REASON, ON_BATTERY_REASON, PREVIEW_THREAD_LEFT, PreviewWords,
-    StreamFeed, TestHooks,
+    StopWitness, StreamFeed, TestHooks,
 };
 use crate::live::{LivePreviews, PreviewLoader, PreviewOffReason, PreviewRefusal, PreviewReport};
 use crate::power::{PowerProbe, PowerSource, PowerSupply};
@@ -2204,16 +2204,42 @@ fn live_preview_a_crash_and_a_fell_behind_stop_in_one_look_report_the_crash() {
     ignore = "below-normal threads exist only on Windows; elsewhere the refusal is tested"
 )]
 fn live_preview_on_a_background_thread_runs_and_reports_no_failure() {
+    let report = background_run(false);
+    assert_eq!(report.off, None, "{report:?}");
+    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+}
+
+/// T12.83: a below-normal thread starved until the end wait has run out (a saturated host; here
+/// its `Done` is held until then) still runs and reports no failure, because past the end wait
+/// the session waits for the thread's own witness that it has stopped. Without the witness this
+/// is `PREVIEW_THREAD_LEFT`, as `live_preview_a_thread_left_at_the_end_wait_says_so_in_the_report`
+/// shows for a thread left in a decode.
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "below-normal threads exist only on Windows; elsewhere the refusal is tested"
+)]
+fn live_preview_on_a_starved_background_thread_reports_no_failure_with_the_stop_witness() {
+    let report = background_run(true);
+    assert_eq!(report.off, None, "{report:?}");
+    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+}
+
+/// A replay with previews on a background thread, the production end wait and a stop witness
+/// ([`StopWitness`]), the thread `starved` until the end wait has run out or not.
+fn background_run(starved: bool) -> PreviewReport {
     let scene = scene_of(27);
     let seen = Arc::new(Seen::default());
     let config = LivePreviews {
         background: true,
+        test_hooks: TestHooks {
+            stop: Some(StopWitness::new(starved)),
+            ..TestHooks::default()
+        },
         ..previews(loader(&seen, marker_words))
     };
     let (_, events, ..) = run_with(&scene, Some(config), 331);
-    let report = report_of(&events).expect("a report");
-    assert_eq!(report.off, None, "{report:?}");
-    assert_eq!(report.backend, Some(BackendKind::Fake), "{report:?}");
+    report_of(&events).expect("a report")
 }
 
 /// T12.70: a preview thread that cannot lower its priority gives up before loading, with the
