@@ -1828,9 +1828,19 @@ export type PreviewsView = {
 	unknown: string | null,
 	/**
 	 *  The choice the first-run wizard marks as suggested for this computer (T12.29), from the
-	 *  rules of both preview sessions on where the next meeting's model runs.
+	 *  whole rule a meeting runs on the next meeting's model and where it runs.
 	 */
 	suggested: PreviewsChoice,
+	/**
+	 *  Why "Other people only" would show nothing on this computer (fixed copy), or none when it
+	 *  runs: the wizard disables it with this beside it.
+	 */
+	other_people_refused: string | null,
+	/**
+	 *  Why "Everyone" would not show the user's own voice on this computer (fixed copy), or none
+	 *  when it does: the wizard disables it with this beside it.
+	 */
+	everyone_refused: string | null,
 };
 
 /**  Which API the endpoint speaks. */

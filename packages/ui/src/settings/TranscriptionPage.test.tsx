@@ -30,8 +30,17 @@ describe("Settings, Transcription, provisional words", () => {
   const group = async () => screen.findByRole("radiogroup", { name: PREVIEWS_HEADING });
   const radio = async (name: string) => within(await group()).getByRole("radio", { name }) as HTMLInputElement;
   const view = (choice: PreviewsChoice, can_change = true, note: string | null = null) => ({
-    // A suggestion the page never marks (only the first-run wizard does, T12.29).
-    previews: { choice, can_change, note, unknown: null, suggested: "everyone" as const },
+    // A suggestion the page never marks and refusals it never shows (only the first-run wizard
+    // does, T12.29).
+    previews: {
+      choice,
+      can_change,
+      note,
+      unknown: null,
+      suggested: "everyone" as const,
+      other_people_refused: "A reason for other people.",
+      everyone_refused: "A reason for everyone.",
+    },
   });
 
   it("offers Off, Other people only and Everyone, says what each shows, and stores a change", async () => {
@@ -40,6 +49,9 @@ describe("Settings, Transcription, provisional words", () => {
       .getAllByRole("radio")
       .map((r) => (r as HTMLInputElement).labels?.[0].textContent);
     expect(labels).toEqual(["Off", "Other people only", "Everyone"]);
+    for (const name of ["Off", "Other people only", "Everyone"]) expect((await radio(name)).disabled).toBe(false);
+    expect(screen.queryByText("A reason for other people.")).toBeNull();
+    expect(screen.queryByText("A reason for everyone.")).toBeNull();
     expect((await radio("Other people only")).checked).toBe(true);
     expect(screen.getByText(PREVIEWS_EXPLAINED)).toBeTruthy();
     expect(screen.getByText(PREVIEWS_OTHER_PEOPLE_EXPLAINED)).toBeTruthy();

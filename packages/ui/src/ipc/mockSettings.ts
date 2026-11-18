@@ -181,6 +181,8 @@ export function createSettingsMock(
     note: null,
     unknown: null,
     suggested: SUGGESTED_PREVIEWS[machine],
+    other_people_refused: null,
+    everyone_refused: null,
   };
   const listeners = new Set<(event: VoiceEvent) => void>();
   const emit = (event: VoiceEvent) => {

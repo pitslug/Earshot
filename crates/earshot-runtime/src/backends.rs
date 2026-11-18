@@ -1488,24 +1488,66 @@ pub fn previews_refused_second(
     second_preview_backend(backend, hardware, choice).err()
 }
 
-/// The setting to suggest for a computer whose transcription runs on `backend` (T12.29, the
-/// first-run wizard), from the rules of both sessions: Off when the first session does not run by
-/// default ([`previews_refused`] with the automatic choice: too little or unknown memory, or a
-/// backend without previews), Everyone when the second is allowed as well
-/// ([`previews_refused_second`] under Everyone), else Other people only.
+/// What each provisional words option does on a computer whose next meeting's model `model`
+/// runs on `backend` (T12.29, the first-run wizard): the whole rule a meeting runs, both
+/// sessions' backend rules and the model rule ([`preview_rule`], [`second_preview_rule`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewOptions {
+    /// The option to suggest for this computer: never one refused below.
+    pub suggested: crate::preview_settings::PreviewSetting,
+    /// Why "Other people only" would show nothing, or `None` when it runs.
+    pub other_people: Option<PreviewRefusal>,
+    /// Why "Everyone" would not show the user's own voice, or `None` when it does.
+    pub everyone: Option<PreviewRefusal>,
+}
+
+/// [`PreviewOptions`] for a model `model` on `backend`: "Other people only" is the first session
+/// under the user's "on", "Everyone" the second under Everyone; the suggestion is Off when the
+/// first session does not run by default (the automatic choice: too little or unknown memory,
+/// or a backend or model without previews), Everyone when the second runs as well, else Other
+/// people only.
+#[must_use]
+pub fn preview_options(
+    backend: BackendKind,
+    model: &str,
+    hardware: &earshot_hardware::Hardware,
+) -> PreviewOptions {
+    use crate::preview_settings::{PreviewChoice, PreviewSetting};
+    let first = |choice| {
+        preview_backend_or_refusal(backend, hardware, choice)
+            .and_then(|_| preview_model(model))
+            .err()
+    };
+    let other_people = first(PreviewChoice::On);
+    let everyone = second_preview_backend_or_refusal(backend, hardware, PreviewChoice::Everyone)
+        .and_then(|_| preview_model(model))
+        .err();
+    let suggested = if first(PreviewChoice::Automatic).is_some() {
+        PreviewSetting::Off
+    } else if everyone.is_none() {
+        PreviewSetting::Everyone
+    } else {
+        // Unreachable while every preview memory limit is 12 GiB (the first session's automatic
+        // limit equals the second's on every backend). A limit change that makes it reachable
+        // needs a literal case in `backends_suggested_previews_follow_the_rules_of_both_sessions`
+        // and a new value in the UI mock's `SUGGESTED_PREVIEWS`.
+        PreviewSetting::OtherPeople
+    };
+    PreviewOptions {
+        suggested,
+        other_people,
+        everyone,
+    }
+}
+
+/// The option to suggest for this computer: [`preview_options`]'s.
 #[must_use]
 pub fn suggested_previews(
     backend: BackendKind,
+    model: &str,
     hardware: &earshot_hardware::Hardware,
 ) -> crate::preview_settings::PreviewSetting {
-    use crate::preview_settings::{PreviewChoice, PreviewSetting};
-    if previews_refused(backend, hardware, PreviewChoice::Automatic).is_some() {
-        PreviewSetting::Off
-    } else if previews_refused_second(backend, hardware, PreviewChoice::Everyone).is_none() {
-        PreviewSetting::Everyone
-    } else {
-        PreviewSetting::OtherPeople
-    }
+    preview_options(backend, model, hardware).suggested
 }
 
 /// The previews' own session of the model of a track that runs on `backend` (T9.1m): background

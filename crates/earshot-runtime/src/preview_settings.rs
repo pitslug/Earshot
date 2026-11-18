@@ -109,12 +109,16 @@ fn backend_of(lead: Accelerator) -> BackendKind {
     }
 }
 
-/// The setting the first-run wizard marks as suggested for a machine whose transcription would
-/// lead with `lead` (T12.29): [`crate::backends::suggested_previews`] on the backend the page
-/// judges.
+/// What each option does for a machine whose transcription would lead with `lead` and whose
+/// next meeting uses `model` (T12.29, the first-run wizard): [`crate::backends::preview_options`]
+/// on the backend the page judges.
 #[must_use]
-pub fn suggested_setting(lead: Accelerator, hardware: &Hardware) -> PreviewSetting {
-    crate::backends::suggested_previews(backend_of(lead), hardware)
+pub fn preview_options(
+    lead: Accelerator,
+    model: &str,
+    hardware: &Hardware,
+) -> crate::backends::PreviewOptions {
+    crate::backends::preview_options(backend_of(lead), model, hardware)
 }
 
 /// The page for a machine whose transcription would lead with `lead`.

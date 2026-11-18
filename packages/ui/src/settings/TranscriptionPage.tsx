@@ -12,6 +12,7 @@ import {
   RadioGroup,
   Title2,
   makeStyles,
+  mergeClasses,
   tokens,
 } from "@fluentui/react-components";
 import { useEffect, useId, useState } from "react";
@@ -30,6 +31,14 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+  },
+  option: {
+    display: "flex",
+    flexDirection: "column",
+  },
+  reason: {
+    // Under the option's label, past the radio's circle.
+    paddingLeft: tokens.spacingHorizontalXXXL,
   },
 });
 
@@ -51,24 +60,29 @@ export const PREVIEWS_EVERYONE_EXPLAINED =
 /** How the wizard marks the option Rust suggests for this computer (T12.29). */
 export const PREVIEWS_SUGGESTED = "suggested for this computer";
 
-/** The three options, in order. */
-const PREVIEWS_OPTIONS: { value: PreviewsChoice; label: string }[] = [
-  { value: "off", label: "Off" },
-  { value: "other_people", label: "Other people only" },
-  { value: "everyone", label: "Everyone" },
+/** The three options, in order, with where the app says why one is refused. */
+const PREVIEWS_OPTIONS: {
+  value: PreviewsChoice;
+  label: string;
+  refused(view: PreviewsView): string | null;
+}[] = [
+  { value: "off", label: "Off", refused: () => null },
+  { value: "other_people", label: "Other people only", refused: (v) => v.other_people_refused },
+  { value: "everyone", label: "Everyone", refused: (v) => v.everyone_refused },
 ];
 
 export interface PreviewsSectionProps {
-  /** In the first-run wizard: the choice is saved on Next, not at once, and only when it differs
-   * from what the app shows now. */
+  /** In the first-run wizard (T12.29): the option the app suggests for this computer is marked,
+   * an option the app refuses here is disabled with its reason beside it, the note shows only
+   * for the choice the app shows now, and the choice is saved on Next, not at once, and only
+   * when it differs from that choice. */
   saveOnNext?: SaveOnNext;
-  /** Marks the option the app suggests for this computer (the wizard). */
-  showSuggested?: boolean;
 }
 
 /** Whose provisional words meetings show, from the next meeting: on the Transcription page a
  * choice applies at once; in the wizard it waits for Next. */
-export function PreviewsSection({ saveOnNext, showSuggested = false }: PreviewsSectionProps) {
+export function PreviewsSection({ saveOnNext }: PreviewsSectionProps) {
+  const wizard = saveOnNext !== undefined;
   const styles = useStyles();
   const ipc = useIpc();
   const [view, setView] = useState<PreviewsView | null>(null);
@@ -117,7 +131,10 @@ export function PreviewsSection({ saveOnNext, showSuggested = false }: PreviewsS
 
   const shown = picked ?? view?.choice ?? "";
   const labelOf = (o: (typeof PREVIEWS_OPTIONS)[number]) =>
-    showSuggested && view?.suggested === o.value ? `${o.label} (${PREVIEWS_SUGGESTED})` : o.label;
+    wizard && view?.suggested === o.value ? `${o.label} (${PREVIEWS_SUGGESTED})` : o.label;
+  const refusedOf = (o: (typeof PREVIEWS_OPTIONS)[number]) => (wizard && view !== null ? o.refused(view) : null);
+  // The app's note is about the choice it shows now: in the wizard it goes once another is picked.
+  const note = view?.note != null && (picked === null || picked === view.choice) ? view.note : null;
 
   return (
     <Section title="During a meeting">
@@ -128,18 +145,34 @@ export function PreviewsSection({ saveOnNext, showSuggested = false }: PreviewsS
         disabled={busy || view === null || !view.can_change}
         onChange={(_, d) => {
           const choice = d.value as PreviewsChoice;
-          if (saveOnNext) setPicked(choice);
+          if (wizard) setPicked(choice);
           else void set(choice);
         }}
       >
-        {PREVIEWS_OPTIONS.map((o) => (
-          <Radio key={o.value} value={o.value} label={labelOf(o)} />
-        ))}
+        {PREVIEWS_OPTIONS.map((o) => {
+          const refused = refusedOf(o);
+          return (
+            <div key={o.value} className={styles.option}>
+              <Radio
+                value={o.value}
+                label={labelOf(o)}
+                // Only a refused option names these: any value given here, even undefined, would
+                // replace the group's own disabled.
+                {...(refused !== null ? { disabled: true, "aria-describedby": `${headingId}-${o.value}` } : {})}
+              />
+              {refused !== null && (
+                <Caption1 id={`${headingId}-${o.value}`} className={mergeClasses(styles.muted, styles.reason)}>
+                  {refused}
+                </Caption1>
+              )}
+            </div>
+          );
+        })}
       </RadioGroup>
       <Caption1 className={styles.muted}>{PREVIEWS_EXPLAINED}</Caption1>
       <Caption1 className={styles.muted}>{PREVIEWS_OTHER_PEOPLE_EXPLAINED}</Caption1>
       <Caption1 className={styles.muted}>{PREVIEWS_EVERYONE_EXPLAINED}</Caption1>
-      {view?.note != null && <Caption1 className={styles.muted}>{view.note}</Caption1>}
+      {note !== null && <Caption1 className={styles.muted}>{note}</Caption1>}
       {problem !== null && (
         <MessageBar intent="error">
           <MessageBarBody>{problem}</MessageBarBody>

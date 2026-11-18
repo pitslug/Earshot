@@ -552,7 +552,7 @@ function OptionalExtrasStep({
   }, [running, onRunningChange]);
   return (
     <>
-      <PreviewsSection saveOnNext={saveOnNext} showSuggested />
+      <PreviewsSection saveOnNext={saveOnNext} />
       <ExtraRow title="Obsidian" words={OBSIDIAN_ROW}>
         <ObsidianSection saveOnNext={saveOnNext} />
       </ExtraRow>

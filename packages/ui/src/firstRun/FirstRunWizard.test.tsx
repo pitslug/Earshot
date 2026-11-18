@@ -878,11 +878,89 @@ describe("First run wizard", () => {
     it("marks the option the app suggests, whichever it is", async () => {
       const s = setup({
         settings: {
-          previews: { choice: "other_people", can_change: true, note: null, unknown: null, suggested: "off" },
+          previews: {
+            choice: "other_people",
+            can_change: true,
+            note: null,
+            unknown: null,
+            suggested: "off",
+            other_people_refused: null,
+            everyone_refused: null,
+          },
         },
       });
       await toStep(s, EXTRAS);
       await waitFor(async () => expect(await labelsOf()).toEqual([suggested("Off"), "Other people only", "Everyone"]));
+    });
+
+    it("disables an option the app refuses here, with its reason beside it", async () => {
+      const s = setup({
+        settings: {
+          previews: {
+            choice: "other_people",
+            can_change: true,
+            note: null,
+            unknown: null,
+            suggested: "off",
+            other_people_refused: "A reason for other people.",
+            everyone_refused: "A reason for everyone.",
+          },
+        },
+      });
+      await toStep(s, EXTRAS);
+      const group = await previews();
+      const radio = (name: string) => within(group).getByRole("radio", { name }) as HTMLInputElement;
+      await waitFor(() => expect(radio("Everyone").disabled).toBe(true));
+      expect(radio("Other people only").disabled).toBe(true);
+      expect(radio(suggested("Off")).disabled).toBe(false);
+      expect(radio("Everyone")).toHaveAccessibleDescription("A reason for everyone.");
+      expect(radio("Other people only")).toHaveAccessibleDescription("A reason for other people.");
+      expect(screen.getByText("A reason for everyone.")).toBeInTheDocument();
+    });
+
+    it("disables only the refused option", async () => {
+      const s = setup({
+        settings: {
+          previews: {
+            choice: "off",
+            can_change: true,
+            note: null,
+            unknown: null,
+            suggested: "off",
+            other_people_refused: null,
+            everyone_refused: "Not enough memory here.",
+          },
+        },
+      });
+      await toStep(s, EXTRAS);
+      const group = await previews();
+      const radio = (name: string) => within(group).getByRole("radio", { name }) as HTMLInputElement;
+      await waitFor(() => expect(radio("Everyone").disabled).toBe(true));
+      expect(radio("Other people only").disabled).toBe(false);
+      expect(screen.getByText("Not enough memory here.")).toBeInTheDocument();
+    });
+
+    it("shows the app's note only while the choice it is about is picked", async () => {
+      const note = "A note about this computer.";
+      const s = setup({
+        settings: {
+          previews: {
+            choice: "other_people",
+            can_change: true,
+            note,
+            unknown: null,
+            suggested: "everyone",
+            other_people_refused: null,
+            everyone_refused: null,
+          },
+        },
+      });
+      await toStep(s, EXTRAS);
+      expect(await screen.findByText(note)).toBeInTheDocument();
+      await s.user.click(within(await previews()).getByRole("radio", { name: "Off" }));
+      expect(screen.queryByText(note)).toBeNull();
+      await s.user.click(within(await previews()).getByRole("radio", { name: "Other people only" }));
+      expect(screen.getByText(note)).toBeInTheDocument();
     });
 
     it("Finish saves a changed choice, and nothing before it", async () => {
