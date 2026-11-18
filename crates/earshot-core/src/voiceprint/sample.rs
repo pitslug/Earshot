@@ -632,6 +632,29 @@ pub(super) fn erase<C: Clock + ?Sized>(
     VoiceprintSample::erased(s.id, meta)
 }
 
+/// Erases the samples `ids` (docs/voice-samples.md 2): each live one is written as a tombstone
+/// stamped now, keeping only its id and sync metadata; tombstones and unknown ids are left as
+/// they are. Returns how many were erased; the caller checkpoints after the commit when that
+/// is not 0. The one sample erasure every writer goes through.
+///
+/// # Errors
+/// Storage errors.
+pub fn erase_samples<Repo: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
+    repo: &mut Repo,
+    ids: &[EntityId],
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<usize, VoiceprintError> {
+    let mut n = 0;
+    for &id in ids {
+        if let Some(s) = repo.sample(id)?.filter(|s| !s.is_erased()) {
+            repo.put_sample(erase(&s, hlc, clock)?)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// Takes the voice `speaker` of `meeting` back out (docs/voice-samples.md 6): writes the
 /// tombstone of every live sample from that origin whose person, resolved through merges, is
 /// not `keep`, itself resolved through merges (`None` takes back all). Keyed only on the sample's own meeting and speaker, so
@@ -652,7 +675,7 @@ pub fn take_back<Repo: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
         Some(p) => resolve_person(repo, p)?.map(|p| p.id),
         None => None,
     };
-    let mut n = 0;
+    let mut gone = Vec::new();
     for s in repo.samples_from(meeting, speaker)? {
         let resolved = match s.person_id() {
             Some(p) => resolve_person(repo, p)?.map(|p| p.id),
@@ -661,10 +684,9 @@ pub fn take_back<Repo: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
         if keep.is_some() && resolved == keep {
             continue;
         }
-        repo.put_sample(erase(&s, hlc, clock)?)?;
-        n += 1;
+        gone.push(s.id());
     }
-    Ok(n)
+    erase_samples(repo, &gone, hlc, clock)
 }
 
 /// Adds `embeddings` (from `speech` of the person's audio, from `origin`) to `person`'s

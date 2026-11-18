@@ -561,3 +561,28 @@ fn edit_not_this_person_reports_a_checkpoint_another_connection_blocks() {
         "the take back is committed"
     );
 }
+
+/// T12.77b6 review (6): a voice saved before samples existed and then re-transcribed keeps
+/// its frozen marker (the final pass carries it to the same voice), so saving it again counts
+/// it nothing twice.
+#[test]
+fn edit_a_retranscribed_voice_saved_before_samples_is_not_counted_twice() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 730);
+    let s = remote_speakers(&svc, m)[0].id;
+    let dee = linked(&svc, m, s, "Dee Invented");
+    saved_before_samples_existed(&svc, m, s, dee);
+    let cancel = CancelToken::new();
+    retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let carried = identities_in(&svc.store(), m)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.speaker == s)
+        .unwrap();
+    assert!(carried.enrolled, "the marker is carried to the same voice");
+    let again = save(&svc, m, s, PersonChoice::Existing(dee), true);
+    assert_eq!(again.remembered, Remembered::AlreadySaved);
+    assert!(sample_ids(&svc, m, s).is_empty());
+    assert_eq!(print_count(&svc, dee), Some(1), "only the base");
+}

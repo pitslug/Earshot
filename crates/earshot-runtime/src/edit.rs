@@ -2003,13 +2003,9 @@ fn remember_in(
             Err(e) => return Err(voiceprint_err(e)),
         }
         // Step 3: the earlier sample goes and the new one is saved, in this transaction.
-        for s in &old {
-            let mut meta = *s.meta();
-            meta.mark_deleted(stamp.hlc, stamp.clock);
-            let gone = VoiceprintSample::erased(s.id(), meta).map_err(voiceprint_err)?;
-            tx.put_sample(gone).map_err(voiceprint_err)?;
-            taken_back += 1;
-        }
+        taken_back +=
+            earshot_core::voiceprint::erase_samples(tx, &excluding, stamp.hlc, stamp.clock)
+                .map_err(voiceprint_err)?;
         let origin = SampleOrigin::Meeting {
             meeting,
             speaker: id,

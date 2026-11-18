@@ -657,25 +657,6 @@ fn by_enroll(
     .unwrap()
 }
 
-fn by_sample(
-    repo: &mut InMemoryVoiceprintRepo,
-    p: EntityId,
-    e: &[Embedding],
-    s: Duration,
-    st: &mut Stamp<'_, ManualClock, ChaCha8Rng>,
-) -> EntityId {
-    enroll(
-        repo,
-        p,
-        e,
-        s,
-        SampleOrigin::Own,
-        &EnrolmentConfig::default(),
-        st,
-    )
-    .unwrap()
-}
-
 /// Bits of the sum, count and speech today's `enroll` (`Voiceprint::add`) gives for
 /// [`literal_inputs`], captured on the commit before samples were written.
 const LITERAL_SUM_BITS: [u32; 3] = [3_201_321_966, 1_062_559_678, 1_062_135_987];
@@ -688,15 +669,10 @@ fn voiceprint_enroll_gives_the_literal_sums_captured_before_samples() {
 }
 
 #[test]
-fn voiceprint_enroll_folds_to_what_enroll_stores_bit_for_bit() {
-    let (_, _, want) = enrolled_with(by_enroll);
-    let (repo, ada, got) = enrolled_with(by_sample);
-    assert_eq!(bits(got.sum()), bits(want.sum()));
+fn voiceprint_enroll_writes_one_zero_base_print_and_a_sample_per_embedding() {
+    let (repo, ada, got) = enrolled_with(by_enroll);
     assert_eq!(bits(got.sum()), LITERAL_SUM_BITS);
-    assert_eq!(
-        (got.count(), got.speech_ms()),
-        (want.count(), want.speech_ms())
-    );
+    assert_eq!((got.count(), got.speech_ms()), (3, 16_346));
     // A zero-base print row, written once, and one sample per embedding.
     let prints = repo.voiceprints_of(ada).unwrap();
     assert_eq!(prints.len(), 1);

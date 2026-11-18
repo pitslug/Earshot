@@ -29,8 +29,8 @@ mod tests;
 
 pub use sample::{
     Effective, MAX_EMBEDDING_DIM, MAX_SAMPLE_SPEECH_MS, SAMPLE_NORM_TOLERANCE, SampleOrigin,
-    SampleRecord, VoiceprintSample, admissible, effective, enroll, live_prints, live_prints_of,
-    saved_before_samples, take_back, unit_vector,
+    SampleRecord, VoiceprintSample, admissible, effective, enroll, erase_samples, live_prints,
+    live_prints_of, saved_before_samples, take_back, unit_vector,
 };
 
 use std::collections::BTreeMap;
@@ -642,10 +642,8 @@ pub fn forget_voiceprints<R: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
             }
         }
     }
-    for s in samples.into_values() {
-        repo.put_sample(sample::erase(&s, hlc, clock)?)?;
-        out.samples += 1;
-    }
+    let ids: Vec<EntityId> = samples.into_keys().collect();
+    out.samples = erase_samples(repo, &ids, hlc, clock)?;
     Ok(out)
 }
 
@@ -732,8 +730,10 @@ where
         .model;
     check_embeddings(embeddings, model, None)?;
     let has_print = match existing_me(repo)? {
-        Some(me) => sample::enrolment_print(repo, me.id, model)?
-            .is_some_and(|v| sample::effective_of(repo, &v, &[]).is_ok_and(|e| e.count() > 0)),
+        Some(me) => match sample::enrolment_print(repo, me.id, model)? {
+            Some(v) => sample::effective_of(repo, &v, &[])?.count() > 0,
+            None => false,
+        },
         None => false,
     };
     if !has_print && speech < config.min_new_speech {

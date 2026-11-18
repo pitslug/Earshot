@@ -1718,8 +1718,10 @@ where
                             // The user's edit, kept: an edit for the next run too.
                             given_stamp: None,
                             user_edited: true,
-                            // A new centroid: saving the voice may add it.
-                            enrolled: false,
+                            // The same voice: a save from before samples (the frozen marker,
+                            // docs/voice-samples.md 5.2) still counts, so a re-save adds it
+                            // nothing again.
+                            enrolled: identity.enrolled,
                             // An ignored voice stays ignored (T12.19).
                             ignored: identity.ignored,
                         });
@@ -1762,6 +1764,11 @@ where
                     next_unknown += 1;
                     (None, format!("Speaker {next_unknown}"))
                 };
+                // A save from before samples carries to the same voice still linked to the
+                // same person (the frozen marker, docs/voice-samples.md 5.2).
+                let carried_marker = earlier_speaker
+                    .as_ref()
+                    .is_some_and(|(_, i)| i.enrolled && i.given_person == person);
                 // An earlier speaker without an edit: its row, named by this run.
                 let row = match earlier_speaker {
                     Some((row, _)) => {
@@ -1799,7 +1806,7 @@ where
                         // The row as this pass left it: any later write is an edit.
                         given_stamp: Some(row.meta.updated_at),
                         user_edited: false,
-                        enrolled: false,
+                        enrolled: carried_marker,
                         ignored: false,
                     });
                 }
@@ -1973,6 +1980,9 @@ where
                 }
                 // Always the user's person: a Me row is linked to no one else (`link_speaker`
                 // refuses it), so nothing is enrolled into another person.
+                // A diarised Me with no Me row cannot happen (the rows above give every worded
+                // voice one); "Me" enrolment is off in every shipped build anyway, so nothing is
+                // enrolled then rather than with an origin no take back could reach.
                 let result = match me_row {
                     _ if saved => Err(None),
                     Some(speaker) => enroll_me(

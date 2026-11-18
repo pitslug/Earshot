@@ -2710,7 +2710,7 @@ fn sync_a_forgotten_voiceprint_stays_forgotten_when_a_later_live_copy_arrives() 
     let (a, b) = pair(&relay);
     set_sync_voiceprints(&a.svc, true).unwrap();
     set_sync_voiceprints(&b.svc, true).unwrap();
-    // Prints in today's shape and an older build's live copy: the clients send them (no hold).
+    // Seeding prints in today's shape, and an older build's live copy: sent with no hold.
     let (ca, cb) = (
         a.client().with_push_hold(PushHold::Off),
         b.client().with_push_hold(PushHold::Off),
@@ -2721,6 +2721,9 @@ fn sync_a_forgotten_voiceprint_stays_forgotten_when_a_later_live_copy_arrives() 
     assert_eq!(print_state(&b, print), (false, false), "B has the print");
     a.clock.advance_ms(1_000);
     crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    // The forgetting computer runs this build: its Forget and re-stamps go under the hold.
+    let ca = a.client();
+    assert_eq!(ca.hold(), PUSH_HOLD);
     ca.tick().unwrap();
     // B writes it live afterwards by its own clock and pushes first: the relay keeps it.
     b.clock.advance_ms(5_000);
@@ -2750,7 +2753,7 @@ fn sync_a_superseded_voiceprint_tombstone_wins_on_the_next_push() {
     let (a, b) = pair(&relay);
     set_sync_voiceprints(&a.svc, true).unwrap();
     set_sync_voiceprints(&b.svc, true).unwrap();
-    // Prints in today's shape and an older build's live copy: the clients send them (no hold).
+    // Seeding prints in today's shape, and an older build's live copy: sent with no hold.
     let (ca, cb) = (
         a.client().with_push_hold(PushHold::Off),
         b.client().with_push_hold(PushHold::Off),
@@ -2760,6 +2763,9 @@ fn sync_a_superseded_voiceprint_tombstone_wins_on_the_next_push() {
     cb.tick().unwrap();
     a.clock.advance_ms(1_000);
     crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    // The forgetting computer runs this build: its Forget and re-stamps go under the hold.
+    let ca = a.client();
+    assert_eq!(ca.hold(), PUSH_HOLD);
     // Before A pushes, B writes the print live later and pushes it.
     b.clock.advance_ms(5_000);
     write_print_live_again(&b, print);
@@ -2790,7 +2796,7 @@ fn sync_a_pulled_voiceprint_tombstone_erases_this_computers_samples_of_it() {
     let (a, b) = pair(&relay);
     set_sync_voiceprints(&a.svc, true).unwrap();
     set_sync_voiceprints(&b.svc, true).unwrap();
-    // Prints in today's shape and an older build's live copy: the clients send them (no hold).
+    // Seeding prints in today's shape, and an older build's live copy: sent with no hold.
     let (ca, cb) = (
         a.client().with_push_hold(PushHold::Off),
         b.client().with_push_hold(PushHold::Off),
@@ -2826,6 +2832,9 @@ fn sync_a_pulled_voiceprint_tombstone_erases_this_computers_samples_of_it() {
     };
     a.clock.advance_ms(1_000);
     crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    // The forgetting computer runs this build: its Forget and re-stamps go under the hold.
+    let ca = a.client();
+    assert_eq!(ca.hold(), PUSH_HOLD);
     ca.tick().unwrap();
     b.clock.advance_ms(1_000);
     cb.tick().unwrap();
