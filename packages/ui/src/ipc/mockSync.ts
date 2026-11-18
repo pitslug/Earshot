@@ -55,6 +55,9 @@ export const SYNC_COMMAND_PROBLEMS: Record<SyncProblemWord, string> = table.comm
 /** What the app says when the setup secret is left empty. */
 export const SECRET_MISSING = table.secret_missing;
 
+/** What the app says when the last sync skipped damaged queued items (T12.77b8). */
+export const UNSENDABLE_NOTE = table.unsendable_note;
+
 /** What the app says about an address over `MAX_ADDRESS_CHARS` (Rust's copy, not in the table). */
 export const ADDRESS_TOO_LONG = "The address is too long.";
 
@@ -103,6 +106,8 @@ export interface SyncMockData {
   held?: number;
   /** Rows from other devices that could not be read (default 0). */
   unreadable?: number;
+  /** Whether the last sync skipped damaged queued rows (default false). */
+  unsendable?: boolean;
   /** The vault's devices (default: this computer and three others). */
   devices?: SyncDeviceView[];
   /** "Write summaries for my other computers" (default false). */
@@ -282,6 +287,7 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     stopped,
     unreadable,
     waiting,
+    unsendable_note: data.unsendable === true ? UNSENDABLE_NOTE : null,
     held,
     offers_summaries: offersSummaries,
     device_name: deviceName,

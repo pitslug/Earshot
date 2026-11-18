@@ -2523,8 +2523,10 @@ export type SyncView = {
 	stopped: boolean,
 	/**  Rows from other devices that could not be read, in all. */
 	unreadable: number,
-	/**  Rows changed here and not yet sent. */
+	/**  Rows changed here and not yet sent (damaged ones the last sync skipped left out). */
 	waiting: number,
+	/**  [`UNSENDABLE_NOTE`] when the last sync skipped damaged queued rows. */
+	unsendable_note: string | null,
 	/**  Rows from other devices held for later. */
 	held: number,
 	/**  "Write summaries for my other computers" (T11.3db). */

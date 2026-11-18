@@ -226,7 +226,8 @@ fn voiceprint_sample_vector_survives_the_wire_bit_for_bit() {
 
 #[test]
 fn voiceprint_sample_of_the_largest_dimension_fits_the_sync_plaintext() {
-    // earshot_sync::MAX_PLAINTEXT (192 KiB); values chosen to print at their longest.
+    // earshot_sync::MAX_PLAINTEXT (192 KiB), which core cannot name; the real limit is pinned
+    // through `seal_row` in earshot-sync (`sync_voice_sample_of_the_largest_dimension_...`).
     const MAX_PLAINTEXT: usize = 192 * 1024;
     let x = -(1.0f32 / 64.0).next_down();
     let p = print(&vec![0.0; MAX_EMBEDDING_DIM], 0, 0);

@@ -385,3 +385,71 @@ fn sync_debug_never_shows_key_material() {
         assert!(shown.ends_with("(..)"), "{shown}");
     }
 }
+
+/// T12.77b8: rows of format 1, written before the raise, still open under format 2.
+#[test]
+fn sync_format_one_rows_still_open_after_the_raise() {
+    assert_eq!(ENVELOPE_FORMAT, 2);
+    let keys = key(1).keys();
+    let m = meeting(1, "Invented review");
+    let mut plain = serde_json::to_value(earshot_core::identity::sync_envelope(&m)).unwrap();
+    plain["format"] = 1.into();
+    let bytes = serde_json::to_vec(&plain).unwrap();
+    let s = seal_plaintext(&keys, keys.row_key(m.id), m.meta.updated_at, &bytes).unwrap();
+    let row = opened(open_row(&keys, s.key, s.stamp, &s.body).unwrap());
+    assert_eq!((row.format, row.entity.as_str()), (1, "meeting"));
+    let back: Meeting = serde_json::from_value(row.record).unwrap();
+    assert_eq!(back, m);
+}
+
+/// T12.77b8: a voice sample of the largest dimension seals under the real `MAX_PLAINTEXT`,
+/// with values chosen to print at their longest in both of serde_json's forms (exponent and
+/// decimal).
+#[test]
+fn sync_voice_sample_of_the_largest_dimension_seals_within_the_plaintext_limit() {
+    use earshot_core::diar::EmbeddingModelId;
+    use earshot_core::voiceprint::{
+        MAX_EMBEDDING_DIM, MAX_SAMPLE_SPEECH_MS, SampleRecord, VoiceprintSample,
+    };
+    let n = MAX_EMBEDDING_DIM;
+    // One component carries the length; every other prints in exponent form at its longest.
+    let mut exponent = vec![-f32::MIN_POSITIVE; n];
+    exponent[0] = 0.999_999_94;
+    // Every component the same, as long as a decimal f32 of that size prints.
+    #[allow(clippy::cast_precision_loss)]
+    let decimal = vec![-(1.0 / (n as f32).sqrt()).next_down(); n];
+    for (what, vector) in [("exponent", exponent), ("decimal", decimal)] {
+        let at = stamp(1_800_000_000_500, u32::MAX);
+        let s = VoiceprintSample::from_stored(SampleRecord {
+            id: id(1),
+            meta: SyncMeta {
+                created_at: at,
+                updated_at: at,
+                deleted: false,
+                origin_device_id: DEVICE,
+            },
+            voiceprint_id: Some(id(2)),
+            person_id: Some(id(3)),
+            model: Some(EmbeddingModelId::new("m".repeat(64))),
+            vector,
+            speech_ms: Some(MAX_SAMPLE_SPEECH_MS),
+            meeting_id: Some(id(4)),
+            speaker_id: Some(id(5)),
+        })
+        .unwrap();
+        let mut plain = serde_json::to_value(earshot_core::identity::sync_envelope(&s)).unwrap();
+        plain["format"] = ENVELOPE_FORMAT.into();
+        let len = serde_json::to_vec(&plain).unwrap().len();
+        // About 99 kB in exponent form (2026-11-18): about half the limit to spare.
+        assert!(len < MAX_PLAINTEXT, "{what}: {len} bytes");
+        let sealed = seal_row(&keys_for_samples(), &s).unwrap();
+        let row =
+            opened(open_row(&keys_for_samples(), sealed.key, sealed.stamp, &sealed.body).unwrap());
+        let back: VoiceprintSample = serde_json::from_value(row.record).unwrap();
+        assert_eq!(back, s, "{what}");
+    }
+}
+
+fn keys_for_samples() -> Keys {
+    key(2).keys()
+}

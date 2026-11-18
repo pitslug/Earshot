@@ -48,6 +48,9 @@ pub struct TickReport {
     pub superseded: usize,
     /// Rows left queued because they could not be sealed (over the size limit, or audio).
     pub refused: usize,
+    /// Queued rows this device could not read to send (a damaged voice sample row), left
+    /// queued and skipped; the most found in one push page.
+    pub unsendable: usize,
     /// Rows pulled (held rows tried again not included).
     pub pulled: usize,
     /// Rows written here.
@@ -147,16 +150,8 @@ pub type WorkerWriter =
     std::sync::Arc<dyn Fn() -> Option<crate::offload::WriterKind> + Send + Sync>;
 
 /// The sync client of one device: the relay at the stored address and the device's vault.
-/// What a push holds back in this build: live voiceprints and voice samples, since every
-/// enrolment writes samples (T12.77b6; docs/voice-samples.md 7.1). T12.77b8 removes it.
-pub const PUSH_HOLD: PushHold = PushHold::Samples;
-
-pub use earshot_store::PushHold;
-
 pub struct SyncClient {
     services: Services,
-    /// [`PUSH_HOLD`]; tests drive it on ([`SyncClient::with_push_hold`]).
-    hold: PushHold,
     vault: std::sync::Arc<dyn SyncVault>,
     relay: Relay,
     device: DeviceId,
@@ -178,35 +173,6 @@ pub struct SyncClient {
 impl std::fmt::Debug for SyncClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SyncClient").finish_non_exhaustive()
-    }
-}
-
-/// One push page under `hold` (docs/voice-samples.md 7.1): the ordinary outbox rows, and with
-/// [`PushHold::Samples`] the outbox's voiceprint tombstones too, read even when the ordinary
-/// page is empty, oldest `updated_at` first. What it can return is what
-/// `Store::outbox_len_held` counts.
-pub(super) fn page_under(
-    store: &earshot_store::Store,
-    limit: usize,
-    recording: &[EntityId],
-    kinds: SyncKinds,
-    hold: PushHold,
-) -> Result<Vec<SyncedRow>, earshot_store::StoreError> {
-    match hold {
-        PushHold::Off => store.outbox_except(limit, recording, kinds),
-        PushHold::Samples => {
-            let others = SyncKinds {
-                voiceprints: false,
-                ..kinds
-            };
-            let mut rows = store.outbox_except(limit, recording, others)?;
-            if kinds.voiceprints {
-                rows.extend(store.outbox_tombstones("voiceprint", limit)?);
-                rows.sort_by_key(|r| r.meta().updated_at);
-                rows.truncate(limit);
-            }
-            Ok(rows)
-        }
     }
 }
 
@@ -248,11 +214,18 @@ pub(super) fn open(
     body: Vec<u8>,
 ) -> Result<Incoming, ()> {
     let key: [u8; ROW_KEY_LEN] = key.try_into().map_err(|_| ())?;
-    let row = match open_row(keys, RowKey(key), stamp, &body).map_err(|_| ())? {
-        Opened::NewerFormat(_) => None,
+    let (row, entity) = match open_row(keys, RowKey(key), stamp, &body).map_err(|_| ())? {
+        Opened::NewerFormat(_) => (None, None),
         // A known entity whose fields this build cannot read was written by a newer Earshot
-        // that did not raise the format: held like a newer format, never skipped past.
-        Opened::Row(row) => SyncedRow::decode(&row.entity, row.record).unwrap_or(None),
+        // that did not raise the format (or is a damaged voice sample): held like a newer
+        // format, never skipped past, unless its kind is switched off here.
+        Opened::Row(row) => {
+            let entity = row.entity.clone();
+            (
+                SyncedRow::decode(&row.entity, row.record).unwrap_or(None),
+                Some(entity),
+            )
+        }
     };
     Ok(Incoming {
         key,
@@ -260,6 +233,7 @@ pub(super) fn open(
         stamp,
         body,
         row,
+        entity,
     })
 }
 
@@ -304,7 +278,6 @@ impl SyncClient {
         let relay = Relay::new(address, std::sync::Arc::clone(&services.clock))?;
         Ok(Self {
             services,
-            hold: PUSH_HOLD,
             vault,
             relay,
             device,
@@ -314,19 +287,6 @@ impl SyncClient {
             model_place: None,
             changes: None,
         })
-    }
-
-    /// The push hold this client sends under (what its waiting count must count).
-    #[must_use]
-    pub fn hold(&self) -> PushHold {
-        self.hold
-    }
-
-    /// This client with a push hold other than [`PUSH_HOLD`] (tests).
-    #[cfg(test)]
-    pub(crate) fn with_push_hold(mut self, hold: PushHold) -> Self {
-        self.hold = hold;
-        self
     }
 
     /// The client for the relay at `address` rather than the stored one: the summary worker
@@ -536,6 +496,7 @@ impl SyncClient {
                 Ok(()) => {
                     status.problem = None;
                     status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
+                    status.unsendable = u64::try_from(report.unsendable).unwrap_or(u64::MAX);
                 }
                 Err(p) => status.problem = Some(*p),
             }
@@ -565,52 +526,58 @@ impl SyncClient {
         kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
-        for _ in 0..MAX_PUSH_PAGES {
-            if self.stopping() {
-                return Ok(());
-            }
-            let recording = self.services.recording_meetings();
-            let mut rows = page_under(
-                &self.services.store(),
-                PUSH_PAGE,
-                &recording,
-                kinds,
-                self.hold,
-            )?;
-            if rows.is_empty() {
-                return Ok(());
-            }
-            let full = rows.len() == PUSH_PAGE;
-            // A recording that started while the page was read: its rows wait too.
-            let now_recording = self.services.recording_meetings();
-            rows.retain(|r| r.meeting().is_none_or(|m| !now_recording.contains(&m)));
-            let mut sent: Vec<(&'static str, EntityId, HlcTimestamp)> = Vec::new();
-            let mut batch = Vec::new();
-            let mut bytes = 0;
-            for row in &rows {
-                let sealed = match seal(keys, row) {
-                    Ok(s) => s,
-                    Err(SealError::Refused(_)) => {
-                        report.refused += 1;
-                        continue;
-                    }
-                    Err(_) => return Err(SyncProblem::Internal),
-                };
-                if bytes + sealed.body.len() > PUSH_BYTES && !batch.is_empty() {
-                    self.send(token, std::mem::take(&mut batch), &mut sent, report)?;
-                    bytes = 0;
+        // Queued rows that cannot be read (a damaged voice sample row) stay queued and are
+        // reported, never sent: one damaged row never stops every push.
+        let mut unreadable = 0;
+        let result = (|| {
+            for _ in 0..MAX_PUSH_PAGES {
+                if self.stopping() {
+                    return Ok(());
                 }
-                bytes += sealed.body.len();
-                batch.push((row.table(), row.id(), wire_row(sealed)));
+                let recording = self.services.recording_meetings();
+                let page = self
+                    .services
+                    .store()
+                    .outbox_page(PUSH_PAGE, &recording, kinds)?;
+                unreadable = unreadable.max(page.unreadable);
+                let mut rows = page.rows;
+                if rows.is_empty() {
+                    return Ok(());
+                }
+                let full = rows.len() + page.unreadable >= PUSH_PAGE;
+                // A recording that started while the page was read: its rows wait too.
+                let now_recording = self.services.recording_meetings();
+                rows.retain(|r| r.meeting().is_none_or(|m| !now_recording.contains(&m)));
+                let mut sent: Vec<(&'static str, EntityId, HlcTimestamp)> = Vec::new();
+                let mut batch = Vec::new();
+                let mut bytes = 0;
+                for row in &rows {
+                    let sealed = match seal(keys, row) {
+                        Ok(s) => s,
+                        Err(SealError::Refused(_)) => {
+                            report.refused += 1;
+                            continue;
+                        }
+                        Err(_) => return Err(SyncProblem::Internal),
+                    };
+                    if bytes + sealed.body.len() > PUSH_BYTES && !batch.is_empty() {
+                        self.send(token, std::mem::take(&mut batch), &mut sent, report)?;
+                        bytes = 0;
+                    }
+                    bytes += sealed.body.len();
+                    batch.push((row.table(), row.id(), wire_row(sealed)));
+                }
+                if !batch.is_empty() {
+                    self.send(token, batch, &mut sent, report)?;
+                }
+                if sent.is_empty() || !full {
+                    return Ok(());
+                }
             }
-            if !batch.is_empty() {
-                self.send(token, batch, &mut sent, report)?;
-            }
-            if sent.is_empty() || !full {
-                return Ok(());
-            }
-        }
-        Ok(())
+            Ok(())
+        })();
+        report.unsendable = unreadable;
+        result
     }
 
     /// Sends one request and marks its rows sent (a superseded row too: the newer copy comes

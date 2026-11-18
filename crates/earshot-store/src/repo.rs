@@ -1121,40 +1121,65 @@ pub(crate) fn synced_by_id(
     table: &str,
     id: EntityId,
 ) -> Result<Option<crate::sync::SyncedRow>, RepoError> {
+    synced_by_id_raw(c, table, id).map_err(storage)
+}
+
+/// [`synced_by_id`] that tells a row whose stored values do not convert (a damaged row: its
+/// check or a column's value refused) apart from any other store error: `Ok(Err(()))` for the
+/// damaged row, `Err` for everything else.
+pub(crate) fn synced_by_id_or_damaged(
+    c: &Connection,
+    table: &str,
+    id: EntityId,
+) -> Result<Result<Option<crate::sync::SyncedRow>, ()>, RepoError> {
+    match synced_by_id_raw(c, table, id) {
+        Ok(row) => Ok(Ok(row)),
+        Err(
+            rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::InvalidColumnType(..),
+        ) => Ok(Err(())),
+        Err(e) => Err(storage(e)),
+    }
+}
+
+fn synced_by_id_raw(
+    c: &Connection,
+    table: &str,
+    id: EntityId,
+) -> rusqlite::Result<Option<crate::sync::SyncedRow>> {
     use crate::sync::SyncedRow as R;
+    fn q<T>(
+        c: &Connection,
+        sql: &str,
+        params: &[Value],
+        f: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<Vec<T>> {
+        let mut st = c.prepare_cached(sql)?;
+        let rows = st.query_map(params_from_iter(params.iter()), f)?;
+        rows.collect()
+    }
     let sql = |cols: &[&'static str]| select_sql(table, &synced_cols(cols), "WHERE id = ?1");
     let p = [id_value(id)];
     Ok(match table {
-        "meeting" => query(c, &sql(&MEETING), &p, meeting_row)?
-            .pop()
-            .map(R::Meeting),
-        "track" => query(c, &sql(&TRACK), &p, track_row)?.pop().map(R::Track),
-        "segment" => query(c, &sql(&SEGMENT), &p, segment_row)?
-            .pop()
-            .map(R::Segment),
-        "speaker" => query(c, &sql(&SPEAKER), &p, speaker_row)?
-            .pop()
-            .map(R::Speaker),
-        "note" => query(c, &sql(&NOTE), &p, note_row)?.pop().map(R::Note),
-        "summary" => query(c, &sql(&SUMMARY), &p, summary_row)?
-            .pop()
-            .map(R::Summary),
-        "person" => query(c, &sql(&PERSON), &p, person_row)?
-            .pop()
-            .map(R::Person),
-        "voiceprint" => query(c, &sql(&VOICEPRINT), &p, voiceprint_row)?
+        "meeting" => q(c, &sql(&MEETING), &p, meeting_row)?.pop().map(R::Meeting),
+        "track" => q(c, &sql(&TRACK), &p, track_row)?.pop().map(R::Track),
+        "segment" => q(c, &sql(&SEGMENT), &p, segment_row)?.pop().map(R::Segment),
+        "speaker" => q(c, &sql(&SPEAKER), &p, speaker_row)?.pop().map(R::Speaker),
+        "note" => q(c, &sql(&NOTE), &p, note_row)?.pop().map(R::Note),
+        "summary" => q(c, &sql(&SUMMARY), &p, summary_row)?.pop().map(R::Summary),
+        "person" => q(c, &sql(&PERSON), &p, person_row)?.pop().map(R::Person),
+        "voiceprint" => q(c, &sql(&VOICEPRINT), &p, voiceprint_row)?
             .pop()
             .map(R::Voiceprint),
-        "folder" => query(c, &sql(&FOLDER), &p, folder_row)?
-            .pop()
-            .map(R::Folder),
-        "summary_request" => query(c, &sql(&SUMMARY_REQUEST), &p, summary_request_row)?
+        "folder" => q(c, &sql(&FOLDER), &p, folder_row)?.pop().map(R::Folder),
+        "summary_request" => q(c, &sql(&SUMMARY_REQUEST), &p, summary_request_row)?
             .pop()
             .map(R::SummaryRequest),
-        "dictionary_word" => query(c, &sql(&DICTIONARY_WORD), &p, dictionary_word_row)?
+        "dictionary_word" => q(c, &sql(&DICTIONARY_WORD), &p, dictionary_word_row)?
             .pop()
             .map(R::DictionaryWord),
-        "voiceprint_sample" => query(c, &sql(&VOICEPRINT_SAMPLE), &p, voiceprint_sample_row)?
+        "voiceprint_sample" => q(c, &sql(&VOICEPRINT_SAMPLE), &p, voiceprint_sample_row)?
             .pop()
             .map(R::VoiceprintSample),
         _ => None,

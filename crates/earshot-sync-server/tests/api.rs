@@ -872,3 +872,66 @@ async fn relay_answers_unknown_calls_with_a_fixed_word() {
         assert!(StatusCode::from_u16(w.status()).unwrap().is_client_error() || w.status() == 500);
     }
 }
+
+/// T12.77b8: a format-1 pull racing the format-2 push that raises the vault either sees the
+/// vault as it was before the push (none of its rows) or is refused `update_needed`; it never
+/// receives a row of the push (the format is read in the pull's own transaction).
+///
+/// The interleaving cannot be forced from outside: the format check and the row read happen
+/// inside one call under the relay's database lock, with no seam between them to stop at, so the
+/// test races real tasks on several threads and prints how the pulls fell. A round where every
+/// pull landed on one side still checks the rule; it just did not exercise the race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_a_format_one_pull_racing_the_raise_never_gets_a_pushed_row() {
+    let raised = b64(&[9; 16]);
+    let (mut before, mut refused) = (0, 0);
+    for round in 0..20u8 {
+        let h = Arc::new(harness(&format!("race-{round}")));
+        let t = h.register(1, 0xC1).await;
+        let old =
+            serde_json::to_vec(&json!({"format": 1, "rows": [row(1, 1, 0, b"old")]})).unwrap();
+        let (s, _) = h
+            .call("POST", "/v1/rows", Some(&t), Some(1), Some(old))
+            .await;
+        assert_eq!(s, StatusCode::OK);
+        let mut pulls = Vec::new();
+        for _ in 0..8 {
+            let (h, t) = (Arc::clone(&h), t.clone());
+            pulls.push(tokio::spawn(async move {
+                h.call("GET", "/v1/rows", Some(&t), Some(1), None).await
+            }));
+        }
+        let new = serde_json::to_vec(
+            &json!({"format": 2, "rows": [row(9, 2, 0, b"new"), row(8, 3, 0, b"new")]}),
+        )
+        .unwrap();
+        let (s, _) = h
+            .call("POST", "/v1/rows", Some(&t), Some(2), Some(new))
+            .await;
+        assert_eq!(s, StatusCode::OK);
+        for p in pulls {
+            let (s, v) = p.await.unwrap();
+            if s == StatusCode::OK {
+                let rows = v["rows"].as_array().unwrap();
+                assert!(
+                    rows.iter().all(|r| r["key"] != raised.as_str()),
+                    "round {round}: {v}"
+                );
+                assert_eq!(rows.len(), 1, "round {round}: only the old row");
+                assert_eq!(v["vault_format"], 1, "round {round}");
+                before += 1;
+            } else {
+                assert_eq!(
+                    (s, error_of(&v)),
+                    (StatusCode::CONFLICT, "update_needed"),
+                    "round {round}"
+                );
+                refused += 1;
+            }
+        }
+        // After the push every format-1 pull is refused.
+        let (s, v) = h.call("GET", "/v1/rows", Some(&t), Some(1), None).await;
+        assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "update_needed"));
+    }
+    println!("format-1 pulls: {before} before the raise, {refused} refused update_needed");
+}

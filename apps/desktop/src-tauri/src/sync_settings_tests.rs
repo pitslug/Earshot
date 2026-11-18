@@ -111,6 +111,10 @@ fn sync_copy_matches_the_shared_table_for_every_problem() {
         Some(empty.message.as_str()),
         table["secret_missing"].as_str()
     );
+    assert_eq!(
+        Some(super::UNSENDABLE_NOTE),
+        table["unsendable_note"].as_str()
+    );
 }
 
 #[test]

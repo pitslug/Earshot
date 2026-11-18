@@ -121,6 +121,9 @@ required-features = ["engines"]
 test = true
 
 [dev-dependencies]
+# The sync tests damage a stored row and read the relay's database (the same version and
+# features as earshot-store's, so no dependency feature widens).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Signing the releases the update tests serve.
 earshot-update = { path = "../earshot-update", features = ["sign"] }
 # Loopback mock LLM endpoint (test support only; the ci `net` step fails if a shipped

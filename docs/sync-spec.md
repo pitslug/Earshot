@@ -53,8 +53,10 @@ All derived from the vault key `K` with HKDF-SHA256, empty salt, these `info` st
 ```
 0x01 | nonce (24 bytes, random) | XChaCha20-Poly1305(k_row, nonce, plaintext, aad)
 aad = "earshot-row-v1" | row_key (16) | wall_ms (u64 BE) | logical (u32 BE) | node (16)
-plaintext = JSON of SyncEnvelope { entity, class, id, meta, record }, plus "format": 1
+plaintext = JSON of SyncEnvelope { entity, class, id, meta, record }, plus "format": 2
 ```
+
+- `"format"` is `earshot_sync::ENVELOPE_FORMAT`: 1 until T12.77b8, 2 since (voice samples, docs/voice-samples.md 7.3). Rows written at format 1 still open; a row above this build's format is kept unopened (section 5).
 
 - The stamp in the associated data is the row's `updated_at`. The relay cannot attach a ciphertext to another row key or stamp without the open failing.
 - Opening checks, in order: the leading byte, the tag, that the envelope's `id` hashes to the row key, that `meta.updated_at` equals the stamp sent beside it. Any failure is `Unreadable` with a fixed reason word, never the bytes.
@@ -96,7 +98,7 @@ Rules:
 - **Pairing slots.** One use, 10 minutes. `take` deletes the wrapped key and marks the slot taken; the slot stays valid for one registration for the rest of its 10 minutes.
 - **Push.** A row is accepted when the relay holds no row for `key` or its stamp is later; otherwise its key is listed in `superseded` and nothing changes. An accepted row replaces the old one and gets the next `seq`. `seq` in the response is the vault's highest.
 - **Pull.** Rows with `seq > after`, ascending, at most `limit` (1 to 500, default 200) and at most 4 MiB of bodies. `more` says another page exists.
-- **Format.** `format` on a push is the highest envelope format the device writes. The vault's format is the highest ever pushed. A push or pull from a device whose `format` (header `Earshot-Sync-Format`) is lower than the vault's is `409 update_needed`.
+- **Format.** `format` on a push is the highest envelope format the device writes. The vault's format is the highest ever pushed. A push or pull from a device whose `format` (header `Earshot-Sync-Format`) is lower than the vault's is `409 update_needed`. A pull reads the vault's format in the same read transaction as its rows (T12.77b8), and a push raises it in the transaction that stores its rows, so a device below the format never receives a row of the push that raised it.
 - **Limits.** 256 KiB per decoded row body (the client's 192 KiB plaintext limit plus the seal always fits), 4 MiB per request, 16 KiB per presence blob. Over a limit is `413`.
 - **Errors.** `{error: <word>}` with a status: `400 bad_request`, `401 unknown_device`, `403 bad_secret`, `404 no_slot`, `404 not_found` (an unknown path or method), `409 key_mismatch`, `409 update_needed`, `409 device_exists` (a pairing code naming a live device id, one registered and not revoked: a code never registers over a live device; only the setup secret does), `413 too_large`, `429 slow_down`, `500 internal`. Every answer that is not a success is one of these. The client maps each word to fixed copy; no server text reaches a window.
 - **Rate limits.** `pairing/take` and `devices`: 10 failures per minute per address, then `429`. Behind the reverse proxy every caller has the proxy's address, so the limit is shared: a stranger's ten guesses make the owner wait a minute to register or pair. Accepted for calls made once per device; `X-Forwarded-For` is not trusted.
@@ -318,6 +320,8 @@ What T11.3db built in the app (`apps/desktop/src-tauri/src/offload.rs`): the Syn
 ### 10.2 Dictionary (T11.3e)
 
 `dictionary_word(id, META, word TEXT NOT NULL)`, class `SyncableOptIn`. Rules as `docs/sync.md` section 9. `settings/vocabulary` stays what summaries read.
+
+The one exception to "a new entity keeps the format" is voice samples (T12.77b8, the owner, 2026-11-18; docs/voice-samples.md 7.3): `ENVELOPE_FORMAT` is 2, because a format-1 build would apply the prints and hold the samples, reading a voiceprint whose voice now lives in its samples as empty. The vault rises at the first push from a 0.4.0 device, samples or not, and every older build and worker in it then gets `update_needed` until it updates.
 
 What T11.3e ships (store migration 8; a new entity, so no `ENVELOPE_FORMAT` change: an older build holds the rows as `format`):
 

@@ -88,6 +88,7 @@ fn incoming(seq: u64, row: SyncedRow) -> Incoming {
         seq,
         stamp,
         body: vec![0x5A; 32],
+        entity: Some(row.table().into()),
         row: Some(row),
     }
 }

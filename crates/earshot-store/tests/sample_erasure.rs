@@ -11,7 +11,8 @@ use earshot_core::diar::{Embedding, EmbeddingModelId};
 use earshot_core::identity::{DeviceId, EntityId, Hlc, HlcTimestamp, ManualClock};
 use earshot_core::model::Stamp;
 use earshot_core::voiceprint::{
-    EnrolmentConfig, Person, SampleOrigin, Voiceprint, VoiceprintRepo, effective, enroll, take_back,
+    EnrolmentConfig, Person, SampleOrigin, Voiceprint, VoiceprintRepo, VoiceprintSample, effective,
+    enroll, live_prints_of, take_back,
 };
 use earshot_store::{ApplyRules, Incoming, Store, StoreError, SyncKinds, SyncedRow};
 use rand_chacha::ChaCha8Rng;
@@ -228,6 +229,7 @@ fn incoming(seq: u64, row: SyncedRow) -> Incoming {
         seq,
         stamp,
         body: vec![0xA5; 40],
+        entity: Some(row.table().into()),
         row: Some(row),
     }
 }
@@ -273,6 +275,10 @@ fn store_sample_erasure_a_pulled_print_tombstone_is_stored_zeroed_and_erases_its
     assert_eq!(a.written, 1);
     // The live print it replaced and the sample of it the repair erased.
     assert_eq!(a.biometrics_forgotten, 2, "{a:?}");
+    assert!(
+        a.meetings.contains(&s.meeting),
+        "the erased sample's meeting: {a:?}"
+    );
     s.store.flush_erasures().unwrap();
     let v = s.store.voiceprints_of(s.person).unwrap().remove(0);
     assert!(v.meta().deleted);
@@ -381,4 +387,333 @@ fn store_sample_erasure_a_damaged_sample_of_a_tombstoned_print_is_erased_not_fat
         .unwrap();
     assert_eq!(left, 0, "a tombstone with no body");
     s.assert_sample_gone();
+}
+
+// T12.77b8 (docs/voice-samples.md 7.2, 7.4, 7.5 and 12): sample rows on apply.
+
+/// A stamp of the other computer at `wall_ms`.
+fn there_at(wall_ms: u64) -> HlcTimestamp {
+    HlcTimestamp {
+        wall_ms,
+        logical: 0,
+        node: THERE,
+    }
+}
+
+/// The other computer, its clock at `wall_ms`.
+fn there_world(wall_ms: u64, seed: u64) -> World {
+    World {
+        clock: ManualClock::new(wall_ms),
+        hlc: Hlc::new(THERE),
+        rng: ChaCha8Rng::seed_from_u64(seed),
+    }
+}
+
+/// The setup's only sample (from the meeting voice).
+fn the_sample(s: &Setup) -> VoiceprintSample {
+    s.store
+        .samples_from(s.meeting, s.speaker)
+        .unwrap()
+        .remove(0)
+}
+
+/// The tombstone of `sample` as the other computer sends it at `wall_ms`.
+fn erased_there(sample: &VoiceprintSample, wall_ms: u64) -> VoiceprintSample {
+    let mut meta = *sample.meta();
+    meta.updated_at = there_at(wall_ms);
+    meta.deleted = true;
+    VoiceprintSample::erased(sample.id(), meta).unwrap()
+}
+
+/// A new sample of `print` written by the other computer at `wall_ms`.
+fn new_there(print: &Voiceprint, wall_ms: u64, seed: u64) -> VoiceprintSample {
+    let mut w = there_world(wall_ms, seed);
+    let x: Vec<f32> = (0..64).map(|i| 0.2 + (i % 7) as f32 * 0.05).collect();
+    let origin = SampleOrigin::Meeting {
+        meeting: EntityId::from_bytes([0x6a; 16]),
+        speaker: EntityId::from_bytes([0x6b; 16]),
+    };
+    VoiceprintSample::new(print, &x, 3_000, origin, &mut w.stamp()).unwrap()
+}
+
+fn apply(s: &mut Setup, rows: Vec<SyncedRow>) -> earshot_store::Applied {
+    let page: Vec<Incoming> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| incoming(u64::try_from(i).unwrap() + 1, r))
+        .collect();
+    let mut hlc = s.store.hlc(HERE).unwrap();
+    s.store
+        .apply_remote(&page, &rules(), &mut hlc, &s.w.clock)
+        .unwrap()
+}
+
+/// A sample tombstone is final: an older live copy is ignored, a later one (a computer that
+/// had not heard of the erasure) gets the tombstone stamped again and sent again.
+#[test]
+fn store_sample_erasure_a_sample_tombstone_is_final_against_a_later_live_copy() {
+    let mut s = setup("erase-sample-final");
+    let live = the_sample(&s);
+    let (meeting, speaker) = (s.meeting, s.speaker);
+    let w = &mut s.w;
+    s.store
+        .transaction(|tx| {
+            take_back(tx, meeting, speaker, None, &mut w.hlc, &w.clock).map_err(|e| {
+                StoreError::Repo(earshot_core::model::RepoError::Storage(e.to_string()))
+            })
+        })
+        .unwrap();
+    let erased_at = s
+        .store
+        .sample(live.id())
+        .unwrap()
+        .unwrap()
+        .meta()
+        .updated_at;
+    let copy_at = |wall_ms: u64| {
+        let mut record = serde_json::to_value(&live).unwrap();
+        record["meta"]["updated_at"] = serde_json::to_value(there_at(wall_ms)).unwrap();
+        SyncedRow::decode("voiceprint_sample", record)
+            .unwrap()
+            .unwrap()
+    };
+    let a = apply(&mut s, vec![copy_at(erased_at.wall_ms - 1)]);
+    assert_eq!((a.written, a.ignored, a.deletions_kept), (0, 1, 0), "{a:?}");
+    let later = erased_at.wall_ms + 60_000;
+    let a = apply(&mut s, vec![copy_at(later)]);
+    assert_eq!((a.written, a.deletions_kept), (0, 1), "{a:?}");
+    let here = s.store.sample(live.id()).unwrap().unwrap();
+    assert!(here.is_erased(), "never comes back");
+    assert!(here.meta().updated_at > there_at(later));
+    assert!(
+        s.store
+            .outbox(1_000)
+            .unwrap()
+            .contains(&SyncedRow::VoiceprintSample(here)),
+        "the tombstone goes out again"
+    );
+    s.store.flush_erasures().unwrap();
+    s.assert_sample_gone();
+}
+
+/// A pulled sample tombstone that still carries a body is stored without one, counted as a
+/// biometric erasure, and tells the window about the person and the sample's meeting.
+#[test]
+fn store_sample_erasure_a_pulled_sample_tombstone_with_a_body_is_stored_without_one() {
+    let mut s = setup("erase-sample-pulled");
+    let _other = rusqlite::Connection::open(&s.db).unwrap();
+    let live = the_sample(&s);
+    let mut record = serde_json::to_value(&live).unwrap();
+    record["meta"]["updated_at"] = serde_json::to_value(there_at(1_800_000_050_000)).unwrap();
+    record["meta"]["deleted"] = serde_json::Value::Bool(true);
+    assert!(
+        record["vector"].as_array().is_some_and(|v| !v.is_empty()),
+        "sanity: the body travels"
+    );
+    let row = SyncedRow::decode("voiceprint_sample", record)
+        .unwrap()
+        .unwrap();
+    let SyncedRow::VoiceprintSample(ref t) = row else {
+        unreachable!()
+    };
+    assert!(
+        t.is_erased() && t.vector().is_none(),
+        "decoded without a body"
+    );
+    let a = apply(&mut s, vec![row]);
+    assert_eq!((a.written, a.biometrics_forgotten), (1, 1), "{a:?}");
+    assert!(a.people, "{a:?}");
+    assert!(a.meetings.contains(&s.meeting), "{a:?}");
+    s.store.flush_erasures().unwrap();
+    assert!(s.store.sample(live.id()).unwrap().unwrap().is_erased());
+    s.assert_sample_gone();
+}
+
+/// "Not" on one computer and Save of the same voice on another before either heard of the
+/// other, in both page orders and both clock orders: the sample taken back never returns,
+/// the other computer's new sample stays and counts (7.5).
+#[test]
+fn store_sample_erasure_not_racing_a_save_keeps_the_new_sample_only() {
+    for not_later in [false, true] {
+        for tomb_first in [false, true] {
+            let mut s = setup("erase-not-save");
+            let old = the_sample(&s);
+            let print = s.store.voiceprints_of(s.person).unwrap().remove(0);
+            let base = live_prints_of(&s.store, s.person).unwrap()[0].1.count();
+            let (t_not, t_save) = if not_later {
+                (1_800_000_060_000, 1_800_000_050_000)
+            } else {
+                (1_800_000_050_000, 1_800_000_060_000)
+            };
+            let tomb = SyncedRow::VoiceprintSample(erased_there(&old, t_not));
+            let new = new_there(&print, t_save, 9);
+            let saved = SyncedRow::VoiceprintSample(new.clone());
+            let page = if tomb_first {
+                vec![tomb, saved]
+            } else {
+                vec![saved, tomb]
+            };
+            let a = apply(&mut s, page);
+            assert_eq!(a.written, 2, "{not_later} {tomb_first}: {a:?}");
+            assert!(s.store.sample(old.id()).unwrap().unwrap().is_erased());
+            assert_eq!(s.store.sample(new.id()).unwrap(), Some(new.clone()));
+            let eff = live_prints_of(&s.store, s.person).unwrap().remove(0).1;
+            assert_eq!(
+                eff.count(),
+                base,
+                "one out, one in: {not_later} {tomb_first}"
+            );
+            assert_eq!(eff, effective(&print, &[new]));
+        }
+    }
+}
+
+/// A late sample or print of a person tombstoned here, directly or through a `merged_into`
+/// chain, is erased in the same apply, counted and flushed.
+#[test]
+fn store_sample_erasure_a_late_sample_or_print_of_a_removed_person_is_erased() {
+    for through_merge in [false, true] {
+        let mut s = setup("erase-dead-person");
+        let _other = rusqlite::Connection::open(&s.db).unwrap();
+        let print = s.store.voiceprints_of(s.person).unwrap().remove(0);
+        // The person the late rows name: the removed one, or a live one merged into them.
+        let named = if through_merge {
+            let mut w = there_world(1_800_000_010_000, 3);
+            let mut p = Person::new("An invented visitor", false, &mut w.stamp());
+            p.merged_into = Some(s.person);
+            s.store.put_person(p.clone()).unwrap();
+            p.id
+        } else {
+            s.person
+        };
+        let mut gone = s.store.person(s.person).unwrap().unwrap();
+        gone.meta.mark_deleted(&mut s.w.hlc, &s.w.clock);
+        s.store.put_person(gone).unwrap();
+        // A print and a sample written elsewhere before that computer heard of the removal.
+        let late_print = {
+            let mut w = there_world(1_800_000_020_000, 4);
+            let st = w.stamp();
+            let id = EntityId::generate(st.clock, &mut *st.rng);
+            let meta = earshot_core::identity::SyncMeta::new(st.hlc, st.clock);
+            Voiceprint::from_stored(id, meta, named, model(), vec![0.0; 64], 0, 0)
+        };
+        let late_sample = new_there(&late_print, 1_800_000_030_000, 5);
+        let needle: Vec<u8> = late_sample.vector().unwrap()[10..16]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        let a = apply(
+            &mut s,
+            vec![
+                SyncedRow::Voiceprint(late_print.clone()),
+                SyncedRow::VoiceprintSample(late_sample.clone()),
+            ],
+        );
+        assert_eq!(a.written, 2, "{through_merge}: {a:?}");
+        // The late print and sample, plus this computer's own print and sample of the person.
+        assert_eq!(a.biometrics_forgotten, 4, "{through_merge}: {a:?}");
+        assert!(a.people);
+        // Both erased samples' meetings: this computer's own and the late one's.
+        assert!(a.meetings.contains(&s.meeting), "{through_merge}: {a:?}");
+        assert!(
+            a.meetings.contains(&EntityId::from_bytes([0x6a; 16])),
+            "{through_merge}: {a:?}"
+        );
+        s.store.flush_erasures().unwrap();
+        assert!(
+            s.store
+                .sample(late_sample.id())
+                .unwrap()
+                .unwrap()
+                .is_erased()
+        );
+        for v in [print.id(), late_print.id()] {
+            let v = s
+                .store
+                .voiceprints(&model())
+                .unwrap()
+                .into_iter()
+                .find(|x| x.id() == v)
+                .unwrap();
+            assert!(v.meta().deleted, "{through_merge}");
+            assert!(effective(&v, &[]).sum().iter().all(|x| *x == 0.0));
+        }
+        assert!(!on_disk(&s.db, &needle), "{through_merge}: the late vector");
+        s.assert_sample_gone();
+    }
+}
+
+/// A sample written elsewhere into a print this computer emptied (every sample taken back,
+/// no base) counts: only the edit's own computer takes back (7.5).
+#[test]
+fn store_sample_erasure_a_concurrent_enrolment_into_an_emptied_print_counts() {
+    let mut s = setup("erase-emptied");
+    let empty = {
+        let st = s.w.stamp();
+        let id = EntityId::generate(st.clock, &mut *st.rng);
+        let meta = earshot_core::identity::SyncMeta::new(st.hlc, st.clock);
+        Voiceprint::from_stored(id, meta, s.person, model(), vec![0.0; 64], 0, 0)
+    };
+    s.store.put_voiceprint(empty.clone()).unwrap();
+    let new = new_there(&empty, 1_800_000_050_000, 6);
+    let a = apply(&mut s, vec![SyncedRow::VoiceprintSample(new.clone())]);
+    assert_eq!((a.written, a.biometrics_forgotten), (1, 0), "{a:?}");
+    assert!(
+        a.people && a.meetings.contains(&EntityId::from_bytes([0x6a; 16])),
+        "{a:?}"
+    );
+    let eff = live_prints_of(&s.store, s.person)
+        .unwrap()
+        .into_iter()
+        .find(|(v, _)| v.id() == empty.id())
+        .unwrap()
+        .1;
+    assert_eq!(eff.count(), 1);
+    assert_eq!(eff, effective(&empty, &[new]));
+}
+
+/// A malformed live sample (the envelope opened, the record fails its check) arrives as no
+/// row with its entity named: held as `Format`, never stored; with voiceprint sync off it is
+/// skipped before any hold.
+#[test]
+fn store_sample_erasure_a_malformed_pulled_sample_is_held_unless_switched_off() {
+    let mut s = setup("erase-malformed");
+    let live = the_sample(&s);
+    let mut record = serde_json::to_value(&live).unwrap();
+    record["vector"] = serde_json::json!([2.0, 0.0]);
+    assert!(
+        SyncedRow::decode("voiceprint_sample", record)
+            .unwrap_or(None)
+            .is_none()
+    );
+    let inc = Incoming {
+        key: [0x77; 16],
+        seq: 1,
+        stamp: there_at(1_800_000_050_000),
+        body: vec![1, 2, 3],
+        entity: Some("voiceprint_sample".into()),
+        row: None,
+    };
+    let mut hlc = s.store.hlc(HERE).unwrap();
+    let a = s
+        .store
+        .apply_remote(std::slice::from_ref(&inc), &rules(), &mut hlc, &s.w.clock)
+        .unwrap();
+    assert_eq!(a.held[0], 1, "{a:?}");
+    assert_eq!(s.store.held_rows().unwrap().len(), 1);
+    let mut off = rules();
+    off.kinds = SyncKinds {
+        voiceprints: false,
+        dictionary: true,
+    };
+    let a = s
+        .store
+        .apply_remote(&[inc], &off, &mut hlc, &s.w.clock)
+        .unwrap();
+    assert_eq!((a.skipped, a.held[0]), (1, 0), "{a:?}");
+    assert!(
+        s.store.held_rows().unwrap().is_empty(),
+        "dropped from the hold"
+    );
+    assert_eq!(the_sample(&s), live, "nothing stored");
 }
