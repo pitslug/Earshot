@@ -16,7 +16,7 @@ use earshot_core::model::{
     Speaker, Stamp, Track, TranscriptPass, VaultPath, repo_contract,
 };
 use earshot_core::prompt::Template;
-use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, effective, enroll};
+use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, enroll};
 use earshot_store::{AudioProvenance, DataDir, MeetingDeletion, PersonRemoval, Store, StoreError};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -97,6 +97,7 @@ fn enrolled(store: &mut Store, w: &mut World, name: &str, is_me: bool, seed: f32
         p.id,
         &[Embedding::new(EmbeddingModelId::new("test-model@1"), v)],
         Duration::from_secs(12),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut w.stamp(),
     )
@@ -122,8 +123,9 @@ fn speaker(store: &mut Store, w: &mut World, meeting: EntityId, person: &Person)
 }
 
 fn vector_bytes(store: &Store, person: EntityId) -> Vec<u8> {
-    // No samples are stored, so the effective sum is the stored vector.
-    let sum = effective(&store.voiceprints_of(person).unwrap()[0], &[])
+    // The print folded with its samples: the enrolled vector, as stored in its sample.
+    let sum = earshot_core::voiceprint::live_prints_of(store, person).unwrap()[0]
+        .1
         .sum()
         .to_vec();
     sum[10..16].iter().flat_map(|x| x.to_le_bytes()).collect()
@@ -424,7 +426,7 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
         PersonRemoval {
             persons_removed: 1,
             voiceprints_forgotten: 1,
-            samples_forgotten: 0,
+            samples_forgotten: 1,
             speakers_unnamed: 1,
         }
     );
@@ -492,7 +494,7 @@ fn store_remove_person_takes_everyone_merged_into_them() {
         PersonRemoval {
             persons_removed: 2,
             voiceprints_forgotten: 2,
-            samples_forgotten: 0,
+            samples_forgotten: 2,
             speakers_unnamed: 1,
         }
     );

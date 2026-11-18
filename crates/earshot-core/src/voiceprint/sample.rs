@@ -542,13 +542,46 @@ pub fn live_prints_of<Repo: VoiceprintRepo + ?Sized>(
         .collect()
 }
 
-/// Every check [`super::enroll`] makes, without writing: `person` live, the embeddings of one
+/// The print an enrolment of `model` for `person` goes to (docs/voice-samples.md 4): the
+/// person's live print of that model with the earliest `(meta.created_at, id)`, so every
+/// computer picks the same of two prints two computers each made; `None` when there is none.
+/// The one choice [`admissible`] judges and [`enroll`] writes to.
+pub(super) fn enrolment_print<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    person: EntityId,
+    model: &EmbeddingModelId,
+) -> Result<Option<Voiceprint>, VoiceprintError> {
+    Ok(repo
+        .voiceprints_of(person)?
+        .into_iter()
+        .filter(|v| &v.model == model && !v.meta.deleted)
+        .min_by_key(|v| (v.meta.created_at, v.id)))
+}
+
+/// `print` folded with its stored samples, those in `excluding` left out.
+pub(super) fn effective_of<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    print: &Voiceprint,
+    excluding: &[EntityId],
+) -> Result<Effective, VoiceprintError> {
+    Ok(fold(print, &repo.samples_of(print.id)?, excluding))
+}
+
+/// The unit-length copy of `v` exactly as an enrolment stores it in a sample (f64
+/// accumulation), or `None` when it is all zeros or not finite: what a re-save compares a
+/// stored sample with, bit for bit.
+#[must_use]
+pub fn unit_vector(v: &[f32]) -> Option<Vec<f32>> {
+    unit(v)
+}
+
+/// Every check [`enroll`] makes, without writing: `person` live, the embeddings of one
 /// model and dimension and valid, and, for a print with an effective count of 0 or none yet,
 /// at least `config.min_new_speech`. The samples in `excluding` are left out of the effective
 /// count (a re-save judges the voice without its own earlier sample).
 ///
 /// # Errors
-/// As [`super::enroll`].
+/// As [`enroll`].
 pub fn admissible<Repo: VoiceprintRepo + ?Sized>(
     repo: &Repo,
     person: EntityId,
@@ -564,13 +597,9 @@ pub fn admissible<Repo: VoiceprintRepo + ?Sized>(
         .first()
         .ok_or(VoiceprintError::NoEmbeddings)?
         .model;
-    let existing = match repo
-        .voiceprints_of(person)?
-        .into_iter()
-        .find(|v| &v.model == model && !v.meta.deleted)
-    {
+    let existing = match enrolment_print(repo, person, model)? {
         Some(v) => {
-            let e = fold(&v, &repo.samples_of(v.id)?, excluding);
+            let e = effective_of(repo, &v, excluding)?;
             Some((v.sum.len(), e.count))
         }
         None => None,
@@ -638,18 +667,21 @@ pub fn take_back<Repo: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
     Ok(n)
 }
 
-/// Enrolment that records each embedding as a sample (docs/voice-samples.md 4): every check is
-/// [`admissible`]'s, run first; a print row is written only when the person has no live print
-/// of the model (a zero base: count 0, speech 0); with two live prints (two computers each made
-/// one) it adds to the earliest by `(meta.created_at, id)`, so every computer picks the same;
-/// then one sample per embedding in input order, with increasing stamps, the speech split so
-/// the samples sum to it exactly (each `speech / n` ms, the first also the remainder). Its
-/// effective print equals [`super::enroll`]'s on the same inputs, bit for bit. Returns the
-/// print id.
+/// Adds `embeddings` (from `speech` of the person's audio, from `origin`) to `person`'s
+/// voiceprint of their model as voice samples (docs/voice-samples.md 4); the print's stored base
+/// is never added to again. Every check is [`admissible`]'s, run first; a print row is written
+/// only when the person has no live print of the model (a zero base: count 0, speech 0); with
+/// two live prints (two computers each made one) it adds to [`enrolment_print`]'s choice, the
+/// earliest; then one sample per embedding in input order, with increasing stamps, the speech
+/// split so the samples sum to it exactly (each `speech / n` ms, the first also the
+/// remainder). Its effective print equals what adding to the base gave before samples, bit for
+/// bit. Returns the print id.
 ///
 /// # Errors
-/// As [`super::enroll`].
-pub fn enroll_sample<Repo, C, R>(
+/// [`VoiceprintError::UnknownPerson`] if the person is not live,
+/// [`VoiceprintError::NotEnoughSpeech`] for a new voiceprint with too little speech,
+/// [`VoiceprintError::Embedding`] for mixed models, dimensions or invalid vectors.
+pub fn enroll<Repo, C, R>(
     repo: &mut Repo,
     person: EntityId,
     embeddings: &[Embedding],
@@ -665,12 +697,7 @@ where
 {
     admissible(repo, person, embeddings, speech, config, &[])?;
     let model = embeddings[0].model.clone();
-    let print = match repo
-        .voiceprints_of(person)?
-        .into_iter()
-        .filter(|v| v.model == model && !v.meta.deleted)
-        .min_by_key(|v| (v.meta.created_at, v.id))
-    {
+    let print = match enrolment_print(repo, person, &model)? {
         Some(v) => v,
         None => {
             let (id, meta) = stamp.new_row();

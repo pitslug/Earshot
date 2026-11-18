@@ -138,6 +138,7 @@ fn read_only_open_reads_persons_voiceprints_and_local_values_and_refuses_their_w
             person.id,
             &[e],
             std::time::Duration::from_secs(20),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             &mut stamp,
         )

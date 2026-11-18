@@ -143,6 +143,7 @@ fn enroll_alice(svc: &Services, k: usize) -> EntityId {
         alice.id,
         &[e],
         Duration::from_secs(20),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut stamp,
     )
@@ -296,6 +297,46 @@ fn post_final_pass_names_a_voice_held_only_in_stored_samples() {
     assert_eq!(outcome.speakers[1].display_name, "Alice");
     assert_eq!(outcome.speakers[1].person, Some(alice));
     assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+}
+
+/// T12.77b6 (docs/voice-samples.md 4): with "Me" enrolment on, the final pass saves the user's
+/// voice as a sample from the Me row; a re-run that finds that sample adds no second one (a
+/// final pass never takes a sample back, and the Me row survives re-runs).
+#[test]
+fn post_rerun_saves_no_second_me_sample() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let run = |svc: &Services| {
+        let (mic_audio, them_audio) = scene();
+        let mut post = PostProcessor::new(
+            transcriber(),
+            FakeSegmenter::segmentation_3_0(),
+            embedder(),
+            config(),
+        )
+        .unwrap();
+        let input = PostInput {
+            echo_locks: Vec::new(),
+            echo_locks_unreadable: false,
+            meeting,
+            tracks: vec![track_input(&mic, mic_audio), track_input(&them, them_audio)],
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        post.run(svc, input, &mut rng, &CancelToken::new()).unwrap()
+    };
+    let first = run(&svc);
+    assert!(first.enrolled_me.is_some());
+    let me_row = first.speakers[0].id;
+    assert_eq!(first.speakers[0].role, SpeakerRole::Me);
+    assert_eq!(svc.store().samples_from(meeting, me_row).unwrap().len(), 1);
+    let again = run(&svc);
+    assert_eq!(
+        again.speakers[0].id, me_row,
+        "the Me row survives the re-run"
+    );
+    assert_eq!(again.enrolled_me, None, "nothing added again");
+    assert_eq!(svc.store().samples_from(meeting, me_row).unwrap().len(), 1);
 }
 
 #[test]
@@ -946,6 +987,7 @@ fn enroll_person_with(svc: &Services, name: &str, is_me: bool, k: usize, model: 
         p.id,
         &[e],
         Duration::from_secs(20),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut stamp,
     )
@@ -1608,6 +1650,7 @@ fn post_in_room_session_stores_one_track_and_names_me_by_voiceprint_only() {
             p.id,
             &[print],
             Duration::from_secs(20),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             &mut stamp,
         )
@@ -2532,9 +2575,13 @@ fn post_echo_users_voiceprint_beats_a_louder_colleague() {
         earshot_core::diar::Embedding::new(EmbeddingModelId::new(CAMPPLUS_ID), centroid(0));
     // The print adds the Me centroid to the earlier enrolment: still the user's voice (a
     // colleague's centroid would pull it to 0.7).
-    let centroid_now = earshot_core::voiceprint::effective(stored, &[])
-        .centroid()
-        .expect("a centroid");
+    let as_store: &earshot_store::Store = &store;
+    let (_, folded) = earshot_core::voiceprint::live_prints_of(as_store, user)
+        .unwrap()
+        .into_iter()
+        .find(|(p, _)| p.id() == stored.id())
+        .unwrap();
+    let centroid_now = folded.centroid().expect("a centroid");
     assert!(centroid_now.cosine_similarity(&user_voice).unwrap() > 0.9);
 }
 
@@ -4083,6 +4130,7 @@ fn post_a_voice_close_to_two_people_is_named_only_with_a_clear_margin() {
                 p.id,
                 &[e],
                 Duration::from_secs(20),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut stamp,
             )
@@ -4169,6 +4217,7 @@ fn post_the_margin_never_costs_the_user_their_own_name() {
                 p.id,
                 &[e],
                 Duration::from_secs(20),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut stamp,
             )

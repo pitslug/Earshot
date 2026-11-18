@@ -451,6 +451,7 @@ fn measure(models: &ModelDir, fixtures: &std::path::Path) -> (Value, Option<f32>
                 p.id,
                 std::slice::from_ref(&d.speakers[k].centroid),
                 d.speakers[k].speech,
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &post.enrolment,
                 &mut stamp,
             ) {

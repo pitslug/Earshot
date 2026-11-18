@@ -201,6 +201,7 @@ fn protocol(speakers: &[Speaker]) -> Scores {
                 p.id,
                 &s.enrol,
                 Duration::from_secs_f64(s.enrol_seconds),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut stamp,
             )

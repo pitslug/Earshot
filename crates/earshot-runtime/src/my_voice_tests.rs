@@ -186,8 +186,12 @@ fn my_voice_enrols_the_user_from_a_recorded_sample_and_adds_later_ones() {
         assert_eq!(prints.len(), 1);
         assert_eq!(prints[0].id(), voiceprint);
         assert_eq!(prints[0].model(), &EmbeddingModelId::new(MODEL));
-        // The voice of scene speaker 3.
-        let best = earshot_core::voiceprint::effective(&prints[0], &[])
+        // The voice of scene speaker 3 (the print folded with its samples).
+        let store: &earshot_store::Store = &db;
+        let (_, folded) = earshot_core::voiceprint::live_prints_of(store, person)
+            .unwrap()
+            .remove(0);
+        let best = folded
             .sum()
             .iter()
             .enumerate()
@@ -312,7 +316,11 @@ fn my_voice_forget_zeroes_and_tombstones_every_voiceprint_of_the_user() {
     else {
         panic!("not enrolled")
     };
-    assert_eq!(forget_my_voice(&svc).unwrap(), 1);
+    assert_eq!(
+        forget_my_voice(&svc).unwrap(),
+        2,
+        "the print and its one sample"
+    );
     assert_eq!(my_voice(&svc).unwrap(), MyVoice::default());
     let db = svc.store();
     let v = db
@@ -398,6 +406,7 @@ fn my_voice_forget_forgets_every_person_marked_as_the_user_at_once() {
             p.id,
             &[centroid],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             stamp,
         )
@@ -406,7 +415,11 @@ fn my_voice_forget_forgets_every_person_marked_as_the_user_at_once() {
     })
     .unwrap();
     assert_eq!(my_voice(&svc).unwrap().voiceprints, 2);
-    assert_eq!(forget_my_voice(&svc).unwrap(), 2);
+    assert_eq!(
+        forget_my_voice(&svc).unwrap(),
+        4,
+        "two prints and their samples"
+    );
     assert_eq!(my_voice(&svc).unwrap(), MyVoice::default());
     let db = svc.store();
     for p in [first, second] {

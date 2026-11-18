@@ -46,6 +46,11 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "the store's row reader",
     ),
     (
+        "crates/earshot-core/src/model/entities.rs",
+        "new",
+        "`Speaker::new` builds a new row with its person (field shorthand)",
+    ),
+    (
         "crates/earshot-core/src/model/repo_contract.rs",
         "*",
         "the repository contract, run only by tests, writes rows directly",
@@ -217,6 +222,12 @@ fn hits(src: &str) -> Vec<(usize, &'static str)> {
             out.push((at, "person_id assignment"));
         }
     }
+    // `person_id.take()`: the person moved out of the row.
+    for (at, _) in src.match_indices("person_id.take(") {
+        if at == 0 || !is_ident(b[at - 1]) {
+            out.push((at, "person_id taken"));
+        }
+    }
     // `Speaker { .. person_id: .. }`, with or without a struct update.
     for (at, _) in src.match_indices("Speaker") {
         if at > 0 && is_ident(b[at - 1]) {
@@ -254,11 +265,11 @@ fn hits(src: &str) -> Vec<(usize, &'static str)> {
             j += 1;
         }
         let inside = &src[open..j.min(src.len())];
+        // `person_id: x` or the shorthand `person_id,` / `person_id }`.
         let has = inside.match_indices("person_id").any(|(k, _)| {
-            inside[k + "person_id".len()..]
-                .trim_start()
-                .starts_with(':')
-                && (k == 0 || !is_ident(inside.as_bytes()[k - 1]))
+            let after = inside[k + "person_id".len()..].trim_start();
+            (k == 0 || !is_ident(inside.as_bytes()[k - 1]))
+                && (after.starts_with(':') || after.starts_with(',') || after.starts_with('}'))
         });
         if has {
             out.push((at, "Speaker literal with person_id"));
@@ -396,6 +407,12 @@ fn compares(row: &Speaker) -> bool {
 fn builds() -> Speaker {
     Speaker { person_id: None, ..base }
 }
+fn shorthand(person_id: Option<EntityId>) -> Speaker {
+    Speaker { id, person_id, ..base }
+}
+fn takes(row: &mut Speaker) -> Option<EntityId> {
+    row.person_id.take()
+}
 fn tombstones(tx: &mut Tx, mut s: Speaker) {
     s.meta.deleted = true;
     tx.put_speaker(s);
@@ -415,7 +432,9 @@ fn tombstones_elsewhere(mut n: Note) {
         got,
         [
             ("writes", "person_id assignment"),
+            ("takes", "person_id taken"),
             ("builds", "Speaker literal with person_id"),
+            ("shorthand", "Speaker literal with person_id"),
             ("tombstones", "tombstone beside put_speaker"),
         ]
     );

@@ -128,6 +128,7 @@ fn enroll_existing(svc: &Services, person: EntityId, k: usize) {
         person,
         &[e],
         Duration::from_secs(20),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut stamp,
     )

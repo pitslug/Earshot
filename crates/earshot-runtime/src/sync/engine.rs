@@ -147,9 +147,9 @@ pub type WorkerWriter =
     std::sync::Arc<dyn Fn() -> Option<crate::offload::WriterKind> + Send + Sync>;
 
 /// The sync client of one device: the relay at the stored address and the device's vault.
-/// What a push holds back in this build (T12.77b4): nothing yet. T12.77b6 sets it to
-/// [`PushHold::Samples`] when enrolments start writing samples; T12.77b8 removes it.
-pub const PUSH_HOLD: PushHold = PushHold::Off;
+/// What a push holds back in this build: live voiceprints and voice samples, since every
+/// enrolment writes samples (T12.77b6; docs/voice-samples.md 7.1). T12.77b8 removes it.
+pub const PUSH_HOLD: PushHold = PushHold::Samples;
 
 pub use earshot_store::PushHold;
 
@@ -316,8 +316,13 @@ impl SyncClient {
         })
     }
 
-    /// This client with a push hold other than [`PUSH_HOLD`] (tests of the hold before it is on
-    /// in production).
+    /// The push hold this client sends under (what its waiting count must count).
+    #[must_use]
+    pub fn hold(&self) -> PushHold {
+        self.hold
+    }
+
+    /// This client with a push hold other than [`PUSH_HOLD`] (tests).
     #[cfg(test)]
     pub(crate) fn with_push_hold(mut self, hold: PushHold) -> Self {
         self.hold = hold;

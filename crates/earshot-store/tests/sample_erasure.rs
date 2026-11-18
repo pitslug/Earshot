@@ -11,8 +11,7 @@ use earshot_core::diar::{Embedding, EmbeddingModelId};
 use earshot_core::identity::{DeviceId, EntityId, Hlc, HlcTimestamp, ManualClock};
 use earshot_core::model::Stamp;
 use earshot_core::voiceprint::{
-    EnrolmentConfig, Person, SampleOrigin, Voiceprint, VoiceprintRepo, effective, enroll,
-    enroll_sample, take_back,
+    EnrolmentConfig, Person, SampleOrigin, Voiceprint, VoiceprintRepo, effective, enroll, take_back,
 };
 use earshot_store::{ApplyRules, Incoming, Store, StoreError, SyncKinds, SyncedRow};
 use rand_chacha::ChaCha8Rng;
@@ -79,22 +78,32 @@ fn setup(tag: &str) -> Setup {
     let ada = Person::new("An invented colleague", false, &mut w.stamp());
     store.put_person(ada.clone()).unwrap();
     let base: Vec<f32> = (0..64).map(|i| 0.01 + i as f32 * 0.0137).collect();
-    let print = enroll(
-        &mut store,
-        ada.id,
-        &[Embedding::new(model(), base)],
-        Duration::from_secs(12),
-        &EnrolmentConfig::default(),
-        &mut w.stamp(),
-    )
-    .unwrap();
+    // A print with a base (an enrolment made before samples existed).
+    let print = {
+        let st = w.stamp();
+        let id = EntityId::generate(st.clock, &mut *st.rng);
+        let meta = earshot_core::identity::SyncMeta::new(st.hlc, st.clock);
+        let unit = earshot_core::voiceprint::unit_vector(&base).unwrap();
+        store
+            .put_voiceprint(Voiceprint::from_stored(
+                id,
+                meta,
+                ada.id,
+                model(),
+                unit,
+                1,
+                12_000,
+            ))
+            .unwrap();
+        id
+    };
     let voice: Vec<f32> = (0..64).map(|i| 0.9 - i as f32 * 0.0091).collect();
     let (meeting, speaker) = (
         EntityId::from_bytes([0x5a; 16]),
         EntityId::from_bytes([0x5b; 16]),
     );
     let origin = SampleOrigin::Meeting { meeting, speaker };
-    enroll_sample(
+    enroll(
         &mut store,
         ada.id,
         &[Embedding::new(model(), voice)],

@@ -1040,6 +1040,7 @@ fn person_with(svc: &Services, name: &str, is_me: bool, print: bool, seed: u64) 
                 vec![1.0, 0.0],
             )],
             std::time::Duration::from_secs(60),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &earshot_core::voiceprint::EnrolmentConfig::default(),
             &mut stamp,
         )

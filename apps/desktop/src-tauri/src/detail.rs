@@ -390,10 +390,10 @@ pub enum RememberOutcome {
 impl RememberOutcome {
     fn of(r: &Remembered) -> Self {
         match r {
-            Remembered::Enrolled { .. } => Self::Remembered,
+            Remembered::Enrolled { .. } | Remembered::Replaced { .. } => Self::Remembered,
             Remembered::NotEnoughSpeech { .. } => Self::NotEnoughSpeech,
             Remembered::NoStoredVoice => Self::NoStoredVoice,
-            Remembered::AlreadyEnrolled => Self::AlreadyRemembered,
+            Remembered::AlreadySaved => Self::AlreadyRemembered,
             Remembered::Uncalibrated { .. } => Self::Unsupported,
         }
     }

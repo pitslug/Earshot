@@ -436,7 +436,16 @@ fn voiceprint_an_empty_print_needs_new_speech_and_admissible_writes_nothing() {
     });
     assert_eq!(admissible(&repo, ada.id, &e, short, &config, &[]), refused);
     assert_eq!(
-        enroll(&mut repo, ada.id, &e, short, &config, &mut stamp).map(|_| ()),
+        enroll(
+            &mut repo,
+            ada.id,
+            &e,
+            short,
+            SampleOrigin::Own,
+            &config,
+            &mut stamp
+        )
+        .map(|_| ()),
         refused
     );
     let before = repo.voiceprints_of(ada.id).unwrap();
@@ -446,7 +455,15 @@ fn voiceprint_an_empty_print_needs_new_speech_and_admissible_writes_nothing() {
     let long = Duration::from_secs(12);
     assert_eq!(admissible(&repo, ada.id, &e, long, &config, &[]), Ok(()));
     assert_eq!(
-        enroll(&mut repo, ada.id, &e, long, &config, &mut stamp),
+        enroll(
+            &mut repo,
+            ada.id,
+            &e,
+            long,
+            SampleOrigin::Own,
+            &config,
+            &mut stamp
+        ),
         Ok(id)
     );
     let (_, eff) = live_prints_of(&repo, ada.id).unwrap().pop().unwrap();
@@ -564,7 +581,17 @@ fn voiceprint_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
         )
         .is_err()
     );
-    assert!(enroll_me(&mut repo, &[e], short, &config, &mut stamp).is_ok());
+    assert!(
+        enroll_me(
+            &mut repo,
+            &[e],
+            short,
+            SampleOrigin::Own,
+            &config,
+            &mut stamp
+        )
+        .is_ok()
+    );
 }
 
 /// Fixed enrolment inputs: two calls of two and one embeddings, values that round in f32.
@@ -618,7 +645,16 @@ fn by_enroll(
     s: Duration,
     st: &mut Stamp<'_, ManualClock, ChaCha8Rng>,
 ) -> EntityId {
-    enroll(repo, p, e, s, &EnrolmentConfig::default(), st).unwrap()
+    enroll(
+        repo,
+        p,
+        e,
+        s,
+        SampleOrigin::Own,
+        &EnrolmentConfig::default(),
+        st,
+    )
+    .unwrap()
 }
 
 fn by_sample(
@@ -628,7 +664,7 @@ fn by_sample(
     s: Duration,
     st: &mut Stamp<'_, ManualClock, ChaCha8Rng>,
 ) -> EntityId {
-    enroll_sample(
+    enroll(
         repo,
         p,
         e,
@@ -652,7 +688,7 @@ fn voiceprint_enroll_gives_the_literal_sums_captured_before_samples() {
 }
 
 #[test]
-fn voiceprint_enroll_sample_folds_to_what_enroll_stores_bit_for_bit() {
+fn voiceprint_enroll_folds_to_what_enroll_stores_bit_for_bit() {
     let (_, _, want) = enrolled_with(by_enroll);
     let (repo, ada, got) = enrolled_with(by_sample);
     assert_eq!(bits(got.sum()), bits(want.sum()));
@@ -677,7 +713,7 @@ fn voiceprint_enroll_sample_folds_to_what_enroll_stores_bit_for_bit() {
 }
 
 #[test]
-fn voiceprint_enroll_sample_adds_to_the_earliest_of_two_live_prints_and_checks_first() {
+fn voiceprint_enroll_adds_to_the_earliest_of_two_live_prints_and_checks_first() {
     let (clock, mut hlc, mut rng, mut repo) = world();
     let mut stamp = Stamp {
         clock: &clock,
@@ -692,7 +728,7 @@ fn voiceprint_enroll_sample_adds_to_the_earliest_of_two_live_prints_and_checks_f
     // Too little speech for a first print: refused, nothing written.
     let short = Duration::from_secs(2);
     assert!(matches!(
-        enroll_sample(&mut repo, ada.id, &e, short, own, &config, &mut stamp),
+        enroll(&mut repo, ada.id, &e, short, own, &config, &mut stamp),
         Err(VoiceprintError::NotEnoughSpeech { .. })
     ));
     assert!(repo.voiceprints_of(ada.id).unwrap().is_empty());
@@ -709,7 +745,7 @@ fn voiceprint_enroll_sample_adds_to_the_earliest_of_two_live_prints_and_checks_f
         repo.put_voiceprint(v).unwrap();
     }
     let one = Duration::from_secs(1);
-    let got = enroll_sample(&mut repo, ada.id, &e, one, own, &config, &mut stamp).unwrap();
+    let got = enroll(&mut repo, ada.id, &e, one, own, &config, &mut stamp).unwrap();
     assert_eq!(got, early_id);
     assert_eq!(repo.samples_of(early_id).unwrap().len(), 1);
     assert!(repo.samples_of(later_id).unwrap().is_empty());
@@ -753,7 +789,7 @@ fn ada_with_samples() -> (
         ([0.9, -0.3], origins[1]),
         ([0.2, 0.2], SampleOrigin::Own),
     ] {
-        enroll_sample(&mut repo, ada.id, &e(v), short, origin, &config, &mut stamp).unwrap();
+        enroll(&mut repo, ada.id, &e(v), short, origin, &config, &mut stamp).unwrap();
     }
     (clock, hlc, repo, ada.id, print, origins)
 }
@@ -906,4 +942,73 @@ fn voiceprint_take_back_resolves_keep_through_merges() {
     let gone = EntityId::from_bytes([0x78; 16]);
     let n = take_back(&mut repo, meeting, speaker, Some(gone), &mut hlc, &clock).unwrap();
     assert_eq!(n, 1);
+}
+
+/// T12.77b6: `admissible` and `enroll` judge and write the same print. With two live prints
+/// whose id order and creation order disagree (the earlier-created empty, the later-created
+/// holding a voice), both take the earliest: too little speech for it is refused and nothing is
+/// written, enough speech adds to it.
+#[test]
+fn voiceprint_admissible_and_enroll_choose_the_same_of_two_prints() {
+    let (clock, mut hlc, mut rng, mut repo) = world();
+    let mut stamp = Stamp {
+        clock: &clock,
+        hlc: &mut hlc,
+        rng: &mut rng,
+    };
+    let ada = Person::new("Ada", false, &mut stamp);
+    repo.put_person(ada.clone()).unwrap();
+    let (_, later_meta) = stamp.new_row();
+    let mut early_meta = later_meta;
+    early_meta.created_at.wall_ms -= 10;
+    let (early, later) = (
+        EntityId::from_bytes([0xee; 16]),
+        EntityId::from_bytes([0x11; 16]),
+    );
+    let put = |repo: &mut InMemoryVoiceprintRepo, id, meta, sum: Vec<f32>, count| {
+        let v = Voiceprint::from_stored(
+            id,
+            meta,
+            ada.id,
+            model(),
+            sum,
+            count,
+            10_000 * u64::from(count),
+        );
+        repo.put_voiceprint(v).unwrap();
+    };
+    put(&mut repo, early, early_meta, vec![0.0, 0.0], 0);
+    put(&mut repo, later, later_meta, vec![0.6, 0.8], 1);
+    let config = EnrolmentConfig::default();
+    let e = [Embedding::new(model(), vec![1.0, 0.0])];
+    let short = Duration::from_secs(1);
+    let refused = Err(VoiceprintError::NotEnoughSpeech {
+        needed: config.min_new_speech,
+        got: short,
+    });
+    assert_eq!(admissible(&repo, ada.id, &e, short, &config, &[]), refused);
+    let wrote = enroll(
+        &mut repo,
+        ada.id,
+        &e,
+        short,
+        SampleOrigin::Own,
+        &config,
+        &mut stamp,
+    );
+    assert_eq!(wrote.map(|_| ()), refused);
+    assert!(repo.samples_of_person(ada.id).unwrap().is_empty());
+    let long = Duration::from_secs(12);
+    let got = enroll(
+        &mut repo,
+        ada.id,
+        &e,
+        long,
+        SampleOrigin::Own,
+        &config,
+        &mut stamp,
+    )
+    .unwrap();
+    assert_eq!(got, early);
+    assert!(repo.samples_of(later).unwrap().is_empty());
 }

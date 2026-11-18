@@ -2710,7 +2710,11 @@ fn sync_a_forgotten_voiceprint_stays_forgotten_when_a_later_live_copy_arrives() 
     let (a, b) = pair(&relay);
     set_sync_voiceprints(&a.svc, true).unwrap();
     set_sync_voiceprints(&b.svc, true).unwrap();
-    let (ca, cb) = (a.client(), b.client());
+    // Prints in today's shape and an older build's live copy: the clients send them (no hold).
+    let (ca, cb) = (
+        a.client().with_push_hold(PushHold::Off),
+        b.client().with_push_hold(PushHold::Off),
+    );
     let (person, print) = print_on(&a, 41);
     ca.tick().unwrap();
     cb.tick().unwrap();
@@ -2746,7 +2750,11 @@ fn sync_a_superseded_voiceprint_tombstone_wins_on_the_next_push() {
     let (a, b) = pair(&relay);
     set_sync_voiceprints(&a.svc, true).unwrap();
     set_sync_voiceprints(&b.svc, true).unwrap();
-    let (ca, cb) = (a.client(), b.client());
+    // Prints in today's shape and an older build's live copy: the clients send them (no hold).
+    let (ca, cb) = (
+        a.client().with_push_hold(PushHold::Off),
+        b.client().with_push_hold(PushHold::Off),
+    );
     let (person, print) = print_on(&a, 42);
     ca.tick().unwrap();
     cb.tick().unwrap();
@@ -2782,7 +2790,11 @@ fn sync_a_pulled_voiceprint_tombstone_erases_this_computers_samples_of_it() {
     let (a, b) = pair(&relay);
     set_sync_voiceprints(&a.svc, true).unwrap();
     set_sync_voiceprints(&b.svc, true).unwrap();
-    let (ca, cb) = (a.client(), b.client());
+    // Prints in today's shape and an older build's live copy: the clients send them (no hold).
+    let (ca, cb) = (
+        a.client().with_push_hold(PushHold::Off),
+        b.client().with_push_hold(PushHold::Off),
+    );
     let (person, print) = print_on(&a, 43);
     ca.tick().unwrap();
     cb.tick().unwrap();
@@ -2952,25 +2964,38 @@ fn sync_the_push_hold_sends_a_print_tombstone_that_is_the_only_row() {
     assert_eq!(holds_print(&b, print), Some(true));
 }
 
-/// T12.77b4: with the hold off (production until T12.77b6) every row goes as before, and the
-/// waiting count is still what a tick sends.
+/// T12.77b4: with the hold off every row goes as before, and the waiting count of a client with
+/// that hold is still what it sends. Production holds since T12.77b6.
 #[test]
 fn sync_the_push_hold_off_sends_everything_as_before() {
     let relay = relay();
     let (a, _b) = pair(&relay);
     set_sync_voiceprints(&a.svc, true).unwrap();
     held_rows_on(&a);
-    assert_eq!(PUSH_HOLD, PushHold::Off, "off in production until T12.77b6");
+    assert_eq!(
+        PUSH_HOLD,
+        PushHold::Samples,
+        "on in production since T12.77b6"
+    );
+    let client = a.client().with_push_hold(PushHold::Off);
     let kinds = sync_settings(&a.svc.store()).unwrap().kinds();
     let store_count = |hold| a.svc.store().outbox_len_held(&[], kinds, hold).unwrap();
     assert_eq!(
         store_count(PushHold::Off),
         a.svc.store().outbox_len_except(&[], kinds).unwrap()
     );
-    let waiting = sync_overview(&a.svc, &*a.vault).unwrap().waiting;
+    let waiting = sync_overview_held(&a.svc, &*a.vault, client.hold())
+        .unwrap()
+        .waiting;
     assert_eq!(waiting, store_count(PushHold::Off));
     assert!(waiting > store_count(PushHold::Samples));
-    let r = a.client().tick().unwrap();
+    // The page's own overview counts the production hold, which a production client uses.
+    assert_eq!(a.client().hold(), PUSH_HOLD);
+    assert_eq!(
+        sync_overview(&a.svc, &*a.vault).unwrap().waiting,
+        store_count(PUSH_HOLD)
+    );
+    let r = client.tick().unwrap();
     assert_eq!(u64::try_from(r.pushed + r.superseded).unwrap(), waiting);
     assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
 }

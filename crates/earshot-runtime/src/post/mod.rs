@@ -1950,22 +1950,50 @@ where
                 && let Some(k) = meeting_diar.me()
             {
                 let me = &meeting_diar.speakers[k];
+                // The sample's origin is the Me row, which survives re-runs; a final pass never
+                // takes a sample back (decision 6), so a re-run that finds one from this row
+                // already saved for the user adds nothing (docs/voice-samples.md 4).
+                let me_row = speakers
+                    .iter()
+                    .find(|s| s.role == SpeakerRole::Me)
+                    .map(|s| s.id);
+                let mut saved = false;
+                if let Some(row) = me_row {
+                    for s in tx
+                        .samples_from(meeting, row)
+                        .map_err(RuntimeError::Voiceprint)?
+                    {
+                        let to = match s.person_id() {
+                            Some(p) => earshot_core::voiceprint::resolve_person(&*tx, p)
+                                .map_err(RuntimeError::Voiceprint)?,
+                            None => None,
+                        };
+                        saved |= to.is_some_and(|p| p.is_me);
+                    }
+                }
                 // Always the user's person: a Me row is linked to no one else (`link_speaker`
                 // refuses it), so nothing is enrolled into another person.
-                let result = enroll_me(
-                    tx,
-                    std::slice::from_ref(&me.centroid),
-                    me.speech,
-                    &config.enrolment,
-                    &mut stamp,
-                )
-                .map(|(_, voiceprint)| voiceprint);
+                let result = match me_row {
+                    _ if saved => Err(None),
+                    Some(speaker) => enroll_me(
+                        tx,
+                        std::slice::from_ref(&me.centroid),
+                        me.speech,
+                        earshot_core::voiceprint::SampleOrigin::Meeting { meeting, speaker },
+                        &config.enrolment,
+                        &mut stamp,
+                    )
+                    .map(|(_, voiceprint)| voiceprint)
+                    .map_err(Some),
+                    None => Err(None),
+                };
                 match result {
                     Ok(voiceprint) => enrolled_me = Some(voiceprint),
-                    Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {
+                    Err(None) => {}
+                    Err(Some(VoiceprintError::NotEnoughSpeech { needed, got })) => {
                         warnings.push(PostWarning::NotEnoughSpeechForMe { needed, got });
                     }
-                    Err(e) => return Err(RuntimeError::Voiceprint(e)),
+                    Err(Some(e)) => return Err(RuntimeError::Voiceprint(e)),
                 }
             }
             // The live records are transient (speaker embeddings are biometric data, the

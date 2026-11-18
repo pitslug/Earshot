@@ -562,12 +562,13 @@ fn calibrated(any: bool) -> PostConfig {
 
 /// The live voiceprint count of `person` (the number of centroids added).
 fn print_count(svc: &Services, person: EntityId) -> Option<u32> {
-    svc.store()
-        .voiceprints_of(person)
+    let db = svc.store();
+    let store: &earshot_store::Store = &db;
+    earshot_core::voiceprint::live_prints_of(store, person)
         .unwrap()
         .into_iter()
-        .find(|v| !v.meta().deleted)
-        .map(|v| earshot_core::voiceprint::effective(&v, &[]).count())
+        .next()
+        .map(|(_, e)| e.count())
 }
 
 /// Links `speaker` to `person` without the edit checks (data as an older build or a sync
@@ -658,14 +659,11 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
     let prints = svc.store().voiceprints_of(dana).unwrap();
     assert_eq!(prints.len(), 1);
     assert_eq!(prints[0].id(), voiceprint);
-    assert_eq!(
-        earshot_core::voiceprint::effective(&prints[0], &[]).count(),
-        1
-    );
+    assert_eq!(print_count(&svc, dana), Some(1));
     assert_eq!(prints[0].model().as_str(), "level@1");
     // A repeat adds nothing.
     let again = remember_voices_with(&svc, m, &[remote[0].id], &any).unwrap();
-    assert_eq!(again[0].1, Remembered::AlreadyEnrolled);
+    assert_eq!(again[0].1, Remembered::AlreadySaved);
     assert_eq!(print_count(&svc, dana), Some(1));
     let listed = list_persons(&svc).unwrap();
     let info = |id| listed.iter().find(|p| p.id == id).unwrap().clone();
@@ -674,7 +672,11 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
 
     // Forgetting: no live voiceprint, vector zeroed, the meeting's centroid entry gone.
     assert!(identity_speakers(&svc, m).contains(&remote[0].id));
-    assert_eq!(forget_person_voices(&svc, dana).unwrap(), 1);
+    assert_eq!(
+        forget_person_voices(&svc, dana).unwrap(),
+        2,
+        "the print and its sample"
+    );
     let prints = svc.store().voiceprints_of(dana).unwrap();
     assert!(prints.iter().all(|v| {
         v.meta().deleted
@@ -807,20 +809,22 @@ fn edit_remember_mark_is_cleared_by_a_new_person_and_by_a_new_final_pass() {
     );
     assert_eq!(
         print_count(&svc, dana),
-        Some(1),
-        "dana's print is not touched"
+        Some(0),
+        "linking the voice to Dee took its sample back from Dana (the print row stays)"
     );
     assert_eq!(
         remember_voices_with(&svc, m, &[s], &any).unwrap()[0].1,
-        Remembered::AlreadyEnrolled
+        Remembered::AlreadySaved
     );
-    // A new final pass writes a new centroid, not yet remembered.
+    // A new final pass of the same audio gives the same centroid: the voice's sample is
+    // still this centroid, so it is still saved, never counted twice (docs/voice-samples.md
+    // 5.3; a different centroid replaces the sample, see the samples tests).
     let cancel = CancelToken::new();
     retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
     assert_eq!(speaker(&svc, m, "Dee").id, s, "the linked row is continued");
     let r = remember_voices_with(&svc, m, &[s], &any).unwrap();
-    assert!(matches!(r[0].1, Remembered::Enrolled { .. }), "{r:?}");
-    assert_eq!(print_count(&svc, dee), Some(2));
+    assert_eq!(r[0].1, Remembered::AlreadySaved, "{r:?}");
+    assert_eq!(print_count(&svc, dee), Some(1));
 }
 
 #[test]
@@ -997,6 +1001,7 @@ fn edit_list_persons_counts_a_merged_persons_voiceprint() {
             dup,
             &[e],
             Duration::from_secs(20),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             &mut stamp,
         )

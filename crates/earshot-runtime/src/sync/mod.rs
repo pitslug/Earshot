@@ -619,6 +619,19 @@ pub fn sync_overview(
     services: &Services,
     vault: &dyn SyncVault,
 ) -> Result<SyncOverview, SyncProblem> {
+    sync_overview_held(services, vault, engine::PUSH_HOLD)
+}
+
+/// [`sync_overview`] counting what a push under `hold` sends (a client's
+/// [`SyncClient::hold`]), so a page and the client it describes agree.
+///
+/// # Errors
+/// As [`sync_overview`].
+pub fn sync_overview_held(
+    services: &Services,
+    vault: &dyn SyncVault,
+    hold: engine::PushHold,
+) -> Result<SyncOverview, SyncProblem> {
     let set_up = vault.has()?;
     let recording = services.recording_meetings();
     let store = services.store();
@@ -628,7 +641,7 @@ pub fn sync_overview(
         status: sync_status(&store)?,
         // What the push would send now: a recording's rows and switched-off kinds are not
         // behind.
-        waiting: store.outbox_len_held(&recording, settings.kinds(), engine::PUSH_HOLD)?,
+        waiting: store.outbox_len_held(&recording, settings.kinds(), hold)?,
         held: u64::try_from(store.held_rows()?.len()).unwrap_or(u64::MAX),
         settings,
     })

@@ -197,6 +197,7 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
             ada.id,
             &[emb(&[1.0, 0.0, 0.0]), emb(&[0.9, 0.1, 0.0])],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &cfg,
             &mut w.stamp(),
         )
@@ -206,6 +207,7 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
             dup.id,
             &[emb(&[0.0, 1.0, 0.0])],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &cfg,
             &mut w.stamp(),
         )
@@ -218,8 +220,11 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
     assert_eq!(vps.len(), 2);
     let a = store.voiceprints_of(ada.id).unwrap();
     assert_eq!(a.len(), 1);
-    assert_eq!(effective(&a[0], &[]).count(), 2);
-    assert_eq!(effective(&a[0], &[]).speech_ms(), 12_000);
+    // Survived the reopen: the print and its two samples fold to the enrolment.
+    let samples = store.samples_of(a[0].id()).unwrap();
+    assert_eq!(samples.len(), 2);
+    let folded = effective(&a[0], &samples);
+    assert_eq!((folded.count(), folded.speech_ms()), (2, 12_000));
     assert_eq!(
         store.person(dup.id).unwrap().unwrap().merged_into,
         Some(ada.id)
@@ -227,8 +232,9 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
 
     let n = forget_voiceprints(&mut store, ada.id, &mut w.hlc, &w.clock).unwrap();
     assert_eq!(
-        n.voiceprints, 2,
-        "the merged duplicate's voiceprint is deleted too"
+        (n.voiceprints, n.samples),
+        (2, 3),
+        "the merged duplicate's voiceprint and samples are deleted too"
     );
     drop(store);
     let store = Store::open(&path).unwrap();
@@ -259,6 +265,7 @@ fn store_forget_voiceprints_of_several_persons_forgets_all_of_them_at_once() {
             p.id,
             &[emb(&v)],
             Duration::from_secs(12),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &cfg,
             &mut w.stamp(),
         )
@@ -272,6 +279,7 @@ fn store_forget_voiceprints_of_several_persons_forgets_all_of_them_at_once() {
         other.id,
         &[emb(&[0.0, 0.0, 1.0])],
         Duration::from_secs(12),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &cfg,
         &mut w.stamp(),
     )

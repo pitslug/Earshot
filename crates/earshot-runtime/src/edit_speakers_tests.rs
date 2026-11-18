@@ -282,7 +282,16 @@ fn edit_save_voice_links_and_remembers_in_one_step() {
     };
     assert_eq!(person, saved.person);
     assert_eq!(print_count(&svc, saved.person), Some(1));
-    assert!(entry(&svc, m, remote[0].id).enrolled);
+    assert!(
+        !entry(&svc, m, remote[0].id).enrolled,
+        "nothing writes the frozen marker"
+    );
+    let saved_samples = svc.store().samples_from(m, remote[0].id).unwrap();
+    assert_eq!(
+        saved_samples.len(),
+        1,
+        "saved as this meeting voice's sample"
+    );
     // Saved again to the same person: linked already, remembered already.
     let again = save_voice_with(
         &svc,
@@ -292,7 +301,7 @@ fn edit_save_voice_links_and_remembers_in_one_step() {
         &any,
     )
     .unwrap();
-    assert_eq!(again.remembered, Remembered::AlreadyEnrolled);
+    assert_eq!(again.remembered, Remembered::AlreadySaved);
     assert_eq!(print_count(&svc, saved.person), Some(1));
 
     // The production thresholds: the level fakes' model is uncalibrated, so the voice is
@@ -521,9 +530,8 @@ fn edit_not_this_person_on_a_recognised_voice_is_carried_by_a_retranscribe() {
 }
 
 #[test]
-fn edit_not_this_person_leaves_a_voiceprint_saved_from_this_meeting_as_it_is() {
-    // T12.77 step 2 (taking the saved contribution back out) waits on the owner: f32
-    // addition is not invertible, so `sum - centroid` is not the sum before the save.
+fn edit_not_this_person_takes_back_a_voice_saved_from_this_meeting() {
+    // T12.77b6: a save records a sample, so "Not" takes exactly it back out.
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
     let m = processed(&svc, 570);
@@ -538,13 +546,12 @@ fn edit_not_this_person_leaves_a_voiceprint_saved_from_this_meeting_as_it_is() {
         &calibrated(true),
     )
     .unwrap();
-    let before = svc.store().voiceprints_of(saved.person).unwrap();
-    not_this_person(&svc, m, s).unwrap();
-    assert_eq!(svc.store().voiceprints_of(saved.person).unwrap(), before);
-    assert!(
-        entry(&svc, m, s).enrolled,
-        "what was saved is still recorded"
-    );
+    assert_eq!(print_count(&svc, saved.person), Some(1));
+    let done = not_this_person(&svc, m, s).unwrap();
+    assert_eq!(done.took_back.taken_back, 1);
+    assert!(!done.saved_before_samples);
+    assert_eq!(print_count(&svc, saved.person), Some(0));
+    assert!(svc.store().samples_from(m, s).unwrap().is_empty());
     assert_eq!(row(&svc, m, s).person_id, None);
 }
 

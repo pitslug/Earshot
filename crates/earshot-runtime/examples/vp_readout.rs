@@ -653,6 +653,7 @@ mod tests {
                 p,
                 e,
                 std::time::Duration::from_secs(30),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &EnrolmentConfig::default(),
                 &mut s,
             )
@@ -802,7 +803,7 @@ mod tests {
     /// edit), and its leave-out is exact: the print folded without that sample.
     #[test]
     fn vp_readout_a_voice_saved_as_a_sample_is_confirmed_and_left_out_exactly() {
-        use earshot_core::voiceprint::{SampleOrigin, enroll_sample};
+        use earshot_core::voiceprint::{SampleOrigin, enroll};
         let dir = temp("sample");
         let db = dir.join("earshot.db");
         let mut store = Store::open(&db).unwrap();
@@ -816,7 +817,7 @@ mod tests {
         store.put_person(casey.clone()).unwrap();
         let config = EnrolmentConfig::default();
         let long = std::time::Duration::from_secs(30);
-        enroll_sample(
+        enroll(
             &mut store,
             casey.id,
             &[voice(1, 0.0)],
@@ -857,7 +858,7 @@ mod tests {
             meeting: m.id,
             speaker: row.id,
         };
-        enroll_sample(
+        enroll(
             &mut store,
             casey.id,
             std::slice::from_ref(&saved),

@@ -722,6 +722,7 @@ fn eval_voiceprints(
                 p.id,
                 &s.enrol,
                 Duration::from_secs_f64(s.enrol_seconds),
+                earshot_core::voiceprint::SampleOrigin::Own,
                 &enrolment,
                 &mut stamp,
             )

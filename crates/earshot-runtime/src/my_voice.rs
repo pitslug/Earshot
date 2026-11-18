@@ -266,6 +266,7 @@ pub fn enrol_my_voice<S: SpeakerSegmenter, E: SpeakerEmbedder>(
             tx,
             std::slice::from_ref(&main.centroid),
             main.speech,
+            earshot_core::voiceprint::SampleOrigin::Own,
             &config.enrolment,
             stamp,
         ) {

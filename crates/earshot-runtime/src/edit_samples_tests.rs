@@ -1,9 +1,9 @@
 //! Voice samples taken back by the user's speaker edits (T12.77b5, docs/voice-samples.md 3.3
-//! and 6). Production writes no samples yet; the tests make them with `enroll_sample`. Every
+//! and 6). Production writes no samples yet; the tests make them with `enroll`. Every
 //! name contains `edit`.
 
 use earshot_core::diar::{Embedding, EmbeddingModelId};
-use earshot_core::voiceprint::{SampleOrigin, enroll_sample};
+use earshot_core::voiceprint::{SampleOrigin, enroll};
 
 use super::*;
 
@@ -28,7 +28,7 @@ fn save_sample(
     k: usize,
 ) -> Vec<u8> {
     write(svc, |tx, stamp| {
-        enroll_sample(
+        enroll(
             tx,
             person,
             &[Embedding::new(model(), voice(k))],
@@ -213,41 +213,61 @@ fn edit_merge_takes_the_merged_away_voices_samples_back() {
     assert!(!on_disk(&dir, &needle));
 }
 
+/// What a Save made before samples existed left (docs/voice-samples.md 5.2): the voice's
+/// centroid in the person's print base, and the frozen marker on this computer's entry.
+fn saved_before_samples_existed(
+    svc: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+    person: EntityId,
+) {
+    let entry = identities_in(&svc.store(), meeting)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.speaker == speaker)
+        .unwrap();
+    write(svc, |tx, stamp| {
+        let id = EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+        let unit = earshot_core::voiceprint::unit_vector(&entry.centroid.vector).unwrap();
+        let base = earshot_core::voiceprint::Voiceprint::from_stored(
+            id,
+            meta,
+            person,
+            entry.centroid.model.clone(),
+            unit,
+            1,
+            20_000,
+        );
+        tx.put_voiceprint(base).map_err(voiceprint_err)?;
+        update_identity_entry(tx, meeting, speaker, |i| i.enrolled = true)?;
+        Ok(())
+    })
+    .unwrap();
+}
+
 #[test]
 fn edit_not_this_person_says_saved_before_samples_only_while_the_print_has_its_base() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
     let m = processed(&svc, 704);
     let s = remote_speakers(&svc, m)[0].id;
-    // Saved before samples existed: today's Save adds to the print's base and sets the frozen
-    // marker.
-    let saved = save_voice_with(
-        &svc,
-        m,
-        s,
-        &PersonChoice::New {
-            name: "Morgan Invented".into(),
-        },
-        &calibrated(true),
-    )
-    .unwrap();
-    assert!(matches!(saved.remembered, Remembered::Enrolled { .. }));
+    let morgan = linked(&svc, m, s, "Morgan Invented");
+    saved_before_samples_existed(&svc, m, s, morgan);
     let done = not_this_person(&svc, m, s).unwrap();
     assert!(done.saved_before_samples, "{done:?}");
     assert_eq!(done.took_back.taken_back, 0);
 
     let m2 = processed(&svc, 705);
     let s2 = remote_speakers(&svc, m2)[0].id;
-    let saved2 = save_voice_with(
-        &svc,
-        m2,
-        s2,
-        &PersonChoice::New {
-            name: "Avery Invented".into(),
-        },
-        &calibrated(true),
-    )
-    .unwrap();
+    let avery = linked(&svc, m2, s2, "Avery Invented");
+    saved_before_samples_existed(&svc, m2, s2, avery);
+    let saved2 = SavedVoice {
+        person: avery,
+        remembered: Remembered::AlreadySaved,
+        took_back: TakenBack::default(),
+        moved_from: None,
+    };
     // Forgotten on another computer: the print's tombstone arrives (here, the core erasure
     // alone), and this computer's identity entry keeps its marker.
     write(&svc, |tx, stamp| {
@@ -271,5 +291,273 @@ fn edit_not_this_person_says_saved_before_samples_only_while_the_print_has_its_b
     assert!(
         !done.saved_before_samples,
         "the marker alone does not count once the print lost its base"
+    );
+}
+
+/// Gives `speaker`'s identity entry a new centroid of `k` (as a new final pass would).
+fn new_centroid(svc: &Services, meeting: EntityId, speaker: EntityId, k: usize) {
+    write(svc, |tx, _| {
+        update_identity_entry(tx, meeting, speaker, |i| {
+            let n = i.centroid.vector.len();
+            let mut v = vec![0.05_f32; n];
+            v[k % n] = 0.9;
+            i.centroid = Embedding::new(i.centroid.model.clone(), v);
+        })?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn sample_ids(svc: &Services, meeting: EntityId, speaker: EntityId) -> Vec<EntityId> {
+    svc.store()
+        .samples_from(meeting, speaker)
+        .unwrap()
+        .iter()
+        .map(earshot_core::voiceprint::VoiceprintSample::id)
+        .collect()
+}
+
+fn save(svc: &Services, m: EntityId, s: EntityId, choice: PersonChoice, any: bool) -> SavedVoice {
+    save_voice_with(svc, m, s, &choice, &calibrated(any)).unwrap()
+}
+
+fn new_name(name: &str) -> PersonChoice {
+    PersonChoice::New { name: name.into() }
+}
+
+/// T12.77b6 (docs/voice-samples.md 5.3): a repeat Save writes nothing; a new centroid
+/// replaces this meeting's sample; one sample per voice per meeting per person.
+#[test]
+fn edit_save_again_writes_nothing_and_a_new_centroid_replaces_the_sample() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 720);
+    let s = remote_speakers(&svc, m)[0].id;
+    let first = save(&svc, m, s, new_name("Quinn Invented"), true);
+    assert!(matches!(first.remembered, Remembered::Enrolled { .. }));
+    let ids = sample_ids(&svc, m, s);
+    assert_eq!(ids.len(), 1);
+    // The same voice, saved again for the same person: nothing written.
+    let again = save(&svc, m, s, PersonChoice::Existing(first.person), true);
+    assert_eq!(again.remembered, Remembered::AlreadySaved);
+    assert_eq!(again.took_back.taken_back, 0);
+    assert_eq!(sample_ids(&svc, m, s), ids);
+    // A new centroid for the voice: the old sample is replaced, never counted twice.
+    new_centroid(&svc, m, s, 4);
+    let replaced = save(&svc, m, s, PersonChoice::Existing(first.person), true);
+    assert!(
+        matches!(replaced.remembered, Remembered::Replaced { person, .. } if person == first.person)
+    );
+    assert_eq!(replaced.took_back.taken_back, 1);
+    let now = sample_ids(&svc, m, s);
+    assert_eq!(now.len(), 1);
+    assert_ne!(now, ids);
+    assert_eq!(print_count(&svc, first.person), Some(1));
+}
+
+/// 5.3 step 2: a refusal (too little speech for what the print would be without the old
+/// sample, or an uncalibrated model) takes nothing back.
+#[test]
+fn edit_a_refused_resave_leaves_the_earlier_sample_counting() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 721);
+    let s = remote_speakers(&svc, m)[0].id;
+    let first = save(&svc, m, s, new_name("Riley Invented"), true);
+    let ids = sample_ids(&svc, m, s);
+    new_centroid(&svc, m, s, 5);
+    let short = save(&svc, m, s, PersonChoice::Existing(first.person), false);
+    assert!(
+        matches!(short.remembered, Remembered::NotEnoughSpeech { .. }),
+        "{short:?}"
+    );
+    assert_eq!(sample_ids(&svc, m, s), ids, "the earlier sample stays");
+    let uncalibrated = save_voice(&svc, m, s, &PersonChoice::Existing(first.person)).unwrap();
+    assert!(matches!(
+        uncalibrated.remembered,
+        Remembered::Uncalibrated { .. }
+    ));
+    assert_eq!(sample_ids(&svc, m, s), ids);
+    assert_eq!(print_count(&svc, first.person), Some(1));
+}
+
+/// 5.3 step 1: a voice saved before samples existed (the frozen marker and a print with a
+/// base) answers AlreadySaved and writes nothing; once the print lost its base it saves anew.
+#[test]
+fn edit_a_voice_saved_before_samples_is_already_saved_until_the_base_is_gone() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 722);
+    let s = remote_speakers(&svc, m)[0].id;
+    let sam = linked(&svc, m, s, "Sam Invented");
+    saved_before_samples_existed(&svc, m, s, sam);
+    let r = save(&svc, m, s, PersonChoice::Existing(sam), true);
+    assert_eq!(r.remembered, Remembered::AlreadySaved);
+    assert!(sample_ids(&svc, m, s).is_empty());
+    // Forgotten elsewhere (the print erased, this computer's marker kept): saved anew.
+    write(&svc, |tx, stamp| {
+        earshot_core::voiceprint::forget_voiceprints(tx, sam, stamp.hlc, stamp.clock)
+            .map_err(voiceprint_err)?;
+        Ok(())
+    })
+    .unwrap();
+    let r = save(&svc, m, s, PersonChoice::Existing(sam), true);
+    assert!(matches!(r.remembered, Remembered::Enrolled { .. }), "{r:?}");
+    assert_eq!(sample_ids(&svc, m, s).len(), 1);
+}
+
+/// 5.3: Save with a new person judges the voice against them in the same transaction: a
+/// refusal keeps the person and the link and saves nothing.
+#[test]
+fn edit_save_with_a_new_person_refused_keeps_the_person_and_the_link() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 723);
+    let s = remote_speakers(&svc, m)[0].id;
+    let r = save(&svc, m, s, new_name("Toby Invented"), false);
+    assert!(
+        matches!(r.remembered, Remembered::NotEnoughSpeech { .. }),
+        "{r:?}"
+    );
+    assert!(list_persons(&svc).unwrap().iter().any(|p| p.id == r.person));
+    let row = view(&svc, m)
+        .speakers
+        .into_iter()
+        .find(|x| x.id == s)
+        .unwrap();
+    assert_eq!(row.person_id, Some(r.person));
+    assert!(sample_ids(&svc, m, s).is_empty());
+    assert_eq!(r.moved_from, None);
+}
+
+/// 6.2: Save on a voice saved for someone else moves its sample: X loses exactly it, Y gains
+/// one; a refusal for Y still takes X's back and saves nothing; an error rolls everything back.
+#[test]
+fn edit_save_on_a_wrongly_named_voice_moves_its_sample() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 724);
+    let remote = remote_speakers(&svc, m);
+    let s = remote[0].id;
+    // Accepted: X to Y.
+    let x = save(&svc, m, s, new_name("Uma Invented"), true).person;
+    let moved = save(&svc, m, s, new_name("Vic Invented"), true);
+    assert!(
+        matches!(moved.remembered, Remembered::Enrolled { person, .. } if person == moved.person)
+    );
+    assert_eq!(moved.moved_from, Some(x));
+    assert_eq!(moved.took_back.taken_back, 1);
+    assert_eq!(print_count(&svc, x), Some(0));
+    assert_eq!(print_count(&svc, moved.person), Some(1));
+    // Refused for the new person: the link moves and X's sample goes, nothing is saved.
+    let s2 = remote[1].id;
+    let x2 = save(&svc, m, s2, new_name("Wren Invented"), true).person;
+    let refused = save(&svc, m, s2, new_name("Xan Invented"), false);
+    assert!(
+        matches!(refused.remembered, Remembered::NotEnoughSpeech { .. }),
+        "{refused:?}"
+    );
+    assert_eq!(refused.moved_from, None);
+    assert_eq!(refused.took_back.taken_back, 1);
+    assert_eq!(print_count(&svc, x2), Some(0));
+    assert_eq!(print_count(&svc, refused.person), None);
+    // An error in the enrolment (the new person's print of another dimension): nothing of
+    // the save stands, X's sample is live and the row still X's.
+    let y = new_person(&svc, "Yael Invented", false, 725);
+    write(&svc, |tx, stamp| {
+        let id = EntityId::generate(stamp.clock, &mut *stamp.rng);
+        let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+        let odd = earshot_core::voiceprint::Voiceprint::from_stored(
+            id,
+            meta,
+            y,
+            model(),
+            vec![1.0, 0.0, 0.0],
+            1,
+            20_000,
+        );
+        tx.put_voiceprint(odd).map_err(voiceprint_err)?;
+        Ok(())
+    })
+    .unwrap();
+    let before = sample_ids(&svc, m, s);
+    assert!(save_voice_with(&svc, m, s, &PersonChoice::Existing(y), &calibrated(true)).is_err());
+    assert_eq!(sample_ids(&svc, m, s), before);
+    let row = view(&svc, m)
+        .speakers
+        .into_iter()
+        .find(|r| r.id == s)
+        .unwrap();
+    assert_eq!(row.person_id, Some(moved.person));
+}
+
+/// T12.77b5 review (1): "saved before samples" is judged before the take back: a voice with
+/// the marker AND a live sample from its origin is saved as a sample, not before.
+#[test]
+fn edit_not_this_person_with_the_marker_and_a_sample_takes_the_sample_back() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 726);
+    let s = remote_speakers(&svc, m)[0].id;
+    let p = save(&svc, m, s, new_name("Zoe Invented"), true).person;
+    write(&svc, |tx, _| {
+        update_identity_entry(tx, m, s, |i| i.enrolled = true)?;
+        Ok(())
+    })
+    .unwrap();
+    let done = not_this_person(&svc, m, s).unwrap();
+    assert!(!done.saved_before_samples, "{done:?}");
+    assert_eq!(done.took_back.taken_back, 1);
+    assert_eq!(print_count(&svc, p), Some(0));
+}
+
+/// T12.77b5 review (3): relinking a voice to the person it is linked to takes back a stray
+/// sample of the voice saved for someone else.
+#[test]
+fn edit_an_unchanged_link_takes_back_a_stray_sample_for_someone_else() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 727);
+    let s = remote_speakers(&svc, m)[0].id;
+    let x = linked(&svc, m, s, "Ash Invented");
+    let other = new_person(&svc, "Bay Invented", false, 728);
+    save_sample(&svc, m, s, other, 2);
+    let again = link_speaker(&svc, m, s, &PersonChoice::Existing(x)).unwrap();
+    assert_eq!(again.took_back.taken_back, 1);
+    assert!(sample_ids(&svc, m, s).is_empty());
+}
+
+/// T12.77b5 review (4): a reader holding a snapshot blocks the checkpoint after a take back;
+/// "Not" reports it pending, never as an error, and the erasure is committed.
+#[test]
+fn edit_not_this_person_reports_a_checkpoint_another_connection_blocks() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 729);
+    let s = remote_speakers(&svc, m)[0].id;
+    save(&svc, m, s, new_name("Cal Invented"), true);
+    let path = svc.data.db_path();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let reader = std::thread::spawn(move || {
+        let mut other = earshot_store::Store::open(&path).unwrap();
+        other
+            .transaction(|tx| -> Result<(), earshot_store::StoreError> {
+                tx.meeting(m)?;
+                ready_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+    });
+    ready_rx.recv().unwrap();
+    let done = not_this_person(&svc, m, s).unwrap();
+    assert_eq!(done.took_back.taken_back, 1);
+    assert!(done.took_back.checkpoint_pending, "{done:?}");
+    release_tx.send(()).unwrap();
+    reader.join().unwrap();
+    assert!(
+        sample_ids(&svc, m, s).is_empty(),
+        "the take back is committed"
     );
 }

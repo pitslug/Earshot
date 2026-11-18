@@ -373,6 +373,7 @@ fn edit_mark_me_adds_no_biometric_data() {
                 vec![1.0, 0.0],
             )],
             Duration::from_secs(60),
+            earshot_core::voiceprint::SampleOrigin::Own,
             &EnrolmentConfig::default(),
             &mut stamp,
         )
@@ -573,6 +574,7 @@ fn enrol_print(svc: &Services, person: EntityId, seed: u64) {
             vec![1.0, 0.0],
         )],
         Duration::from_secs(60),
+        earshot_core::voiceprint::SampleOrigin::Own,
         &EnrolmentConfig::default(),
         &mut stamp,
     )
@@ -712,8 +714,8 @@ fn edit_merge_into_me_merges_the_person_and_keeps_their_voiceprints_as_the_users
     assert_eq!(resolved_person(&**svc.store(), twin).unwrap(), Some(user));
     crate::my_voice::set_my_name(&svc, "Casey Lane").unwrap();
     assert_eq!(row_of(&svc, m, other).display_name, "Casey Lane");
-    // Forgetting the user's voice forgets the merged person's print too.
-    assert_eq!(crate::my_voice::forget_my_voice(&svc).unwrap(), 1);
+    // Forgetting the user's voice forgets the merged person's print (and its sample) too.
+    assert_eq!(crate::my_voice::forget_my_voice(&svc).unwrap(), 2);
     assert_eq!(print_count(&svc, twin), None);
 }
 
@@ -862,7 +864,7 @@ fn edit_mark_me_and_unmark_me_mark_a_summary_that_uses_the_old_name() {
 /// anyone but the user; "This isn't me" takes back what the user's own row held.
 #[test]
 fn edit_mark_me_and_unmark_me_take_the_voices_samples_back() {
-    use earshot_core::voiceprint::{SampleOrigin, enroll_sample};
+    use earshot_core::voiceprint::{SampleOrigin, enroll};
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
     let user = new_person(&svc, "Casey", true, 940);
@@ -871,7 +873,7 @@ fn edit_mark_me_and_unmark_me_take_the_voices_samples_back() {
     named_by_the_pass(&svc, m, voice, robin);
     let sample = |svc: &Services, person: EntityId| {
         write(svc, |tx, stamp| {
-            enroll_sample(
+            enroll(
                 tx,
                 person,
                 &[Embedding::new(

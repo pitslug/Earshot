@@ -76,8 +76,9 @@ use earshot_core::pipeline::{FinalPassRequest, FinalPassTrack};
 use earshot_core::summary::SummaryV1;
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{
-    DEFAULT_ME_NAME, Person, VoiceprintError, VoiceprintRepo, enroll, existing_me, identity_of,
-    live_prints_of, me_person, merge_persons, resolve_person, saved_before_samples, take_back,
+    DEFAULT_ME_NAME, Person, SampleOrigin, VoiceprintError, VoiceprintRepo, VoiceprintSample,
+    enroll, existing_me, identity_of, live_prints_of, me_person, merge_persons, resolve_person,
+    saved_before_samples, take_back, unit_vector,
 };
 use earshot_store::{StoreTx, first_free_speaker_name};
 use rand_core::Rng;
@@ -1314,7 +1315,18 @@ fn link_in(
         _ => {}
     }
     if row.person_id == Some(person.id) && row.display_name == person.display_name {
-        return Ok((person.id, 0));
+        // Unchanged link: still no sample of this voice may count for anyone else (a stray
+        // one, from a save made elsewhere before this link was).
+        let taken_back = take_back(
+            tx,
+            meeting,
+            speaker,
+            Some(person.id),
+            stamp.hlc,
+            stamp.clock,
+        )
+        .map_err(voiceprint_err)?;
+        return Ok((person.id, taken_back));
     }
     if row.person_id != Some(person.id) {
         update_identity_entry(tx, meeting, speaker, |i| {
@@ -1819,11 +1831,21 @@ pub enum Remembered {
         /// The speaker's final segments.
         got: Duration,
     },
+    /// This meeting's earlier sample of the voice for this person was replaced by the
+    /// centroid now stored (docs/voice-samples.md 5.3): one sample per voice per meeting.
+    Replaced {
+        /// The person.
+        person: EntityId,
+        /// The voiceprint.
+        voiceprint: EntityId,
+    },
     /// No stored voice for this speaker: the final pass has not run, did not record a
     /// centroid for it, or its identity record cannot be read.
     NoStoredVoice,
-    /// This centroid was already added (an earlier call); it is not added twice.
-    AlreadyEnrolled,
+    /// This voice is already saved for this person: a live sample of this very centroid, or
+    /// a save from before samples existed that still counts ([`saved_before_samples`]).
+    /// Nothing is written.
+    AlreadySaved,
     /// The centroid's embedding model has no calibrated voiceprint threshold, so a
     /// voiceprint of it could never match: nothing is stored.
     Uncalibrated {
@@ -1838,9 +1860,10 @@ pub enum Remembered {
 /// the centroid; the enrolment settings and voiceprint thresholds of
 /// [`PostConfig::default`]). The speech behind a centroid is the total length of the
 /// speaker's live final segments. A centroid is added once: the entry is marked enrolled
-/// (`SpeakerIdentity::enrolled`) in the same transaction, and a repeat is
-/// [`Remembered::AlreadyEnrolled`]; a new final pass (a new centroid) or a link to another
-/// person clears the mark. Returns one result per distinct speaker, in order.
+/// is a voice sample from this meeting's voice (docs/voice-samples.md 5.3): a repeat of the
+/// same centroid is [`Remembered::AlreadySaved`], a new centroid replaces the earlier sample
+/// ([`Remembered::Replaced`]), and a refusal leaves the earlier one counting. Returns one
+/// result per distinct speaker, in order.
 ///
 /// # Errors
 /// [`EditError`] for a speaker that is unknown or deleted, not linked to a person (or linked
@@ -1871,19 +1894,22 @@ pub fn remember_voices_with(
         .copied()
         .filter(|s| seen.insert(*s))
         .collect();
-    write(services, |tx, stamp| {
+    let (out, taken_back) = write(services, |tx, stamp| {
         remember_in(tx, stamp, meeting, &speakers, config)
-    })
+    })?;
+    TakenBack::flushed(taken_back, services);
+    Ok(out)
 }
 
-/// [`remember_voices_with`] inside `tx`, for distinct `speakers`.
+/// [`remember_voices_with`] inside `tx`, for distinct `speakers`; also returns how many earlier
+/// samples were replaced (the caller checkpoints after the commit).
 fn remember_in(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
     meeting: EntityId,
     speakers: &[EntityId],
     config: &PostConfig,
-) -> Result<Vec<(EntityId, Remembered)>, RuntimeError> {
+) -> Result<(Vec<(EntityId, Remembered)>, usize), RuntimeError> {
     live_meeting(&*tx, meeting)?;
     // Every speaker is checked before anything is enrolled.
     let mut targets = Vec::new();
@@ -1909,6 +1935,7 @@ fn remember_in(
     };
     let finals = live_segments(&*tx, meeting, TranscriptPass::Final)?;
     let mut out = Vec::new();
+    let mut taken_back = 0;
     for (id, person) in targets {
         let Some(entry) = record
             .iter()
@@ -1917,10 +1944,34 @@ fn remember_in(
             out.push((id, Remembered::NoStoredVoice));
             continue;
         };
-        if entry.enrolled {
-            out.push((id, Remembered::AlreadyEnrolled));
+        // This voice's live samples saved for this person (resolved through merges).
+        let mut old = Vec::new();
+        for s in tx.samples_from(meeting, id).map_err(voiceprint_err)? {
+            let to = match s.person_id() {
+                Some(p) => resolve_person(&*tx, p).map_err(voiceprint_err)?,
+                None => None,
+            };
+            if to.is_some_and(|p| p.id == person) {
+                old.push(s);
+            }
+        }
+        // 5.3 step 1: the same centroid already saved, or a save from before samples.
+        let unit = unit_vector(&entry.centroid.vector);
+        let same = old.iter().any(|s| s.vector().map(<[f32]>::to_vec) == unit);
+        let before = saved_before_samples(
+            &*tx,
+            entry.enrolled,
+            meeting,
+            id,
+            person,
+            &entry.centroid.model,
+        )
+        .map_err(voiceprint_err)?;
+        if same || before {
+            out.push((id, Remembered::AlreadySaved));
             continue;
         }
+        // Step 2: admissibility first; a refusal takes nothing back.
         match config.voiceprint_threshold(&entry.centroid.model) {
             Ok(_) => {}
             Err(RuntimeError::Uncalibrated { model, .. }) => {
@@ -1934,29 +1985,55 @@ fn remember_in(
             .filter(|r| r.segment.speaker_id == Some(id))
             .map(|r| r.segment.end.saturating_sub(r.segment.start))
             .sum();
-        let result = enroll(
-            tx,
+        let centroid = std::slice::from_ref(&entry.centroid);
+        let excluding: Vec<EntityId> = old.iter().map(VoiceprintSample::id).collect();
+        match earshot_core::voiceprint::admissible(
+            &*tx,
             person,
-            std::slice::from_ref(&entry.centroid),
+            centroid,
             speech,
             &config.enrolment,
+            &excluding,
+        ) {
+            Ok(()) => {}
+            Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {
+                out.push((id, Remembered::NotEnoughSpeech { needed, got }));
+                continue;
+            }
+            Err(e) => return Err(voiceprint_err(e)),
+        }
+        // Step 3: the earlier sample goes and the new one is saved, in this transaction.
+        for s in &old {
+            let mut meta = *s.meta();
+            meta.mark_deleted(stamp.hlc, stamp.clock);
+            let gone = VoiceprintSample::erased(s.id(), meta).map_err(voiceprint_err)?;
+            tx.put_sample(gone).map_err(voiceprint_err)?;
+            taken_back += 1;
+        }
+        let origin = SampleOrigin::Meeting {
+            meeting,
+            speaker: id,
+        };
+        let voiceprint = enroll(
+            tx,
+            person,
+            centroid,
+            speech,
+            origin,
+            &config.enrolment,
             stamp,
-        );
+        )
+        .map_err(voiceprint_err)?;
         out.push((
             id,
-            match result {
-                Ok(voiceprint) => {
-                    update_identity_entry(tx, meeting, id, |i| i.enrolled = true)?;
-                    Remembered::Enrolled { person, voiceprint }
-                }
-                Err(VoiceprintError::NotEnoughSpeech { needed, got }) => {
-                    Remembered::NotEnoughSpeech { needed, got }
-                }
-                Err(e) => return Err(voiceprint_err(e)),
+            if old.is_empty() {
+                Remembered::Enrolled { person, voiceprint }
+            } else {
+                Remembered::Replaced { person, voiceprint }
             },
         ));
     }
-    Ok(out)
+    Ok((out, taken_back))
 }
 
 /// What [`save_voice`] did: the person the voice is now linked to and what remembering
@@ -1967,8 +2044,12 @@ pub struct SavedVoice {
     pub person: EntityId,
     /// Remembering the voice ([`Remembered::Enrolled`] or why nothing was stored).
     pub remembered: Remembered,
-    /// This meeting's voice samples taken back from the person it was linked to before.
+    /// This meeting's voice samples taken back: from the person it was linked to before and,
+    /// on a re-save, the earlier sample replaced.
     pub took_back: TakenBack,
+    /// The person the voice was saved for before, when this save moved its sample to the new
+    /// person (docs/voice-samples.md 6.2 step 3).
+    pub moved_from: Option<EntityId>,
 }
 
 /// "Save" on a voice that needs a name (T12.19): links speaker `speaker` of `meeting` to a
@@ -1977,8 +2058,11 @@ pub struct SavedVoice {
 /// enrolment needs (it replaced the panel-wide "Remember these voices" tickbox). The link
 /// is kept whatever remembering does: too little speech, no stored voice or an
 /// uncalibrated speaker model store no voiceprint and say so in
-/// [`SavedVoice::remembered`]; a voice already remembered for that person is
-/// [`Remembered::AlreadyEnrolled`].
+/// [`SavedVoice::remembered`]; a voice already saved for that person is
+/// [`Remembered::AlreadySaved`]. Saving a voice linked to someone else moves its sample
+/// (docs/voice-samples.md 6.2): taken back from them and saved for the new person; when the
+/// new person cannot take it (too little speech, no stored voice, an uncalibrated model) the
+/// link and the take back stand and nothing is saved.
 ///
 /// # Errors
 /// As [`link_speaker`] and [`remember_voices`] ("Me" and the user's person are refused, so
@@ -2004,21 +2088,36 @@ pub fn save_voice_with(
     config: &PostConfig,
 ) -> Result<SavedVoice, RuntimeError> {
     let new_name = checked_choice(choice)?;
-    let (person, remembered, taken_back) = write(services, |tx, stamp| {
-        let (person, taken_back) = link_in(tx, stamp, meeting, speaker, choice, new_name)?;
-        let remembered = remember_in(tx, stamp, meeting, &[speaker], config)?
-            .into_iter()
-            .next()
-            .map(|(_, r)| r)
-            .ok_or(RuntimeError::Internal(
-                "remembering one voice gave no result",
-            ))?;
-        Ok((person, remembered, taken_back))
+    let (person, remembered, taken_back, moved_from) = write(services, |tx, stamp| {
+        let before = live_speaker(&*tx, meeting, speaker)?.person_id;
+        let before = match before {
+            Some(p) => resolve_person(&*tx, p)
+                .map_err(voiceprint_err)?
+                .map(|p| p.id),
+            None => None,
+        };
+        let (person, linked_back) = link_in(tx, stamp, meeting, speaker, choice, new_name)?;
+        let (results, replaced) = remember_in(tx, stamp, meeting, &[speaker], config)?;
+        let remembered =
+            results
+                .into_iter()
+                .next()
+                .map(|(_, r)| r)
+                .ok_or(RuntimeError::Internal(
+                    "remembering one voice gave no result",
+                ))?;
+        let saved = matches!(
+            remembered,
+            Remembered::Enrolled { .. } | Remembered::Replaced { .. }
+        );
+        let moved_from = before.filter(|b| saved && linked_back > 0 && *b != person);
+        Ok((person, remembered, linked_back + replaced, moved_from))
     })?;
     Ok(SavedVoice {
         person,
         remembered,
         took_back: TakenBack::flushed(taken_back, services),
+        moved_from,
     })
 }
 

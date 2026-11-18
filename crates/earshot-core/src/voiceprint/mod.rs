@@ -7,7 +7,8 @@
 //!   model (sync class opt-in, D6). Embeddings of other models are never compared with it.
 //! - [`VoiceprintRepo`]: storage trait; [`InMemoryVoiceprintRepo`] for tests (SQLite lives in
 //!   `earshot-store`).
-//! - [`enroll`], [`enroll_me`]: create or update a voiceprint (running centroid update).
+//! - [`enroll`], [`enroll_me`]: record an enrolment as voice samples of a person's voiceprint
+//!   (created with a zero base when there is none).
 //! - [`match_embedding`]: open-set identification: the best-scoring person (cosine
 //!   similarity to the voiceprint centroid) if the score reaches the threshold, otherwise
 //!   "unknown".
@@ -28,8 +29,8 @@ mod tests;
 
 pub use sample::{
     Effective, MAX_EMBEDDING_DIM, MAX_SAMPLE_SPEECH_MS, SAMPLE_NORM_TOLERANCE, SampleOrigin,
-    SampleRecord, VoiceprintSample, admissible, effective, enroll_sample, live_prints,
-    live_prints_of, saved_before_samples, take_back,
+    SampleRecord, VoiceprintSample, admissible, effective, enroll, live_prints, live_prints_of,
+    saved_before_samples, take_back, unit_vector,
 };
 
 use std::collections::BTreeMap;
@@ -288,31 +289,6 @@ impl Voiceprint {
     #[must_use]
     pub fn base_speech_ms(&self) -> u64 {
         self.speech_ms
-    }
-
-    /// Running centroid update: adds unit-length copies of `embeddings` (all of this
-    /// voiceprint's model and dimension) and `speech`.
-    ///
-    /// # Errors
-    /// [`VoiceprintError::Embedding`] for another model, another dimension or an invalid
-    /// vector; nothing is changed then.
-    pub fn add<C: Clock + ?Sized>(
-        &mut self,
-        embeddings: &[Embedding],
-        speech: Duration,
-        hlc: &mut Hlc,
-        clock: &C,
-    ) -> Result<(), VoiceprintError> {
-        let units = check_embeddings(embeddings, &self.model, Some(self.sum.len()))?;
-        for u in &units {
-            for (s, x) in self.sum.iter_mut().zip(u) {
-                *s += x;
-            }
-        }
-        self.count += units.len() as u32;
-        self.speech_ms += speech.as_millis() as u64;
-        self.meta.touch(hlc, clock);
-        Ok(())
     }
 }
 
@@ -689,61 +665,6 @@ impl Default for EnrolmentConfig {
     }
 }
 
-/// Adds `embeddings` (from `speech` of the person's audio) to `person`'s live voiceprint for
-/// their model, creating it if there is none. Returns the voiceprint id. Every check is
-/// [`admissible`]'s, run first; a print with an effective count of 0 is new (it needs
-/// `config.min_new_speech`).
-///
-/// # Errors
-/// [`VoiceprintError::UnknownPerson`] if the person is not live,
-/// [`VoiceprintError::NotEnoughSpeech`] for a new voiceprint with too little speech,
-/// [`VoiceprintError::Embedding`] for mixed models, dimensions or invalid vectors.
-pub fn enroll<Repo, C, R>(
-    repo: &mut Repo,
-    person: EntityId,
-    embeddings: &[Embedding],
-    speech: Duration,
-    config: &EnrolmentConfig,
-    stamp: &mut Stamp<'_, C, R>,
-) -> Result<EntityId, VoiceprintError>
-where
-    Repo: VoiceprintRepo + ?Sized,
-    C: Clock + ?Sized,
-    R: Rng + ?Sized,
-{
-    admissible(repo, person, embeddings, speech, config, &[])?;
-    let model = embeddings[0].model.clone();
-    let existing = live_prints_of(repo, person)?
-        .into_iter()
-        .map(|(v, _)| v)
-        .find(|v| v.model == model);
-    if let Some(mut v) = existing {
-        v.add(embeddings, speech, stamp.hlc, stamp.clock)?;
-        let id = v.id;
-        repo.put_voiceprint(v)?;
-        return Ok(id);
-    }
-    let units = check_embeddings(embeddings, &model, None)?;
-    let dim = units[0].len();
-    let mut sum = vec![0.0f32; dim];
-    for u in &units {
-        for (s, x) in sum.iter_mut().zip(u) {
-            *s += x;
-        }
-    }
-    let (id, meta) = stamp.new_row();
-    repo.put_voiceprint(Voiceprint {
-        id,
-        meta,
-        person_id: person,
-        model,
-        sum,
-        count: units.len() as u32,
-        speech_ms: speech.as_millis() as u64,
-    })?;
-    Ok(id)
-}
-
 /// The user's name until they give one.
 pub const DEFAULT_ME_NAME: &str = "Me";
 
@@ -785,10 +706,10 @@ where
         .min_by_key(|p| p.id))
 }
 
-/// "Me" enrolment: enrols `embeddings` for the user's person ([`me_person`]). Returns the
-/// person and voiceprint ids. Every check (the embeddings, and the speech a first voiceprint
-/// needs) runs before the "Me" person is created, so a refused first enrolment writes
-/// nothing.
+/// "Me" enrolment: enrols `embeddings` for the user's person ([`me_person`]) as samples from
+/// `origin`. Returns the person and voiceprint ids. Every check (the embeddings, and the speech
+/// a first voiceprint needs) runs before the "Me" person is created, so a refused first
+/// enrolment writes nothing.
 ///
 /// # Errors
 /// As [`enroll`].
@@ -796,6 +717,7 @@ pub fn enroll_me<Repo, C, R>(
     repo: &mut Repo,
     embeddings: &[Embedding],
     speech: Duration,
+    origin: SampleOrigin,
     config: &EnrolmentConfig,
     stamp: &mut Stamp<'_, C, R>,
 ) -> Result<(EntityId, EntityId), VoiceprintError>
@@ -810,9 +732,8 @@ where
         .model;
     check_embeddings(embeddings, model, None)?;
     let has_print = match existing_me(repo)? {
-        Some(me) => live_prints_of(repo, me.id)?
-            .iter()
-            .any(|(v, e)| &v.model == model && e.count() > 0),
+        Some(me) => sample::enrolment_print(repo, me.id, model)?
+            .is_some_and(|v| sample::effective_of(repo, &v, &[]).is_ok_and(|e| e.count() > 0)),
         None => false,
     };
     if !has_print && speech < config.min_new_speech {
@@ -822,7 +743,7 @@ where
         });
     }
     let me = me_person(repo, stamp)?;
-    let vp = enroll(repo, me.id, embeddings, speech, config, stamp)?;
+    let vp = enroll(repo, me.id, embeddings, speech, origin, config, stamp)?;
     Ok((me.id, vp))
 }
 
