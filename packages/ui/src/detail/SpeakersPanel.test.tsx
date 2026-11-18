@@ -282,6 +282,53 @@ describe("MeetingDetailView", () => {
     expect(within(table).getAllByText("Speaker 1").length).toBeGreaterThan(0);
   });
 
+  it("says a saved voice leaves the person with Not, and the tooltip says it will", async () => {
+    const { user } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "Sam Lee{Enter}");
+    await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.");
+    await openNamed(user);
+    const not = within(speakerRow("Sam Lee")).getByRole("button", { name: "Not Sam Lee" });
+    expect(not).toHaveAccessibleDescription(
+      "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of Sam Lee's saved voice.",
+    );
+    expect(notThisPersonHint("Ana Diaz", true, true)).toBe(
+      "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of Ana Diaz's saved voice.",
+    );
+    await user.click(not);
+    expect(
+      await screen.findByText("Unlinked. This meeting's voice is no longer part of Sam Lee's saved voice."),
+    ).toBeInTheDocument();
+  });
+
+  it("says a voice saved before samples stays the person's after Not", async () => {
+    const { user } = await setup({ savedBeforeSamples: [SAMPLE_SPEAKERS.priya] });
+    await screen.findByText(/TL;DR/);
+    await openNamed(user);
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" }));
+    expect(
+      await screen.findByText(
+        "Unlinked. This voice was saved before Earshot 0.4.0, so it stays part of Priya Shah's saved voice. To start their voice over, remove them on the People page.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says a saved voice moves when linked to someone else", async () => {
+    const { user } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "Sam Lee{Enter}");
+    await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.");
+    await openNamed(user);
+    await user.click(within(speakerRow("Sam Lee")).getByRole("button", { name: "Link to person" }));
+    const dialog = await screen.findByRole("dialog", { name: "Link Sam Lee to a person" });
+    await user.type(within(dialog).getByRole("combobox", { name: "Person" }), "Ana Diaz");
+    await user.click(await screen.findByRole("option", { name: "New person: Ana Diaz" }));
+    await user.click(within(dialog).getByRole("button", { name: "Link" }));
+    expect(
+      await screen.findByText("Linked to Ana Diaz. This meeting's voice is no longer part of Sam Lee's saved voice."),
+    ).toBeInTheDocument();
+  });
+
   it("the mock refuses Not <name> like the runtime", async () => {
     const { ipc } = await setup();
     await screen.findByText(/TL;DR/);

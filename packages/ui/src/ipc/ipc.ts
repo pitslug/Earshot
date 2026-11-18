@@ -26,6 +26,10 @@ import type {
   ModelsView,
   PersonItem,
   SavedVoiceResult,
+  LinkResult,
+  MarkedMeResult,
+  MergeResult,
+  NotThisPersonResult,
   RemovedView,
   SearchResultsView,
   ClaudeCodeStatusView,
@@ -130,14 +134,16 @@ export interface IpcCommands
   editSummary(meeting: string, summary: string, field: SummaryFieldRef, text: string): Promise<void>;
   /** Renames a speaker. Rejects with an edit refusal (`invalid_name`, ...). */
   renameSpeaker(meeting: string, speaker: string, name: string): Promise<void>;
-  /** Merges speaker `merge` into `keep`. */
-  mergeSpeakers(meeting: string, keep: string, merge: string): Promise<void>;
-  /** Links a speaker to a person; resolves with the person's id. */
-  linkSpeaker(meeting: string, speaker: string, choice: LinkChoice): Promise<string>;
+  /** Merges speaker `merge` into `keep`; resolves with the voice samples taken back (T12.77b7). */
+  mergeSpeakers(meeting: string, keep: string, merge: string): Promise<MergeResult>;
+  /** Links a speaker to a person; resolves with the person's id and the voice samples taken
+   * back from the person it was linked to (T12.77b7). */
+  linkSpeaker(meeting: string, speaker: string, choice: LinkChoice): Promise<LinkResult>;
   /** "This is me": a voice of an in-room meeting becomes its one "Me" row. Saves no voice.
    * Rejects with `not_in_room` or `meeting_has_me`. Resolves with the separate persons named
-   * after the user, whom the panel offers to merge into the user (T12.44). */
-  markMe(meeting: string, speaker: string): Promise<PersonItem[]>;
+   * after the user, whom the panel offers to merge into the user (T12.44), and the voice
+   * samples taken back (T12.77b7). */
+  markMe(meeting: string, speaker: string): Promise<MarkedMeResult>;
   /** Merges a separate person named after the user into the user (T12.44). Rejects with
    * `person_not_found` or `not_named_after_user`. */
   mergeIntoMe(person: string): Promise<void>;
@@ -158,8 +164,8 @@ export interface IpcCommands
   unignoreSpeaker(meeting: string, speaker: string): Promise<void>;
   /** "Not <name>" on a named voice (T12.77): unlinked from the person, back to "Speaker N" and
    * ignored in this meeting. Rejects with `user_row`, `no_person`, `no_stored_voice` or a
-   * retryable `meeting_busy`. */
-  notThisPerson(meeting: string, speaker: string): Promise<void>;
+   * retryable `meeting_busy`. Resolves with what was taken back of the voice (T12.77b7). */
+  notThisPerson(meeting: string, speaker: string): Promise<NotThisPersonResult>;
   /** Forgets every voiceprint of a person. */
   forgetPersonVoices(person: string): Promise<number>;
   removePerson(person: string): Promise<void>;

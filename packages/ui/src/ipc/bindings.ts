@@ -97,14 +97,17 @@ export const commands = {
 	/**  Renames a speaker of `meeting`. */
 	renameSpeaker: (meeting: string, speaker: string, name: string) => typedError<null, IpcError>(__TAURI_INVOKE("rename_speaker", { meeting, speaker, name })),
 	/**  Merges speaker `merge` into `keep`. */
-	mergeSpeakers: (meeting: string, keep: string, merge: string) => typedError<null, IpcError>(__TAURI_INVOKE("merge_speakers", { meeting, keep, merge })),
-	/**  Links a speaker to an existing or a new person; returns the person's id. */
-	linkSpeaker: (meeting: string, speaker: string, choice: LinkChoice) => typedError<string, IpcError>(__TAURI_INVOKE("link_speaker", { meeting, speaker, choice })),
+	mergeSpeakers: (meeting: string, keep: string, merge: string) => typedError<MergeResult, IpcError>(__TAURI_INVOKE("merge_speakers", { meeting, keep, merge })),
+	/**
+	 *  Links a speaker to an existing or a new person; returns the person's id and what was
+	 *  taken back.
+	 */
+	linkSpeaker: (meeting: string, speaker: string, choice: LinkChoice) => typedError<LinkResult, IpcError>(__TAURI_INVOKE("link_speaker", { meeting, speaker, choice })),
 	/**
 	 *  Says a voice of an in-room meeting is the user's ("This is me"); returns the separate
 	 *  persons named after the user, to offer merging them into the user (T12.44).
 	 */
-	markMe: (meeting: string, speaker: string) => typedError<PersonItem[], IpcError>(__TAURI_INVOKE("mark_me", { meeting, speaker })),
+	markMe: (meeting: string, speaker: string) => typedError<MarkedMeResult, IpcError>(__TAURI_INVOKE("mark_me", { meeting, speaker })),
 	/**  Merges a separate person named after the user into the user (T12.44). */
 	mergeIntoMe: (person: string) => typedError<null, IpcError>(__TAURI_INVOKE("merge_into_me", { person })),
 	/**  Puts a "Me" row of an in-room meeting back as an unnamed voice ("This isn't me"). */
@@ -129,8 +132,11 @@ export const commands = {
 	 *  "Not <name>" on a named voice (T12.77): unlinks it from the person, gives it back
 	 *  "Speaker N" and ignores it in this meeting.
 	 */
-	notThisPerson: (meeting: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("not_this_person", { meeting, speaker })),
-	/**  Forgets every voiceprint of a person; returns how many were forgotten. */
+	notThisPerson: (meeting: string, speaker: string) => typedError<NotThisPersonResult, IpcError>(__TAURI_INVOKE("not_this_person", { meeting, speaker })),
+	/**
+	 *  Forgets every voiceprint of a person; returns how many voiceprints and voice samples were
+	 *  forgotten.
+	 */
 	forgetPersonVoices: (person: string) => typedError<number, IpcError>(__TAURI_INVOKE("forget_person_voices", { person })),
 	/**  Removes a person: their name and voice, from this computer (the Speakers page). */
 	removePerson: (person: string) => typedError<null, IpcError>(__TAURI_INVOKE("remove_person", { person })),
@@ -283,7 +289,7 @@ export const commands = {
 	startVoiceSample: () => typedError<null, IpcError>(__TAURI_INVOKE("start_voice_sample")),
 	/**  Cancels the voice sample; nothing is saved. */
 	cancelVoiceSample: () => __TAURI_INVOKE<void>("cancel_voice_sample"),
-	/**  Forgets the user's voice; returns how many voiceprints were forgotten. */
+	/**  Forgets the user's voice; returns how many voiceprints and voice samples were forgotten. */
 	forgetMyVoice: () => typedError<number, IpcError>(__TAURI_INVOKE("forget_my_voice")),
 	/**  The Obsidian page settings (and stored values this version cannot use). */
 	obsidianSettings: () => typedError<ObsidianSettingsView, IpcError>(__TAURI_INVOKE("obsidian_settings")),
@@ -1285,12 +1291,28 @@ person: string } |
 /**  The name. */
 name: string };
 
+/**  What linking a speaker did (T12.77b7). */
+export type LinkResult = {
+	/**  The person the speaker is linked to (hyphenated UUID). */
+	person: string,
+	/**  Voice samples of this meeting's voice taken back from the person it was linked to. */
+	taken_back: number,
+};
+
 /**  A live track as the meeting screen names it: speaker names exist only after hang-up. */
 export type LiveTrack = 
 /**  The mic (after echo cancellation). */
 "You" | 
 /**  The computer's audio. */
 "Them";
+
+/**  What "This is me" did (T12.77b7). */
+export type MarkedMeResult = {
+	/**  The separate persons named after the user, offered to merge into the user (T12.44). */
+	offers: PersonItem[],
+	/**  Voice samples of this meeting's voice taken back from the person it was linked to. */
+	taken_back: number,
+};
 
 /**  Everything the meeting detail screen shows. */
 export type MeetingDetail = {
@@ -1518,6 +1540,12 @@ export type MeetingState =
 /**  Recorded and processed. */
 "Ready";
 
+/**  What merging two speakers did (T12.77b7). */
+export type MergeResult = {
+	/**  Voice samples of the merged-away voice taken back. */
+	samples_taken_back: number,
+};
+
 /**
  *  How a meeting records the microphone (T12.36,
  *  `earshot_runtime::audio_settings::MicSignal`).
@@ -1681,6 +1709,14 @@ export type ModelsView = {
 	in_use: InUseView,
 };
 
+/**  What "Not <name>" did (T12.77b7): counts and a flag only. */
+export type NotThisPersonResult = {
+	/**  Voice samples of this meeting's voice taken back. */
+	taken_back: number,
+	/**  The voice was saved before samples existed, so it stays in the person's saved voice. */
+	saved_before_samples: boolean,
+};
+
 /**  A section of enhanced notes. */
 export type NotesView = {
 	/**  The heading. */
@@ -1835,6 +1871,8 @@ export type RememberOutcome =
 "NoStoredVoice" | 
 /**  Already remembered. */
 "AlreadyRemembered" | 
+/**  This meeting's earlier sample of the voice was replaced by the new one. */
+"Replaced" | 
 /**  The speaker model cannot match voiceprints. */
 "Unsupported";
 
@@ -1906,6 +1944,13 @@ export type SavedVoiceResult = {
 	person: string,
 	/**  What remembering its voice did. */
 	outcome: RememberOutcome,
+	/**
+	 *  Voice samples of this meeting's voice taken back from the person it was linked to
+	 *  before (and a replaced earlier sample).
+	 */
+	taken_back: number,
+	/**  The save moved the voice's sample from the person it was saved for before. */
+	moved: boolean,
 };
 
 /**  How often automatic checks run, as the page names it. */
@@ -2006,6 +2051,11 @@ export type SpeakerCard = {
 	 *  `edit::can_not_this_person`).
 	 */
 	can_not_this_person: boolean,
+	/**
+	 *  This meeting's voice is saved for the linked person as a voice sample, so "Not <name>"
+	 *  takes it out of their saved voice (`edit::voice_saved_here`, T12.77b7).
+	 */
+	voice_saved_here: boolean,
 	/**  The user may say this voice is theirs ("This is me": `edit::can_mark_me`). */
 	can_mark_me: boolean,
 	/**  The user may say this "Me" row is not theirs ("This isn't me": `edit::can_unmark_me`). */

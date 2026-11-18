@@ -2262,6 +2262,38 @@ pub fn can_not_this_person<R: VoiceprintRepo + ?Sized>(
             .is_empty())
 }
 
+/// Whether this meeting's voice `row` is saved for the person it is linked to as a voice
+/// sample (docs/voice-samples.md 5.1): a live sample from `(meeting, row)` whose person
+/// resolves to the row's. What "Not <name>" would take back, read from a store the caller has
+/// locked.
+///
+/// # Errors
+/// Store errors.
+pub fn voice_saved_here<R: VoiceprintRepo + ?Sized>(
+    repo: &R,
+    row: &Speaker,
+) -> Result<bool, RuntimeError> {
+    let Some(linked) = row.person_id else {
+        return Ok(false);
+    };
+    let Some(owner) = resolve_person(repo, linked).map_err(voiceprint_err)? else {
+        return Ok(false);
+    };
+    for s in repo
+        .samples_from(row.meeting_id, row.id)
+        .map_err(voiceprint_err)?
+    {
+        let to = match s.person_id() {
+            Some(p) => resolve_person(repo, p).map_err(voiceprint_err)?,
+            None => None,
+        };
+        if to.is_some_and(|p| p.id == owner.id) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// What [`not_this_person`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NotThisPerson {

@@ -140,3 +140,25 @@ fn page_names_no_shown_text_of_the_app_or_the_runtime_names_a_gone_page() {
         .collect();
     assert!(found.is_empty(), "{found:#?}");
 }
+
+/// The voice sample copy sends the user to "the People page" to start a voice over (T12.77b7):
+/// that page exists in Settings and holds the Remove button the copy means.
+#[test]
+fn page_names_the_voice_sample_copy_names_the_people_page_that_removes_a_person() {
+    let copy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/voice_sample_copy_cases.json"
+    ))
+    .unwrap();
+    let text = copy["not_saved_before_samples"].as_str().unwrap();
+    assert!(text.contains("remove them on the People page"), "{text}");
+    assert!(stale_page_names(text).is_empty(), "{text}");
+    let settings = include_str!("../../../../packages/ui/src/settings/SettingsView.tsx");
+    let sections = settings
+        .split_once("export const SETTINGS_SECTIONS = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .unwrap()
+        .0;
+    assert!(sections.contains("\"People\""), "{sections}");
+    let people = include_str!("../../../../packages/ui/src/settings/PeoplePage.tsx");
+    assert!(people.contains("Remove {removing?.name}?"));
+}

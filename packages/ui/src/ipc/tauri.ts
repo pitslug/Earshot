@@ -72,9 +72,7 @@ export function createTauriIpc(): Ipc {
     renameSpeaker: async (meeting, speaker, name) => {
       unwrap(await commands.renameSpeaker(meeting, speaker, name));
     },
-    mergeSpeakers: async (meeting, keep, merge) => {
-      unwrap(await commands.mergeSpeakers(meeting, keep, merge));
-    },
+    mergeSpeakers: async (meeting, keep, merge) => unwrap(await commands.mergeSpeakers(meeting, keep, merge)),
     linkSpeaker: async (meeting, speaker, choice) =>
       unwrap(await commands.linkSpeaker(meeting, speaker, choice)),
     markMe: async (meeting, speaker) => unwrap(await commands.markMe(meeting, speaker)),
@@ -94,9 +92,7 @@ export function createTauriIpc(): Ipc {
     unignoreSpeaker: async (meeting, speaker) => {
       unwrap(await commands.unignoreSpeaker(meeting, speaker));
     },
-    notThisPerson: async (meeting, speaker) => {
-      unwrap(await commands.notThisPerson(meeting, speaker));
-    },
+    notThisPerson: async (meeting, speaker) => unwrap(await commands.notThisPerson(meeting, speaker)),
     forgetPersonVoices: async (person) => unwrap(await commands.forgetPersonVoices(person)),
     removePerson: async (person) => {
       unwrap(await commands.removePerson(person));

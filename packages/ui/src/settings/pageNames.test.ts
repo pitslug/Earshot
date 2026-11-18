@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import table from "../../../../fixtures/ui/page_name_cases.json";
+import voiceCopy from "../../../../fixtures/ui/voice_sample_copy_cases.json";
 import { SETTINGS_SECTIONS } from "./SettingsView";
 
 /** The gone page names `text` uses, in the shared table's forms ("the Models page", "Settings,
@@ -56,6 +57,13 @@ describe("Settings page names", () => {
     }
     // Comments may keep history; shown text may not.
     expect(code("// was on the Models page\nconst x = 1;")).toBe("const x = 1;");
+  });
+
+  it("sends a voice saved before samples to the People page, which exists (T12.77b7)", () => {
+    const text = voiceCopy.not_saved_before_samples;
+    expect(text).toContain("remove them on the People page");
+    expect(stalePageNames(text)).toEqual([]);
+    expect(SETTINGS_SECTIONS).toContain("People");
   });
 
   it("names no gone page in any shown text of the UI", () => {

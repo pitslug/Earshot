@@ -1122,7 +1122,7 @@ fn detail_mark_me_returns_the_persons_named_after_the_user_to_merge() {
     person_with(&svc, "Robin", false, false, 64);
     let (m, voice, other) = in_room_meeting(&svc, 65);
     edit::link_speaker(&svc, m, other, &PersonChoice::Existing(twin)).unwrap();
-    let offered = super::mark_me(&svc, m, voice).unwrap();
+    let offered = super::mark_me(&svc, m, voice).unwrap().offers;
     assert_eq!(offered.len(), 1);
     assert_eq!(offered[0].id, twin.to_string());
     assert_eq!(offered[0].name, "Casey Lane");
@@ -1285,7 +1285,8 @@ fn detail_edits_go_through_the_runtime_and_refusals_arrive_as_user_copy() {
             name: "Sam Lee".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     let d = meeting_detail(&svc, f.meeting).unwrap();
     let c = card(&d, f.unnamed);
     assert_eq!(c.name, "Sam Lee");
@@ -1811,4 +1812,91 @@ fn detail_person_filter_letters_bindings_are_up_to_date() {
         "packages/ui/src/detail/baseLetters.ts is out of date: run \
          EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings"
     );
+}
+
+/// The voice sample copy table (`fixtures/ui/voice_sample_copy_cases.json`, T12.77b7).
+fn voice_copy() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/voice_sample_copy_cases.json"
+    ))
+    .unwrap()
+}
+
+/// A dotted version as numbers (`0.4.0` gives `[0, 4, 0]`).
+fn version_parts(v: &str) -> Vec<u64> {
+    v.split('.').map(|p| p.parse().unwrap()).collect()
+}
+
+#[test]
+fn detail_voice_sample_copy_names_a_release_not_yet_past() {
+    let since = voice_copy()["since"].as_str().unwrap().to_owned();
+    let workspace = env!("CARGO_PKG_VERSION");
+    assert!(
+        version_parts(&since) >= version_parts(workspace),
+        "since {since} names a release before this one ({workspace})"
+    );
+    assert_eq!(version_parts("0.4.0"), [0, 4, 0]);
+    assert!(version_parts("0.3.11") < version_parts("0.4.0"));
+}
+
+#[test]
+fn detail_voice_sample_copy_is_the_agreed_table_word_for_word() {
+    let doc = include_str!("../../../../docs/voice-samples.md");
+    let table = voice_copy();
+    let texts: Vec<(&str, &str)> = table
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(k, _)| !k.starts_with('_') && k.as_str() != "since")
+        .map(|(k, v)| (k.as_str(), v.as_str().unwrap()))
+        .collect();
+    assert_eq!(texts.len(), 8, "seven texts and the tooltip");
+    for (key, text) in texts {
+        assert!(doc.contains(&format!("\"{text}\"")), "{key}: {text}");
+        assert!(!text.contains('\u{2014}'), "{key} holds an em dash");
+    }
+}
+
+#[test]
+fn detail_no_voice_sample_result_serialises_a_vector() {
+    let results = [
+        serde_json::to_value(NotThisPersonResult {
+            taken_back: 1,
+            saved_before_samples: true,
+        }),
+        serde_json::to_value(LinkResult {
+            person: "p".into(),
+            taken_back: 1,
+        }),
+        serde_json::to_value(MarkedMeResult {
+            offers: Vec::new(),
+            taken_back: 1,
+        }),
+        serde_json::to_value(MergeResult {
+            samples_taken_back: 1,
+        }),
+        serde_json::to_value(SavedVoiceResult {
+            person: "p".into(),
+            outcome: RememberOutcome::Replaced,
+            taken_back: 1,
+            moved: true,
+        }),
+    ];
+    fn floats(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Number(n) => n.is_f64(),
+            serde_json::Value::Array(a) => a.iter().any(floats),
+            serde_json::Value::Object(o) => o.values().any(floats),
+            _ => false,
+        }
+    }
+    for r in results {
+        let v = r.unwrap();
+        let text = v.to_string();
+        assert!(
+            !text.contains("vector") && !text.contains("centroid"),
+            "{text}"
+        );
+        assert!(!floats(&v), "{text}");
+    }
 }

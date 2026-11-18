@@ -886,17 +886,14 @@ async fn merge_speakers(
     meeting: String,
     keep: String,
     merge: String,
-) -> Result<(), IpcError> {
+) -> Result<detail::MergeResult, IpcError> {
     let services = state.services()?;
     let (meeting, keep, merge) = (parse_id(&meeting)?, parse_id(&keep)?, parse_id(&merge)?);
-    blocking(move || {
-        earshot_runtime::edit::merge_speakers(&services, meeting, keep, merge)?;
-        Ok(())
-    })
-    .await
+    blocking(move || detail::merge(&services, meeting, keep, merge)).await
 }
 
-/// Links a speaker to an existing or a new person; returns the person's id.
+/// Links a speaker to an existing or a new person; returns the person's id and what was
+/// taken back.
 #[tauri::command]
 #[specta::specta]
 async fn link_speaker(
@@ -904,7 +901,7 @@ async fn link_speaker(
     meeting: String,
     speaker: String,
     choice: LinkChoice,
-) -> Result<String, IpcError> {
+) -> Result<detail::LinkResult, IpcError> {
     let services = state.services()?;
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
     blocking(move || detail::link(&services, meeting, speaker, &choice)).await
@@ -918,7 +915,7 @@ async fn mark_me(
     state: State<'_, AppState>,
     meeting: String,
     speaker: String,
-) -> Result<Vec<PersonItem>, IpcError> {
+) -> Result<detail::MarkedMeResult, IpcError> {
     let services = state.services()?;
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
     blocking(move || detail::mark_me(&services, meeting, speaker)).await
@@ -1037,14 +1034,10 @@ async fn not_this_person(
     state: State<'_, AppState>,
     meeting: String,
     speaker: String,
-) -> Result<(), IpcError> {
+) -> Result<detail::NotThisPersonResult, IpcError> {
     let services = state.services()?;
     let (meeting, speaker) = (parse_id(&meeting)?, parse_id(&speaker)?);
-    blocking(move || {
-        earshot_runtime::edit::not_this_person(&services, meeting, speaker)?;
-        Ok(())
-    })
-    .await
+    blocking(move || detail::not_this_person(&services, meeting, speaker)).await
 }
 
 /// Removes a person: their name and voice, from this computer (the Speakers page).
@@ -1060,7 +1053,8 @@ async fn remove_person(state: State<'_, AppState>, person: String) -> Result<(),
     .await
 }
 
-/// Forgets every voiceprint of a person; returns how many were forgotten.
+/// Forgets every voiceprint of a person; returns how many voiceprints and voice samples were
+/// forgotten.
 #[tauri::command]
 #[specta::specta]
 async fn forget_person_voices(state: State<'_, AppState>, person: String) -> Result<u32, IpcError> {

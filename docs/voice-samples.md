@@ -234,7 +234,7 @@ Migration 9 in `crates/earshot-store/src/schema.rs`: `CREATE TABLE voiceprint_sa
 
 ## 10. Copy
 
-Result fields carry counts and flags; the words live in the UI (`packages/ui/src/detail/`), in a case table `fixtures/ui/voice_sample_copy_cases.json` read by the UI test and by a Rust test that pins `since` (the version in the copy) to be no later than the workspace version. `{name}` and `{other}` are filled with a function replacer (a name can hold `$&`).
+Result fields carry counts and flags; the words live in the UI (`packages/ui/src/detail/`), in a case table `fixtures/ui/voice_sample_copy_cases.json` read by the UI test and by a Rust test that pins `since` (the version in the copy, 0.4.0) to be at least the workspace version, so it can never name a release already past; T12.77b8, which merges only with the release bump, pins it equal to the workspace version. `{name}` and `{other}` are filled with a function replacer (a name can hold `$&`).
 
 | Case | Text |
 |---|---|
@@ -246,7 +246,7 @@ Result fields carry counts and flags; the words live in the UI (`packages/ui/src
 | This is me, `taken_back > 0` | "Marked as you. This meeting's voice is no longer part of {name}'s saved voice." |
 | Merge, `samples_taken_back > 0` | "Merged. The merged voice is no longer part of {name}'s saved voice: save the voice again to add it." |
 
-Only the decision-5 text is agreed; the rest are proposals. This table, with the tooltip below, is the one list the owner reviews when T12.77b7 starts; nothing earlier ships these words. The "Not <name>" tooltip (`notThisPersonHint`, `SpeakersPanel.tsx`) says "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of {name}'s saved voice." when a live sample exists, today's text otherwise. The page-name guard (`page_names_tests.rs`, `pageNames.test.ts`) gets a source-pinning case for "People page".
+The owner agreed this table and the tooltip below as written (2026-11-18, T12.77b7). The "Not <name>" tooltip (`notThisPersonHint`, `SpeakersPanel.tsx`) says "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of {name}'s saved voice." when a live sample exists, today's text otherwise. The page-name guard (`page_names_tests.rs`, `pageNames.test.ts`) gets a source-pinning case for "People page".
 
 ## 11. Privacy
 

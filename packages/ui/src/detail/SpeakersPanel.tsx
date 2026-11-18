@@ -53,6 +53,7 @@ import { type KeyboardEvent, type ReactElement, type Ref, useRef, useState } fro
 import { RECOGNISED_ME_COPY, type LinkChoice, type MeetingDetail, type PersonItem, type SpeakerCard } from "../ipc";
 import { recognised, recordingsGone, sourceLabel, speakerGroups } from "./detail";
 import { meetingsText, personNameKey, personsMatching, personsNamed } from "./personFilter";
+import { notThisPersonSavedHint } from "./voiceSampleCopy";
 
 const useStyles = makeStyles({
   panel: {
@@ -199,10 +200,12 @@ export function mergeOfferText(person: PersonItem): string {
   return `There is also a person called ${person.name}. If that is you, merge them into you.${voice}`;
 }
 
-/** What "Not <name>" does (T12.77), for its tooltip. Until T12.77b, a voice saved for the
- * person stays in their saved voice, so the tooltip says so; `forgetShown`: the row shows
- * Forget voice (the person has a saved voice), which deletes that saved voice only. */
-export function notThisPersonHint(name: string, forgetShown: boolean): string {
+/** What "Not <name>" does (T12.77), for its tooltip. `savedHere`: this meeting's voice is saved
+ * as a sample of `name`'s voice, so "Not" takes it out (T12.77b7, the agreed copy); otherwise
+ * `name`'s saved voice may still hold it, and `forgetShown` (the row shows Forget voice, the
+ * person has a saved voice) adds that Forget voice deletes that saved voice only. */
+export function notThisPersonHint(name: string, forgetShown: boolean, savedHere = false): string {
+  if (savedHere) return notThisPersonSavedHint(name);
   const forget = forgetShown ? ` Forget voice deletes ${name}'s saved voice.` : "";
   return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it.${forget}`;
 }
@@ -574,7 +577,7 @@ function NamedRow(props: RowProps) {
         <LinkPopover card={card} persons={persons} onLink={onLink} locked={locked} />
         {card.can_not_this_person && card.person !== null && editing === null && (
           <Tooltip
-            content={notThisPersonHint(card.person.name, card.person.has_voiceprint)}
+            content={notThisPersonHint(card.person.name, card.person.has_voiceprint, card.voice_saved_here)}
             relationship="description"
           >
             <Button

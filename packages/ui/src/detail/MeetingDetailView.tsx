@@ -93,11 +93,17 @@ import {
   recordingsGone,
   recordingsGoneReason,
   rowTime,
-  savedText,
   summaryMarkdown,
   voicesBadge,
   voicesToName,
 } from "./detail";
+import {
+  linkedText,
+  markedMeText,
+  mergedText,
+  notThisPersonText,
+  savedVoiceText,
+} from "./voiceSampleCopy";
 
 const useStyles = makeStyles({
   root: {
@@ -668,6 +674,13 @@ export function MeetingDetailView({
     else view.current?.scrollIntoView?.({ block: "start" });
   }, [tab, cited]);
 
+  /** The name of the person speaker `s` is linked to now, before an edit changes it. */
+  const personNameOf = (s: string): string | null =>
+    detail?.speakers.find((c) => c.id === s)?.person?.name ?? null;
+  /** The name `choice` links to: a new person's typed name, or the listed person's. */
+  const choiceName = (choice: LinkChoice): string =>
+    choice.kind === "New" ? choice.name.trim() : (persons.find((p) => p.id === choice.person)?.name ?? "");
+
   const run = async (f: () => Promise<unknown>, failTitle: string) => {
     try {
       await f();
@@ -1052,10 +1065,21 @@ export function MeetingDetailView({
                       run(() => ipc.renamePerson(person, name), "The person was not renamed")
                     }
                     onLink={(s, choice: LinkChoice) =>
-                      run(() => ipc.linkSpeaker(id, s, choice), "The speaker was not linked")
+                      run(async () => {
+                        const was = personNameOf(s);
+                        const result = await ipc.linkSpeaker(id, s, choice);
+                        const text = linkedText(was, choiceName(choice), result);
+                        if (text !== null) setNotice({ key: "edit", intent: "success", text });
+                      }, "The speaker was not linked")
                     }
                     onMarkMe={(s) =>
-                      run(async () => setMergeOffers(await ipc.markMe(id, s)), "The voice was not marked as you")
+                      run(async () => {
+                        const was = personNameOf(s);
+                        const marked = await ipc.markMe(id, s);
+                        setMergeOffers(marked.offers);
+                        const text = markedMeText(was, marked);
+                        if (text !== null) setNotice({ key: "edit", intent: "success", text });
+                      }, "The voice was not marked as you")
                     }
                     mergeOffer={mergeOffers[0] ?? null}
                     onMergeIntoMe={(person) =>
@@ -1074,7 +1098,12 @@ export function MeetingDetailView({
                       }, "The voice was not changed")
                     }
                     onMerge={(keep, merge) =>
-                      run(() => ipc.mergeSpeakers(id, keep, merge), "The speakers were not merged")
+                      run(async () => {
+                        const was = personNameOf(merge);
+                        const result = await ipc.mergeSpeakers(id, keep, merge);
+                        const text = mergedText(was, result);
+                        if (text !== null) setNotice({ key: "edit", intent: "success", text });
+                      }, "The speakers were not merged")
                     }
                     onForget={(person) =>
                       run(async () => {
@@ -1084,18 +1113,28 @@ export function MeetingDetailView({
                     }
                     onSave={(s, choice, name) =>
                       run(async () => {
+                        const was = personNameOf(s);
                         const saved = await ipc.saveVoice(id, s, choice);
-                        const kept = saved.outcome === "Remembered" || saved.outcome === "AlreadyRemembered";
+                        const kept =
+                          saved.outcome === "Remembered" ||
+                          saved.outcome === "Replaced" ||
+                          saved.outcome === "AlreadyRemembered";
                         setNotice({
                           key: "edit",
                           intent: kept ? "success" : "info",
-                          text: savedText(name, saved.outcome),
+                          text: savedVoiceText(was, name, saved),
                         });
                       }, "The voice was not saved")
                     }
                     onIgnore={(s) => run(() => ipc.ignoreSpeaker(id, s), "The voice was not ignored")}
                     onUnignore={(s) => run(() => ipc.unignoreSpeaker(id, s), "The voice was not changed")}
-                    onNotThisPerson={(s) => run(() => ipc.notThisPerson(id, s), "The voice was not changed")}
+                    onNotThisPerson={(s) =>
+                      run(async () => {
+                        const was = personNameOf(s) ?? "";
+                        const result = await ipc.notThisPerson(id, s);
+                        setNotice({ key: "edit", intent: "success", text: notThisPersonText(was, result) });
+                      }, "The voice was not changed")
+                    }
                     firstNameField={(el) => {
                       nameField.current = el;
                     }}
