@@ -308,11 +308,9 @@ pub struct Applied {
     /// because a person was deleted elsewhere, live prints a pulled print tombstone replaced,
     /// and samples of a print tombstoned here (the dead-print repair).
     pub biometrics_forgotten: usize,
-    /// Live voiceprints refused because the print is deleted here (its tombstone was stamped
-    /// again, so it goes out and wins at the relay, T12.77b3).
-    pub print_deletions_kept: usize,
-    /// Live meeting rows refused because the meeting is deleted here (its tombstone was
-    /// stamped again, so it goes out and wins at the relay).
+    /// Live meeting rows refused because the meeting is deleted here, and live voiceprints
+    /// refused because the print is deleted here (T12.77b3): the tombstone was stamped again,
+    /// so it goes out and wins at the relay.
     pub deletions_kept: usize,
     /// "Me" people merged into the earliest one (two devices each made their own).
     pub mes_merged: usize,
@@ -505,17 +503,22 @@ fn converge<C: Clock + ?Sized>(
         )?;
         st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
     };
+    // Erased by id in SQL, never read back first: a damaged live row (one `from_stored`
+    // refuses) is erased too and cannot abort the page.
     for id in dead {
-        let Some(SyncedRow::VoiceprintSample(s)) =
-            crate::repo::synced_by_id(&tx.conn, "voiceprint_sample", EntityId::from_bytes(id))?
-        else {
-            continue;
-        };
-        let mut meta = *s.meta();
-        meta.mark_deleted(hlc, clock);
-        let erased = VoiceprintSample::erased(s.id(), meta)
-            .map_err(|e| StoreError::Repo(RepoError::Storage(e.to_string())))?;
-        crate::repo::put_synced(&tx.conn, &SyncedRow::VoiceprintSample(erased))?;
+        let at = hlc.now(clock);
+        tx.conn.execute(
+            "UPDATE voiceprint_sample SET deleted = 1, voiceprint_id = NULL, person_id = NULL, \
+             model = NULL, vector = x'', speech_ms = NULL, meeting_id = NULL, speaker_id = NULL, \
+             updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+             WHERE id = ?4 AND deleted = 0",
+            params![
+                i64_of(at.wall_ms)?,
+                at.logical,
+                &at.node.as_uuid().as_bytes()[..],
+                &id[..],
+            ],
+        )?;
         out.biometrics_forgotten += 1;
         out.people = true;
     }
@@ -913,7 +916,7 @@ impl Store {
                             here.base_speech_ms(),
                         );
                         crate::repo::put_synced(&tx.conn, &SyncedRow::Voiceprint(again))?;
-                        out.print_deletions_kept += 1;
+                        out.deletions_kept += 1;
                     } else {
                         out.ignored += 1;
                     }

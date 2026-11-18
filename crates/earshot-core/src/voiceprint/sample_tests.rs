@@ -882,3 +882,28 @@ fn voiceprint_saved_before_samples_needs_the_marker_no_sample_and_a_base() {
     repo.put_voiceprint(new).unwrap();
     assert!(!saved_before_samples(&repo, true, meeting, fresh, ada, &m).unwrap());
 }
+
+#[test]
+fn voiceprint_take_back_resolves_keep_through_merges() {
+    let (clock, mut hlc, mut repo, ada, _, origins) = ada_with_samples();
+    let (meeting, speaker) = meeting_voice(origins[0]);
+    // A duplicate merged into Ada: keeping it keeps Ada's voice.
+    let mut rng = ChaCha8Rng::seed_from_u64(12);
+    let dup = {
+        let mut st = Stamp {
+            clock: &clock,
+            hlc: &mut hlc,
+            rng: &mut rng,
+        };
+        Person::new("Ada (laptop)", false, &mut st)
+    };
+    repo.put_person(dup.clone()).unwrap();
+    merge_persons(&mut repo, dup.id, ada, &mut hlc, &clock).unwrap();
+    let n = take_back(&mut repo, meeting, speaker, Some(dup.id), &mut hlc, &clock).unwrap();
+    assert_eq!(n, 0, "the kept person resolves to Ada");
+    assert_eq!(repo.samples_from(meeting, speaker).unwrap().len(), 1);
+    // A kept person that resolves to nobody keeps nothing.
+    let gone = EntityId::from_bytes([0x78; 16]);
+    let n = take_back(&mut repo, meeting, speaker, Some(gone), &mut hlc, &clock).unwrap();
+    assert_eq!(n, 1);
+}

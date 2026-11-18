@@ -605,7 +605,7 @@ pub(super) fn erase<C: Clock + ?Sized>(
 
 /// Takes the voice `speaker` of `meeting` back out (docs/voice-samples.md 6): writes the
 /// tombstone of every live sample from that origin whose person, resolved through merges, is
-/// not `keep` (`None` takes back all). Keyed only on the sample's own meeting and speaker, so
+/// not `keep`, itself resolved through merges (`None` takes back all). Keyed only on the sample's own meeting and speaker, so
 /// it needs no identity record. Returns how many were taken back; the caller checkpoints after
 /// the commit when that is not 0.
 ///
@@ -619,6 +619,10 @@ pub fn take_back<Repo: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
     hlc: &mut Hlc,
     clock: &C,
 ) -> Result<usize, VoiceprintError> {
+    let keep = match keep {
+        Some(p) => resolve_person(repo, p)?.map(|p| p.id),
+        None => None,
+    };
     let mut n = 0;
     for s in repo.samples_from(meeting, speaker)? {
         let resolved = match s.person_id() {

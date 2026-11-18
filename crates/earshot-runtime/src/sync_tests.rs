@@ -2786,8 +2786,8 @@ fn sync_a_pulled_voiceprint_tombstone_erases_this_computers_samples_of_it() {
     let (person, print) = print_on(&a, 43);
     ca.tick().unwrap();
     cb.tick().unwrap();
-    // B holds two samples of that print (written by B, never sent: this build holds no
-    // sample on the wire yet).
+    // B holds two samples of that print. B's next tick also sends them (no hold in this
+    // build); a computer of this build holds a pulled sample as an entity it does not read.
     let samples: Vec<VoiceprintSample> = {
         let clock = Arc::clone(&b.svc.clock);
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(44);

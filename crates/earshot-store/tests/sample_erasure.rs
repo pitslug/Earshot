@@ -296,11 +296,7 @@ fn store_sample_erasure_a_voiceprint_tombstone_is_final_against_a_later_live_cop
             &s.w.clock,
         )
         .unwrap();
-    assert_eq!(
-        (a.written, a.ignored, a.print_deletions_kept),
-        (0, 1, 0),
-        "{a:?}"
-    );
+    assert_eq!((a.written, a.ignored, a.deletions_kept), (0, 1, 0), "{a:?}");
     // A later live copy (an older build that still had the print) never brings it back: the
     // tombstone is stamped again after it and queued to go out.
     let later = print_from_there(&tomb, forgot_at.wall_ms + 60_000, false);
@@ -314,7 +310,7 @@ fn store_sample_erasure_a_voiceprint_tombstone_is_final_against_a_later_live_cop
             &s.w.clock,
         )
         .unwrap();
-    assert_eq!((a.written, a.print_deletions_kept), (0, 1), "{a:?}");
+    assert_eq!((a.written, a.deletions_kept), (0, 1), "{a:?}");
     let v = s.store.voiceprints_of(s.person).unwrap().remove(0);
     assert!(v.meta().deleted, "still forgotten");
     assert!(effective(&v, &[]).sum().iter().all(|x| *x == 0.0));
@@ -329,4 +325,51 @@ fn store_sample_erasure_a_voiceprint_tombstone_is_final_against_a_later_live_cop
             .contains(&SyncedRow::Voiceprint(v)),
         "the tombstone goes out again"
     );
+}
+
+/// T12.77b3 review: the dead-print repair erases by id, so a damaged live sample row (one the
+/// store would refuse to read) is erased too and never aborts the page.
+#[test]
+fn store_sample_erasure_a_damaged_sample_of_a_tombstoned_print_is_erased_not_fatal() {
+    let mut s = setup("erase-damaged");
+    {
+        let c = rusqlite::Connection::open(&s.db).unwrap();
+        let bad: Vec<u8> = [2.0f32; 64].iter().flat_map(|x| x.to_le_bytes()).collect();
+        c.execute("UPDATE voiceprint_sample SET vector = ?1", [bad])
+            .unwrap();
+    }
+    assert!(
+        s.store.samples_from(s.meeting, s.speaker).is_err(),
+        "sanity: damaged"
+    );
+    let here = s.store.voiceprints_of(s.person).unwrap().remove(0);
+    let gone = print_from_there(&here, 1_800_000_050_000, true);
+    let mut hlc = s.store.hlc(HERE).unwrap();
+    let a = s
+        .store
+        .apply_remote(
+            &[incoming(1, SyncedRow::Voiceprint(gone))],
+            &rules(),
+            &mut hlc,
+            &s.w.clock,
+        )
+        .unwrap();
+    assert_eq!((a.written, a.biometrics_forgotten), (1, 2), "{a:?}");
+    s.store.flush_erasures().unwrap();
+    assert!(
+        s.store
+            .samples_from(s.meeting, s.speaker)
+            .unwrap()
+            .is_empty()
+    );
+    let left: i64 = rusqlite::Connection::open(&s.db)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM voiceprint_sample WHERE deleted = 0 OR length(vector) > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0, "a tombstone with no body");
+    s.assert_sample_gone();
 }

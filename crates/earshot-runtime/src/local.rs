@@ -1050,6 +1050,48 @@ mod tests {
     }
 
     #[test]
+    fn voiceprint_enroll_sample_is_called_by_no_shipped_code() {
+        // The sample writer is tests only until every enrolment writes samples (T12.77b6):
+        // a queued sample would be pushed at the vault format of today.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let skip = test_support_packages(&root);
+        let mut files = Vec::new();
+        for krate in workspace_members(&root)
+            .iter()
+            .filter(|m| m.as_str() != "xtask" && !skip.contains(m))
+        {
+            let dir = root.join("crates").join(krate);
+            if dir.join("src").exists() {
+                files.extend(production_files(&dir));
+            }
+        }
+        files.extend(production_files(&root.join("apps/desktop/src-tauri")));
+        assert!(
+            files.iter().any(|f| f
+                .to_string_lossy()
+                .replace('\\', "/")
+                .ends_with("voiceprint/sample.rs")),
+            "the scan reaches the writer's module"
+        );
+        let call = concat!("enroll", "_sample(");
+        let mut found = Vec::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap();
+            for (n, line) in production_lines(&src) {
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains(call) {
+                    found.push(format!("{}:{n}: {}", f.display(), line.trim()));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "no shipped code writes voice samples before T12.77b6:\n{}",
+            found.join("\n")
+        );
+    }
+
+    #[test]
     fn voiceprint_effective_scan_finds_a_fold_over_nothing_and_passes_real_folds() {
         assert_eq!(
             folds_over_nothing("let a = 1;\nlet e = voiceprint::effective(&v, &[]).count();\n"),
