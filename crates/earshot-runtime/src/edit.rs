@@ -77,7 +77,7 @@ use earshot_core::summary::SummaryV1;
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{
     DEFAULT_ME_NAME, Person, VoiceprintError, VoiceprintRepo, enroll, existing_me, identity_of,
-    live_prints_of, me_person, merge_persons, resolve_person,
+    live_prints_of, me_person, merge_persons, resolve_person, saved_before_samples, take_back,
 };
 use earshot_store::{StoreTx, first_free_speaker_name};
 use rand_core::Rng;
@@ -1039,10 +1039,69 @@ pub struct Merged {
     /// The merged speaker's stored identity entry (its centroid, biometric) was dropped, or
     /// the meeting's unreadable identity record was deleted whole.
     pub identity_dropped: bool,
-    /// The dropped centroid is deleted (committed) but the checkpoint that removes it from
-    /// the WAL could not finish (another connection was reading, or it failed): it leaves at
-    /// the next checkpoint (any later erasure, or the store's closing checkpoint).
+    /// Voice samples taken back from the merged-away voice (docs/voice-samples.md 6.1): it is no
+    /// longer a voice of anyone, so its samples stop counting.
+    pub samples_taken_back: usize,
+    /// The dropped centroid or a taken-back sample is deleted (committed) but the checkpoint
+    /// that removes it from the WAL could not finish (another connection was reading, or it
+    /// failed): it leaves at the next checkpoint (any later erasure, or the store's closing
+    /// checkpoint).
     pub checkpoint_pending: bool,
+}
+
+/// What a speaker edit took back: how many voice samples of that meeting's voice stopped
+/// counting, and whether the checkpoint after the commit could not finish (the erasure is
+/// committed; it leaves the WAL at the next checkpoint).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TakenBack {
+    /// Voice samples taken back.
+    pub taken_back: usize,
+    /// The checkpoint after the commit could not finish.
+    pub checkpoint_pending: bool,
+}
+
+impl TakenBack {
+    /// After the commit: checkpoints when anything was taken back, so with `secure_delete`
+    /// the vectors leave the WAL; a failure is reported, never an error.
+    fn flushed(taken_back: usize, services: &Services) -> Self {
+        let checkpoint_pending = taken_back > 0 && services.store().flush_erasures().is_err();
+        TakenBack {
+            taken_back,
+            checkpoint_pending,
+        }
+    }
+}
+
+/// Sets the person of speaker row `row` of `meeting` to `person` and writes it (re-stamped),
+/// taking back every voice sample from that meeting voice whose person is no longer the row's
+/// ([`take_back`] with `person` as the one kept, resolved through merges inside it). The one way
+/// a user's edit changes a speaker row's person (docs/voice-samples.md 3.3, pinned by
+/// `edit_speaker_person_changes_only_through_set_row_person`); the caller sets the row's other
+/// fields first. Returns how many samples were taken back.
+fn set_row_person(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+    meeting: EntityId,
+    row: &mut Speaker,
+    person: Option<EntityId>,
+) -> Result<usize, RuntimeError> {
+    row.person_id = person;
+    row.meta.touch(stamp.hlc, stamp.clock);
+    tx.put_speaker(row.clone())?;
+    take_back(tx, meeting, row.id, person, stamp.hlc, stamp.clock).map_err(voiceprint_err)
+}
+
+/// Tombstones speaker row `row` of `meeting` (a user's edit: the merged-away voice) and takes
+/// back every voice sample from it: it is no one's voice any more.
+fn retire_row(
+    tx: &mut StoreTx<'_>,
+    stamp: &mut DynStamp<'_, '_>,
+    meeting: EntityId,
+    row: &mut Speaker,
+) -> Result<usize, RuntimeError> {
+    row.meta.mark_deleted(stamp.hlc, stamp.clock);
+    tx.put_speaker(row.clone())?;
+    take_back(tx, meeting, row.id, None, stamp.hlc, stamp.clock).map_err(voiceprint_err)
 }
 
 /// Merges speaker `merge` into `keep` (both live speakers of `meeting`): every live segment
@@ -1080,18 +1139,18 @@ pub fn merge_speakers(
             tx.put_segment(row)?;
             segments_moved += 1;
         }
-        gone.meta.mark_deleted(stamp.hlc, stamp.clock);
-        tx.put_speaker(gone)?;
+        let samples_taken_back = retire_row(tx, stamp, meeting, &mut gone)?;
         kept.meta.touch(stamp.hlc, stamp.clock);
         tx.put_speaker(kept)?;
         let identity_dropped = drop_identity_entry(tx, meeting, merge)?;
         Ok(Merged {
             segments_moved,
             identity_dropped,
+            samples_taken_back,
             checkpoint_pending: false,
         })
     })?;
-    if merged.identity_dropped {
+    if merged.identity_dropped || merged.samples_taken_back > 0 {
         // The dropped centroid leaves the WAL too (as the final pass does); the merge is
         // committed whatever the checkpoint does, so a failure is reported, not an error.
         let flushed = services.store().flush_erasures();
@@ -1185,7 +1244,8 @@ pub enum PersonChoice {
 /// "Me" row's alone, and the "Me" row links only to it, as the final pass's naming rule
 /// ("nobody else is the user"). Linking to another person clears the speaker's
 /// "remembered" mark ([`remember_voices`]), so its voice can be remembered for the new one,
-/// and ends an ignore ([`ignore_speaker`]).
+/// ends an ignore ([`ignore_speaker`]) and takes back this meeting's voice samples from the
+/// person it was linked to ([`set_row_person`]).
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting, speaker or person, unusable name,
@@ -1195,11 +1255,24 @@ pub fn link_speaker(
     meeting: EntityId,
     speaker: EntityId,
     choice: &PersonChoice,
-) -> Result<EntityId, RuntimeError> {
+) -> Result<Linked, RuntimeError> {
     let new_name = checked_choice(choice)?;
-    write(services, |tx, stamp| {
+    let (person, taken_back) = write(services, |tx, stamp| {
         link_in(tx, stamp, meeting, speaker, choice, new_name)
+    })?;
+    Ok(Linked {
+        person,
+        took_back: TakenBack::flushed(taken_back, services),
     })
+}
+
+/// What [`link_speaker`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Linked {
+    /// The person the speaker is linked to.
+    pub person: EntityId,
+    /// This meeting's voice samples taken back from the person it was linked to before.
+    pub took_back: TakenBack,
 }
 
 /// The checked name of a new person in `choice` (`None` for an existing person).
@@ -1212,6 +1285,7 @@ fn checked_choice(choice: &PersonChoice) -> Result<Option<String>, RuntimeError>
 
 /// [`link_speaker`] inside `tx` (`new_name`: [`checked_choice`] of `choice`). Linking a voice
 /// to a person also ends an ignore ([`ignore_speaker`]): a named voice is not ignored.
+/// Returns the person and how many voice samples were taken back.
 fn link_in(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
@@ -1219,7 +1293,7 @@ fn link_in(
     speaker: EntityId,
     choice: &PersonChoice,
     new_name: Option<String>,
-) -> Result<EntityId, RuntimeError> {
+) -> Result<(EntityId, usize), RuntimeError> {
     let mut row = live_speaker(&*tx, meeting, speaker)?;
     let person = match (choice, new_name) {
         (PersonChoice::Existing(id), _) => live_person(&*tx, *id)?,
@@ -1240,7 +1314,7 @@ fn link_in(
         _ => {}
     }
     if row.person_id == Some(person.id) && row.display_name == person.display_name {
-        return Ok(person.id);
+        return Ok((person.id, 0));
     }
     if row.person_id != Some(person.id) {
         update_identity_entry(tx, meeting, speaker, |i| {
@@ -1249,12 +1323,10 @@ fn link_in(
         })?;
     }
     let old = std::mem::take(&mut row.display_name);
-    row.person_id = Some(person.id);
     row.display_name.clone_from(&person.display_name);
-    row.meta.touch(stamp.hlc, stamp.clock);
-    tx.put_speaker(row)?;
+    let taken_back = set_row_person(tx, stamp, meeting, &mut row, Some(person.id))?;
     crate::summary_names::name_changed_tx(tx, meeting, &old, &person.display_name)?;
-    Ok(person.id)
+    Ok((person.id, taken_back))
 }
 
 /// Whether a meeting with these Track rows (its live ones count) was recorded in the room,
@@ -1480,8 +1552,8 @@ pub fn mark_me(
     services: &Services,
     meeting: EntityId,
     speaker: EntityId,
-) -> Result<EntityId, RuntimeError> {
-    write(services, |tx, stamp| {
+) -> Result<MarkedMe, RuntimeError> {
+    let (person, taken_back) = write(services, |tx, stamp| {
         let mut row = live_speaker(&*tx, meeting, speaker)?;
         if !records_in_room(&tx.tracks(meeting)?) {
             return Err(EditError::NotInRoom(meeting).into());
@@ -1501,10 +1573,8 @@ pub fn mark_me(
         drop_voiceprint_me(tx, meeting, speaker)?;
         let old = std::mem::take(&mut row.display_name);
         row.role = SpeakerRole::Me;
-        row.person_id = Some(me.id);
         row.display_name.clone_from(&me.display_name);
-        row.meta.touch(stamp.hlc, stamp.clock);
-        tx.put_speaker(row)?;
+        let taken_back = set_row_person(tx, stamp, meeting, &mut row, Some(me.id))?;
         crate::summary_names::name_changed_tx(tx, meeting, &old, &me.display_name)?;
         // The entry is the user's voice now: forgetting the user's voice drops it, and
         // removing a person the pass had matched to the voice does not.
@@ -1514,8 +1584,21 @@ pub fn mark_me(
             i.enrolled = false;
             i.ignored = false;
         })?;
-        Ok(me.id)
+        Ok((me.id, taken_back))
+    })?;
+    Ok(MarkedMe {
+        person,
+        took_back: TakenBack::flushed(taken_back, services),
     })
+}
+
+/// What [`mark_me`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkedMe {
+    /// The user's person.
+    pub person: EntityId,
+    /// This meeting's voice samples taken back from anyone but the user.
+    pub took_back: TakenBack,
 }
 
 /// "This isn't me" (T9.12), the way out of a mistake: the "Me" row `speaker` of the in-room
@@ -1532,8 +1615,8 @@ pub fn unmark_me(
     services: &Services,
     meeting: EntityId,
     speaker: EntityId,
-) -> Result<(), RuntimeError> {
-    write(services, |tx, stamp| {
+) -> Result<TakenBack, RuntimeError> {
+    let taken_back = write(services, |tx, stamp| {
         let mut row = live_speaker(&*tx, meeting, speaker)?;
         if !records_in_room(&tx.tracks(meeting)?) {
             return Err(EditError::NotInRoom(meeting).into());
@@ -1559,11 +1642,9 @@ pub fn unmark_me(
             .map(|s| s.display_name)
             .collect();
         row.role = SpeakerRole::Room;
-        row.person_id = None;
         let old = std::mem::replace(&mut row.display_name, first_free_speaker_name(&taken));
         drop_voiceprint_me(tx, meeting, speaker)?;
-        row.meta.touch(stamp.hlc, stamp.clock);
-        tx.put_speaker(row.clone())?;
+        let taken_back = set_row_person(tx, stamp, meeting, &mut row, None)?;
         crate::summary_names::name_changed_tx(tx, meeting, &old, &row.display_name)?;
         update_identity_entry(tx, meeting, speaker, |i| {
             i.given_name.clone_from(&row.display_name);
@@ -1573,8 +1654,9 @@ pub fn unmark_me(
             i.enrolled = false;
             i.ignored = false;
         })?;
-        Ok(())
-    })
+        Ok(taken_back)
+    })?;
+    Ok(TakenBack::flushed(taken_back, services))
 }
 
 /// Renames person `person` to `name` (trimmed) and rewrites the display name of every live
@@ -1885,6 +1967,8 @@ pub struct SavedVoice {
     pub person: EntityId,
     /// Remembering the voice ([`Remembered::Enrolled`] or why nothing was stored).
     pub remembered: Remembered,
+    /// This meeting's voice samples taken back from the person it was linked to before.
+    pub took_back: TakenBack,
 }
 
 /// "Save" on a voice that needs a name (T12.19): links speaker `speaker` of `meeting` to a
@@ -1920,8 +2004,8 @@ pub fn save_voice_with(
     config: &PostConfig,
 ) -> Result<SavedVoice, RuntimeError> {
     let new_name = checked_choice(choice)?;
-    write(services, |tx, stamp| {
-        let person = link_in(tx, stamp, meeting, speaker, choice, new_name)?;
+    let (person, remembered, taken_back) = write(services, |tx, stamp| {
+        let (person, taken_back) = link_in(tx, stamp, meeting, speaker, choice, new_name)?;
         let remembered = remember_in(tx, stamp, meeting, &[speaker], config)?
             .into_iter()
             .next()
@@ -1929,7 +2013,12 @@ pub fn save_voice_with(
             .ok_or(RuntimeError::Internal(
                 "remembering one voice gave no result",
             ))?;
-        Ok(SavedVoice { person, remembered })
+        Ok((person, remembered, taken_back))
+    })?;
+    Ok(SavedVoice {
+        person,
+        remembered,
+        took_back: TakenBack::flushed(taken_back, services),
     })
 }
 
@@ -2057,9 +2146,9 @@ fn is_users_row<R: VoiceprintRepo + ?Sized>(repo: &R, row: &Speaker) -> Result<b
 }
 
 /// Whether [`not_this_person`] would accept `row` with these `identities`, reading persons
-/// from `repo` (a store the caller has locked): what the Speakers panel offers, by the
-/// refusals' own rules. The user's rows (`is_users_row`, which follows merges) are not
-/// offered.
+/// and voice samples from `repo` (a store the caller has locked): what the Speakers panel
+/// offers, by the refusals' own rules. A linked row with an identity entry or a live sample
+/// from its voice is offered; the user's rows (`is_users_row`, which follows merges) are not.
 ///
 /// # Errors
 /// Store errors.
@@ -2068,9 +2157,26 @@ pub fn can_not_this_person<R: VoiceprintRepo + ?Sized>(
     row: &Speaker,
     identities: &[crate::identities::SpeakerIdentity],
 ) -> Result<bool, RuntimeError> {
-    Ok(row.person_id.is_some()
-        && identities.iter().any(|i| i.speaker == row.id)
-        && !is_users_row(repo, row)?)
+    if row.person_id.is_none() || is_users_row(repo, row)? {
+        return Ok(false);
+    }
+    Ok(identities.iter().any(|i| i.speaker == row.id)
+        || !repo
+            .samples_from(row.meeting_id, row.id)
+            .map_err(voiceprint_err)?
+            .is_empty())
+}
+
+/// What [`not_this_person`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotThisPerson {
+    /// The person the row was linked to.
+    pub person: EntityId,
+    /// This meeting's voice samples taken back from that person.
+    pub took_back: TakenBack,
+    /// The voice was saved on this computer before samples existed and still counts in that
+    /// person's voice ([`saved_before_samples`]): it cannot be taken back.
+    pub saved_before_samples: bool,
 }
 
 /// "Not <name>" (T12.77): voice `speaker` of `meeting` was named, or recognised by a
@@ -2078,10 +2184,12 @@ pub fn can_not_this_person<R: VoiceprintRepo + ?Sized>(
 /// smallest free "Speaker N" ([`first_free_speaker_name`]) and is ignored
 /// ([`ignore_speaker`]): its identity entry reads as the pass's own naming of that label with
 /// the ignore on top, so a re-run continues it unlinked whatever voiceprint it matches, and
-/// "Stop ignoring" ([`unignore_speaker`]) leaves a voice that needs a name. The person and
-/// their voiceprints are not touched: a voice saved for them from this meeting stays in their
-/// voiceprint (`SpeakerIdentity::enrolled` stays as it was), because f32 addition cannot be
-/// undone exactly. Returns the person the row was linked to.
+/// "Stop ignoring" ([`unignore_speaker`]) leaves a voice that needs a name. This meeting's
+/// voice samples are taken back ([`set_row_person`], docs/voice-samples.md 6.1); a voice saved
+/// before samples existed stays in the person's voiceprint (`SpeakerIdentity::enrolled` stays
+/// as it was) and the result says so ([`NotThisPerson::saved_before_samples`]). A row with a
+/// live sample and no identity entry is accepted too: it is unlinked and named, with no ignore
+/// recorded (there is no entry to hold it).
 ///
 /// Refused while a live session, a final pass, a summary or a job works on the meeting, as
 /// line edits are (`line_edit_claim`): the final pass would otherwise rewrite the entry.
@@ -2089,38 +2197,56 @@ pub fn can_not_this_person<R: VoiceprintRepo + ?Sized>(
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::UserRow`] for "Me" or a
 /// row linked to the user, [`EditError::NoPerson`] for an unlinked voice,
-/// [`EditError::NoStoredVoice`] for a voice without an identity entry);
+/// [`EditError::NoStoredVoice`] for a voice with neither an identity entry nor a live sample);
 /// [`RuntimeError::MeetingBusy`] (retryable) while the meeting is busy; store errors.
 pub fn not_this_person(
     services: &Services,
     meeting: EntityId,
     speaker: EntityId,
-) -> Result<EntityId, RuntimeError> {
+) -> Result<NotThisPerson, RuntimeError> {
     let _claim = line_edit_claim(services, meeting)?;
-    write(services, |tx, stamp| {
+    let (person, taken_back, saved_before) = write(services, |tx, stamp| {
         let mut row = live_speaker(&*tx, meeting, speaker)?;
         if is_users_row(&*tx, &row)? {
             return Err(EditError::UserRow(speaker).into());
         }
         let linked = row.person_id.ok_or(EditError::NoPerson(speaker))?;
         let key = crate::identities::record_key(meeting);
-        let has_entry = matches!(
-            tx.local_value(key.as_str())?.map(|b| crate::identities::decode(&b)),
-            Some(StoredIdentities::Record(r)) if r.speakers.iter().any(|i| i.speaker == speaker)
-        );
-        if !has_entry {
+        let entry = match tx
+            .local_value(key.as_str())?
+            .map(|b| crate::identities::decode(&b))
+        {
+            Some(StoredIdentities::Record(r)) => {
+                r.speakers.into_iter().find(|i| i.speaker == speaker)
+            }
+            _ => None,
+        };
+        let has_sample = !tx
+            .samples_from(meeting, speaker)
+            .map_err(voiceprint_err)?
+            .is_empty();
+        if entry.is_none() && !has_sample {
             return Err(EditError::NoStoredVoice(speaker).into());
         }
+        // Judged before anything is taken back (docs/voice-samples.md 5.2, 6.1).
+        let saved_before = match &entry {
+            Some(i) => {
+                let owner = resolve_person(&*tx, linked)
+                    .map_err(voiceprint_err)?
+                    .map_or(linked, |p| p.id);
+                saved_before_samples(&*tx, i.enrolled, meeting, speaker, owner, &i.centroid.model)
+                    .map_err(voiceprint_err)?
+            }
+            None => false,
+        };
         let taken: Vec<String> = tx
             .speakers(meeting)?
             .into_iter()
             .filter(|s| !s.meta.deleted && s.id != speaker)
             .map(|s| s.display_name)
             .collect();
-        row.person_id = None;
         let old = std::mem::replace(&mut row.display_name, first_free_speaker_name(&taken));
-        row.meta.touch(stamp.hlc, stamp.clock);
-        tx.put_speaker(row.clone())?;
+        let taken_back = set_row_person(tx, stamp, meeting, &mut row, None)?;
         crate::summary_names::name_changed_tx(tx, meeting, &old, &row.display_name)?;
         update_identity_entry(tx, meeting, speaker, |i| {
             i.given_name.clone_from(&row.display_name);
@@ -2129,7 +2255,12 @@ pub fn not_this_person(
             i.user_edited = false;
             i.ignored = true;
         })?;
-        Ok(linked)
+        Ok((linked, taken_back, saved_before))
+    })?;
+    Ok(NotThisPerson {
+        person,
+        took_back: TakenBack::flushed(taken_back, services),
+        saved_before_samples: saved_before,
     })
 }
 

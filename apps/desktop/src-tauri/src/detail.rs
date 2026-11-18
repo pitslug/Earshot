@@ -1150,7 +1150,8 @@ pub fn link(
     speaker: EntityId,
     choice: &LinkChoice,
 ) -> Result<String, IpcError> {
-    Ok(edit::link_speaker(services, meeting, speaker, &person_choice(choice)?)?.to_string())
+    let linked = edit::link_speaker(services, meeting, speaker, &person_choice(choice)?)?;
+    Ok(linked.person.to_string())
 }
 
 fn person_choice(choice: &LinkChoice) -> Result<PersonChoice, IpcError> {

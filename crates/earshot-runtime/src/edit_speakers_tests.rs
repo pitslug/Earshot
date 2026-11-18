@@ -433,13 +433,14 @@ fn edit_not_this_person_unlinks_relabels_and_ignores_a_named_voice() {
             name: "Rowan".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     let identities = identities_in(&svc.store(), m).unwrap();
     let linked = row(&svc, m, s.id);
     assert!(can_not_this_person(&**svc.store(), &linked, &identities).unwrap());
     let label = free_label(&svc, m, s.id);
 
-    assert_eq!(not_this_person(&svc, m, s.id).unwrap(), rowan);
+    assert_eq!(not_this_person(&svc, m, s.id).unwrap().person, rowan);
     let after = row(&svc, m, s.id);
     assert_eq!(after.person_id, None);
     assert_eq!(after.display_name, label);
@@ -491,7 +492,7 @@ fn edit_not_this_person_on_a_recognised_voice_is_carried_by_a_retranscribe() {
     let count = print_count(&svc, avery);
     let label = free_label(&svc, m, voice.id);
 
-    assert_eq!(not_this_person(&svc, m, voice.id).unwrap(), avery);
+    assert_eq!(not_this_person(&svc, m, voice.id).unwrap().person, avery);
     // Only recognised here, never saved from this meeting: the voiceprint is untouched.
     assert_eq!(print_count(&svc, avery), count);
     assert!(!entry(&svc, m, voice.id).enrolled);
@@ -654,7 +655,8 @@ fn edit_not_this_person_refuses_a_row_linked_to_a_person_merged_into_the_user() 
             name: "Casey Lane".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     let identities = identities_in(&svc.store(), m).unwrap();
     let before = row(&svc, m, s);
     assert!(can_not_this_person(&**svc.store(), &before, &identities).unwrap());

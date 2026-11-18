@@ -238,7 +238,8 @@ fn edit_link_speaker_to_a_new_or_existing_person() {
             name: " Alice Jones ".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     let row = speaker(&svc, a, "Alice Jones");
     assert_eq!(row.person_id, Some(person));
     assert_eq!(
@@ -247,7 +248,9 @@ fn edit_link_speaker_to_a_new_or_existing_person() {
     );
     // Linking again writes nothing.
     assert_eq!(
-        link_speaker(&svc, a, alice_a, &PersonChoice::Existing(person)).unwrap(),
+        link_speaker(&svc, a, alice_a, &PersonChoice::Existing(person))
+            .unwrap()
+            .person,
         person
     );
     assert_eq!(speaker(&svc, a, "Alice Jones").meta, row.meta);
@@ -260,7 +263,9 @@ fn edit_link_speaker_to_a_new_or_existing_person() {
         merge_persons(store, dup, person, hlc, &*clock).unwrap();
     }
     assert_eq!(
-        link_speaker(&svc, b, alice_b, &PersonChoice::Existing(dup)).unwrap(),
+        link_speaker(&svc, b, alice_b, &PersonChoice::Existing(dup))
+            .unwrap()
+            .person,
         person
     );
     assert_eq!(speaker(&svc, b, "Alice Jones").person_id, Some(person));
@@ -601,7 +606,8 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     let any = calibrated(true);
 
     // Refusals write nothing: the second speaker has no person, "Me" is the user, and so is
@@ -704,7 +710,8 @@ fn edit_remove_person_unnames_their_speakers_and_refuses_the_user() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     remember_voices_with(&svc, m, &[s], &calibrated(true)).unwrap();
     assert_eq!(print_count(&svc, dana), Some(1));
 
@@ -738,7 +745,8 @@ fn edit_remove_person_unnames_their_speakers_and_refuses_the_user() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     assert_ne!(again, dana);
 
     let me = new_person(&svc, "Me", true, 346);
@@ -784,11 +792,14 @@ fn edit_remember_mark_is_cleared_by_a_new_person_and_by_a_new_final_pass() {
             name: "Dana".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     remember_voices_with(&svc, m, &[s], &any).unwrap();
     assert_eq!(print_count(&svc, dana), Some(1));
     // The voice was someone else: linked again, it can be remembered for them.
-    let dee = link_speaker(&svc, m, s, &PersonChoice::New { name: "Dee".into() }).unwrap();
+    let dee = link_speaker(&svc, m, s, &PersonChoice::New { name: "Dee".into() })
+        .unwrap()
+        .person;
     let r = remember_voices_with(&svc, m, &[s], &any).unwrap();
     assert!(
         matches!(r[0].1, Remembered::Enrolled { person, .. } if person == dee),
@@ -842,12 +853,16 @@ fn edit_link_keeps_the_user_to_the_me_row() {
     assert!(!list_persons(&svc).unwrap().iter().any(|p| p.name == "Sam"));
     assert_eq!(speaker(&svc, m, "Alice").person_id, None);
     assert_eq!(
-        link_speaker(&svc, m, me, &PersonChoice::Existing(user)).unwrap(),
+        link_speaker(&svc, m, me, &PersonChoice::Existing(user))
+            .unwrap()
+            .person,
         user
     );
     assert_eq!(speaker(&svc, m, "Casey").id, me);
     assert_eq!(
-        link_speaker(&svc, m, alice, &PersonChoice::Existing(bob)).unwrap(),
+        link_speaker(&svc, m, alice, &PersonChoice::Existing(bob))
+            .unwrap()
+            .person,
         bob
     );
 }
@@ -1236,3 +1251,11 @@ mod words_tests;
 /// T12.82: a naming change and the summary.
 #[path = "edit_names_tests.rs"]
 mod names_tests;
+
+/// T12.77b5: voice samples taken back by the user's speaker edits.
+#[path = "edit_samples_tests.rs"]
+mod samples_tests;
+
+/// T12.77b5: the scan that keeps speaker person changes on `set_row_person`.
+#[path = "edit_scan_tests.rs"]
+mod scan_tests;

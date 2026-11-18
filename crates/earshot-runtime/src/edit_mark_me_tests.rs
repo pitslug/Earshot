@@ -153,7 +153,7 @@ fn edit_mark_me_makes_the_voice_the_users_row_under_their_name() {
     let (m, voice, other) = in_room_meeting(&svc, 902);
     let before = row_of(&svc, m, voice);
 
-    assert_eq!(mark_me(&svc, m, voice).unwrap(), user);
+    assert_eq!(mark_me(&svc, m, voice).unwrap().person, user);
     let row = row_of(&svc, m, voice);
     assert_eq!(row.role, SpeakerRole::Me);
     assert_eq!(row.person_id, Some(user));
@@ -178,7 +178,7 @@ fn edit_mark_me_creates_the_users_person_when_there_is_none() {
     let (svc, _) = services(&dir);
     let (m, voice, _) = in_room_meeting(&svc, 905);
     assert!(list_persons(&svc).unwrap().is_empty());
-    let user = mark_me(&svc, m, voice).unwrap();
+    let user = mark_me(&svc, m, voice).unwrap().person;
     let persons = list_persons(&svc).unwrap();
     assert_eq!(persons.len(), 1);
     assert!(persons[0].is_me);
@@ -187,7 +187,7 @@ fn edit_mark_me_creates_the_users_person_when_there_is_none() {
     assert_eq!(row_of(&svc, m, voice).display_name, DEFAULT_ME_NAME);
     // A second meeting uses the same person, and undoing keeps it.
     let (second, theirs, _) = in_room_meeting(&svc, 906);
-    assert_eq!(mark_me(&svc, second, theirs).unwrap(), user);
+    assert_eq!(mark_me(&svc, second, theirs).unwrap().person, user);
     unmark_me(&svc, second, theirs).unwrap();
     assert_eq!(list_persons(&svc).unwrap().len(), 1);
 }
@@ -339,7 +339,7 @@ fn edit_mark_me_adds_no_biometric_data() {
             .collect::<Vec<_>>()
     };
     let before = centroids(&svc);
-    let user = mark_me(&svc, m, voice).unwrap();
+    let user = mark_me(&svc, m, voice).unwrap().person;
     assert_eq!(print_count(&svc, user), None, "no print from a mark");
     assert!(svc.store().voiceprints_of(user).unwrap().is_empty());
     assert_eq!(centroids(&svc), before, "the record gains no centroid");
@@ -394,7 +394,7 @@ fn edit_mark_me_shows_the_user_in_the_view_and_export_and_keeps_written_summarie
     store(&svc, m, "The pump arrives on Monday.", 918);
     let written = view(&svc, m).summary.unwrap();
 
-    assert_eq!(mark_me(&svc, m, voice).unwrap(), user);
+    assert_eq!(mark_me(&svc, m, voice).unwrap().person, user);
     let v = view(&svc, m);
     assert_eq!(v.user_name().as_deref(), Some("Casey Lane"));
     assert!(
@@ -459,8 +459,9 @@ fn edit_mark_me_leaves_a_person_the_user_named_after_themselves() {
             name: "Casey".into(),
         },
     )
-    .unwrap();
-    let user = mark_me(&svc, m, voice).unwrap();
+    .unwrap()
+    .person;
+    let user = mark_me(&svc, m, voice).unwrap().person;
     assert_ne!(user, twin);
     assert_eq!(row_of(&svc, m, voice).person_id, Some(user));
     let persons = list_persons(&svc).unwrap();
@@ -521,7 +522,7 @@ fn edit_mark_me_entry_is_the_users_not_the_person_the_pass_named() {
     let robin = new_person(&svc, "Robin", false, 931);
     let (m, voice, other) = in_room_meeting(&svc, 932);
     named_by_the_pass(&svc, m, voice, robin);
-    assert_eq!(mark_me(&svc, m, voice).unwrap(), user);
+    assert_eq!(mark_me(&svc, m, voice).unwrap().person, user);
     assert_eq!(entry_of(&svc, m, voice).given_person, Some(user));
     // Removing the person the pass had named keeps the mark's entry: it is the user's now.
     remove_person(&svc, robin).unwrap();
@@ -541,7 +542,7 @@ fn edit_mark_me_entry_goes_when_the_user_forgets_their_voice() {
     let (svc, _) = services(&dir);
     let user = new_person(&svc, "Casey", true, 933);
     let (m, voice, other) = in_room_meeting(&svc, 934);
-    assert_eq!(mark_me(&svc, m, voice).unwrap(), user);
+    assert_eq!(mark_me(&svc, m, voice).unwrap().person, user);
     crate::my_voice::forget_my_voice(&svc).unwrap();
     let left: Vec<EntityId> = entries_of(&svc, m).iter().map(|i| i.speaker).collect();
     assert_eq!(
@@ -652,7 +653,7 @@ fn edit_mark_me_offers_a_person_named_after_the_user() {
     // A user without a name of their own ("Me") has nobody named after them, even a person
     // called "Me".
     let called_me = new_person(&svc, DEFAULT_ME_NAME, false, 941);
-    let user = mark_me(&svc, m, voice).unwrap();
+    let user = mark_me(&svc, m, voice).unwrap().person;
     assert!(named_after_me(&svc).unwrap().is_empty());
     remove_person(&svc, called_me).unwrap();
 
@@ -683,7 +684,8 @@ fn edit_merge_into_me_merges_the_person_and_keeps_their_voiceprints_as_the_users
             name: "Casey".into(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .person;
     enrol_print(&svc, twin, 947);
     mark_me(&svc, m, voice).unwrap();
     assert_eq!(ids(&named_after_me(&svc).unwrap()), [twin]);
@@ -854,4 +856,56 @@ fn edit_mark_me_and_unmark_me_mark_a_summary_that_uses_the_old_name() {
     store(&svc, m, "The pump arrives on Monday.", 844);
     mark_me(&svc, m, first).unwrap();
     assert!(!named(&svc).summary_out_of_date());
+}
+
+/// T12.77b5 (docs/voice-samples.md 6.1): "This is me" takes back the voice's samples saved for
+/// anyone but the user; "This isn't me" takes back what the user's own row held.
+#[test]
+fn edit_mark_me_and_unmark_me_take_the_voices_samples_back() {
+    use earshot_core::voiceprint::{SampleOrigin, enroll_sample};
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let user = new_person(&svc, "Casey", true, 940);
+    let robin = new_person(&svc, "Robin", false, 941);
+    let (m, voice, _) = in_room_meeting(&svc, 942);
+    named_by_the_pass(&svc, m, voice, robin);
+    let sample = |svc: &Services, person: EntityId| {
+        write(svc, |tx, stamp| {
+            enroll_sample(
+                tx,
+                person,
+                &[Embedding::new(
+                    EmbeddingModelId::new("level@1"),
+                    vec![0.6, 0.8, 0.0, 0.0],
+                )],
+                Duration::from_secs(20),
+                SampleOrigin::Meeting {
+                    meeting: m,
+                    speaker: voice,
+                },
+                &EnrolmentConfig::default(),
+                stamp,
+            )
+            .map_err(voiceprint_err)?;
+            Ok(())
+        })
+        .unwrap();
+    };
+    let count = |svc: &Services| svc.store().samples_from(m, voice).unwrap().len();
+    sample(&svc, robin);
+    let marked = mark_me(&svc, m, voice).unwrap();
+    assert_eq!(marked.person, user);
+    assert_eq!(
+        marked.took_back.taken_back, 1,
+        "Robin's sample of the voice goes"
+    );
+    assert_eq!(count(&svc), 0);
+    // A sample for the user from the Me row (as a final pass with enrolment on would write)
+    // stays while the row is the user's, and goes when it stops being.
+    sample(&svc, user);
+    assert_eq!(count(&svc), 1);
+    let undone = unmark_me(&svc, m, voice).unwrap();
+    assert_eq!(undone.taken_back, 1);
+    assert!(!undone.checkpoint_pending);
+    assert_eq!(count(&svc), 0);
 }

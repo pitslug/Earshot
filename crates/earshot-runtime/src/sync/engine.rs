@@ -185,7 +185,7 @@ impl std::fmt::Debug for SyncClient {
 /// [`PushHold::Samples`] the outbox's voiceprint tombstones too, read even when the ordinary
 /// page is empty, oldest `updated_at` first. What it can return is what
 /// `Store::outbox_len_held` counts.
-fn page_under(
+pub(super) fn page_under(
     store: &earshot_store::Store,
     limit: usize,
     recording: &[EntityId],

@@ -603,7 +603,7 @@ pub(crate) fn on_off(text: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -692,7 +692,7 @@ mod tests {
 
     /// Lines of production code in `src` (items under `#[cfg(test)]` and test-only files
     /// left out).
-    fn production_lines(src: &str) -> Vec<(usize, String)> {
+    pub(crate) fn production_lines(src: &str) -> Vec<(usize, String)> {
         let mut out = Vec::new();
         let mut skipping = false;
         let mut depth: i64 = 0;
@@ -783,7 +783,7 @@ mod tests {
     /// The production source files of a crate: from `src/lib.rs` and `src/main.rs` through
     /// every module declaration not under `#[cfg(test)]`, so a test-only file is left out by
     /// how it is declared, not by its name.
-    fn production_files(krate: &std::path::Path) -> Vec<std::path::PathBuf> {
+    pub(crate) fn production_files(krate: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut todo: Vec<std::path::PathBuf> = ["lib.rs", "main.rs"]
             .iter()
             .map(|r| krate.join("src").join(r))
@@ -805,7 +805,7 @@ mod tests {
 
     /// Workspace members (folder names, which are the package names) from the root
     /// manifest.
-    fn workspace_members(root: &std::path::Path) -> Vec<String> {
+    pub(crate) fn workspace_members(root: &std::path::Path) -> Vec<String> {
         let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
         let list = manifest
             .split_once("members = [")
@@ -820,7 +820,7 @@ mod tests {
     }
 
     /// `net_guard::TEST_SUPPORT_PACKAGES`, read from xtask's source (fails closed).
-    fn test_support_packages(root: &std::path::Path) -> Vec<String> {
+    pub(crate) fn test_support_packages(root: &std::path::Path) -> Vec<String> {
         let src = std::fs::read_to_string(root.join("xtask/src/net_guard.rs")).unwrap();
         let list = src
             .split_once("pub const TEST_SUPPORT_PACKAGES: &[&str] = &[")
@@ -1073,13 +1073,11 @@ mod tests {
                 .ends_with("voiceprint/sample.rs")),
             "the scan reaches the writer's module"
         );
-        let call = concat!("enroll", "_sample(");
         let mut found = Vec::new();
         for f in &files {
             let src = std::fs::read_to_string(f).unwrap();
             for (n, line) in production_lines(&src) {
-                let code = line.split("//").next().unwrap_or("");
-                if code.contains(call) {
+                if calls_enroll_sample(&line) {
                     found.push(format!("{}:{n}: {}", f.display(), line.trim()));
                 }
             }
@@ -1089,6 +1087,41 @@ mod tests {
             "no shipped code writes voice samples before T12.77b6:\n{}",
             found.join("\n")
         );
+    }
+
+    /// Whether `line` calls the sample writer outside a comment: a plain call or a turbofish
+    /// (the name written split, so this file never matches itself).
+    fn calls_enroll_sample(line: &str) -> bool {
+        let code = line.split("//").next().unwrap_or("");
+        let name = concat!("enroll", "_sample");
+        code.match_indices(name).any(|(i, _)| {
+            let before_ok = code[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            let after = code[i + name.len()..].trim_start();
+            before_ok && (after.starts_with('(') || after.starts_with("::<"))
+        })
+    }
+
+    #[test]
+    fn voiceprint_enroll_sample_scan_finds_calls_and_turbofish_and_passes_other_names() {
+        let n = concat!("enroll", "_sample");
+        for hit in [
+            format!("    {n}(&mut repo, p, &e, s, o, &c, &mut st)?;"),
+            format!("    voiceprint::{n}::<Store, _, _>(&mut repo, p)?;"),
+            format!("let id = {n} (repo, p);"),
+        ] {
+            assert!(calls_enroll_sample(&hit), "{hit}");
+        }
+        for miss in [
+            format!("// {n}(&mut repo) is tests only"),
+            format!("pub use sample::{{{n}, take_back}};"),
+            format!("fn my_{n}(x: u8) {{}}"),
+            "enroll(&mut repo, p, &e, s, &c, &mut st)?;".to_owned(),
+        ] {
+            assert!(!calls_enroll_sample(&miss), "{miss}");
+        }
     }
 
     #[test]

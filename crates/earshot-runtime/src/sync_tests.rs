@@ -2974,3 +2974,67 @@ fn sync_the_push_hold_off_sends_everything_as_before() {
     assert_eq!(u64::try_from(r.pushed + r.superseded).unwrap(), waiting);
     assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
 }
+
+/// T12.77b4 review: one push page under the hold merges the ordinary rows and the print
+/// tombstones by `updated_at` and stops at the page limit; the next read goes on from there.
+/// With voiceprint sync off no tombstone joins the page.
+#[test]
+fn sync_the_push_hold_page_merges_and_truncates_at_the_limit() {
+    let dev = Device::new("sync-page");
+    let (person, print) = print_on(&dev, 61);
+    {
+        // Everything so far is sent: only what follows is waiting.
+        let mut db = dev.svc.store();
+        let rows = db.outbox(1_000).unwrap();
+        let sent: Vec<_> = rows
+            .iter()
+            .map(|r| (r.table(), r.id(), r.meta().updated_at))
+            .collect();
+        db.outbox_sent(&sent).unwrap();
+    }
+    // An ordinary row, then (later) a print tombstone.
+    dev.clock.advance_ms(1_000);
+    let m = meeting(&dev.svc, "Earlier", 62);
+    dev.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&dev.svc, person).unwrap();
+    let on = SyncKinds::ALL;
+    let page = |kinds| {
+        engine::page_under(&dev.svc.store(), 1, &[], kinds, PushHold::Samples)
+            .unwrap()
+            .iter()
+            .map(|r| (r.table(), r.id()))
+            .collect::<Vec<_>>()
+    };
+    let first = page(on);
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].0, "meeting",
+        "the older ordinary row first: {first:?}"
+    );
+    assert_eq!(first[0].1, m);
+    // Progress: once the meeting's rows are sent, the tombstone comes next.
+    {
+        let mut db = dev.svc.store();
+        let rows = db.outbox(1_000).unwrap();
+        let sent: Vec<_> = rows
+            .iter()
+            .filter(|r| r.table() != "voiceprint")
+            .map(|r| (r.table(), r.id(), r.meta().updated_at))
+            .collect();
+        db.outbox_sent(&sent).unwrap();
+    }
+    assert_eq!(page(on), vec![("voiceprint", print)]);
+    // With voiceprint sync off the tombstone stays out of the page.
+    let off = SyncKinds {
+        voiceprints: false,
+        ..on
+    };
+    assert!(page(off).is_empty());
+    assert_eq!(
+        dev.svc
+            .store()
+            .outbox_len_held(&[], off, PushHold::Samples)
+            .unwrap(),
+        0
+    );
+}
