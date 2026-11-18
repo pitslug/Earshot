@@ -9,8 +9,12 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::{EnrolmentConfig, Voiceprint, VoiceprintError, VoiceprintRepo, check_embeddings, unit};
+use super::{
+    EnrolmentConfig, Voiceprint, VoiceprintError, VoiceprintRepo, check_embeddings, identity_of,
+    resolve_person, unit,
+};
 use crate::diar::{DiarError, Embedding, EmbeddingModelId};
+use crate::identity::Hlc;
 use crate::identity::{Clock, EntityId, SyncClass, SyncMeta, SyncSerialize, SyncableOptInClass};
 use crate::voiceprint::Stamp;
 use rand_core::Rng;
@@ -586,4 +590,135 @@ pub fn admissible<Repo: VoiceprintRepo + ?Sized>(
         }
     }
     Ok(())
+}
+
+/// The tombstone of the live sample `s`, stamped now.
+pub(super) fn erase<C: Clock + ?Sized>(
+    s: &VoiceprintSample,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<VoiceprintSample, VoiceprintError> {
+    let mut meta = s.meta;
+    meta.mark_deleted(hlc, clock);
+    VoiceprintSample::erased(s.id, meta)
+}
+
+/// Takes the voice `speaker` of `meeting` back out (docs/voice-samples.md 6): writes the
+/// tombstone of every live sample from that origin whose person, resolved through merges, is
+/// not `keep` (`None` takes back all). Keyed only on the sample's own meeting and speaker, so
+/// it needs no identity record. Returns how many were taken back; the caller checkpoints after
+/// the commit when that is not 0.
+///
+/// # Errors
+/// Storage errors.
+pub fn take_back<Repo: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
+    repo: &mut Repo,
+    meeting: EntityId,
+    speaker: EntityId,
+    keep: Option<EntityId>,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<usize, VoiceprintError> {
+    let mut n = 0;
+    for s in repo.samples_from(meeting, speaker)? {
+        let resolved = match s.person_id() {
+            Some(p) => resolve_person(repo, p)?.map(|p| p.id),
+            None => None,
+        };
+        if keep.is_some() && resolved == keep {
+            continue;
+        }
+        repo.put_sample(erase(&s, hlc, clock)?)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Enrolment that records each embedding as a sample (docs/voice-samples.md 4): every check is
+/// [`admissible`]'s, run first; a print row is written only when the person has no live print
+/// of the model (a zero base: count 0, speech 0); with two live prints (two computers each made
+/// one) it adds to the earliest by `(meta.created_at, id)`, so every computer picks the same;
+/// then one sample per embedding in input order, with increasing stamps, the speech split so
+/// the samples sum to it exactly (each `speech / n` ms, the first also the remainder). Its
+/// effective print equals [`super::enroll`]'s on the same inputs, bit for bit. Returns the
+/// print id.
+///
+/// # Errors
+/// As [`super::enroll`].
+pub fn enroll_sample<Repo, C, R>(
+    repo: &mut Repo,
+    person: EntityId,
+    embeddings: &[Embedding],
+    speech: Duration,
+    origin: SampleOrigin,
+    config: &EnrolmentConfig,
+    stamp: &mut Stamp<'_, C, R>,
+) -> Result<EntityId, VoiceprintError>
+where
+    Repo: VoiceprintRepo + ?Sized,
+    C: Clock + ?Sized,
+    R: Rng + ?Sized,
+{
+    admissible(repo, person, embeddings, speech, config, &[])?;
+    let model = embeddings[0].model.clone();
+    let print = match repo
+        .voiceprints_of(person)?
+        .into_iter()
+        .filter(|v| v.model == model && !v.meta.deleted)
+        .min_by_key(|v| (v.meta.created_at, v.id))
+    {
+        Some(v) => v,
+        None => {
+            let (id, meta) = stamp.new_row();
+            let v = Voiceprint {
+                id,
+                meta,
+                person_id: person,
+                model,
+                sum: vec![0.0; embeddings[0].vector.len()],
+                count: 0,
+                speech_ms: 0,
+            };
+            repo.put_voiceprint(v.clone())?;
+            v
+        }
+    };
+    let total = u64::try_from(speech.as_millis()).unwrap_or(u64::MAX);
+    let n = embeddings.len() as u64;
+    for (i, e) in embeddings.iter().enumerate() {
+        let share = total / n + if i == 0 { total % n } else { 0 };
+        let s = VoiceprintSample::new(&print, &e.vector, share, origin, stamp)?;
+        repo.put_sample(s)?;
+    }
+    Ok(print.id)
+}
+
+/// Whether a voice was saved on this computer before samples existed and still counts in
+/// `person`'s print (docs/voice-samples.md 5.2): this computer's frozen marker (`marked`, the
+/// identity entry's `enrolled`), no live sample from `(meeting, speaker)` in any identity, and
+/// a live print of `model` in `person`'s identity with a base. A print forgotten and made again
+/// has no base, so a voice saved before then no longer counts.
+///
+/// # Errors
+/// Storage errors.
+pub fn saved_before_samples<Repo: VoiceprintRepo + ?Sized>(
+    repo: &Repo,
+    marked: bool,
+    meeting: EntityId,
+    speaker: EntityId,
+    person: EntityId,
+    model: &EmbeddingModelId,
+) -> Result<bool, VoiceprintError> {
+    if !marked || !repo.samples_from(meeting, speaker)?.is_empty() {
+        return Ok(false);
+    }
+    for id in identity_of(repo, person)? {
+        if live_prints_of(repo, id)?
+            .iter()
+            .any(|(v, e)| &v.model == model && e.has_base())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

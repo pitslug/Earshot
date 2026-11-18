@@ -28,7 +28,8 @@ mod tests;
 
 pub use sample::{
     Effective, MAX_EMBEDDING_DIM, MAX_SAMPLE_SPEECH_MS, SAMPLE_NORM_TOLERANCE, SampleOrigin,
-    SampleRecord, VoiceprintSample, admissible, effective, live_prints, live_prints_of,
+    SampleRecord, VoiceprintSample, admissible, effective, enroll_sample, live_prints,
+    live_prints_of, saved_before_samples, take_back,
 };
 
 use std::collections::BTreeMap;
@@ -607,10 +608,36 @@ pub fn identity_of<R: VoiceprintRepo + ?Sized>(
     Ok(identity)
 }
 
-/// Deletes (tombstones, vector zeroed) every voiceprint of the identity `person`
-/// ([`identity_of`]): its own and those of every person merged into it, directly or through
-/// a chain, since those match as `person` (biometric data is deletable per person, PLAN.md
-/// 3.9). Deletion is per identity, not per row. Returns how many voiceprints were deleted.
+/// What [`forget_voiceprints`] erased.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Forgotten {
+    /// Voiceprints tombstoned with their vector zeroed.
+    pub voiceprints: usize,
+    /// Voice samples tombstoned (no body left).
+    pub samples: usize,
+}
+
+impl Forgotten {
+    /// Every biometric row erased: what decides a checkpoint and what is shown.
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.voiceprints + self.samples
+    }
+}
+
+impl std::ops::AddAssign for Forgotten {
+    fn add_assign(&mut self, other: Self) {
+        self.voiceprints += other.voiceprints;
+        self.samples += other.samples;
+    }
+}
+
+/// Deletes every voiceprint of the identity `person` ([`identity_of`]): its own and those of
+/// every person merged into it, directly or through a chain, since those match as `person`
+/// (biometric data is deletable per person, PLAN.md 3.9). A print is tombstoned with its
+/// vector zeroed; a voice sample is tombstoned with no body left, every live sample written
+/// for a person of the identity or adding to one of its prints (docs/voice-samples.md 8).
+/// Deletion is per identity, not per row.
 ///
 /// # Errors
 /// Storage errors.
@@ -619,20 +646,31 @@ pub fn forget_voiceprints<R: VoiceprintRepo + ?Sized, C: Clock + ?Sized>(
     person: EntityId,
     hlc: &mut Hlc,
     clock: &C,
-) -> Result<usize, VoiceprintError> {
+) -> Result<Forgotten, VoiceprintError> {
     let identity = identity_of(repo, person)?;
-    let mut n = 0;
-    for id in identity {
+    let mut out = Forgotten::default();
+    let mut samples: BTreeMap<EntityId, VoiceprintSample> = BTreeMap::new();
+    for &id in &identity {
+        for s in repo.samples_of_person(id)? {
+            samples.insert(s.id(), s);
+        }
         for mut v in repo.voiceprints_of(id)? {
+            for s in repo.samples_of(v.id)? {
+                samples.insert(s.id(), s);
+            }
             if !v.meta.deleted {
                 v.meta.mark_deleted(hlc, clock);
                 v.sum.fill(0.0);
                 repo.put_voiceprint(v)?;
-                n += 1;
+                out.voiceprints += 1;
             }
         }
     }
-    Ok(n)
+    for s in samples.into_values() {
+        repo.put_sample(sample::erase(&s, hlc, clock)?)?;
+        out.samples += 1;
+    }
+    Ok(out)
 }
 
 /// Enrolment settings.

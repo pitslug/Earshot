@@ -2136,7 +2136,8 @@ pub fn not_this_person(
 /// Forgets every voiceprint of person `person` and of everyone merged into them, and their
 /// speaker centroids in every meeting's identity record: `Store::forget_voiceprints` (zeroed,
 /// tombstoned, then a truncating checkpoint). Deleted and merged-away persons are accepted
-/// (forgetting biometric data always works). Returns how many voiceprints were forgotten.
+/// (forgetting biometric data always works). Returns how many voiceprints and voice samples
+/// were forgotten.
 ///
 /// # Errors
 /// [`EditError::PersonNotFound`] for an id that was never a person; `StoreError::Busy`
@@ -2149,7 +2150,7 @@ pub fn forget_person_voices(services: &Services, person: EntityId) -> Result<usi
         return Err(EditError::PersonNotFound(person).into());
     }
     let (store, hlc) = db.parts();
-    Ok(store.forget_voiceprints(person, hlc, &*clock)?)
+    Ok(store.forget_voiceprints(person, hlc, &*clock)?.total())
 }
 
 /// Removes a person from this computer (the Speakers page, T9.1u): their name, voiceprints and

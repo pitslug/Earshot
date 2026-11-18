@@ -2620,3 +2620,206 @@ fn dictionary_sync_an_edit_holds_the_store_lock_from_its_read_to_its_write() {
     // Once the edit has committed, the lock is free for an apply.
     assert!(!a.svc.store_is_held());
 }
+
+/// A person and a voiceprint of theirs written on `dev` (an enrolment of today's shape).
+fn print_on(
+    dev: &Device,
+    seed: u64,
+) -> (
+    earshot_core::identity::EntityId,
+    earshot_core::identity::EntityId,
+) {
+    use earshot_core::voiceprint::{Person, Voiceprint};
+    use rand_core::SeedableRng;
+    let clock = Arc::clone(&dev.svc.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+    let mut db = dev.svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = earshot_core::model::Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let p = Person::new("An invented colleague", false, &mut stamp);
+    let vid = earshot_core::identity::EntityId::generate(stamp.clock, &mut *stamp.rng);
+    let meta = earshot_core::identity::SyncMeta::new(stamp.hlc, stamp.clock);
+    let v = Voiceprint::from_stored(
+        vid,
+        meta,
+        p.id,
+        earshot_core::diar::EmbeddingModelId::new("invented-model"),
+        vec![0.5; 4],
+        1,
+        5_000,
+    );
+    store.put_person(p.clone()).unwrap();
+    store.put_voiceprint(v).unwrap();
+    (p.id, vid)
+}
+
+/// What an older build that still had the print does: writes it live again, later.
+fn write_print_live_again(dev: &Device, print: earshot_core::identity::EntityId) {
+    let clock = Arc::clone(&dev.svc.clock);
+    let mut db = dev.svc.store();
+    let (store, hlc) = db.parts();
+    let v = store
+        .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id() == print)
+        .unwrap();
+    assert!(!v.meta().deleted, "still live there");
+    let mut meta = *v.meta();
+    meta.touch(hlc, &*clock);
+    let again = earshot_core::voiceprint::Voiceprint::from_stored(
+        v.id(),
+        meta,
+        v.person_id(),
+        v.model().clone(),
+        vec![0.5; 4],
+        1,
+        5_000,
+    );
+    store.put_voiceprint(again).unwrap();
+}
+
+fn print_state(dev: &Device, print: earshot_core::identity::EntityId) -> (bool, bool) {
+    let v = dev
+        .svc
+        .store()
+        .voiceprints(&earshot_core::diar::EmbeddingModelId::new("invented-model"))
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id() == print)
+        .unwrap();
+    let zero = earshot_core::voiceprint::effective(&v, &[])
+        .sum()
+        .iter()
+        .all(|x| *x == 0.0);
+    (v.meta().deleted, zero)
+}
+
+/// T12.77b3 (docs/voice-samples.md 7.4, traced sequence 1): a Forget here, then a computer
+/// that still had the print writes it live with a later stamp. The live copy arrives, the
+/// tombstone stays and is stamped again, the next push is accepted and the other computer
+/// applies it.
+#[test]
+fn sync_a_forgotten_voiceprint_stays_forgotten_when_a_later_live_copy_arrives() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    let (person, print) = print_on(&a, 41);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (false, false), "B has the print");
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    ca.tick().unwrap();
+    // B writes it live afterwards by its own clock and pushes first: the relay keeps it.
+    b.clock.advance_ms(5_000);
+    write_print_live_again(&b, print);
+    cb.tick().unwrap();
+    // A refuses the live copy and stamps its tombstone again; the next tick sends it.
+    ca.tick().unwrap();
+    assert_eq!(
+        print_state(&a, print),
+        (true, true),
+        "the Forget stays on A"
+    );
+    let r = ca.tick().unwrap();
+    assert_eq!(r.superseded, 0, "{r:?}");
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (true, true), "B applies the Forget");
+    ca.tick().unwrap();
+    assert_eq!(print_state(&a, print), (true, true));
+}
+
+/// T12.77b3 (7.4): a tombstone pushed while the relay holds a later live copy is answered
+/// superseded; the pull brings the live copy, finality stamps the tombstone again, and the
+/// next push wins.
+#[test]
+fn sync_a_superseded_voiceprint_tombstone_wins_on_the_next_push() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    let (person, print) = print_on(&a, 42);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    // Before A pushes, B writes the print live later and pushes it.
+    b.clock.advance_ms(5_000);
+    write_print_live_again(&b, print);
+    cb.tick().unwrap();
+    let r = ca.tick().unwrap();
+    assert!(
+        r.superseded >= 1,
+        "the relay holds a later live copy: {r:?}"
+    );
+    assert_eq!(
+        print_state(&a, print),
+        (true, true),
+        "the Forget stays on A"
+    );
+    let r = ca.tick().unwrap();
+    assert!(r.pushed >= 1 && r.superseded == 0, "{r:?}");
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (true, true));
+}
+
+/// T12.77b3 (7.4, traced sequence 2): a print tombstone pulled while this computer holds
+/// samples of that print erases them in the same apply.
+#[test]
+fn sync_a_pulled_voiceprint_tombstone_erases_this_computers_samples_of_it() {
+    use earshot_core::voiceprint::{SampleOrigin, Voiceprint, VoiceprintSample};
+    use rand_core::SeedableRng;
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_sync_voiceprints(&a.svc, true).unwrap();
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    let (person, print) = print_on(&a, 43);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    // B holds two samples of that print (written by B, never sent: this build holds no
+    // sample on the wire yet).
+    let samples: Vec<VoiceprintSample> = {
+        let clock = Arc::clone(&b.svc.clock);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(44);
+        let mut db = b.svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = earshot_core::model::Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let v: Voiceprint = store
+            .voiceprints_of(person)
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id() == print)
+            .unwrap();
+        let mut out = Vec::new();
+        for x in [[1.0f32, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]] {
+            let s = VoiceprintSample::new(&v, &x, 2_000, SampleOrigin::Own, &mut stamp).unwrap();
+            store.put_sample(s.clone()).unwrap();
+            out.push(s);
+        }
+        out
+    };
+    a.clock.advance_ms(1_000);
+    crate::edit::forget_person_voices(&a.svc, person).unwrap();
+    ca.tick().unwrap();
+    b.clock.advance_ms(1_000);
+    cb.tick().unwrap();
+    assert_eq!(print_state(&b, print), (true, true));
+    let db = b.svc.store();
+    assert!(db.samples_of(print).unwrap().is_empty());
+    for s in &samples {
+        assert!(db.sample(s.id()).unwrap().unwrap().is_erased());
+    }
+}

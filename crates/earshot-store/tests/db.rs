@@ -226,7 +226,10 @@ fn store_voiceprints_round_trip_and_forget_is_per_identity_and_durable() {
     );
 
     let n = forget_voiceprints(&mut store, ada.id, &mut w.hlc, &w.clock).unwrap();
-    assert_eq!(n, 2, "the merged duplicate's voiceprint is deleted too");
+    assert_eq!(
+        n.voiceprints, 2,
+        "the merged duplicate's voiceprint is deleted too"
+    );
     drop(store);
     let store = Store::open(&path).unwrap();
     for v in store.voiceprints(&model).unwrap() {
@@ -276,7 +279,7 @@ fn store_forget_voiceprints_of_several_persons_forgets_all_of_them_at_once() {
     let n = store
         .forget_voiceprints_of(&people, &mut w.hlc, &w.clock)
         .unwrap();
-    assert_eq!(n, 2);
+    assert_eq!(n.voiceprints, 2);
     drop(store);
     let store = Store::open(&path).unwrap();
     for p in &people {

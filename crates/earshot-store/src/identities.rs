@@ -168,14 +168,14 @@ pub fn decode(bytes: &[u8]) -> StoredIdentities {
 /// voiceprints ([`earshot_core::voiceprint::forget_voiceprints`]) and its speaker centroids
 /// in every meeting's record ([`forget_identity`] over
 /// [`earshot_core::voiceprint::identity_of`]). The one path for both
-/// [`crate::Store::forget_voiceprints`] and [`crate::Store::remove_person`]. Returns how many voiceprints were forgotten; the
-/// caller checkpoints after the commit.
+/// [`crate::Store::forget_voiceprints`] and [`crate::Store::remove_person`]. Returns how many
+/// voiceprints and voice samples were forgotten; the caller checkpoints after the commit.
 pub(crate) fn forget_identity_biometrics<C: Clock + ?Sized>(
     tx: &mut StoreTx<'_>,
     person: EntityId,
     hlc: &mut Hlc,
     clock: &C,
-) -> Result<usize, StoreError> {
+) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
     let storage = |e: earshot_core::voiceprint::VoiceprintError| {
         StoreError::Repo(RepoError::Storage(e.to_string()))
     };

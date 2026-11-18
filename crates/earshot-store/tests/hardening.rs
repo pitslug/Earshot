@@ -188,7 +188,7 @@ fn store_forget_voiceprints_leaves_no_trace_on_disk() {
     let n = store
         .forget_voiceprints(ada.id, &mut w.hlc, &w.clock)
         .unwrap();
-    assert_eq!(n, 1);
+    assert_eq!(n.voiceprints, 1);
     assert!(
         !on_disk(&db, &needle),
         "the biometric vector must not survive in free pages or the WAL"

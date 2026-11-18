@@ -966,18 +966,41 @@ mod tests {
 
     /// The lines of `src` that fold a print over no samples (`effective(.., &[])`), which
     /// would read a print as its base alone while samples are stored (T12.77b2).
+    /// Calls are matched across lines (rustfmt wraps long ones); each hit is reported at the
+    /// line its call starts on.
     fn folds_over_nothing(src: &str) -> Vec<(usize, &str)> {
-        src.lines()
-            .enumerate()
-            .filter(|(_, l)| {
-                l.match_indices("effective(").any(|(i, _)| {
-                    let call = &l[i..];
-                    let end = call.find(')').map_or(call.len(), |e| e + 1);
-                    call[..end].contains("&[])")
-                })
-            })
-            .map(|(n, l)| (n + 1, l))
-            .collect()
+        let mut out: Vec<(usize, &str)> = Vec::new();
+        for (i, _) in src.match_indices("effective(") {
+            let args_start = i + "effective(".len();
+            let mut depth = 1usize;
+            let mut end = None;
+            for (j, c) in src[args_start..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(args_start + j);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(end) = end else { continue };
+            let args: String = src[args_start..end]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            if args.trim_end_matches(',').ends_with(",&[]") {
+                let n = src[..i].matches('\n').count();
+                let line = src.lines().nth(n).unwrap_or("");
+                if out.last().is_none_or(|(m, _)| *m != n + 1) {
+                    out.push((n + 1, line));
+                }
+            }
+        }
+        out
     }
 
     #[test]
@@ -1038,6 +1061,16 @@ mod tests {
                 .is_empty()
         );
         assert!(folds_over_nothing("let e = fold(&v, &samples, &[]);\n").is_empty());
+        // A call rustfmt wrapped over several lines, with a trailing comma.
+        let wrapped = "let a = 1;\nlet e = voiceprint::effective(\n    &a_long_print_name,\n    &[],\n)\n.count();\n";
+        assert_eq!(
+            folds_over_nothing(wrapped),
+            vec![(2, "let e = voiceprint::effective(")]
+        );
+        assert!(
+            folds_over_nothing("let e = effective(\n    &v,\n    &samples_of(v.id()),\n);\n")
+                .is_empty()
+        );
     }
 
     #[test]

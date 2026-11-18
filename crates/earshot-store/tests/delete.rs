@@ -424,6 +424,7 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
         PersonRemoval {
             persons_removed: 1,
             voiceprints_forgotten: 1,
+            samples_forgotten: 0,
             speakers_unnamed: 1,
         }
     );
@@ -491,6 +492,7 @@ fn store_remove_person_takes_everyone_merged_into_them() {
         PersonRemoval {
             persons_removed: 2,
             voiceprints_forgotten: 2,
+            samples_forgotten: 0,
             speakers_unnamed: 1,
         }
     );

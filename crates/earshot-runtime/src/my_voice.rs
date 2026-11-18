@@ -365,7 +365,8 @@ pub fn my_voice(services: &Services) -> Result<MyVoice, RuntimeError> {
 /// Forgets every voiceprint of every person marked as the user (live or not, and everyone
 /// merged into them) in one store transaction (`Store::forget_voiceprints_of`: zeroed,
 /// tombstoned, then one truncating checkpoint), so either all of them are forgotten or none.
-/// Returns how many were forgotten. A checkpoint blocked by another connection after the
+/// Returns how many voiceprints and voice samples were forgotten. A checkpoint blocked by
+/// another connection after the
 /// commit (`StoreError::Busy`) still counts as forgotten: the deletion is committed.
 ///
 /// # Errors
@@ -389,6 +390,15 @@ pub fn forget_my_voice(services: &Services) -> Result<usize, RuntimeError> {
                     if !v.meta().deleted {
                         live.insert(v.id());
                     }
+                    for s in store.samples_of(v.id()).map_err(RuntimeError::Voiceprint)? {
+                        live.insert(s.id());
+                    }
+                }
+                for s in store
+                    .samples_of_person(id)
+                    .map_err(RuntimeError::Voiceprint)?
+                {
+                    live.insert(s.id());
                 }
             }
         }
@@ -399,7 +409,7 @@ pub fn forget_my_voice(services: &Services) -> Result<usize, RuntimeError> {
     }
     let (store, hlc) = db.parts();
     match store.forget_voiceprints_of(&mine, hlc, &*clock) {
-        Ok(n) => Ok(n),
+        Ok(n) => Ok(n.total()),
         Err(earshot_store::StoreError::Busy(_)) => Ok(live),
         Err(e) => Err(e.into()),
     }

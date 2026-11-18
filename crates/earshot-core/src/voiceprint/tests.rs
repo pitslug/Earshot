@@ -218,7 +218,9 @@ fn voiceprint_merged_persons_match_as_their_target_and_deleted_prints_are_ignore
     assert!(merge_persons(&mut w.repo, keep, keep, &mut w.hlc, &w.clock).is_err());
     // Forgetting tombstones the voiceprint (vector cleared) and it no longer matches.
     assert_eq!(
-        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock).unwrap(),
+        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock)
+            .unwrap()
+            .voiceprints,
         1
     );
     let v = w.repo.voiceprints_of(dup).unwrap().remove(0);
@@ -228,7 +230,9 @@ fn voiceprint_merged_persons_match_as_their_target_and_deleted_prints_are_ignore
         MatchOutcome::Unknown { best: None }
     );
     assert_eq!(
-        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock).unwrap(),
+        forget_voiceprints(&mut w.repo, dup, &mut w.hlc, &w.clock)
+            .unwrap()
+            .total(),
         0
     );
 }
@@ -254,7 +258,14 @@ fn voiceprint_forgetting_a_merge_target_forgets_every_merged_identity() {
     assert_eq!(resolve_person(&w.repo, phone).unwrap().unwrap().id, dee);
 
     let n = forget_voiceprints(&mut w.repo, dee, &mut w.hlc, &w.clock).unwrap();
-    assert_eq!(n, 3, "Dee's own print and both merged prints");
+    assert_eq!(
+        n,
+        Forgotten {
+            voiceprints: 3,
+            samples: 0
+        },
+        "Dee's own print and both merged prints"
+    );
     for id in [laptop, phone, dee] {
         let v = w.repo.voiceprints_of(id).unwrap().remove(0);
         assert!(v.meta.deleted && v.sum.iter().all(|&x| x == 0.0), "{id:?}");

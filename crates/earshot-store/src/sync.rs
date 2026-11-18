@@ -293,8 +293,13 @@ pub struct Applied {
     pub skipped: usize,
     /// Rows held, per reason, in [`HoldReason::ALL`] order.
     pub held: [usize; 4],
-    /// Voiceprints and centroids forgotten because a person was deleted elsewhere.
+    /// Biometric rows erased by the page: voiceprints, voice samples and centroids forgotten
+    /// because a person was deleted elsewhere, live prints a pulled print tombstone replaced,
+    /// and samples of a print tombstoned here (the dead-print repair).
     pub biometrics_forgotten: usize,
+    /// Live voiceprints refused because the print is deleted here (its tombstone was stamped
+    /// again, so it goes out and wins at the relay, T12.77b3).
+    pub print_deletions_kept: usize,
     /// Live meeting rows refused because the meeting is deleted here (its tombstone was
     /// stamped again, so it goes out and wins at the relay).
     pub deletions_kept: usize,
@@ -480,6 +485,28 @@ fn converge<C: Clock + ?Sized>(
             out.summaries_replaced += 1;
             out.meetings.insert(replaced.meeting_id);
         }
+    }
+    // Rule 3: no live voice sample of a print tombstoned here (docs/voice-samples.md 7.4).
+    let dead: Vec<[u8; 16]> = {
+        let mut st = tx.conn.prepare(
+            "SELECT s.id FROM voiceprint_sample s JOIN voiceprint v ON v.id = s.voiceprint_id \
+             WHERE s.deleted = 0 AND v.deleted = 1",
+        )?;
+        st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+    };
+    for id in dead {
+        let Some(SyncedRow::VoiceprintSample(s)) =
+            crate::repo::synced_by_id(&tx.conn, "voiceprint_sample", EntityId::from_bytes(id))?
+        else {
+            continue;
+        };
+        let mut meta = *s.meta();
+        meta.mark_deleted(hlc, clock);
+        let erased = VoiceprintSample::erased(s.id(), meta)
+            .map_err(|e| StoreError::Repo(RepoError::Storage(e.to_string())))?;
+        crate::repo::put_synced(&tx.conn, &SyncedRow::VoiceprintSample(erased))?;
+        out.biometrics_forgotten += 1;
+        out.people = true;
     }
     Ok(())
 }
@@ -781,6 +808,35 @@ impl Store {
                     unhold(tx, inc)?;
                     continue;
                 }
+                // A voiceprint deletion is final, as a meeting's (docs/voice-samples.md 7.4): a
+                // live copy written elsewhere after it (an older build that still had the print)
+                // never brings the voice back. The tombstone is stamped again and goes out.
+                if let (Some(SyncedRow::Voiceprint(here)), SyncedRow::Voiceprint(there)) =
+                    (&local, row)
+                    && here.meta().deleted
+                    && !there.meta().deleted
+                {
+                    let _ = hlc.observe(inc.stamp, clock);
+                    if here.meta().updated_at < row.meta().updated_at {
+                        let mut meta = *here.meta();
+                        meta.touch(hlc, clock);
+                        let again = Voiceprint::from_stored(
+                            here.id(),
+                            meta,
+                            here.person_id(),
+                            here.model().clone(),
+                            here.base_sum().to_vec(),
+                            here.base_count(),
+                            here.base_speech_ms(),
+                        );
+                        crate::repo::put_synced(&tx.conn, &SyncedRow::Voiceprint(again))?;
+                        out.print_deletions_kept += 1;
+                    } else {
+                        out.ignored += 1;
+                    }
+                    unhold(tx, inc)?;
+                    continue;
+                }
                 // A summary request's withdrawal is final (docs/sync-spec.md section 10.1).
                 if let (Some(SyncedRow::SummaryRequest(here)), SyncedRow::SummaryRequest(there)) =
                     (&local, row)
@@ -832,6 +888,25 @@ impl Store {
                     None => matches!(row, SyncedRow::Person(_)),
                     Some(_) => false,
                 };
+                let print_was_live =
+                    matches!(&local, Some(SyncedRow::Voiceprint(v)) if !v.meta().deleted);
+                // A pulled print tombstone is stored with its vector zeroed, whatever it holds.
+                let zeroed;
+                let row = match row {
+                    SyncedRow::Voiceprint(v) if v.meta().deleted => {
+                        zeroed = SyncedRow::Voiceprint(Voiceprint::from_stored(
+                            v.id(),
+                            *v.meta(),
+                            v.person_id(),
+                            v.model().clone(),
+                            vec![0.0; v.base_sum().len()],
+                            v.base_count(),
+                            v.base_speech_ms(),
+                        ));
+                        &zeroed
+                    }
+                    other => other,
+                };
                 {
                     let sp = tx.conn.savepoint()?;
                     match crate::repo::put_synced(&sp, row) {
@@ -859,12 +934,16 @@ impl Store {
                     out.meetings.insert(m);
                 }
                 out.people |= matches!(row, SyncedRow::Person(_));
+                if matches!(row, SyncedRow::Voiceprint(v) if v.meta().deleted) && print_was_live {
+                    out.biometrics_forgotten += 1;
+                }
                 if let SyncedRow::Person(p) = row
                     && p.meta.deleted
                     && person_was_live
                 {
                     out.biometrics_forgotten +=
-                        crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?;
+                        crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?
+                            .total();
                 }
             }
             converge(tx, hlc, clock, &mut out)?;

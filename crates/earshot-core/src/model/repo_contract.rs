@@ -960,10 +960,20 @@ pub fn voiceprint_sample_repo<R: crate::voiceprint::VoiceprintRepo>(make: impl F
     let a = sample(&mut f, &p1, Some((meeting, speaker)));
     let b = sample(&mut f, &p1, None);
     let c = sample(&mut f, &p2, Some((meeting, speaker2)));
+    // The largest id but the earliest creation: reads go by `created_at`, not id.
+    let early = {
+        let mut r = SampleRecord::from(sample(&mut f, &p1, None));
+        r.meta.created_at.wall_ms = a.meta().created_at.wall_ms - 1;
+        r.meta.updated_at = r.meta.created_at;
+        VoiceprintSample::from_stored(r).unwrap()
+    };
+    assert!(early.id() > c.id() && early.meta().created_at < a.meta().created_at);
+    let first = vec![early.id(), a.id(), b.id()];
+    let rest = vec![early.id(), b.id()];
     assert_eq!(repo.sample(a.id()).unwrap(), None);
     assert!(repo.samples(&model).unwrap().is_empty());
     // Written in the other order: reads are in creation order.
-    for s in [&c, &b, &a] {
+    for s in [&c, &b, &a, &early] {
         repo.put_sample(s.clone()).unwrap();
     }
     let ids = |v: Vec<VoiceprintSample>| v.iter().map(VoiceprintSample::id).collect::<Vec<_>>();
@@ -971,14 +981,11 @@ pub fn voiceprint_sample_repo<R: crate::voiceprint::VoiceprintRepo>(make: impl F
     let back = repo.sample(a.id()).unwrap().unwrap();
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(back.vector().unwrap()), bits(&vector), "bit for bit");
-    assert_eq!(ids(repo.samples(&model).unwrap()), vec![a.id(), b.id()]);
+    assert_eq!(ids(repo.samples(&model).unwrap()), first.clone());
     assert_eq!(ids(repo.samples(&other).unwrap()), vec![c.id()]);
-    assert_eq!(ids(repo.samples_of(p1.id()).unwrap()), vec![a.id(), b.id()]);
+    assert_eq!(ids(repo.samples_of(p1.id()).unwrap()), first.clone());
     assert_eq!(ids(repo.samples_of(p2.id()).unwrap()), vec![c.id()]);
-    assert_eq!(
-        ids(repo.samples_of_person(ada).unwrap()),
-        vec![a.id(), b.id()]
-    );
+    assert_eq!(ids(repo.samples_of_person(ada).unwrap()), first.clone());
     assert_eq!(ids(repo.samples_of_person(bea).unwrap()), vec![c.id()]);
     assert_eq!(
         ids(repo.samples_from(meeting, speaker).unwrap()),
@@ -997,8 +1004,8 @@ pub fn voiceprint_sample_repo<R: crate::voiceprint::VoiceprintRepo>(make: impl F
     let gone = VoiceprintSample::erased(a.id(), meta).unwrap();
     repo.put_sample(gone.clone()).unwrap();
     assert_eq!(repo.sample(a.id()).unwrap().as_ref(), Some(&gone));
-    assert_eq!(ids(repo.samples(&model).unwrap()), vec![b.id()]);
-    assert_eq!(ids(repo.samples_of(p1.id()).unwrap()), vec![b.id()]);
-    assert_eq!(ids(repo.samples_of_person(ada).unwrap()), vec![b.id()]);
+    assert_eq!(ids(repo.samples(&model).unwrap()), rest.clone());
+    assert_eq!(ids(repo.samples_of(p1.id()).unwrap()), rest.clone());
+    assert_eq!(ids(repo.samples_of_person(ada).unwrap()), rest.clone());
     assert!(repo.samples_from(meeting, speaker).unwrap().is_empty());
 }

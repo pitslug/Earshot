@@ -566,3 +566,319 @@ fn voiceprint_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
     );
     assert!(enroll_me(&mut repo, &[e], short, &config, &mut stamp).is_ok());
 }
+
+/// Fixed enrolment inputs: two calls of two and one embeddings, values that round in f32.
+fn literal_inputs() -> [(Vec<Embedding>, Duration); 2] {
+    let e = |v: [f32; 3]| Embedding::new(model(), v.to_vec());
+    [
+        (
+            vec![e([0.3, 0.7, -0.2]), e([0.11, -0.53, 0.97])],
+            Duration::from_millis(12_345),
+        ),
+        (vec![e([-0.61, 0.29, 0.13])], Duration::from_millis(4_001)),
+    ]
+}
+
+/// A repo with one live person and what `enrol` did to it with [`literal_inputs`].
+fn enrolled_with(
+    enrol: impl Fn(
+        &mut InMemoryVoiceprintRepo,
+        EntityId,
+        &[Embedding],
+        Duration,
+        &mut Stamp<'_, ManualClock, ChaCha8Rng>,
+    ) -> EntityId,
+) -> (InMemoryVoiceprintRepo, EntityId, Effective) {
+    let (clock, mut hlc, mut rng, mut repo) = world();
+    let mut stamp = Stamp {
+        clock: &clock,
+        hlc: &mut hlc,
+        rng: &mut rng,
+    };
+    let ada = Person::new("Ada", false, &mut stamp);
+    repo.put_person(ada.clone()).unwrap();
+    let mut print = None;
+    for (e, speech) in literal_inputs() {
+        clock.advance_ms(1000);
+        print = Some(enrol(&mut repo, ada.id, &e, speech, &mut stamp));
+    }
+    let print = print.unwrap();
+    let (_, eff) = live_prints_of(&repo, ada.id)
+        .unwrap()
+        .into_iter()
+        .find(|(v, _)| v.id() == print)
+        .unwrap();
+    (repo, ada.id, eff)
+}
+
+fn by_enroll(
+    repo: &mut InMemoryVoiceprintRepo,
+    p: EntityId,
+    e: &[Embedding],
+    s: Duration,
+    st: &mut Stamp<'_, ManualClock, ChaCha8Rng>,
+) -> EntityId {
+    enroll(repo, p, e, s, &EnrolmentConfig::default(), st).unwrap()
+}
+
+fn by_sample(
+    repo: &mut InMemoryVoiceprintRepo,
+    p: EntityId,
+    e: &[Embedding],
+    s: Duration,
+    st: &mut Stamp<'_, ManualClock, ChaCha8Rng>,
+) -> EntityId {
+    enroll_sample(
+        repo,
+        p,
+        e,
+        s,
+        SampleOrigin::Own,
+        &EnrolmentConfig::default(),
+        st,
+    )
+    .unwrap()
+}
+
+/// Bits of the sum, count and speech today's `enroll` (`Voiceprint::add`) gives for
+/// [`literal_inputs`], captured on the commit before samples were written.
+const LITERAL_SUM_BITS: [u32; 3] = [3_201_321_966, 1_062_559_678, 1_062_135_987];
+
+#[test]
+fn voiceprint_enroll_gives_the_literal_sums_captured_before_samples() {
+    let (_, _, eff) = enrolled_with(by_enroll);
+    assert_eq!(bits(eff.sum()), LITERAL_SUM_BITS);
+    assert_eq!((eff.count(), eff.speech_ms()), (3, 16_346));
+}
+
+#[test]
+fn voiceprint_enroll_sample_folds_to_what_enroll_stores_bit_for_bit() {
+    let (_, _, want) = enrolled_with(by_enroll);
+    let (repo, ada, got) = enrolled_with(by_sample);
+    assert_eq!(bits(got.sum()), bits(want.sum()));
+    assert_eq!(bits(got.sum()), LITERAL_SUM_BITS);
+    assert_eq!(
+        (got.count(), got.speech_ms()),
+        (want.count(), want.speech_ms())
+    );
+    // A zero-base print row, written once, and one sample per embedding.
+    let prints = repo.voiceprints_of(ada).unwrap();
+    assert_eq!(prints.len(), 1);
+    assert!(!got.has_base());
+    let samples = repo.samples_of(prints[0].id()).unwrap();
+    assert_eq!(samples.len(), 3);
+    // The speech split sums exactly: 12_345 over two (the first takes the remainder), then
+    // 4_001.
+    let speech: Vec<u64> = samples.iter().map(|s| s.speech_ms().unwrap()).collect();
+    assert_eq!(speech, vec![6_173, 6_172, 4_001]);
+    // Input order is creation order.
+    let stamps: Vec<_> = samples.iter().map(|s| s.meta().created_at).collect();
+    assert!(stamps.windows(2).all(|w| w[0] < w[1]));
+}
+
+#[test]
+fn voiceprint_enroll_sample_adds_to_the_earliest_of_two_live_prints_and_checks_first() {
+    let (clock, mut hlc, mut rng, mut repo) = world();
+    let mut stamp = Stamp {
+        clock: &clock,
+        hlc: &mut hlc,
+        rng: &mut rng,
+    };
+    let ada = Person::new("Ada", false, &mut stamp);
+    repo.put_person(ada.clone()).unwrap();
+    let config = EnrolmentConfig::default();
+    let e = [Embedding::new(model(), vec![1.0, 0.0])];
+    let own = SampleOrigin::Own;
+    // Too little speech for a first print: refused, nothing written.
+    let short = Duration::from_secs(2);
+    assert!(matches!(
+        enroll_sample(&mut repo, ada.id, &e, short, own, &config, &mut stamp),
+        Err(VoiceprintError::NotEnoughSpeech { .. })
+    ));
+    assert!(repo.voiceprints_of(ada.id).unwrap().is_empty());
+    assert!(repo.samples_of_person(ada.id).unwrap().is_empty());
+    // Two live prints (two computers each made one): the earlier-created gets the sample,
+    // even with the larger id.
+    let (later_id, later_meta) = stamp.new_row();
+    clock.advance_ms(1);
+    let (_, mut early_meta) = stamp.new_row();
+    early_meta.created_at.wall_ms = later_meta.created_at.wall_ms - 10;
+    let early_id = EntityId::from_bytes([0xff; 16]);
+    for (id, meta) in [(later_id, later_meta), (early_id, early_meta)] {
+        let v = Voiceprint::from_stored(id, meta, ada.id, model(), vec![0.5, 0.5], 1, 10_000);
+        repo.put_voiceprint(v).unwrap();
+    }
+    let one = Duration::from_secs(1);
+    let got = enroll_sample(&mut repo, ada.id, &e, one, own, &config, &mut stamp).unwrap();
+    assert_eq!(got, early_id);
+    assert_eq!(repo.samples_of(early_id).unwrap().len(), 1);
+    assert!(repo.samples_of(later_id).unwrap().is_empty());
+}
+
+/// The person "Ada" with a based print, then samples from two meeting voices and her own.
+fn ada_with_samples() -> (
+    ManualClock,
+    Hlc,
+    InMemoryVoiceprintRepo,
+    EntityId,
+    Voiceprint,
+    [SampleOrigin; 2],
+) {
+    let (clock, mut hlc, mut rng, mut repo) = world();
+    let mut stamp = Stamp {
+        clock: &clock,
+        hlc: &mut hlc,
+        rng: &mut rng,
+    };
+    let ada = Person::new("Ada", false, &mut stamp);
+    repo.put_person(ada.clone()).unwrap();
+    let (id, meta) = stamp.new_row();
+    let print = Voiceprint::from_stored(id, meta, ada.id, model(), vec![0.6, 0.8], 1, 10_000);
+    repo.put_voiceprint(print.clone()).unwrap();
+    let origins = [
+        SampleOrigin::Meeting {
+            meeting: EntityId::from_bytes([0x41; 16]),
+            speaker: EntityId::from_bytes([0x42; 16]),
+        },
+        SampleOrigin::Meeting {
+            meeting: EntityId::from_bytes([0x41; 16]),
+            speaker: EntityId::from_bytes([0x43; 16]),
+        },
+    ];
+    let config = EnrolmentConfig::default();
+    let e = |v: [f32; 2]| [Embedding::new(model(), v.to_vec())];
+    let short = Duration::from_secs(1);
+    for (v, origin) in [
+        ([0.1, 0.9], origins[0]),
+        ([0.9, -0.3], origins[1]),
+        ([0.2, 0.2], SampleOrigin::Own),
+    ] {
+        enroll_sample(&mut repo, ada.id, &e(v), short, origin, &config, &mut stamp).unwrap();
+    }
+    (clock, hlc, repo, ada.id, print, origins)
+}
+
+fn meeting_voice(o: SampleOrigin) -> (EntityId, EntityId) {
+    match o {
+        SampleOrigin::Meeting { meeting, speaker } => (meeting, speaker),
+        SampleOrigin::Own => unreachable!("a meeting voice"),
+    }
+}
+
+#[test]
+fn voiceprint_take_back_restores_the_print_exactly_and_respects_keep() {
+    let (clock, mut hlc, mut repo, ada, print, origins) = ada_with_samples();
+    let (meeting, speaker) = meeting_voice(origins[0]);
+    let all = repo.samples_of(print.id()).unwrap();
+    let rest: Vec<VoiceprintSample> = all
+        .iter()
+        .filter(|s| s.origin() != Some(origins[0]))
+        .cloned()
+        .collect();
+    // Kept: the voice still resolves to Ada.
+    let n = take_back(&mut repo, meeting, speaker, Some(ada), &mut hlc, &clock).unwrap();
+    assert_eq!(n, 0);
+    // Taken back: exactly that sample, as if it had never been added.
+    let n = take_back(&mut repo, meeting, speaker, None, &mut hlc, &clock).unwrap();
+    assert_eq!(n, 1);
+    let (_, now) = live_prints_of(&repo, ada).unwrap().pop().unwrap();
+    assert_eq!(now, effective(&print, &rest));
+    assert_eq!(bits(now.sum()), bits(effective(&print, &rest).sum()));
+    assert_eq!(repo.samples_of(print.id()).unwrap().len(), 2);
+    // Its tombstone holds nothing but its id and metadata.
+    let gone = all.iter().find(|s| s.origin() == Some(origins[0])).unwrap();
+    let stored = repo.sample(gone.id()).unwrap().unwrap();
+    assert!(stored.is_erased() && stored.meta().deleted);
+    assert!(stored.meta().updated_at > gone.meta().updated_at);
+    // Nothing left from that voice: a second take back writes nothing.
+    let n = take_back(&mut repo, meeting, speaker, None, &mut hlc, &clock).unwrap();
+    assert_eq!(n, 0);
+    // Keeping another person takes the voice back from Ada.
+    let (meeting, speaker) = meeting_voice(origins[1]);
+    let other = Some(EntityId::from_bytes([0x77; 16]));
+    let n = take_back(&mut repo, meeting, speaker, other, &mut hlc, &clock).unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn voiceprint_forget_erases_samples_by_person_and_by_print() {
+    let (clock, mut hlc, mut repo, ada, print, _) = ada_with_samples();
+    let meta = {
+        let mut rng = ChaCha8Rng::seed_from_u64(9);
+        let mut st = Stamp {
+            clock: &clock,
+            hlc: &mut hlc,
+            rng: &mut rng,
+        };
+        st.new_row().1
+    };
+    let at = meta.created_at.wall_ms;
+    // A sample of the print written for another person id (a merged duplicate's row), and one
+    // of hers whose print this repo does not hold: both are hers to erase.
+    let mut by_print = record(0x51, at, &print, unit_of(&[1.0, 1.0]), 5);
+    by_print.person_id = Some(EntityId::from_bytes([0x99; 16]));
+    repo.put_sample(VoiceprintSample::from_stored(by_print).unwrap())
+        .unwrap();
+    let missing_print = Voiceprint::from_stored(
+        EntityId::from_bytes([0x60; 16]),
+        meta,
+        ada,
+        model(),
+        vec![0.0, 0.0],
+        0,
+        0,
+    );
+    let orphan = record(0x52, at, &missing_print, unit_of(&[1.0, 0.0]), 5);
+    repo.put_sample(VoiceprintSample::from_stored(orphan).unwrap())
+        .unwrap();
+
+    let n = forget_voiceprints(&mut repo, ada, &mut hlc, &clock).unwrap();
+    assert_eq!(
+        n,
+        Forgotten {
+            voiceprints: 1,
+            samples: 5
+        }
+    );
+    assert_eq!(n.total(), 6);
+    assert!(repo.samples_of(print.id()).unwrap().is_empty());
+    assert!(repo.samples_of_person(ada).unwrap().is_empty());
+    assert!(repo.samples_of(missing_print.id()).unwrap().is_empty());
+    for id in [0x51u8, 0x52] {
+        let s = repo
+            .sample(EntityId::from_bytes([id; 16]))
+            .unwrap()
+            .unwrap();
+        assert!(s.is_erased());
+    }
+    let again = forget_voiceprints(&mut repo, ada, &mut hlc, &clock).unwrap();
+    assert_eq!(again, Forgotten::default());
+}
+
+#[test]
+fn voiceprint_saved_before_samples_needs_the_marker_no_sample_and_a_base() {
+    let (clock, mut hlc, mut repo, ada, _, origins) = ada_with_samples();
+    let (meeting, saved_voice) = meeting_voice(origins[0]);
+    let fresh = EntityId::from_bytes([0x44; 16]);
+    let m = model();
+    // Marker, no sample from the voice, a print with a base: saved before samples.
+    assert!(saved_before_samples(&repo, true, meeting, fresh, ada, &m).unwrap());
+    assert!(!saved_before_samples(&repo, false, meeting, fresh, ada, &m).unwrap());
+    // A live sample from the voice: saved as a sample, not before.
+    assert!(!saved_before_samples(&repo, true, meeting, saved_voice, ada, &m).unwrap());
+    // Forgotten elsewhere and a new zero-base print made: the marker alone no longer counts.
+    forget_voiceprints(&mut repo, ada, &mut hlc, &clock).unwrap();
+    let meta = {
+        let mut rng = ChaCha8Rng::seed_from_u64(5);
+        let mut st = Stamp {
+            clock: &clock,
+            hlc: &mut hlc,
+            rng: &mut rng,
+        };
+        st.new_row().1
+    };
+    let id = EntityId::from_bytes([0x61; 16]);
+    let new = Voiceprint::from_stored(id, meta, ada, m.clone(), vec![0.0, 0.0], 0, 0);
+    repo.put_voiceprint(new).unwrap();
+    assert!(!saved_before_samples(&repo, true, meeting, fresh, ada, &m).unwrap());
+}

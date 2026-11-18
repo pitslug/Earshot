@@ -581,4 +581,8 @@ fn my_voice_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
     );
     assert!(has_voice(&svc).unwrap());
     assert!(listed(&svc));
+    // T12.77b3: forgetting counts the sample with the print, and leaves no voice.
+    assert_eq!(forget_my_voice(&svc).unwrap(), 2);
+    assert_eq!(my_voice(&svc).unwrap().voiceprints, 0);
+    assert!(svc.store().samples_of(print.id()).unwrap().is_empty());
 }
