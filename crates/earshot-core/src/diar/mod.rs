@@ -41,7 +41,8 @@ pub use assign::{
     label_segment_speakers_unassigned, label_segments,
 };
 pub use cluster::{
-    Clustering, ClusteringConfig, Regroup, cluster_embeddings, cluster_embeddings_with,
+    CALIBRATED_REGROUPS, CAMPPLUS_REGROUP, CalibratedRegroup, Clustering, ClusteringConfig,
+    Regroup, calibrated_regroup, cluster_embeddings, cluster_embeddings_with,
 };
 pub use echo::{
     CALIBRATED_SPEAKER_ECHO_MARGINS, CAMPPLUS_SPEAKER_ECHO_MARGIN, CalibratedSpeakerEchoMargin,

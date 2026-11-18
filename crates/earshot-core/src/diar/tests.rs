@@ -2002,3 +2002,31 @@ fn diar_pipeline_regroup_frame_at_count_two_replaces_only_the_speaker_that_lost(
         vec![0, 1]
     );
 }
+
+#[test]
+fn diar_cluster_regroup_is_chosen_per_model() {
+    // T12.74: CAM++ gets T12.66's pick from the dev rule; another model gets none (it is
+    // clustered as before, never refused).
+    let campplus = EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b");
+    assert_eq!(calibrated_regroup(&campplus), Some(CAMPPLUS_REGROUP));
+    assert_eq!(
+        CAMPPLUS_REGROUP,
+        Regroup {
+            floor: 0.60,
+            distance: 0.80,
+            min_speech_s: 8.0,
+            weighted: false,
+        }
+    );
+    assert!(CAMPPLUS_REGROUP.validate().is_ok());
+    assert_eq!(
+        calibrated_regroup(&EmbeddingModelId::new("campplus-en-voxceleb@000000000000")),
+        None
+    );
+    for c in CALIBRATED_REGROUPS {
+        assert!(c.source.contains("AMI dev"), "{}", c.model);
+        assert!(!c.source.contains("test-clean"), "{}", c.model);
+    }
+    // Off unless a caller turns it on.
+    assert_eq!(ClusteringConfig::default().regroup, None);
+}

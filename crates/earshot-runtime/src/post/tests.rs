@@ -82,6 +82,7 @@ fn config() -> PostConfig {
         voiceprint_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
         naming_thresholds: ModelThresholds::new().with(EmbeddingModelId::new(MODEL), 0.5),
         voiceprint_margins: ModelThresholds::new(),
+        regroups: Vec::new(),
         enroll_me: true,
         enrolment: EnrolmentConfig::default(),
         reuse_live: true,
@@ -429,16 +430,49 @@ fn post_final_pass_diarises_names_and_stores_speakers() {
 }
 
 #[test]
-fn post_never_regroups_small_clusters_by_default() {
-    // T12.66: the small-cluster regrouping is evaluation only (docs/far-speakers/short-turns.md);
-    // turning it on in the app needs its own task.
-    assert!(
-        PostConfig::default()
-            .diarization
-            .clustering
-            .regroup
-            .is_none()
+fn post_regroups_small_clusters_with_the_models_calibrated_setting() {
+    // T12.74: the final pass regroups with the core's choice for the exact model; another
+    // model gets none (never refused); an override wins.
+    let defaults = PostConfig::default();
+    let campp = EmbeddingModelId::new("campplus-en-voxceleb@357a834f702b");
+    assert_eq!(
+        defaults.regroup(&campp),
+        Some(earshot_core::diar::CAMPPLUS_REGROUP)
     );
+    assert_eq!(defaults.regroup(&EmbeddingModelId::new(MODEL)), None);
+    assert!(defaults.diarization.clustering.regroup.is_none());
+    let mut over = PostConfig::default();
+    over.regroups.push((
+        EmbeddingModelId::new(MODEL),
+        earshot_core::diar::CAMPPLUS_REGROUP,
+    ));
+    assert_eq!(
+        over.regroup(&EmbeddingModelId::new(MODEL)),
+        Some(earshot_core::diar::CAMPPLUS_REGROUP)
+    );
+    // The processor's diarizer runs with it.
+    let post = PostProcessor::new(
+        transcriber(),
+        FakeSegmenter::segmentation_3_0(),
+        embedder(),
+        PostConfig {
+            regroups: over.regroups.clone(),
+            ..config()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        post.diarizer_config().clustering.regroup,
+        Some(earshot_core::diar::CAMPPLUS_REGROUP)
+    );
+    let plain = PostProcessor::new(
+        transcriber(),
+        FakeSegmenter::segmentation_3_0(),
+        embedder(),
+        config(),
+    )
+    .unwrap();
+    assert_eq!(plain.diarizer_config().clustering.regroup, None);
 }
 
 /// Source files under `dir` (recursively) holding any of `needles`.
@@ -463,11 +497,12 @@ fn rust_files_holding(
     }
 }
 
-/// T12.66: the small-cluster regrouping is evaluation only. No shipped source outside
-/// earshot-core's diar module sets it or builds its settings (the `cluster_sweep` example, not
-/// shipped, may).
+/// T12.74: the only shipped source of a regrouping is the core's calibrated table. No shipped
+/// source outside earshot-core's diar module builds `Regroup` settings or sets one directly
+/// (the `cluster_sweep` example, not shipped, may); the final pass reads them through
+/// `PostConfig::regroup`.
 #[test]
-fn post_regroup_is_used_by_no_shipped_code() {
+fn post_regroup_comes_only_from_the_calibrated_table() {
     let needles = [concat!("regroup: ", "Some("), concat!("Regroup", " {")];
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut sources: Vec<std::path::PathBuf> = std::fs::read_dir(repo.join("crates"))
@@ -487,15 +522,25 @@ fn post_regroup_is_used_by_no_shipped_code() {
     found.retain(|p| !p.starts_with(&diar));
     assert!(
         found.is_empty(),
-        "shipped code sets the regrouping: {found:?}"
+        "shipped code builds a regrouping outside the calibrated table: {found:?}"
     );
-    // A negative control: the scan finds the settings where they are declared.
+    // The table is where the scan finds the settings (a negative control).
     let mut declared = Vec::new();
-    rust_files_holding(&diar, &needles, &mut declared);
-    assert!(
-        !declared.is_empty(),
-        "the scan found nothing in earshot-core's diar module"
+    rust_files_holding(
+        &diar,
+        &[concat!("CAMPPLUS_REGROUP: Regroup = Regroup", " {")],
+        &mut declared,
     );
+    assert_eq!(declared.len(), 1, "{declared:?}");
+    // And production sets the diarizer's regrouping only from `PostConfig::regroup`.
+    let post = std::fs::read_to_string(repo.join("crates/earshot-runtime/src/post/mod.rs"))
+        .expect("post/mod.rs");
+    assert_eq!(
+        post.matches(concat!("clustering.regroup", " = ")).count(),
+        1,
+        "the final pass sets the regrouping in one place"
+    );
+    assert!(post.contains(concat!("clustering.regroup = config.", "regroup(&model)")));
 }
 
 #[test]

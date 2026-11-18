@@ -36,7 +36,8 @@
 //!    "cosine")`), unless that best cosine is below [`ClusteringConfig::unassigned_floor`]:
 //!    such a small cluster is kept apart and marked unassigned ([`Clustering::unassigned`]),
 //!    so its speech gets no speaker rather than an unlike one (T12.65).
-//! 6. **Regrouping small clusters** (T12.66, off by default, [`ClusteringConfig::regroup`]):
+//! 6. **Regrouping small clusters** (T12.66, off in [`ClusteringConfig::default`], turned on
+//!    by the final pass from [`CALIBRATED_REGROUPS`] since T12.74, [`ClusteringConfig::regroup`]):
 //!    the small clusters of step 5 whose best cosine to every large centroid is below
 //!    [`Regroup::floor`] are clustered among themselves (centroid linkage, each small cluster
 //!    one node, merging while the closest pair is at most [`Regroup::distance`] apart), and a
@@ -80,6 +81,14 @@
 //!   belonged to the large cluster after all. The default floor, -1, is pyannote's
 //!   behaviour bit for bit; a model's floor is chosen on dev data by the rule in
 //!   `docs/far-speakers/unassigned-floor.md` ([`calibrated_unassigned_floor`]).
+//! - **Regrouped small clusters** (T12.66, step 6, not in pyannote; on in the final pass since
+//!   T12.74 through [`calibrated_regroup`]). pyannote gives a small cluster unlike every
+//!   large one to the most similar large cluster; here such small clusters can become a new
+//!   speaker of their own when, grouped among themselves, they hold enough speech. Expected
+//!   effect on DER: lower where a short-turn talker was merged into another speaker (confusion
+//!   turns into a correct speaker), slightly higher where the new speaker is a split of a
+//!   speaker already found. On dev data it lowered the short-turn scenes' DER (0.1748 to
+//!   0.1615) and changed no AMI dev meeting or long scene.
 //! - The threshold was tuned by pyannote for its WeSpeaker ResNet34 embeddings. A
 //!   different embedding model (CAM++) needs its own threshold, calibrated on dev data
 //!   (T3.2/T3.5).
@@ -268,6 +277,48 @@ pub fn calibrated_unassigned_floor(model: &EmbeddingModelId) -> Option<f32> {
         .iter()
         .find(|c| c.model == model.as_str())
         .map(|c| c.floor)
+}
+
+/// A small-cluster regrouping ([`ClusteringConfig::regroup`], module docs step 6) chosen on dev
+/// data for one exact embedding model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CalibratedRegroup {
+    /// Exact [`EmbeddingModelId`] string.
+    pub model: &'static str,
+    /// The settings.
+    pub regroup: Regroup,
+    /// How they were obtained.
+    pub source: &'static str,
+}
+
+/// Regroupings the final pass turns on (T12.74), each chosen by a rule on dev data only (AMI
+/// dev mixes and dev-clean scenes, never the acceptance sets). Measured by `cargo run --release
+/// -p earshot-runtime --example cluster_sweep -- <repo> --models <dir> --short-turns` (the grid)
+/// and `--training-cap` (the check on all fifteen AMI dev meetings).
+pub const CALIBRATED_REGROUPS: &[CalibratedRegroup] = &[CalibratedRegroup {
+    model: "campplus-en-voxceleb@357a834f702b",
+    regroup: CAMPPLUS_REGROUP,
+    source: "T12.66 rule (docs/far-speakers/short-turns.md) on the five AMI dev mixes, 16              dev-clean long scenes and 10 short-turn scenes at clustering threshold 0.68: f 0.60,              d 0.80, m 8 s, plain finds 9 of 10 short-turn talkers (6 today) with no new speaker              on any long scene or AMI meeting; T12.76 (docs/far-speakers/training-cap.md)              picked it again over all fifteen AMI dev meetings, none changed",
+}];
+
+/// The CAM++ VoxCeleb regrouping (see [`CALIBRATED_REGROUPS`]): small clusters below cosine
+/// 0.60 to every large cluster, grouped while at most 0.80 apart, a new speaker from 8 s of
+/// speech, plain means.
+pub const CAMPPLUS_REGROUP: Regroup = Regroup {
+    floor: 0.60,
+    distance: 0.80,
+    min_speech_s: 8.0,
+    weighted: false,
+};
+
+/// The dev-chosen regrouping for `model`, or `None` (a model without one is clustered without
+/// regrouping, never refused: a missing setting must not cost a meeting).
+#[must_use]
+pub fn calibrated_regroup(model: &EmbeddingModelId) -> Option<Regroup> {
+    CALIBRATED_REGROUPS
+        .iter()
+        .find(|c| c.model == model.as_str())
+        .map(|c| c.regroup)
 }
 
 impl ClusteringConfig {

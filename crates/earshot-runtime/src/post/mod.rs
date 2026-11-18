@@ -38,7 +38,11 @@
 //!    what the live echo filter removed. With [`PostConfig::reuse_live`] off neither the
 //!    stretches nor the speaker windows (step 2) are taken ([`WHOLE_PASS_REQUESTED`]): the
 //!    whole-meeting pass with the same models, for comparing the two (T6.13).
-//! 2. **Diarisation** of each track with the [`Diarizer`].
+//! 2. **Diarisation** of each track with the [`Diarizer`], the clustering threshold, unassigned
+//!    floor and, since T12.74, small-cluster regrouping chosen for the exact embedding model
+//!    ([`PostConfig::regroup`]): a quiet voice whose short turns are like no voice found
+//!    becomes a voice of its own ("Speaker N", matched and carried like any other) instead of
+//!    being merged into the most similar one.
 //!
 //!    **Reusing the live speaker windows (T6.13d2).** A track whose live worker computed
 //!    speaker windows during the meeting has a record of them ([`crate::speakers`]). The
@@ -182,7 +186,9 @@ use earshot_core::asr::{
 use earshot_core::audio::{MonoBuffer, SampleRate};
 use earshot_core::capture::TrackId;
 use earshot_core::diar::DiarError;
-use earshot_core::diar::cluster::{calibrated_cluster_threshold, calibrated_unassigned_floor};
+use earshot_core::diar::cluster::{
+    Regroup, calibrated_cluster_threshold, calibrated_regroup, calibrated_unassigned_floor,
+};
 use earshot_core::diar::{
     Diarization, DiarizationConfig, Diarizer, EmbeddingModelId, MeetingDiarization, MeetingSpeaker,
     SpanEmbedding, SpeakerEchoConfig, SpeakerEmbedder, SpeakerRole, SpeakerSegmenter, SpeakerTurn,
@@ -286,6 +292,9 @@ pub struct PostConfig {
     /// Voiceprint margins over the runner-up person that override the core choice (tests, a
     /// newly measured model, T12.67). Default: empty.
     pub voiceprint_margins: ModelThresholds,
+    /// Small-cluster regroupings that override the core choice, per exact model (tests, a
+    /// newly measured model, T12.74). Default: empty.
+    pub regroups: Vec<(EmbeddingModelId, Regroup)>,
     /// Store the user's voiceprint from the "Me" speaker. Default off: voiceprints are
     /// biometric data (PLAN.md 3.9), so the host turns this on after the user agrees.
     pub enroll_me: bool,
@@ -311,6 +320,7 @@ impl Default for PostConfig {
             voiceprint_thresholds: ModelThresholds::new(),
             naming_thresholds: ModelThresholds::new(),
             voiceprint_margins: ModelThresholds::new(),
+            regroups: Vec::new(),
             enroll_me: false,
             enrolment: EnrolmentConfig::default(),
             reuse_live: true,
@@ -354,6 +364,18 @@ impl PostConfig {
             },
             other => RuntimeError::Voiceprint(other),
         })
+    }
+
+    /// The small-cluster regrouping for `model` (T12.74): an override, else the core choice
+    /// ([`calibrated_regroup`]), else none. A model without one is clustered as before: a
+    /// missing setting never refuses a meeting.
+    #[must_use]
+    pub fn regroup(&self, model: &EmbeddingModelId) -> Option<Regroup> {
+        self.regroups
+            .iter()
+            .find(|(m, _)| m == model)
+            .map(|(_, r)| *r)
+            .or_else(|| calibrated_regroup(model))
     }
 
     /// The margin a voiceprint match must hold over the runner-up person for `model` (T12.67):
@@ -1119,6 +1141,7 @@ where
         let mut diarization = config.diarization.clone();
         diarization.clustering.threshold = clustering;
         diarization.clustering.unassigned_floor = floor;
+        diarization.clustering.regroup = config.regroup(&model);
         let diarizer =
             Diarizer::new(segmenter, embedder, diarization).map_err(RuntimeError::Diar)?;
         Ok(Self {
@@ -1131,6 +1154,12 @@ where
             pieces: None,
             speaker_threads: None,
         })
+    }
+
+    /// The diarisation settings the final pass runs with (tests).
+    #[cfg(test)]
+    pub(crate) fn diarizer_config(&self) -> &DiarizationConfig {
+        self.diarizer.config()
     }
 
     /// Records that the speaker models run with `threads` ONNX Runtime threads (production:

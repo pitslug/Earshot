@@ -795,6 +795,8 @@ fn main() {
     let mut config = post.diarization.clone();
     config.clustering.threshold = cluster_threshold;
     config.clustering.unassigned_floor = post.unassigned_floor(&model).unwrap_or_else(|e| fail(e));
+    // The final pass's regrouping for this model (T12.74).
+    config.clustering.regroup = post.regroup(&model);
     let mut d = Diarizer::new(segmenter, embedder, config.clone()).unwrap_or_else(|e| fail(e));
 
     // AMI DER and count.
