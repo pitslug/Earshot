@@ -1588,7 +1588,8 @@ Closed: work done after the x64 early release, before M12 existed. New ideas go 
 
 New ideas and features, after the v1 release or beside it, with their own ids (the owner, 2026-11-08). A task moved here keeps its old id in brackets, because commits and code comments name it.
 
-- [ ] T12.1a An open browser does not hold off the offer to stop
+- [~] T12.1a An open browser does not hold off the offer to stop
+  - status (2026-11-19): built (`CallAppWatch` in `earshot-capture-wasapi::session`, used by the desktop's call signal and `teams_probe`); a dedicated app counts as seen after `DEDICATED_SEEN_READINGS` (2) readings in a row, so one notification sound during a web call does not stop the browser counting; any dedicated app still active keeps the call on (two dedicated apps: the default chosen, the owner may change it). Owed before [x]: the real Teams call with Edge open.
   - deps: T9.4
   - found (the owner, 2026-11-19, Surface, a Teams call): after hang-up both `ms-teams.exe` sessions read inactive and the far end was flat, but no offer came for minutes. `call_app_active` counts any known call app with an active session, browsers included, and Edge (many tabs open) held an active, silent render session, so the call never looked over.
   - do: the call's app is the one seen active during the meeting: once a dedicated call app (a non-browser entry of `KNOWN_CALL_APPS`) has been seen active, only dedicated apps count for "the session ended"; browsers count only when no dedicated app was seen (a web call). Decide the rule with the owner if a meeting sees two dedicated apps. Keep "a meeting that never saw a session is never offered".

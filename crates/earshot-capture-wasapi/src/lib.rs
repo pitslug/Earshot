@@ -65,8 +65,8 @@ pub use recording::{
     NotifyingTrack, RawRecording, RecordingTrack, TimestampsFile, TrackRecording, TrackReport,
 };
 pub use session::{
-    AudioSession, CALL_POLL_INTERVAL, CaptureMode, FallbackReason, LoopbackChoice, LoopbackRequest,
-    ProcessTarget, SelectError, SessionPeak, call_app_active, choose_loopback,
+    AudioSession, CALL_POLL_INTERVAL, CallAppWatch, CaptureMode, FallbackReason, LoopbackChoice,
+    LoopbackRequest, ProcessTarget, SelectError, SessionPeak, choose_loopback,
 };
 pub use timeline::{PacketInfo, PacketRecord, QPC_UNITS_PER_SEC, TrackTimeline};
 

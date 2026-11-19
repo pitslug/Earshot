@@ -1735,16 +1735,19 @@ fn wasapi_source(svc: &Services, request: &StartRequest) -> Result<MeetingSource
 /// the offer: never a recording.
 #[cfg(windows)]
 fn call_signal(mode: CaptureMode) -> Option<CallSignal> {
-    use earshot_capture_wasapi::{CALL_POLL_INTERVAL, RenderSessionPoller, call_app_active};
+    use earshot_capture_wasapi::{CALL_POLL_INTERVAL, CallAppWatch, RenderSessionPoller};
     use earshot_runtime::call_end::CallSessions;
 
     if mode != CaptureMode::Call {
         return None;
     }
     let mut poller = RenderSessionPoller::start(CALL_POLL_INTERVAL).ok()?;
+    // One watch per meeting: once Teams (or another dedicated app) was seen, an open browser no
+    // longer keeps the call on (T12.1a).
+    let mut watch = CallAppWatch::default();
     Some(Box::new(move || {
         poller.latest().map(|reading| match reading {
-            Ok(sessions) if call_app_active(&sessions) => CallSessions::Active,
+            Ok(sessions) if watch.active(&sessions) => CallSessions::Active,
             Ok(_) => CallSessions::NoneActive,
             Err(_) => CallSessions::Unknown,
         })

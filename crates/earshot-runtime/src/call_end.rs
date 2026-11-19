@@ -8,7 +8,9 @@
 //!
 //! The offer needs both of these at once, for [`CallEndConfig::quiet_after`]:
 //! - **The call app's session ended**: one of its render sessions was seen active during this
-//!   meeting, and then [`CallEndConfig::polls_to_end`] readings in a row found none. A meeting that
+//!   meeting, and then [`CallEndConfig::polls_to_end`] readings in a row found none (the host
+//!   decides what counts as active: the desktop's `CallAppWatch` stops counting browsers once a
+//!   dedicated call app was seen, T12.1a). A meeting that
 //!   never saw one (a call app Earshot does not know, a call that has not started) is never offered,
 //!   and a reading that failed is [`CallSessions::Unknown`], which counts as no evidence and ends the
 //!   run of readings.

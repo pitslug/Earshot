@@ -197,7 +197,7 @@ mod probe {
     use earshot_capture_wasapi::wasapi::{
         CaptureStream, ComApartment, Endpoint, RenderCategory, RenderStream, render_session_peaks,
     };
-    use earshot_capture_wasapi::{call_app_active, list_audio_devices};
+    use earshot_capture_wasapi::{CallAppWatch, list_audio_devices};
 
     use super::{Level, call_verdict, category_verdict, pids_in_tasklist};
 
@@ -303,14 +303,15 @@ mod probe {
         let started = std::time::Instant::now();
         let mut was: BTreeMap<(String, u32, String, usize), (bool, bool)> = BTreeMap::new();
         let mut call_active = None;
+        let mut watch = CallAppWatch::default();
         println!("watching render sessions for {seconds} s: hang up or go on hold now");
         while started.elapsed() < Duration::from_secs(seconds) {
             let at = started.elapsed().as_secs_f64();
             let peaks = render_session_peaks(&com).map_err(|e| e.to_string())?;
-            let active = call_app_active(&peaks);
+            let active = watch.active(&peaks);
             if call_active != Some(active) {
                 println!(
-                    "{at:7.1} s  a known call app has an active session: {}",
+                    "{at:7.1} s  the call looks under way (CallAppWatch): {}",
                     if active { "YES" } else { "NO" }
                 );
                 call_active = Some(active);

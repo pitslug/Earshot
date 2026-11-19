@@ -139,12 +139,48 @@ pub struct SessionPeak {
 /// walks every output's sessions, so often enough to notice a call but no tighter.
 pub const CALL_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Whether a known call app has an active render session (T9.4).
-#[must_use]
-pub fn call_app_active(sessions: &[SessionPeak]) -> bool {
-    sessions
-        .iter()
-        .any(|s| s.pid != 0 && s.active && known_call_app(&s.process_name).is_some())
+/// Readings in a row with a dedicated call app active before it counts as seen (2, as T6.15's
+/// two-poll rule; a judgement: a notification sound lasts one reading at
+/// [`CALL_POLL_INTERVAL`]).
+pub const DEDICATED_SEEN_READINGS: u32 = 2;
+
+/// Whether a call looks under way, reading after reading, for one meeting (T9.4, T12.1a).
+///
+/// A known call app with an active render session counts. Browsers count only until a dedicated
+/// call app (any [`KNOWN_CALL_APPS`] entry that is not [`CallApp::browser`]) has been seen active
+/// for [`DEDICATED_SEEN_READINGS`] readings in a row: from then on the call is in a dedicated app,
+/// and a browser holding an active session (many open tabs do, silently) says nothing about it.
+/// Any dedicated app still active keeps the call on, so a second call app never lets the offer
+/// come early. A web call in a browser counts as before as long as no dedicated app is seen.
+#[derive(Debug, Default)]
+pub struct CallAppWatch {
+    /// Readings in a row with a dedicated app active.
+    dedicated_run: u32,
+    /// A dedicated app has been seen for [`DEDICATED_SEEN_READINGS`] readings in a row.
+    dedicated_seen: bool,
+}
+
+impl CallAppWatch {
+    /// Takes one reading and says whether a call looks under way.
+    pub fn active(&mut self, sessions: &[SessionPeak]) -> bool {
+        let (mut dedicated, mut browser) = (false, false);
+        for s in sessions.iter().filter(|s| s.pid != 0 && s.active) {
+            match known_call_app(&s.process_name) {
+                Some((_, app)) if app.browser => browser = true,
+                Some(_) => dedicated = true,
+                None => {}
+            }
+        }
+        self.dedicated_run = if dedicated {
+            self.dedicated_run.saturating_add(1)
+        } else {
+            0
+        };
+        if self.dedicated_run >= DEDICATED_SEEN_READINGS {
+            self.dedicated_seen = true;
+        }
+        dedicated || (browser && !self.dedicated_seen)
+    }
 }
 
 /// A call application recognised by its executable names.
@@ -154,6 +190,8 @@ pub struct CallApp {
     pub label: &'static str,
     /// Lower-case executable names without `.exe`.
     pub exe_names: &'static [&'static str],
+    /// A web browser (a call in its web client), not a dedicated call app ([`CallAppWatch`]).
+    pub browser: bool,
 }
 
 /// Known call apps in ranking order: dedicated call apps first, browsers (web
@@ -162,50 +200,62 @@ pub const KNOWN_CALL_APPS: &[CallApp] = &[
     CallApp {
         label: "Microsoft Teams",
         exe_names: &["ms-teams", "msteams", "teams"],
+        browser: false,
     },
     CallApp {
         label: "Zoom",
         exe_names: &["zoom"],
+        browser: false,
     },
     CallApp {
         label: "Webex",
         exe_names: &["webex", "ciscocollabhost", "atmgr"],
+        browser: false,
     },
     CallApp {
         label: "Slack",
         exe_names: &["slack"],
+        browser: false,
     },
     CallApp {
         label: "Discord",
         exe_names: &["discord"],
+        browser: false,
     },
     CallApp {
         label: "Skype",
         exe_names: &["skype", "skypeapp"],
+        browser: false,
     },
     CallApp {
         label: "Microsoft Edge",
         exe_names: &["msedge"],
+        browser: true,
     },
     CallApp {
         label: "Google Chrome",
         exe_names: &["chrome"],
+        browser: true,
     },
     CallApp {
         label: "Firefox",
         exe_names: &["firefox"],
+        browser: true,
     },
     CallApp {
         label: "Brave",
         exe_names: &["brave"],
+        browser: true,
     },
     CallApp {
         label: "Opera",
         exe_names: &["opera"],
+        browser: true,
     },
     CallApp {
         label: "Vivaldi",
         exe_names: &["vivaldi"],
+        browser: true,
     },
 ];
 
@@ -402,14 +452,82 @@ mod tests {
 
     #[test]
     fn call_app_active_needs_a_known_app_with_an_active_session() {
-        assert!(!call_app_active(&[]));
-        assert!(!call_app_active(&[peak(10, "ms-teams.exe", false)]));
-        assert!(!call_app_active(&[peak(10, "spotify.exe", true)]));
-        assert!(!call_app_active(&[peak(0, "ms-teams.exe", true)]));
-        assert!(call_app_active(&[
-            peak(10, "spotify.exe", true),
-            peak(11, "Zoom.exe", true)
-        ]));
+        let fresh = || CallAppWatch::default();
+        assert!(!fresh().active(&[]));
+        assert!(!fresh().active(&[peak(10, "ms-teams.exe", false)]));
+        assert!(!fresh().active(&[peak(10, "spotify.exe", true)]));
+        assert!(!fresh().active(&[peak(0, "ms-teams.exe", true)]));
+        assert!(fresh().active(&[peak(10, "spotify.exe", true), peak(11, "Zoom.exe", true)]));
+    }
+
+    #[test]
+    fn call_app_teams_ending_is_seen_while_a_browser_stays_active() {
+        // T12.1a: an open browser with an active, silent session held off the offer.
+        let mut w = CallAppWatch::default();
+        let teams = peak(10, "ms-teams.exe", true);
+        let edge = peak(20, "msedge.exe", true);
+        assert!(w.active(&[teams.clone(), edge.clone()]));
+        assert!(w.active(&[teams, edge.clone()]));
+        assert!(!w.active(&[peak(10, "ms-teams.exe", false), edge.clone()]));
+        assert!(!w.active(std::slice::from_ref(&edge)));
+    }
+
+    #[test]
+    fn call_app_a_web_call_in_a_browser_counts_and_ends() {
+        let mut w = CallAppWatch::default();
+        let chrome = peak(20, "chrome.exe", true);
+        for _ in 0..5 {
+            assert!(w.active(std::slice::from_ref(&chrome)));
+        }
+        assert!(!w.active(&[peak(20, "chrome.exe", false)]));
+    }
+
+    #[test]
+    fn call_app_one_reading_of_a_dedicated_app_does_not_end_a_web_call() {
+        // A notification sound from Teams during a browser call lasts one reading: the browser
+        // still counts afterwards.
+        let mut w = CallAppWatch::default();
+        let edge = peak(20, "msedge.exe", true);
+        assert!(w.active(&[peak(10, "ms-teams.exe", true), edge.clone()]));
+        assert!(w.active(std::slice::from_ref(&edge)));
+        assert!(w.active(std::slice::from_ref(&edge)));
+        // Interrupted runs never add up: one, a gap, one again.
+        assert!(w.active(&[peak(10, "ms-teams.exe", true), edge.clone()]));
+        assert!(w.active(std::slice::from_ref(&edge)));
+    }
+
+    #[test]
+    fn call_app_another_dedicated_app_still_active_keeps_the_call_on() {
+        let mut w = CallAppWatch::default();
+        let teams = peak(10, "ms-teams.exe", true);
+        let zoom = peak(11, "zoom.exe", true);
+        assert!(w.active(&[teams.clone(), zoom.clone()]));
+        assert!(w.active(&[teams, zoom.clone()]));
+        assert!(w.active(std::slice::from_ref(&zoom)));
+        assert!(!w.active(&[peak(11, "zoom.exe", false)]));
+    }
+
+    #[test]
+    fn call_app_browsers_are_exactly_the_web_clients() {
+        let browsers: Vec<&str> = KNOWN_CALL_APPS
+            .iter()
+            .filter(|a| a.browser)
+            .map(|a| a.label)
+            .collect();
+        assert_eq!(
+            browsers,
+            [
+                "Microsoft Edge",
+                "Google Chrome",
+                "Firefox",
+                "Brave",
+                "Opera",
+                "Vivaldi"
+            ]
+        );
+        // Browsers rank last, so every dedicated app outranks every browser.
+        let first_browser = KNOWN_CALL_APPS.iter().position(|a| a.browser).unwrap();
+        assert!(KNOWN_CALL_APPS[first_browser..].iter().all(|a| a.browser));
     }
 
     fn s(pid: u32, name: &str, active: bool) -> AudioSession {
