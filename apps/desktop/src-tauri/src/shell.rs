@@ -1,8 +1,8 @@
 //! The tray, the global shortcut and the OS notifications (T7.5).
 //!
 //! Earshot lives in the tray: closing the window hides it (always, not only during a meeting,
-//! so the shortcut and a meeting's last steps keep running), minimising it hides it while a
-//! meeting records, and only "Quit Earshot" in the tray menu ends the process. Started by
+//! so the shortcut and a meeting's last steps keep running), minimising it leaves it on the
+//! taskbar, and only "Quit Earshot" in the tray menu ends the process. Started by
 //! Windows (`--autostart`, the `Run` value of [`crate::general`]), no window opens at all.
 //!
 //! Quitting while a meeting records asks first, in the app's window ([`ShellEvent::QuitAsked`]),
@@ -1047,24 +1047,17 @@ impl Shell {
         }
     }
 
-    /// The window's own events: closing hides it, and minimising hides it while recording.
+    /// The window's own events: closing hides it to the tray. Minimising leaves it on the
+    /// taskbar, as any window, recording or not (the owner, 2026-11-19).
     pub fn on_window_event(&self, window: &Window, event: &WindowEvent) {
         if window.label() != MAIN_WINDOW {
             return;
         }
-        match event {
-            WindowEvent::CloseRequested { api, .. } if self.has_tray.load(Ordering::SeqCst) => {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-            WindowEvent::Resized(_)
-                if self.tracker().phase() == Phase::Recording
-                    && self.has_tray.load(Ordering::SeqCst)
-                    && window.is_minimized().unwrap_or(false) =>
-            {
-                let _ = window.hide();
-            }
-            _ => {}
+        if let WindowEvent::CloseRequested { api, .. } = event
+            && self.has_tray.load(Ordering::SeqCst)
+        {
+            api.prevent_close();
+            let _ = window.hide();
         }
     }
 }
