@@ -61,10 +61,12 @@ const useStyles = makeStyles({
     maxWidth: "760px",
     width: "100%",
   },
-  // The recording view fills the window: only the transcript scrolls.
+  // The recording view fills the window, as a saved meeting's page does: only the transcript
+  // scrolls. The 760px cap is for the New meeting form.
   recording: {
     flexGrow: 1,
     minHeight: 0,
+    maxWidth: "none",
   },
   // Stays in view even if a short window makes the whole page scroll.
   header: {
