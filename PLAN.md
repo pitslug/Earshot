@@ -1588,11 +1588,23 @@ Closed: work done after the x64 early release, before M12 existed. New ideas go 
 
 New ideas and features, after the v1 release or beside it, with their own ids (the owner, 2026-11-08). A task moved here keeps its old id in brackets, because commits and code comments name it.
 
+- [ ] T12.1a An open browser does not hold off the offer to stop
+  - deps: T9.4
+  - found (the owner, 2026-11-19, Surface, a Teams call): after hang-up both `ms-teams.exe` sessions read inactive and the far end was flat, but no offer came for minutes. `call_app_active` counts any known call app with an active session, browsers included, and Edge (many tabs open) held an active, silent render session, so the call never looked over.
+  - do: the call's app is the one seen active during the meeting: once a dedicated call app (a non-browser entry of `KNOWN_CALL_APPS`) has been seen active, only dedicated apps count for "the session ended"; browsers count only when no dedicated app was seen (a web call). Decide the rule with the owner if a meeting sees two dedicated apps. Keep "a meeting that never saw a session is never offered".
+  - accept: `cargo test -p earshot-runtime call_end` and `cargo test -p earshot-capture-wasapi session` with a case of Teams ending while a browser stays active (offered) and a web call in a browser ending (offered); on a real Teams call with Edge open, the offer comes after hang-up
+
 - [ ] T12.1 Offer to stop when the call ends (was T9.4)
-  - deps: T6.14a, T6.15a
+  - deps: T6.14a, T6.15a, T12.1a
   - status (2026-11-07): the code is merged (`call_end`, `RenderSessionPoller`, `MeetingEvent::CallEndOffer`). The owner changed the text below: a notification that stays on screen with Stop recording and Keep recording buttons, and a stop 3 minutes after the offer if nobody answers (the plan's 60 s was too likely to cut a live call, and asking alone leaves a recording running with nobody there). Left: the hang-up measurement and the real Teams and Zoom calls. The 30 s and 3 minutes are judgements until measured.
   - do: stop the recording once the meeting is over. First measure, with `teams-probe` extended, what a known call app's render sessions do at hang-up: during a test call Teams held active sessions and with no call none, but the moment of hang-up, being on hold, and Zoom are unmeasured. Then, in call mode only: when the call app's active session ends and the far end stays quiet, show a banner "The call seems to have ended" with Stop recording and Keep recording, plus a notification that stays on screen with the same buttons when the window is not focused, whose text is fixed copy; nobody answering for 3 minutes stops the recording and says so. Never stop on silence alone (hold, breaks, waiting for someone to join), and never without the chance to keep recording: a wrong stop loses part of a meeting. In-room meetings still stop by hand.
   - accept: the hang-up measurement logged; `cargo test -p earshot-runtime` with replayed session changes (ended then quiet stops after the wait; Keep recording cancels; silence with the session still active never stops; in-room never stops); `cmd /c pnpm -r test`; tried by the owner on real Teams and Zoom calls
+
+- [ ] T12.86 Offer to start recording when a call starts
+  - deps: T12.1a
+  - asked (the owner, 2026-11-19): when Teams starts a call, offer to start recording; when it ends, offer to stop (T12.1).
+  - do: with no meeting recording and the app running (tray included), watch the known dedicated call apps on their own poller thread, as T12.1's. First measure what a call start looks like against Teams' other audio (ringing, notification sounds, a video played in a chat, being in a meeting lobby): render sessions alone, and whether the app's capture (microphone) session is the better sign of a call, logged with times. Then offer "Start recording" (call mode) and "Not now" in a notification that stays on screen, fixed copy, never a meeting or contact name, and a banner when the window is open. Never start recording without the user's press; "Not now" means no new offer until that call's session has ended. A setting on the General page turns the offer off. Process names are read, never stored or logged.
+  - accept: the measurement logged; `cargo test -p earshot-runtime` with replayed session changes (call starts: offered once; Not now: no offer until the session ends and a new one starts; ringing or notification sounds alone: per the measurement); `cmd /c pnpm --filter @earshot/ui test`; tried by the owner on real Teams calls
 
 - [ ] T12.2 Record the output the call app plays on (was T6.15)
   - deps: T6.14, T6.14a, T6.15a
