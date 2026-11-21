@@ -105,6 +105,52 @@ import {
   savedVoiceText,
 } from "./voiceSampleCopy";
 
+/** Where the pinned Speakers panel sticks: the pinned header's height plus a gap. */
+const PANEL_TOP = "--earshot-panel-top";
+/** The tallest the pinned Speakers panel may be: what the pane shows below the header. */
+const PANEL_HEIGHT = "--earshot-panel-height";
+
+/** The nearest ancestor that scrolls vertically (AppShell's meeting pane), or null. */
+function scrollingAncestor(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p !== null; p = p.parentElement) {
+    const y = getComputedStyle(p).overflowY;
+    if (y === "auto" || y === "scroll") return p;
+  }
+  return null;
+}
+
+/**
+ * Keeps `PANEL_TOP` and `PANEL_HEIGHT` on `root` up to date, so the Speakers panel sticks just
+ * below the pinned header and fits in the pane whatever the header's height and the window's.
+ */
+function usePanelSpace(
+  root: RefObject<HTMLElement | null>,
+  pinned: RefObject<HTMLElement | null>,
+  gap: number,
+) {
+  useLayoutEffect(() => {
+    const view = root.current;
+    const header = pinned.current;
+    if (view === null || header === null) return;
+    const pane = scrollingAncestor(view);
+    const measure = () => {
+      const top = header.offsetHeight + gap;
+      view.style.setProperty(PANEL_TOP, `${top}px`);
+      if (pane !== null) {
+        const style = getComputedStyle(pane);
+        const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+        const height = pane.clientHeight - (Number.isNaN(padding) ? 0 : padding) - top;
+        if (height > 0) view.style.setProperty(PANEL_HEIGHT, `${height}px`);
+      }
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(header);
+    if (pane !== null) watch.observe(pane);
+    return () => watch.disconnect();
+  }, [root, pinned, gap]);
+}
+
 const useStyles = makeStyles({
   root: {
     display: "flex",
@@ -187,7 +233,11 @@ const useStyles = makeStyles({
     gridTemplateColumns: "minmax(0, 1fr) auto",
     alignItems: "start",
   },
+  // The panel stays in view while the transcript scrolls: it sticks just below the pinned header
+  // and scrolls on its own when it is taller than the space left (`usePanelSpace`).
   drawer: {
+    position: "sticky",
+    top: `var(${PANEL_TOP}, 0px)`,
     width: 0,
     overflow: "hidden",
     transitionProperty: "width, margin-left",
@@ -204,6 +254,8 @@ const useStyles = makeStyles({
   // The panel itself slides in from the right as its column opens.
   drawerInner: {
     width: "320px",
+    maxHeight: `var(${PANEL_HEIGHT}, none)`,
+    overflowY: "auto",
     animationName: {
       from: { transform: "translateX(24px)", opacity: 0 },
       to: { transform: "translateX(0)", opacity: 1 },
@@ -572,6 +624,9 @@ export function MeetingDetailView({
   const rows = useRef(new Map<string, HTMLDivElement>());
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
+  const pinnedHeader = useRef<HTMLDivElement | null>(null);
+  // 12px is the root's gap (spacingVerticalM): the panel sticks where its column starts.
+  usePanelSpace(view, pinnedHeader, 12);
   const audio = useRef<HTMLAudioElement | null>(null);
   const audioUrl = useRef<string | null>(null);
 
@@ -791,7 +846,7 @@ export function MeetingDetailView({
 
   return (
     <section ref={view} className={styles.root} aria-label="Meeting detail">
-      <div className={styles.pinned}>
+      <div ref={pinnedHeader} className={styles.pinned}>
         <div className={styles.header}>
           <div className={styles.headerText}>
             {editingTitle && detail !== null ? (
