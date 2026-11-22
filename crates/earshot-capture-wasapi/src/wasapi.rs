@@ -546,8 +546,19 @@ pub fn list_render_sessions(com: &ComApartment) -> Result<Vec<AudioSession>, Cap
 /// Every render session on every active endpoint with its current peak (the system sounds
 /// session is skipped).
 pub fn render_session_peaks(com: &ComApartment) -> Result<Vec<SessionPeak>, CaptureError> {
+    session_peaks(com, eRender)
+}
+
+/// Every capture (microphone) session on every active capture endpoint with its current peak
+/// (T12.86: which app has a microphone open, and when). Like [`render_session_peaks`], it reads
+/// only process names, session states and meters; no audio.
+pub fn capture_session_peaks(com: &ComApartment) -> Result<Vec<SessionPeak>, CaptureError> {
+    session_peaks(com, eCapture)
+}
+
+fn session_peaks(com: &ComApartment, flow: EDataFlow) -> Result<Vec<SessionPeak>, CaptureError> {
     let mut out = Vec::new();
-    each_render_session(com, |device, control, pid| {
+    each_session(com, flow, |device, control, pid| {
         // SAFETY: plain COM calls on live, owned interfaces; `GetPeakValue` returns a value.
         let (active, peak) = unsafe {
             (
@@ -656,11 +667,20 @@ fn poll_render_sessions(
 /// active endpoint, the system sounds session skipped.
 fn each_render_session(
     com: &ComApartment,
+    f: impl FnMut(&IMMDevice, &IAudioSessionControl, u32),
+) -> Result<(), CaptureError> {
+    each_session(com, eRender, f)
+}
+
+/// [`each_render_session`] for the endpoints of `flow` (render or capture).
+fn each_session(
+    com: &ComApartment,
+    flow: EDataFlow,
     mut f: impl FnMut(&IMMDevice, &IAudioSessionControl, u32),
 ) -> Result<(), CaptureError> {
     let enumerator = device_enumerator(com)?;
     // SAFETY: plain COM calls on live, owned interfaces.
-    let devices = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }
+    let devices = unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) }
         .ctx("EnumAudioEndpoints")?;
     // SAFETY: as above.
     let count = unsafe { devices.GetCount() }.ctx("IMMDeviceCollection::GetCount")?;

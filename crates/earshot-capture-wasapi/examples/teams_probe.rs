@@ -9,10 +9,11 @@
 //! process, with the default output's loopback and the session meter as controls. It repeats a
 //! report made on another machine (Windows-classic-samples#414) on this machine's driver.
 //!
-//! `teams_probe sessions [--seconds N]` (T9.4) prints a timeline of every render session: when each
-//! becomes active or stops, when its meter starts or stops showing sound, and when a known call app
-//! has an active session. Start it during a call and hang up, or go on hold, while it runs. It opens
-//! no capture and plays nothing.
+//! `teams_probe sessions [--seconds N]` (T9.4, T12.86) prints a timeline of every render (`out`) and
+//! capture (`mic`) session: when each becomes active or stops, when its meter starts or stops showing
+//! sound, when a known call app has an active render session, and when one has the microphone. Start
+//! it before a call (it runs up to 4 hours), let the call ring, join, talk and hang up while it runs.
+//! It opens no capture and plays nothing.
 //!
 //! It prints levels and process names only. Samples are read for their level and dropped: no
 //! audio is kept, nothing is written and nothing reaches the network.
@@ -26,12 +27,12 @@ fn main() {
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
-        Some("call") => match seconds_from(&args[1..]) {
+        Some("call") => match seconds_from(&args[1..], CALL_MAX_SECONDS) {
             Ok(seconds) => probe::call(seconds),
             Err(e) => Err(e),
         },
         Some("category") => probe::category(),
-        Some("sessions") => match seconds_from(&args[1..]) {
+        Some("sessions") => match seconds_from(&args[1..], SESSIONS_MAX_SECONDS) {
             Ok(seconds) => probe::sessions(seconds),
             Err(e) => Err(e),
         },
@@ -49,14 +50,21 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// `--seconds N` (default 45: a Teams test call plays, records you and plays it back).
+/// The longest `call` run: it captures every Teams process and output for its whole length.
+const CALL_MAX_SECONDS: u64 = 600;
+/// The longest `sessions` run (4 hours): it only reads session states and meters, so it can be
+/// started before a call and left running through it.
+const SESSIONS_MAX_SECONDS: u64 = 4 * 60 * 60;
+
+/// `--seconds N` from 1 to `max` (default 45: a Teams test call plays, records you and plays it
+/// back).
 #[cfg_attr(not(windows), allow(dead_code))]
-fn seconds_from(args: &[String]) -> Result<u64, String> {
+fn seconds_from(args: &[String], max: u64) -> Result<u64, String> {
     match args {
         [] => Ok(45),
         [flag, n] if flag == "--seconds" => match n.parse::<u64>() {
-            Ok(s) if (1..=600).contains(&s) => Ok(s),
-            _ => Err(format!("--seconds takes 1 to 600, not {n}")),
+            Ok(s) if (1..=max).contains(&s) => Ok(s),
+            _ => Err(format!("--seconds takes 1 to {max}, not {n}")),
         },
         _ => Err("this mode takes only --seconds N".to_owned()),
     }
@@ -168,6 +176,18 @@ fn category_verdict(other: &[f32], communications: &[f32], outputs: &[f32]) -> &
     }
 }
 
+/// Whether a known call app (Teams, Zoom, a browser's web client...) has an active microphone
+/// session in `capture` (T12.86: a call app opens the microphone when a call starts, which a ringing
+/// sound or a notification does not).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn call_app_has_mic(capture: &[earshot_capture_wasapi::SessionPeak]) -> bool {
+    capture.iter().any(|s| {
+        s.pid != 0
+            && s.active
+            && earshot_capture_wasapi::session::known_call_app(&s.process_name).is_some()
+    })
+}
+
 /// `tasklist /FO CSV /NH` output -> the pids of `image` (lower case, with `.exe`).
 #[cfg_attr(not(windows), allow(dead_code))]
 fn pids_in_tasklist(csv: &str, image: &str) -> Vec<u32> {
@@ -195,11 +215,12 @@ mod probe {
     use std::time::Duration;
 
     use earshot_capture_wasapi::wasapi::{
-        CaptureStream, ComApartment, Endpoint, RenderCategory, RenderStream, render_session_peaks,
+        CaptureStream, ComApartment, Endpoint, RenderCategory, RenderStream, capture_session_peaks,
+        render_session_peaks,
     };
     use earshot_capture_wasapi::{CallAppWatch, list_audio_devices};
 
-    use super::{Level, call_verdict, category_verdict, pids_in_tasklist};
+    use super::{Level, call_app_has_mic, call_verdict, category_verdict, pids_in_tasklist};
 
     /// Time for every capture to start before the sound or the measuring window counts.
     const SETTLE: Duration = Duration::from_millis(500);
@@ -299,16 +320,23 @@ mod probe {
 
     /// The `sessions` mode: a line for every change, nothing in between.
     pub(super) fn sessions(seconds: u64) -> Result<(), String> {
+        // Keyed by (side, endpoint, pid, process, index of the pid's sessions on that endpoint).
+        type Key = (&'static str, String, u32, String, usize);
         let com = ComApartment::init_mta().map_err(|e| e.to_string())?;
         let started = std::time::Instant::now();
-        let mut was: BTreeMap<(String, u32, String, usize), (bool, bool)> = BTreeMap::new();
+        let mut was: BTreeMap<Key, (bool, bool)> = BTreeMap::new();
         let mut call_active = None;
+        let mut mic_in_call_app = None;
         let mut watch = CallAppWatch::default();
-        println!("watching render sessions for {seconds} s: hang up or go on hold now");
+        println!(
+            "watching output (out) and microphone (mic) sessions for {seconds} s: let the call \
+             ring, join, talk, go on hold and hang up while this runs"
+        );
         while started.elapsed() < Duration::from_secs(seconds) {
             let at = started.elapsed().as_secs_f64();
-            let peaks = render_session_peaks(&com).map_err(|e| e.to_string())?;
-            let active = watch.active(&peaks);
+            let render = render_session_peaks(&com).map_err(|e| e.to_string())?;
+            let capture = capture_session_peaks(&com).map_err(|e| e.to_string())?;
+            let active = watch.active(&render);
             if call_active != Some(active) {
                 println!(
                     "{at:7.1} s  the call looks under way (CallAppWatch): {}",
@@ -316,19 +344,31 @@ mod probe {
                 );
                 call_active = Some(active);
             }
-            let mut seen: BTreeMap<(String, u32), usize> = BTreeMap::new();
+            let mic = call_app_has_mic(&capture);
+            if mic_in_call_app != Some(mic) {
+                println!(
+                    "{at:7.1} s  a call app has the microphone open: {}",
+                    if mic { "YES" } else { "NO" }
+                );
+                mic_in_call_app = Some(mic);
+            }
+            let mut seen: BTreeMap<(&'static str, String, u32), usize> = BTreeMap::new();
             let mut now = BTreeMap::new();
-            for s in peaks {
-                let n = seen.entry((s.endpoint.clone(), s.pid)).or_default();
-                let key = (s.endpoint, s.pid, s.process_name, *n);
+            let sides = render
+                .into_iter()
+                .map(|s| ("out", s))
+                .chain(capture.into_iter().map(|s| ("mic", s)));
+            for (side, s) in sides {
+                let n = seen.entry((side, s.endpoint.clone(), s.pid)).or_default();
+                let key: Key = (side, s.endpoint, s.pid, s.process_name, *n);
                 *n += 1;
                 let state = (s.active, s.peak.is_some_and(|p| p >= super::AUDIBLE));
                 if was.get(&key) != Some(&state) {
                     println!(
-                        "{at:7.1} s  {} pid {} on {}: {}, {}",
+                        "{at:7.1} s  {side} {} pid {} on {}: {}, {}",
+                        key.3,
                         key.2,
                         key.1,
-                        key.0,
                         if state.0 { "active" } else { "not active" },
                         if state.1 { "sound" } else { "no sound" }
                     );
@@ -337,8 +377,8 @@ mod probe {
             }
             for key in was.keys().filter(|k| !now.contains_key(*k)) {
                 println!(
-                    "{at:7.1} s  {} pid {} on {}: session gone",
-                    key.2, key.1, key.0
+                    "{at:7.1} s  {} {} pid {} on {}: session gone",
+                    key.0, key.3, key.2, key.1
                 );
             }
             was = now;
@@ -514,13 +554,50 @@ mod tests {
 
     #[test]
     fn teams_probe_seconds_default_and_limits() {
-        assert_eq!(seconds_from(&[]), Ok(45));
+        let max = CALL_MAX_SECONDS;
+        assert_eq!(seconds_from(&[], max), Ok(45));
         let args = |n: &str| ["--seconds".to_owned(), n.to_owned()];
-        assert_eq!(seconds_from(&args("3")), Ok(3));
-        assert!(seconds_from(&args("0")).is_err());
-        assert!(seconds_from(&args("601")).is_err());
-        assert!(seconds_from(&args("x")).is_err());
-        assert!(seconds_from(&["--other".to_owned()]).is_err());
+        assert_eq!(seconds_from(&args("3"), max), Ok(3));
+        assert_eq!(seconds_from(&args("600"), max), Ok(600));
+        assert!(seconds_from(&args("0"), max).is_err());
+        assert!(seconds_from(&args("601"), max).is_err());
+        assert!(seconds_from(&args("x"), max).is_err());
+        assert!(seconds_from(&["--other".to_owned()], max).is_err());
+    }
+
+    #[test]
+    fn teams_probe_sessions_runs_through_a_whole_call() {
+        let args = |n: &str| ["--seconds".to_owned(), n.to_owned()];
+        assert_eq!(
+            seconds_from(&args("14400"), SESSIONS_MAX_SECONDS),
+            Ok(14_400)
+        );
+        assert!(seconds_from(&args("14401"), SESSIONS_MAX_SECONDS).is_err());
+        assert!(seconds_from(&args("601"), CALL_MAX_SECONDS).is_err());
+    }
+
+    fn mic(pid: u32, name: &str, active: bool) -> earshot_capture_wasapi::SessionPeak {
+        earshot_capture_wasapi::SessionPeak {
+            endpoint: "Microphone".into(),
+            endpoint_id: "{mic}".into(),
+            pid,
+            process_name: name.into(),
+            active,
+            peak: Some(0.0),
+        }
+    }
+
+    #[test]
+    fn teams_probe_mic_counts_only_an_active_call_app() {
+        assert!(!call_app_has_mic(&[]));
+        assert!(!call_app_has_mic(&[mic(10, "ms-teams.exe", false)]));
+        assert!(!call_app_has_mic(&[mic(10, "earshot.exe", true)]));
+        assert!(!call_app_has_mic(&[mic(0, "ms-teams.exe", true)]));
+        assert!(call_app_has_mic(&[
+            mic(10, "earshot.exe", true),
+            mic(11, "ms-teams.exe", true)
+        ]));
+        assert!(call_app_has_mic(&[mic(12, "msedge.exe", true)]));
     }
 
     #[test]
