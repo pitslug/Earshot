@@ -36,9 +36,14 @@ export async function openNamed(user: ReturnType<typeof userEvent.setup>) {
   await user.click(within(panel()).getByRole("button", { name: /^Named/ }));
 }
 /** The list row of a meeting and its trash can, also while an open modal hides the page from
- * assistive technology. */
-export const listRow = (item: MeetingListItem) =>
-  screen.getByRole("button", { name: new RegExp(`^${item.title}`), hidden: true });
+ * assistive technology. The role query runs inside the meeting list only: over the whole page it
+ * took longer than `waitFor`'s interval on the Surface, so a `waitFor` around it starved the very
+ * render it waited for (the T12.76 status-dot test failed there every run). */
+export const listRow = (item: MeetingListItem) => {
+  const list = document.querySelector<HTMLElement>('ul[aria-label="Meetings"]');
+  if (list === null) throw new Error("the meeting list is not on the page");
+  return within(list).getByRole("button", { name: new RegExp(`^${item.title}`), hidden: true });
+};
 export const trashName = (item: MeetingListItem) => `Delete ${item.title}`;
 
 /** Longer than tabster's deferred aria-hidden pass (`ModalizerAPI.hiddenUpdate`, 250 ms): a

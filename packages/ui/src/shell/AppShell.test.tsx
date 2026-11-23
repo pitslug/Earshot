@@ -126,7 +126,13 @@ describe("AppShell", () => {
 });
 
 describe("AppShell status dots (T12.76)", () => {
-  const row = (title: RegExp) => screen.getByRole("button", { name: title });
+  // Inside the meeting list only, as `listRow`: a whole-page role query inside `waitFor` starves
+  // the render it waits for on a slow machine.
+  const row = (title: RegExp) => {
+    const list = document.querySelector<HTMLElement>('ul[aria-label="Meetings"]');
+    if (list === null) throw new Error("the meeting list is not on the page");
+    return within(list).getByRole("button", { name: title });
+  };
   const dot = (el: HTMLElement) => el.querySelector("[data-dot]")?.getAttribute("data-dot") ?? null;
   const STATES: MeetingListItem[] = [
     { ...MEETINGS[0], id: "s5", title: "Read meeting" },
