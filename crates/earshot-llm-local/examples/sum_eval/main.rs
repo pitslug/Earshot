@@ -33,6 +33,7 @@ mod compare;
 mod facts;
 mod format_key;
 mod judge;
+mod marks;
 mod score;
 mod store;
 mod two_track;
@@ -145,6 +146,9 @@ struct Args {
     prior_key: Option<PathBuf>,
     /// Judge verdicts to count (`judge.rs`), one directory per meeting.
     import_verdicts: Option<PathBuf>,
+    /// Real-item and mis-heard marks to count (T12.87, `marks.rs`), one directory per
+    /// meeting.
+    count_marks: Option<PathBuf>,
     /// Blinded judge packets: write (with `--judge-packets`) or read (with
     /// `--import-verdicts`) this key of `S<n>` labels to models.
     blind_key: Option<PathBuf>,
@@ -295,6 +299,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--prior-key" => a.prior_key = Some(val()?.into()),
             "--import-verdicts" => a.import_verdicts = Some(val()?.into()),
+            "--count-marks" => a.count_marks = Some(val()?.into()),
             "--split-facts" => a.split_facts = Some(val()?.into()),
             "--facts" => a.facts = Some(val()?.into()),
             "--judge-facts" => a.judge_facts = Some(val()?.into()),
@@ -356,6 +361,12 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     }
     if a.facts.is_some() && a.judge_packets.is_none() && a.import_verdicts.is_none() {
         return Err("--facts needs --judge-packets or --import-verdicts".into());
+    }
+    if a.count_marks.is_some() {
+        if a.meetings.is_empty() || a.out.as_os_str().is_empty() || a.has_store_jobs() {
+            return Err("--count-marks needs --meetings and --out (AMI packets only)".into());
+        }
+        return Ok(a);
     }
     if a.import_verdicts.is_some() {
         if a.annotations.as_os_str().is_empty()
@@ -1753,6 +1764,19 @@ fn run() -> Result<(), String> {
     }
     if let Some(dir) = &a.import_verdicts {
         return import_verdicts(&a, dir);
+    }
+    if let Some(dir) = &a.count_marks {
+        let key: Option<Value> = match &a.blind_key {
+            Some(p) => Some(
+                serde_json::from_str(
+                    &std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?,
+                )
+                .map_err(|e| format!("{}: {e}", p.display()))?,
+            ),
+            None => None,
+        };
+        let all: Vec<String> = a.meetings.values().flatten().cloned().collect();
+        return marks::count(dir, &all, key.as_ref(), &a.out);
     }
     if let Some(dir) = &a.judge_packets {
         return judge_packets(&a, dir);
