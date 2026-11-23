@@ -31,3 +31,25 @@ Expectation before measuring (a judgement): gain alone should change little, bec
 If `gain12` passes, the effect is level alone (a gain change would do, no compressor needed). If a compressor passes and `gain12` does not, a follow-up task designs a live compressor for in-room meetings (mic only, before the recording and voice detection). If none passes, the idea is parked and the advice is microphone placement. Nothing ships from this task.
 
 **Limits.** In AMI everyone sits at a similar distance from the array in the middle of the table, so the level spread between speakers is smaller than with a laptop at one end; five meetings; one model; the compressor's settings are one reasonable choice, not tuned.
+
+## Result (2026-11-24)
+
+Run once, `parakeet-tdt-0.6b-v2` on CUDA, report committed unmodified as `docs/quiet-voices/cuda.json` (counts and levels only). Pooled over the five meetings:
+
+| Condition | `segments` WER | `whole` WER | `whole` deletions | `heard_quiet` | all speakers heard | Helps |
+|---|---|---|---|---|---|---|
+| off | 29.41% | 29.53% | 2687 | 68.4% (1845/2696) | 73.0% | |
+| gain12 | 29.18% | 25.59% | 2072 | 74.1% (1998/2696) | 77.3% | yes |
+| comp4 | 30.24% | 29.12% | 2599 | 69.5% | 73.3% | no |
+| comp10 | 30.37% | 29.90% | 2708 | 69.7% | 72.5% | no |
+
+**Decision under the rule: `gain12` passes, both compressors fail, so the effect is level alone and no compressor is needed.**
+
+What the counts say (a reading, not part of the rule):
+
+- Mis-hearing does not change with level: `segments` WER moves by 0.2 points with gain and gets slightly worse with compression (more substitutions and deletions as noise and echo come up with the voice).
+- Missed speech does: with +12 dB the whole-meeting pass loses 615 fewer words (deletions 2687 -> 2072), so voice detection (Silero) was skipping quiet speech that the recogniser reads well once it is decoded. The quietest speaker gains 5.7 points of words heard; everyone gains 4.3.
+- AMI's far-field recordings are very quiet: four of the five meetings have a reference level near -44 dBFS and speakers at -48 to -52 dBFS. The fifth (IS1008a, reference -29 dBFS) gets slightly worse with gain (whole 8.89% -> 9.51%), so the help is for audio that reaches the recogniser too quietly, not a general boost.
+- The compressors leave loud speech at the reference level and lift only what lies below it, so the speech voice detection was missing stays near the same absolute level; a fixed gain lifts all of it. (Measured in the tests: the compressor's fast-attack power envelope sits about 2.4 dB above a tone's mean power, so a steady signal at L leaves slightly below L; this does not change the reading.)
+
+What this means for Earshot: whether it matters depends on the level Earshot's own microphone delivers in a room. Windows' default (processed) mic stream applies its own gain, so it is probably far louder than AMI's array; the raw mic setting and quiet laptop mics may not be. Next step, if wanted: read the speech level of real in-room recordings (levels only, no content) and, if they sit near AMI's, bring the input up to a fixed level before voice detection.

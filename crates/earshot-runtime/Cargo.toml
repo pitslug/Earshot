@@ -168,6 +168,14 @@ name = "vp_meetings"
 required-features = ["engines"]
 test = true
 
+# T12.89: gain and compression for quiet voices in the room, measured on AMI dev far-field
+# audio (docs/quiet-voices.md, evaluation only); its unit tests pin the conditions and the
+# heard-word match.
+[[example]]
+name = "quiet_voices"
+required-features = ["engines"]
+test = true
+
 # `cargo xtask bench` (T8.1): RTF, live latency and peak memory; its unit tests run with the
 # crate's tests.
 [[example]]

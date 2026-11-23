@@ -1,0 +1,1122 @@
+{
+  "backend": "Cuda",
+  "conditions": [
+    {
+      "condition": "off",
+      "heard_all": {
+        "heard": 9097,
+        "percent": 72.96278472890599,
+        "words": 12468
+      },
+      "heard_quiet": {
+        "heard": 1845,
+        "percent": 68.43471810089021,
+        "words": 2696
+      },
+      "meetings": [
+        {
+          "meeting": "ES2003a",
+          "segments": {
+            "deletions": 102,
+            "insertions": 147,
+            "ref_words": 1991,
+            "substitutions": 219,
+            "wer_percent": 23.505775991963837
+          },
+          "speakers": [
+            {
+              "heard": 292,
+              "level_dbfs": -49.64294603796606,
+              "quietest": false,
+              "speaker": "A",
+              "words": 471
+            },
+            {
+              "heard": 766,
+              "level_dbfs": -48.72874561824506,
+              "quietest": false,
+              "speaker": "B",
+              "words": 984
+            },
+            {
+              "heard": 289,
+              "level_dbfs": -47.32343369593913,
+              "quietest": false,
+              "speaker": "C",
+              "words": 373
+            },
+            {
+              "heard": 120,
+              "level_dbfs": -50.56352239183148,
+              "quietest": true,
+              "speaker": "D",
+              "words": 178
+            }
+          ],
+          "whole": {
+            "deletions": 411,
+            "insertions": 56,
+            "ref_words": 1991,
+            "substitutions": 123,
+            "wer_percent": 29.633350075339028
+          }
+        },
+        {
+          "meeting": "ES2011a",
+          "segments": {
+            "deletions": 244,
+            "insertions": 336,
+            "ref_words": 2466,
+            "substitutions": 310,
+            "wer_percent": 36.09083536090835
+          },
+          "speakers": [
+            {
+              "heard": 701,
+              "level_dbfs": -51.155493878500096,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1003
+            },
+            {
+              "heard": 29,
+              "level_dbfs": -51.317924790807126,
+              "quietest": true,
+              "speaker": "B",
+              "words": 95
+            },
+            {
+              "heard": 531,
+              "level_dbfs": -51.16808442738956,
+              "quietest": false,
+              "speaker": "C",
+              "words": 770
+            },
+            {
+              "heard": 392,
+              "level_dbfs": -48.953020748627615,
+              "quietest": false,
+              "speaker": "D",
+              "words": 622
+            }
+          ],
+          "whole": {
+            "deletions": 650,
+            "insertions": 97,
+            "ref_words": 2467,
+            "substitutions": 185,
+            "wer_percent": 37.77867855695176
+          }
+        },
+        {
+          "meeting": "IS1008a",
+          "segments": {
+            "deletions": 86,
+            "insertions": 79,
+            "ref_words": 2397,
+            "substitutions": 93,
+            "wer_percent": 10.763454317897372
+          },
+          "speakers": [
+            {
+              "heard": 1180,
+              "level_dbfs": -36.686405415800735,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1291
+            },
+            {
+              "heard": 225,
+              "level_dbfs": -38.51841026163847,
+              "quietest": true,
+              "speaker": "B",
+              "words": 249
+            },
+            {
+              "heard": 398,
+              "level_dbfs": -33.40558925388533,
+              "quietest": false,
+              "speaker": "C",
+              "words": 410
+            },
+            {
+              "heard": 409,
+              "level_dbfs": -30.866260872551802,
+              "quietest": false,
+              "speaker": "D",
+              "words": 447
+            }
+          ],
+          "whole": {
+            "deletions": 130,
+            "insertions": 22,
+            "ref_words": 2397,
+            "substitutions": 61,
+            "wer_percent": 8.88610763454318
+          }
+        },
+        {
+          "meeting": "TS3004a",
+          "segments": {
+            "deletions": 312,
+            "insertions": 329,
+            "ref_words": 2931,
+            "substitutions": 433,
+            "wer_percent": 36.642784032753326
+          },
+          "speakers": [
+            {
+              "heard": 1021,
+              "level_dbfs": -52.326447257689225,
+              "quietest": true,
+              "speaker": "A",
+              "words": 1488
+            },
+            {
+              "heard": 369,
+              "level_dbfs": -48.88389299681795,
+              "quietest": false,
+              "speaker": "B",
+              "words": 532
+            },
+            {
+              "heard": 211,
+              "level_dbfs": -50.336375315519135,
+              "quietest": false,
+              "speaker": "C",
+              "words": 297
+            },
+            {
+              "heard": 403,
+              "level_dbfs": -50.694735925747445,
+              "quietest": false,
+              "speaker": "D",
+              "words": 627
+            }
+          ],
+          "whole": {
+            "deletions": 766,
+            "insertions": 58,
+            "ref_words": 2932,
+            "substitutions": 187,
+            "wer_percent": 34.481582537517056
+          }
+        },
+        {
+          "meeting": "TS3006a",
+          "segments": {
+            "deletions": 206,
+            "insertions": 381,
+            "ref_words": 2626,
+            "substitutions": 373,
+            "wer_percent": 36.55750190403656
+          },
+          "speakers": [
+            {
+              "heard": 651,
+              "level_dbfs": -51.48312953517436,
+              "quietest": false,
+              "speaker": "A",
+              "words": 948
+            },
+            {
+              "heard": 257,
+              "level_dbfs": -48.288843760715196,
+              "quietest": false,
+              "speaker": "B",
+              "words": 369
+            },
+            {
+              "heard": 450,
+              "level_dbfs": -51.672923697465066,
+              "quietest": true,
+              "speaker": "C",
+              "words": 686
+            },
+            {
+              "heard": 403,
+              "level_dbfs": -49.8276796976355,
+              "quietest": false,
+              "speaker": "D",
+              "words": 628
+            }
+          ],
+          "whole": {
+            "deletions": 730,
+            "insertions": 49,
+            "ref_words": 2626,
+            "substitutions": 140,
+            "wer_percent": 34.996191926885
+          }
+        }
+      ],
+      "seconds": 132.03269,
+      "segments": {
+        "deletions": 950,
+        "insertions": 1272,
+        "ref_words": 12411,
+        "substitutions": 1428,
+        "wer_percent": 29.409394891628395
+      },
+      "whole": {
+        "deletions": 2687,
+        "insertions": 282,
+        "ref_words": 12413,
+        "substitutions": 696,
+        "wer_percent": 29.525497462337874
+      }
+    },
+    {
+      "condition": "gain12",
+      "decision": {
+        "heard_quiet_at_least_2_points_higher": true,
+        "helps": true,
+        "segments_at_most_0_5_point_higher": true,
+        "whole_at_least_1_point_lower": true
+      },
+      "heard_all": {
+        "heard": 9638,
+        "percent": 77.30189284568495,
+        "words": 12468
+      },
+      "heard_quiet": {
+        "heard": 1998,
+        "percent": 74.10979228486647,
+        "words": 2696
+      },
+      "meetings": [
+        {
+          "meeting": "ES2003a",
+          "segments": {
+            "deletions": 91,
+            "insertions": 145,
+            "ref_words": 1991,
+            "substitutions": 220,
+            "wer_percent": 22.903063787041688
+          },
+          "speakers": [
+            {
+              "heard": 381,
+              "level_dbfs": -49.64294603796606,
+              "quietest": false,
+              "speaker": "A",
+              "words": 471
+            },
+            {
+              "heard": 849,
+              "level_dbfs": -48.72874561824506,
+              "quietest": false,
+              "speaker": "B",
+              "words": 984
+            },
+            {
+              "heard": 319,
+              "level_dbfs": -47.32343369593913,
+              "quietest": false,
+              "speaker": "C",
+              "words": 373
+            },
+            {
+              "heard": 122,
+              "level_dbfs": -50.56352239183148,
+              "quietest": true,
+              "speaker": "D",
+              "words": 178
+            }
+          ],
+          "whole": {
+            "deletions": 179,
+            "insertions": 62,
+            "ref_words": 1991,
+            "substitutions": 159,
+            "wer_percent": 20.09040683073832
+          }
+        },
+        {
+          "meeting": "ES2011a",
+          "segments": {
+            "deletions": 258,
+            "insertions": 320,
+            "ref_words": 2466,
+            "substitutions": 305,
+            "wer_percent": 35.80697485806975
+          },
+          "speakers": [
+            {
+              "heard": 763,
+              "level_dbfs": -51.155493878500096,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1003
+            },
+            {
+              "heard": 38,
+              "level_dbfs": -51.317924790807126,
+              "quietest": true,
+              "speaker": "B",
+              "words": 95
+            },
+            {
+              "heard": 559,
+              "level_dbfs": -51.16808442738956,
+              "quietest": false,
+              "speaker": "C",
+              "words": 770
+            },
+            {
+              "heard": 416,
+              "level_dbfs": -48.953020748627615,
+              "quietest": false,
+              "speaker": "D",
+              "words": 622
+            }
+          ],
+          "whole": {
+            "deletions": 528,
+            "insertions": 129,
+            "ref_words": 2467,
+            "substitutions": 185,
+            "wer_percent": 34.1305229023105
+          }
+        },
+        {
+          "meeting": "IS1008a",
+          "segments": {
+            "deletions": 86,
+            "insertions": 80,
+            "ref_words": 2397,
+            "substitutions": 91,
+            "wer_percent": 10.721735502711722
+          },
+          "speakers": [
+            {
+              "heard": 1180,
+              "level_dbfs": -36.686405415800735,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1291
+            },
+            {
+              "heard": 223,
+              "level_dbfs": -38.51841026163847,
+              "quietest": true,
+              "speaker": "B",
+              "words": 249
+            },
+            {
+              "heard": 391,
+              "level_dbfs": -33.40558925388533,
+              "quietest": false,
+              "speaker": "C",
+              "words": 410
+            },
+            {
+              "heard": 405,
+              "level_dbfs": -30.866260872551802,
+              "quietest": false,
+              "speaker": "D",
+              "words": 447
+            }
+          ],
+          "whole": {
+            "deletions": 143,
+            "insertions": 24,
+            "ref_words": 2397,
+            "substitutions": 61,
+            "wer_percent": 9.51188986232791
+          }
+        },
+        {
+          "meeting": "TS3004a",
+          "segments": {
+            "deletions": 318,
+            "insertions": 317,
+            "ref_words": 2931,
+            "substitutions": 434,
+            "wer_percent": 36.472193790515185
+          },
+          "speakers": [
+            {
+              "heard": 1118,
+              "level_dbfs": -52.326447257689225,
+              "quietest": true,
+              "speaker": "A",
+              "words": 1488
+            },
+            {
+              "heard": 380,
+              "level_dbfs": -48.88389299681795,
+              "quietest": false,
+              "speaker": "B",
+              "words": 532
+            },
+            {
+              "heard": 212,
+              "level_dbfs": -50.336375315519135,
+              "quietest": false,
+              "speaker": "C",
+              "words": 297
+            },
+            {
+              "heard": 421,
+              "level_dbfs": -50.694735925747445,
+              "quietest": false,
+              "speaker": "D",
+              "words": 627
+            }
+          ],
+          "whole": {
+            "deletions": 630,
+            "insertions": 59,
+            "ref_words": 2932,
+            "substitutions": 198,
+            "wer_percent": 30.252387448840384
+          }
+        },
+        {
+          "meeting": "TS3006a",
+          "segments": {
+            "deletions": 217,
+            "insertions": 362,
+            "ref_words": 2626,
+            "substitutions": 377,
+            "wer_percent": 36.4051789794364
+          },
+          "speakers": [
+            {
+              "heard": 678,
+              "level_dbfs": -51.48312953517436,
+              "quietest": false,
+              "speaker": "A",
+              "words": 948
+            },
+            {
+              "heard": 255,
+              "level_dbfs": -48.288843760715196,
+              "quietest": false,
+              "speaker": "B",
+              "words": 369
+            },
+            {
+              "heard": 497,
+              "level_dbfs": -51.672923697465066,
+              "quietest": true,
+              "speaker": "C",
+              "words": 686
+            },
+            {
+              "heard": 431,
+              "level_dbfs": -49.8276796976355,
+              "quietest": false,
+              "speaker": "D",
+              "words": 628
+            }
+          ],
+          "whole": {
+            "deletions": 592,
+            "insertions": 38,
+            "ref_words": 2626,
+            "substitutions": 190,
+            "wer_percent": 31.226199543031225
+          }
+        }
+      ],
+      "seconds": 130.6242484,
+      "segments": {
+        "deletions": 970,
+        "insertions": 1224,
+        "ref_words": 12411,
+        "substitutions": 1427,
+        "wer_percent": 29.17573120618806
+      },
+      "whole": {
+        "deletions": 2072,
+        "insertions": 312,
+        "ref_words": 12413,
+        "substitutions": 793,
+        "wer_percent": 25.59413518085878
+      }
+    },
+    {
+      "condition": "comp4",
+      "decision": {
+        "heard_quiet_at_least_2_points_higher": false,
+        "helps": false,
+        "segments_at_most_0_5_point_higher": false,
+        "whole_at_least_1_point_lower": false
+      },
+      "heard_all": {
+        "heard": 9138,
+        "percent": 73.29162656400385,
+        "words": 12468
+      },
+      "heard_quiet": {
+        "heard": 1874,
+        "percent": 69.51038575667656,
+        "words": 2696
+      },
+      "meetings": [
+        {
+          "meeting": "ES2003a",
+          "segments": {
+            "deletions": 116,
+            "insertions": 149,
+            "ref_words": 1991,
+            "substitutions": 225,
+            "wer_percent": 24.610748367654445
+          },
+          "speakers": [
+            {
+              "heard": 313,
+              "level_dbfs": -49.64294603796606,
+              "quietest": false,
+              "speaker": "A",
+              "words": 471
+            },
+            {
+              "heard": 713,
+              "level_dbfs": -48.72874561824506,
+              "quietest": false,
+              "speaker": "B",
+              "words": 984
+            },
+            {
+              "heard": 293,
+              "level_dbfs": -47.32343369593913,
+              "quietest": false,
+              "speaker": "C",
+              "words": 373
+            },
+            {
+              "heard": 107,
+              "level_dbfs": -50.56352239183148,
+              "quietest": true,
+              "speaker": "D",
+              "words": 178
+            }
+          ],
+          "whole": {
+            "deletions": 435,
+            "insertions": 48,
+            "ref_words": 1991,
+            "substitutions": 143,
+            "wer_percent": 31.441486690105474
+          }
+        },
+        {
+          "meeting": "ES2011a",
+          "segments": {
+            "deletions": 275,
+            "insertions": 327,
+            "ref_words": 2466,
+            "substitutions": 335,
+            "wer_percent": 37.99675587996756
+          },
+          "speakers": [
+            {
+              "heard": 715,
+              "level_dbfs": -51.155493878500096,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1003
+            },
+            {
+              "heard": 37,
+              "level_dbfs": -51.317924790807126,
+              "quietest": true,
+              "speaker": "B",
+              "words": 95
+            },
+            {
+              "heard": 577,
+              "level_dbfs": -51.16808442738956,
+              "quietest": false,
+              "speaker": "C",
+              "words": 770
+            },
+            {
+              "heard": 382,
+              "level_dbfs": -48.953020748627615,
+              "quietest": false,
+              "speaker": "D",
+              "words": 622
+            }
+          ],
+          "whole": {
+            "deletions": 601,
+            "insertions": 105,
+            "ref_words": 2467,
+            "substitutions": 178,
+            "wer_percent": 35.832995541143084
+          }
+        },
+        {
+          "meeting": "IS1008a",
+          "segments": {
+            "deletions": 99,
+            "insertions": 71,
+            "ref_words": 2397,
+            "substitutions": 89,
+            "wer_percent": 10.80517313308302
+          },
+          "speakers": [
+            {
+              "heard": 1166,
+              "level_dbfs": -36.686405415800735,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1291
+            },
+            {
+              "heard": 225,
+              "level_dbfs": -38.51841026163847,
+              "quietest": true,
+              "speaker": "B",
+              "words": 249
+            },
+            {
+              "heard": 392,
+              "level_dbfs": -33.40558925388533,
+              "quietest": false,
+              "speaker": "C",
+              "words": 410
+            },
+            {
+              "heard": 404,
+              "level_dbfs": -30.866260872551802,
+              "quietest": false,
+              "speaker": "D",
+              "words": 447
+            }
+          ],
+          "whole": {
+            "deletions": 146,
+            "insertions": 17,
+            "ref_words": 2397,
+            "substitutions": 68,
+            "wer_percent": 9.637046307884855
+          }
+        },
+        {
+          "meeting": "TS3004a",
+          "segments": {
+            "deletions": 310,
+            "insertions": 322,
+            "ref_words": 2931,
+            "substitutions": 461,
+            "wer_percent": 37.291026953258275
+          },
+          "speakers": [
+            {
+              "heard": 1020,
+              "level_dbfs": -52.326447257689225,
+              "quietest": true,
+              "speaker": "A",
+              "words": 1488
+            },
+            {
+              "heard": 380,
+              "level_dbfs": -48.88389299681795,
+              "quietest": false,
+              "speaker": "B",
+              "words": 532
+            },
+            {
+              "heard": 214,
+              "level_dbfs": -50.336375315519135,
+              "quietest": false,
+              "speaker": "C",
+              "words": 297
+            },
+            {
+              "heard": 404,
+              "level_dbfs": -50.694735925747445,
+              "quietest": false,
+              "speaker": "D",
+              "words": 627
+            }
+          ],
+          "whole": {
+            "deletions": 736,
+            "insertions": 54,
+            "ref_words": 2932,
+            "substitutions": 206,
+            "wer_percent": 33.969986357435204
+          }
+        },
+        {
+          "meeting": "TS3006a",
+          "segments": {
+            "deletions": 235,
+            "insertions": 376,
+            "ref_words": 2626,
+            "substitutions": 363,
+            "wer_percent": 37.09063214013709
+          },
+          "speakers": [
+            {
+              "heard": 668,
+              "level_dbfs": -51.48312953517436,
+              "quietest": false,
+              "speaker": "A",
+              "words": 948
+            },
+            {
+              "heard": 245,
+              "level_dbfs": -48.288843760715196,
+              "quietest": false,
+              "speaker": "B",
+              "words": 369
+            },
+            {
+              "heard": 485,
+              "level_dbfs": -51.672923697465066,
+              "quietest": true,
+              "speaker": "C",
+              "words": 686
+            },
+            {
+              "heard": 398,
+              "level_dbfs": -49.8276796976355,
+              "quietest": false,
+              "speaker": "D",
+              "words": 628
+            }
+          ],
+          "whole": {
+            "deletions": 681,
+            "insertions": 42,
+            "ref_words": 2626,
+            "substitutions": 155,
+            "wer_percent": 33.43488194973344
+          }
+        }
+      ],
+      "seconds": 129.7350135,
+      "segments": {
+        "deletions": 1035,
+        "insertions": 1245,
+        "ref_words": 12411,
+        "substitutions": 1473,
+        "wer_percent": 30.239303843364755
+      },
+      "whole": {
+        "deletions": 2599,
+        "insertions": 266,
+        "ref_words": 12413,
+        "substitutions": 750,
+        "wer_percent": 29.122693949891243
+      }
+    },
+    {
+      "condition": "comp10",
+      "decision": {
+        "heard_quiet_at_least_2_points_higher": false,
+        "helps": false,
+        "segments_at_most_0_5_point_higher": false,
+        "whole_at_least_1_point_lower": false
+      },
+      "heard_all": {
+        "heard": 9039,
+        "percent": 72.49759384023099,
+        "words": 12468
+      },
+      "heard_quiet": {
+        "heard": 1878,
+        "percent": 69.65875370919882,
+        "words": 2696
+      },
+      "meetings": [
+        {
+          "meeting": "ES2003a",
+          "segments": {
+            "deletions": 125,
+            "insertions": 152,
+            "ref_words": 1991,
+            "substitutions": 226,
+            "wer_percent": 25.26368658965344
+          },
+          "speakers": [
+            {
+              "heard": 272,
+              "level_dbfs": -49.64294603796606,
+              "quietest": false,
+              "speaker": "A",
+              "words": 471
+            },
+            {
+              "heard": 695,
+              "level_dbfs": -48.72874561824506,
+              "quietest": false,
+              "speaker": "B",
+              "words": 984
+            },
+            {
+              "heard": 271,
+              "level_dbfs": -47.32343369593913,
+              "quietest": false,
+              "speaker": "C",
+              "words": 373
+            },
+            {
+              "heard": 118,
+              "level_dbfs": -50.56352239183148,
+              "quietest": true,
+              "speaker": "D",
+              "words": 178
+            }
+          ],
+          "whole": {
+            "deletions": 511,
+            "insertions": 46,
+            "ref_words": 1991,
+            "substitutions": 134,
+            "wer_percent": 34.70617780010045
+          }
+        },
+        {
+          "meeting": "ES2011a",
+          "segments": {
+            "deletions": 280,
+            "insertions": 311,
+            "ref_words": 2466,
+            "substitutions": 324,
+            "wer_percent": 37.104622871046224
+          },
+          "speakers": [
+            {
+              "heard": 705,
+              "level_dbfs": -51.155493878500096,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1003
+            },
+            {
+              "heard": 33,
+              "level_dbfs": -51.317924790807126,
+              "quietest": true,
+              "speaker": "B",
+              "words": 95
+            },
+            {
+              "heard": 562,
+              "level_dbfs": -51.16808442738956,
+              "quietest": false,
+              "speaker": "C",
+              "words": 770
+            },
+            {
+              "heard": 384,
+              "level_dbfs": -48.953020748627615,
+              "quietest": false,
+              "speaker": "D",
+              "words": 622
+            }
+          ],
+          "whole": {
+            "deletions": 606,
+            "insertions": 105,
+            "ref_words": 2467,
+            "substitutions": 202,
+            "wer_percent": 37.008512363194164
+          }
+        },
+        {
+          "meeting": "IS1008a",
+          "segments": {
+            "deletions": 94,
+            "insertions": 75,
+            "ref_words": 2397,
+            "substitutions": 93,
+            "wer_percent": 10.930329578639967
+          },
+          "speakers": [
+            {
+              "heard": 1161,
+              "level_dbfs": -36.686405415800735,
+              "quietest": false,
+              "speaker": "A",
+              "words": 1291
+            },
+            {
+              "heard": 223,
+              "level_dbfs": -38.51841026163847,
+              "quietest": true,
+              "speaker": "B",
+              "words": 249
+            },
+            {
+              "heard": 392,
+              "level_dbfs": -33.40558925388533,
+              "quietest": false,
+              "speaker": "C",
+              "words": 410
+            },
+            {
+              "heard": 406,
+              "level_dbfs": -30.866260872551802,
+              "quietest": false,
+              "speaker": "D",
+              "words": 447
+            }
+          ],
+          "whole": {
+            "deletions": 146,
+            "insertions": 22,
+            "ref_words": 2397,
+            "substitutions": 73,
+            "wer_percent": 10.054234459741343
+          }
+        },
+        {
+          "meeting": "TS3004a",
+          "segments": {
+            "deletions": 332,
+            "insertions": 331,
+            "ref_words": 2931,
+            "substitutions": 454,
+            "wer_percent": 38.109860116001364
+          },
+          "speakers": [
+            {
+              "heard": 1019,
+              "level_dbfs": -52.326447257689225,
+              "quietest": true,
+              "speaker": "A",
+              "words": 1488
+            },
+            {
+              "heard": 376,
+              "level_dbfs": -48.88389299681795,
+              "quietest": false,
+              "speaker": "B",
+              "words": 532
+            },
+            {
+              "heard": 212,
+              "level_dbfs": -50.336375315519135,
+              "quietest": false,
+              "speaker": "C",
+              "words": 297
+            },
+            {
+              "heard": 409,
+              "level_dbfs": -50.694735925747445,
+              "quietest": false,
+              "speaker": "D",
+              "words": 627
+            }
+          ],
+          "whole": {
+            "deletions": 756,
+            "insertions": 53,
+            "ref_words": 2932,
+            "substitutions": 186,
+            "wer_percent": 33.93587994542974
+          }
+        },
+        {
+          "meeting": "TS3006a",
+          "segments": {
+            "deletions": 231,
+            "insertions": 361,
+            "ref_words": 2626,
+            "substitutions": 380,
+            "wer_percent": 37.01447067783701
+          },
+          "speakers": [
+            {
+              "heard": 681,
+              "level_dbfs": -51.48312953517436,
+              "quietest": false,
+              "speaker": "A",
+              "words": 948
+            },
+            {
+              "heard": 241,
+              "level_dbfs": -48.288843760715196,
+              "quietest": false,
+              "speaker": "B",
+              "words": 369
+            },
+            {
+              "heard": 485,
+              "level_dbfs": -51.672923697465066,
+              "quietest": true,
+              "speaker": "C",
+              "words": 686
+            },
+            {
+              "heard": 394,
+              "level_dbfs": -49.8276796976355,
+              "quietest": false,
+              "speaker": "D",
+              "words": 628
+            }
+          ],
+          "whole": {
+            "deletions": 689,
+            "insertions": 41,
+            "ref_words": 2626,
+            "substitutions": 142,
+            "wer_percent": 33.2063975628332
+          }
+        }
+      ],
+      "seconds": 127.9805117,
+      "segments": {
+        "deletions": 1062,
+        "insertions": 1230,
+        "ref_words": 12411,
+        "substitutions": 1477,
+        "wer_percent": 30.368221738780115
+      },
+      "whole": {
+        "deletions": 2708,
+        "insertions": 267,
+        "ref_words": 12413,
+        "substitutions": 737,
+        "wer_percent": 29.9041327640377
+      }
+    }
+  ],
+  "meetings": [
+    "ES2003a",
+    "ES2011a",
+    "IS1008a",
+    "TS3004a",
+    "TS3006a"
+  ],
+  "model": "parakeet-tdt-0.6b-v2",
+  "reference_levels": [
+    {
+      "meeting": "ES2003a",
+      "reference_level_dbfs": -43.86007947034216
+    },
+    {
+      "meeting": "ES2011a",
+      "reference_level_dbfs": -43.51945925599507
+    },
+    {
+      "meeting": "IS1008a",
+      "reference_level_dbfs": -29.015672312072475
+    },
+    {
+      "meeting": "TS3004a",
+      "reference_level_dbfs": -44.61394055209319
+    },
+    {
+      "meeting": "TS3006a",
+      "reference_level_dbfs": -44.21613272473622
+    }
+  ],
+  "rule": "docs/quiet-voices.md",
+  "settings": {
+    "attack_s": 0.005,
+    "match_window_s": 1.0,
+    "reference_percentile": 0.95,
+    "release_s": 0.1,
+    "threshold_below_reference_db": 25.0
+  },
+  "task": "T12.89"
+}
