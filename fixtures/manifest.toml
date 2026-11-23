@@ -7,7 +7,7 @@
 # destinations of fetch-fixtures (no fixture URL redirects, so `redirect_hosts` is empty and any
 # redirect to another host is refused). Licences and attribution: fixtures/LICENSES.md.
 
-sets = ["smoke", "librispeech", "ami", "ami-sum", "ami-dev", "ami-dev-ihm"]
+sets = ["smoke", "librispeech", "ami", "ami-sum", "ami-dev", "ami-dev-ihm", "ami-dev-sdm"]
 
 hosts = [
     "www.openslr.org",
@@ -3014,3 +3014,64 @@ licence = "CC-BY-4.0"
 attribution = "LibriSpeech ASR corpus (Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur), https://www.openslr.org/12, derived from LibriVox public-domain audiobooks"
 
 # END generated smoke set
+
+# AMI dev-series distant microphone (T12.89, set ami-dev-sdm): Array1-01 of each ami-dev
+# meeting, for the quiet-voice level evaluation (docs/quiet-voices.md); used with set
+# ami-dev-ihm's UEMs and pinned oracle segments. Dev data, never an acceptance set. sha256
+# and size pinned on first download, 2026-11-24, each size checked against the server's
+# Content-Length.
+
+[[artefact]]
+id = "ami-ES2003a-audio-Array1-01"
+sets = ["ami-dev-sdm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2003a/audio/ES2003a.Array1-01.wav"
+path = "ami/audio/ES2003a.Array1-01.wav"
+sha256 = "882da2d7fad1f838f92598a3d4cf5e76cfbbdece5d11805cf3ca08a9619c5458"
+size = 36472536
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-ES2011a-audio-Array1-01"
+sets = ["ami-dev-sdm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2011a/audio/ES2011a.Array1-01.wav"
+path = "ami/audio/ES2011a.Array1-01.wav"
+sha256 = "eef59d96abe292a2b421b39d8ea8fea250210a9028bfe92758d58e51d18f9f7a"
+size = 35643096
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-IS1008a-audio-Array1-01"
+sets = ["ami-dev-sdm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/IS1008a/audio/IS1008a.Array1-01.wav"
+path = "ami/audio/IS1008a.Array1-01.wav"
+sha256 = "a76f820b0af6adb274f94454521cd82d446a69dace3075a7e623c720d3e19c01"
+size = 30208103
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3004a-audio-Array1-01"
+sets = ["ami-dev-sdm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3004a/audio/TS3004a.Array1-01.wav"
+path = "ami/audio/TS3004a.Array1-01.wav"
+sha256 = "dc8157fd7379e1c7b6a9b69fd5fad6a6bebbc359f914e906a82119d0613e2593"
+size = 43051390
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
+
+[[artefact]]
+id = "ami-TS3006a-audio-Array1-01"
+sets = ["ami-dev-sdm"]
+location = "cache"
+url = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/TS3006a/audio/TS3006a.Array1-01.wav"
+path = "ami/audio/TS3006a.Array1-01.wav"
+sha256 = "e5abb7aafee890e66b6262f4e46072003c95e7a4b0bc42bbb03fb680c30fd47e"
+size = 40092714
+licence = "CC-BY-4.0"
+attribution = "AMI Meeting Corpus (Carletta et al., 2005), University of Edinburgh and the AMI Consortium, https://groups.inf.ed.ac.uk/ami/corpus/"
