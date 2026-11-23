@@ -214,10 +214,15 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         split: Vec<String>,
         /// Transcript sources, comma-separated: reference, earshot (default: both; earshot
-        /// on the test split only). Or `store` alone with --store-run: the owner's own
-        /// meetings (T12.25a), results kept in the run folder.
+        /// on the test split only), or room (T12.87: in-room replays of each meeting's mix,
+        /// any split). Or `store` alone with --store-run: the owner's own meetings (T12.25a),
+        /// results kept in the run folder.
         #[arg(long, value_delimiter = ',')]
         source: Vec<String>,
+        /// Where replays are cached and read (default <out>/earshot or <out>/room), so
+        /// several runs share one set of replays (T12.87).
+        #[arg(long, value_name = "DIR")]
+        replays: Option<std::path::PathBuf>,
         /// Only the first N meetings of each split.
         #[arg(long)]
         limit: Option<usize>,
@@ -578,6 +583,7 @@ fn main() -> ExitCode {
             model,
             split,
             source,
+            replays,
             limit,
             out,
             rerun_earshot,
@@ -612,6 +618,7 @@ fn main() -> ExitCode {
                 models: model,
                 splits: split,
                 sources: source,
+                replays,
                 limit,
                 out,
                 rerun_earshot,

@@ -845,7 +845,17 @@ fn with_variant(template: Template, variant: PromptVariant) -> SummaryInput {
 #[test]
 fn prompt_variants_have_stable_names_and_current_is_the_default() {
     let names: Vec<&str> = PromptVariant::ALL.iter().map(|v| v.name()).collect();
-    assert_eq!(names, ["current", "brief", "standard"]);
+    assert_eq!(
+        names,
+        [
+            "current",
+            "brief",
+            "standard",
+            "misheard",
+            "misheard-around",
+            "misheard-all"
+        ]
+    );
     for v in PromptVariant::ALL {
         assert_eq!(v.name().parse::<PromptVariant>(), Ok(v));
         assert_eq!(v.to_string(), v.name());
@@ -948,6 +958,70 @@ fn prompt_variants_change_only_the_shared_rules() {
             assert_eq!(line(rules), line(base), "{v} rule {n}");
         }
     }
+}
+
+/// T12.87's variants: each writer's own rules file plus exactly the text the rule in
+/// docs/summary-eval.md fixed before any run, nothing else changed.
+#[test]
+fn prompt_misheard_variants_are_their_base_plus_the_t1287_text() {
+    const MISHEARD: &str = " The transcript was made by speech recognition, so some words are \
+        mis-heard. When a word or name makes no sense where it stands, read it as the \
+        similar-sounding word the surrounding lines support. When you cannot tell what was \
+        meant, keep the doubtful word out of decisions and action items rather than repeating \
+        it as if it were certain.";
+    const AROUND: &str = "9. Leave out talk around the meeting itself: greetings and small \
+        talk, ordering food or drinks, sorting out equipment, side remarks about something \
+        else, and anything said after the meeting has ended. Such talk is not a note, a \
+        decision, an action item or an open question.";
+    const DECIDED: &str = " A choice made in this meeting to stop, pause, start or go ahead \
+        with a piece of work is a decision too: list it as a decision, and also as an action \
+        item when someone takes on the work that follows.";
+    let edit = |base: &str, around: bool, decided: bool| {
+        let mut out = Vec::new();
+        for line in base.split('\n') {
+            let mut line = line.to_owned();
+            if line.starts_with("2. ") {
+                line.push_str(MISHEARD);
+            }
+            if decided && line.starts_with("6. ") {
+                line.push_str(DECIDED);
+            }
+            let rule_8 = line.starts_with("8. ");
+            out.push(line);
+            if around && rule_8 {
+                out.push(AROUND.to_owned());
+            }
+        }
+        out.join("\n")
+    };
+    for writer in [SummaryRules::Standard, SummaryRules::Brief] {
+        let base = writer.rules();
+        // Each anchor exists exactly once, so a later edit of the base files fails here.
+        for n in ["2. ", "6. ", "8. "] {
+            assert_eq!(base.lines().filter(|l| l.starts_with(n)).count(), 1, "{n}");
+        }
+        assert!(!base.lines().any(|l| l.starts_with("9. ")));
+        for (v, around, decided) in [
+            (PromptVariant::Misheard, false, false),
+            (PromptVariant::MisheardAround, true, false),
+            (PromptVariant::MisheardAll, true, true),
+        ] {
+            assert_eq!(
+                v.rules_for(writer),
+                edit(base, around, decided),
+                "{v} on {writer:?}"
+            );
+        }
+    }
+    // The production rules and the existing variants are untouched.
+    assert_eq!(
+        PromptVariant::Current.rules_for(SummaryRules::Brief),
+        super::template::BRIEF
+    );
+    assert_eq!(
+        PromptVariant::Current.rules_for(SummaryRules::Standard),
+        super::template::SYSTEM
+    );
 }
 
 #[test]
@@ -1322,8 +1396,9 @@ fn prompt_rules_with_rules_forms_equal_an_input_carrying_the_rules() {
 
 #[test]
 fn prompt_rules_give_way_to_an_evaluation_variant() {
-    // A variant other than current names its own rules file whatever the writer's rules,
-    // so an evaluation can run the standard rules on an agent CLI (`standard`).
+    // `brief` and `standard` name their own rules file whatever the writer's rules, so an
+    // evaluation can run the standard rules on an agent CLI (`standard`); T12.87's variants
+    // add to the writer's own file.
     for rules in [SummaryRules::Standard, SummaryRules::Brief] {
         for v in PromptVariant::ALL.into_iter().skip(1) {
             let inp = SummaryInput {
@@ -1333,7 +1408,7 @@ fn prompt_rules_give_way_to_an_evaluation_variant() {
             assert!(
                 single(&inp).messages[0]
                     .content
-                    .starts_with(&rules_with_schema(v.rules())),
+                    .starts_with(&rules_with_schema(v.rules_for(rules))),
                 "{v} on {rules:?}"
             );
         }

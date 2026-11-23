@@ -14,6 +14,24 @@ pub(super) const SYSTEM: &str = include_str!("templates/system.md");
 /// most, every decision and action item still listed. Measured as the T12.17 `brief`
 /// variant (docs/summary-eval.md).
 pub(super) const BRIEF: &str = include_str!("templates/brief.md");
+/// T12.87 evaluation-only variants: each is its writer's rules file plus fixed text
+/// (docs/summary-eval.md, T12.87), pinned by
+/// `prompt_misheard_variants_are_their_base_plus_the_t1287_text`.
+pub(super) const MISHEARD_SYSTEM: &str = include_str!("templates/variants/misheard-system.md");
+/// [`MISHEARD_SYSTEM`] for the brief rules.
+pub(super) const MISHEARD_BRIEF: &str = include_str!("templates/variants/misheard-brief.md");
+/// [`MISHEARD_SYSTEM`] plus the rule on talk around the meeting.
+pub(super) const MISHEARD_AROUND_SYSTEM: &str =
+    include_str!("templates/variants/misheard-around-system.md");
+/// [`MISHEARD_AROUND_SYSTEM`] for the brief rules.
+pub(super) const MISHEARD_AROUND_BRIEF: &str =
+    include_str!("templates/variants/misheard-around-brief.md");
+/// [`MISHEARD_AROUND_SYSTEM`] plus the stop-or-go decision rule.
+pub(super) const MISHEARD_ALL_SYSTEM: &str =
+    include_str!("templates/variants/misheard-all-system.md");
+/// [`MISHEARD_ALL_SYSTEM`] for the brief rules.
+pub(super) const MISHEARD_ALL_BRIEF: &str =
+    include_str!("templates/variants/misheard-all-brief.md");
 /// Extra instruction for one part of a map-reduce run; `{{part}}` and `{{parts}}` are
 /// replaced by the part number and count.
 pub(super) const MAP: &str = include_str!("templates/map.md");
@@ -166,14 +184,25 @@ pub enum PromptVariant {
     /// T12.17c: [`SYSTEM`] whatever the writer, so an evaluation can run the standard rules
     /// on an agent CLI, whose production rules are [`BRIEF`].
     Standard,
+    /// T12.87: the writer's own rules, plus a rule that the transcript is machine-recognised
+    /// (read a word that makes no sense as the similar-sounding word the context supports,
+    /// keep doubtful words out of decisions and action items).
+    Misheard,
+    /// T12.87: [`PromptVariant::Misheard`] plus a rule leaving out talk around the meeting.
+    MisheardAround,
+    /// T12.87: [`PromptVariant::MisheardAround`] plus a stop-or-go choice as a decision.
+    MisheardAll,
 }
 
 impl PromptVariant {
     /// Every variant, the production one first.
-    pub const ALL: [PromptVariant; 3] = [
+    pub const ALL: [PromptVariant; 6] = [
         PromptVariant::Current,
         PromptVariant::Brief,
         PromptVariant::Standard,
+        PromptVariant::Misheard,
+        PromptVariant::MisheardAround,
+        PromptVariant::MisheardAll,
     ];
 
     /// The variant's name as used on the command line and in format keys.
@@ -183,6 +212,9 @@ impl PromptVariant {
             PromptVariant::Current => "current",
             PromptVariant::Brief => "brief",
             PromptVariant::Standard => "standard",
+            PromptVariant::Misheard => "misheard",
+            PromptVariant::MisheardAround => "misheard-around",
+            PromptVariant::MisheardAll => "misheard-all",
         }
     }
 
@@ -202,14 +234,26 @@ impl PromptVariant {
     }
 
     /// The shared rules of this variant for an input whose writer's rules are `writer`;
-    /// `{{schema}}` is replaced by the reply schema. Only [`PromptVariant::Current`] reads
-    /// `writer`.
+    /// `{{schema}}` is replaced by the reply schema. [`PromptVariant::Brief`] and
+    /// [`PromptVariant::Standard`] ignore `writer`; the T12.87 variants add to its rules.
     #[must_use]
     pub(super) const fn rules_for(self, writer: SummaryRules) -> &'static str {
         match self {
             PromptVariant::Current => writer.rules(),
             PromptVariant::Standard => SYSTEM,
             PromptVariant::Brief => BRIEF,
+            PromptVariant::Misheard => match writer {
+                SummaryRules::Standard => MISHEARD_SYSTEM,
+                SummaryRules::Brief => MISHEARD_BRIEF,
+            },
+            PromptVariant::MisheardAround => match writer {
+                SummaryRules::Standard => MISHEARD_AROUND_SYSTEM,
+                SummaryRules::Brief => MISHEARD_AROUND_BRIEF,
+            },
+            PromptVariant::MisheardAll => match writer {
+                SummaryRules::Standard => MISHEARD_ALL_SYSTEM,
+                SummaryRules::Brief => MISHEARD_ALL_BRIEF,
+            },
         }
     }
 }

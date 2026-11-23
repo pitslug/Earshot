@@ -230,7 +230,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--job" => {
                 let v = val()?;
                 let (split, source) = v.split_once(':').ok_or("--job is <split>:<source>")?;
-                if !matches!(source, "reference" | "earshot" | store::SOURCE) {
+                // `room` (T12.87) is an in-room replay, read through `--earshot-inputs` like
+                // `earshot`.
+                if !matches!(source, "reference" | "earshot" | "room" | store::SOURCE) {
                     return Err(format!("unknown source {source}"));
                 }
                 a.jobs.push((split.to_owned(), source.to_owned()));
@@ -566,15 +568,17 @@ fn check_agent_cli(a: &Args, agent: AgentCli) -> Result<(), String> {
         return Err("give exactly one of --model, --remote, --claude-code and --codex".into());
     }
     // The owner's own meetings may go to the agent CLIs (T12.25a, the owner's decision:
-    // their summaries already do); Earshot's replays of AMI audio never do.
+    // their summaries already do); so may Earshot's replays of public AMI audio (T12.87).
+    let replays = |source: &str| source == "earshot" || source == "room";
     if a.jobs
         .iter()
-        .any(|(_, source)| source != "reference" && source != store::SOURCE)
-        || a.earshot_inputs.is_some()
+        .any(|(_, source)| source != "reference" && source != store::SOURCE && !replays(source))
+        || (a.earshot_inputs.is_some() && !a.jobs.iter().any(|(_, s)| replays(s)))
     {
         return Err(format!(
-            "{flag} summarises only the public AMI reference transcripts or the owner's \
-                 own meetings (--job <split>:reference or <split>:store, no --earshot-inputs)"
+            "{flag} summarises only public AMI text (the reference transcripts or Earshot's \
+                 replays of AMI audio) or the owner's own meetings (--job <split>:reference, \
+                 <split>:earshot, <split>:room or <split>:store)"
         ));
     }
     // A prompt variant is allowed (T12.17, evaluation only): the rules change, the plan
@@ -2312,6 +2316,8 @@ mod tests {
         for e in extra {
             match *e {
                 "earshot" => a.jobs.push(("test".into(), "earshot".into())),
+                "room" => a.jobs.push(("dev".into(), "room".into())),
+                "inputs" => a.earshot_inputs = Some("replays".into()),
                 "remote" => a.remote = true,
                 "two-call" => a.two_call = true,
                 "variant" => a.prompt_variant = PromptVariant::Standard,
@@ -2351,7 +2357,11 @@ mod tests {
             let e = check_claude_code(&claude_args(extra)).unwrap_err();
             assert!(e.contains(needle), "{extra:?}: {e}");
         };
-        refused(&["earshot"], "reference transcripts");
+        // Earshot's replays of public AMI audio may go to it (T12.87); replay inputs
+        // without a replay job may not.
+        check_claude_code(&claude_args(&["earshot", "inputs"])).unwrap();
+        check_claude_code(&claude_args(&["room", "inputs"])).unwrap();
+        refused(&["inputs"], "public AMI text");
         refused(&["remote"], "exactly one");
         refused(&["two-call"], "production prompt");
         // A prompt variant is allowed (T12.17, evaluation only: its own format key).
@@ -2400,10 +2410,8 @@ mod tests {
             let e = check_agent_cli(&codex(extra), AgentCli::Codex).unwrap_err();
             assert!(e.contains(needle), "{extra:?}: {e}");
         };
-        refused(
-            &["earshot"],
-            "--codex summarises only the public AMI reference transcripts",
-        );
+        check_agent_cli(&codex(&["room", "inputs"]), AgentCli::Codex).unwrap();
+        refused(&["inputs"], "--codex summarises only public AMI text");
         refused(&["remote"], "exactly one");
         refused(&["two-call"], "production prompt");
         // A prompt variant is allowed (T12.17, evaluation only).
@@ -2714,7 +2722,7 @@ mod store_tests {
     }
 
     #[test]
-    fn sum_eval_agent_clis_take_the_owners_meetings_but_never_earshot_replays() {
+    fn sum_eval_agent_clis_take_the_owners_meetings_and_replays_but_not_beside_them() {
         let claude = Args {
             model: None,
             claude_code: true,
@@ -2727,11 +2735,15 @@ mod store_tests {
             ..store_args()
         };
         check_agent_cli(&codex, AgentCli::Codex).unwrap();
+        // A replay job beside the owner's meetings is refused by the store check.
         let replay = Args {
-            jobs: vec![("test".into(), "earshot".into())],
+            jobs: vec![
+                ("real".into(), "store".into()),
+                ("test".into(), "earshot".into()),
+            ],
             ..claude
         };
-        assert!(check_agent_cli(&replay, AgentCli::ClaudeCode).is_err());
+        assert!(check_store(&replay).is_err());
     }
 
     #[test]

@@ -64,6 +64,26 @@ pub mod key;
 /// Transcription model of the Earshot source: the top of the English ladder for CUDA and
 /// the CPU in `models/manifest.toml`.
 pub const ASR_MODEL: &str = "parakeet-tdt-0.6b-v2";
+/// The in-room replay source (T12.87): each meeting's `Mix-Headset` recording replayed as an
+/// in-room meeting (the mic track alone, speakers from diarisation), any split.
+pub const ROOM_SOURCE: &str = "room";
+
+/// Whether `jobs` hold a replay source (`earshot` or [`ROOM_SOURCE`]).
+#[must_use]
+pub fn has_replays(jobs: &[(String, String)]) -> bool {
+    jobs.iter().any(|(_, s)| s == "earshot" || s == ROOM_SOURCE)
+}
+
+/// The folder the replays of `jobs` are cached in and read from: `--replays`, else
+/// `<out>/room` for the in-room source and `<out>/earshot` otherwise.
+#[must_use]
+pub fn replay_dir(out: &Path, replays: Option<&Path>, jobs: &[(String, String)]) -> PathBuf {
+    match replays {
+        Some(d) => d.to_owned(),
+        None if jobs.iter().any(|(_, s)| s == ROOM_SOURCE) => out.join(ROOM_SOURCE),
+        None => out.join("earshot"),
+    }
+}
 
 /// Deadline for one release build (a cold CUDA build of whisper.cpp and llama.cpp).
 const BUILD_TIMEOUT: Duration = Duration::from_secs(90 * 60);
@@ -307,8 +327,12 @@ pub struct Options {
     pub models: Vec<String>,
     /// `dev`, `test` (empty: both).
     pub splits: Vec<String>,
-    /// `reference`, `earshot` (empty: both; `earshot` only on the test split).
+    /// `reference`, `earshot` (empty: both; `earshot` only on the test split), or
+    /// [`ROOM_SOURCE`] (T12.87: in-room replays of the mixes, any split).
     pub sources: Vec<String>,
+    /// Where replays are cached and read (T12.87; default `<out>/earshot` or `<out>/room`),
+    /// so several runs share one set of replays.
+    pub replays: Option<PathBuf>,
     /// Only the first N meetings of each split (for a quick check).
     pub limit: Option<usize>,
     /// Output directory (default `target/sum-eval`).
@@ -522,6 +546,7 @@ impl Default for Options {
             models: Vec::new(),
             splits: Vec::new(),
             sources: Vec::new(),
+            replays: None,
             limit: None,
             out: None,
             rerun_earshot: false,
@@ -582,7 +607,7 @@ pub fn jobs(splits: &[String], sources: &[String]) -> Result<Vec<(String, String
         ensure!(matches!(*split, "dev" | "test"), "unknown split {split}");
         for source in &sources {
             ensure!(
-                matches!(*source, "reference" | "earshot"),
+                matches!(*source, "reference" | "earshot" | ROOM_SOURCE),
                 "unknown source {source}"
             );
             if *source == "earshot" && *split != "test" {
@@ -594,6 +619,11 @@ pub fn jobs(splits: &[String], sources: &[String]) -> Result<Vec<(String, String
     ensure!(
         !out.is_empty(),
         "no job: the earshot source exists only for the test split"
+    );
+    // Both replay sources read their inputs through one `--earshot-inputs` folder.
+    ensure!(
+        !(out.iter().any(|(_, s)| s == "earshot") && out.iter().any(|(_, s)| s == ROOM_SOURCE)),
+        "--source earshot and --source {ROOM_SOURCE} run apart"
     );
     Ok(out)
 }
@@ -843,17 +873,16 @@ pub fn build_args(
 }
 
 /// Replays every test meeting through the CLI (module docs), writing
-/// `<out>/earshot/<meeting>.json`. Returns per-meeting facts for the report.
+/// `<dir>/<meeting>.json` ([`replay_dir`]). Returns per-meeting facts for the report.
 fn replay_meetings(
     earshot: &Path,
     meetings: &[String],
     fixtures: &Path,
-    out: &Path,
+    dir: &Path,
     cuda: bool,
     rerun: bool,
 ) -> Result<Vec<Value>> {
-    let dir = out.join("earshot");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(dir)?;
     let ann = fixtures.join(AMI_ANNOTATIONS_DIR);
     let xml: String = std::fs::read(ann.join(AMI_MEETINGS_XML))
         .context("run `cargo xtask fetch-fixtures --set ami-sum`")?
@@ -941,6 +970,91 @@ fn replay_meetings(
             "asr": pick("live asr"),
             "post": pick("post: final pass ran"),
             "echo": pick("post: echo"),
+        }));
+    }
+    Ok(facts)
+}
+
+/// Replays each meeting's `Mix-Headset` recording as an in-room meeting through the CLI
+/// (T12.87, [`ROOM_SOURCE`]): the mic track alone, writing `<dir>/<meeting>.json`. Cached
+/// unless `rerun`. Returns per-meeting facts for the report.
+fn replay_room(
+    earshot: &Path,
+    meetings: &[String],
+    fixtures: &Path,
+    dir: &Path,
+    cuda: bool,
+    rerun: bool,
+) -> Result<Vec<Value>> {
+    std::fs::create_dir_all(dir)?;
+    let mut path_dirs = Vec::new();
+    if cuda && let Some(d) = cudnn_bin() {
+        path_dirs.push(d);
+    }
+    let path = path_with(&path_dirs)?;
+    let mut facts = Vec::new();
+    for meeting in meetings {
+        let input = dir.join(format!("{meeting}.json"));
+        let log = dir.join(format!("{meeting}.log"));
+        if input.is_file() && !rerun {
+            eprintln!("sum-eval: {meeting}: reusing {}", input.display());
+        } else {
+            let mix = fixtures.join(format!("ami/audio/{meeting}.Mix-Headset.wav"));
+            ensure!(
+                mix.is_file(),
+                "{}: run `cargo xtask fetch-fixtures --set ami-dev` (the in-room source needs \
+                 each meeting's mix)",
+                mix.display()
+            );
+            let data = dir.join(format!("data-{meeting}"));
+            if data.exists() {
+                std::fs::remove_dir_all(&data)?;
+            }
+            let mut cmd = Command::new(earshot);
+            cmd.arg("replay")
+                .arg("--mic")
+                .arg(&mix)
+                .arg("--out")
+                .arg(&data)
+                .args(["--model", ASR_MODEL])
+                .arg("--no-summary")
+                .arg("--summary-input")
+                .arg(&input)
+                .env("PATH", &path);
+            eprintln!("sum-eval: {meeting}: replaying the mix in the room");
+            let started = std::time::Instant::now();
+            let r = run_with_timeout(&mut cmd, REPLAY_TIMEOUT)
+                .with_context(|| format!("{meeting}: replay did not finish within the deadline"))?;
+            std::fs::write(&log, format!("{}\n--- stderr ---\n{}", r.stdout, r.stderr))?;
+            if !r.success {
+                bail!(
+                    "{meeting}: replay failed (log {}): {}",
+                    log.display(),
+                    r.describe()
+                );
+            }
+            r.require_complete("earshot-cli replay")?;
+            std::fs::write(
+                dir.join(format!("{meeting}.seconds")),
+                format!("{:.1}", started.elapsed().as_secs_f64()),
+            )?;
+            let _ = std::fs::remove_dir_all(data.join("audio"));
+        }
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let pick = |prefix: &str| -> Vec<String> {
+            text.lines()
+                .filter(|l| l.trim_start().starts_with(prefix))
+                .map(|l| l.trim().to_owned())
+                .collect()
+        };
+        facts.push(json!({
+            "meeting": meeting,
+            "source": ROOM_SOURCE,
+            "replay_seconds": std::fs::read_to_string(dir.join(format!("{meeting}.seconds")))
+                .ok()
+                .and_then(|s| s.trim().parse::<f64>().ok()),
+            "asr": pick("live asr"),
+            "post": pick("post: final pass ran"),
         }));
     }
     Ok(facts)
@@ -1443,14 +1557,19 @@ pub fn check_agent_cli(opts: &Options, agent: AgentCli) -> Result<()> {
         opts.models
     );
     agent.model(&opts.models[0])?;
-    // The owner's own meetings may go to the agent CLIs (T12.25a, the owner's decision);
-    // Earshot's replays of AMI audio never do.
+    // The owner's own meetings may go to the agent CLIs (T12.25a, the owner's decision); so
+    // may Earshot's replays of public AMI audio (T12.87, read from `--replays`, never
+    // replayed by an agent-CLI run).
     ensure!(
         !opts.sources.is_empty()
-            && (opts.sources.iter().all(|s| s == "reference")
+            && (opts
+                .sources
+                .iter()
+                .all(|s| matches!(s.as_str(), "reference" | "earshot" | ROOM_SOURCE))
                 || opts.sources.iter().all(|s| s == store::SOURCE)),
-        "--model {id} summarises only the public AMI reference transcripts or the owner's \
-         own meetings: pass --source reference or --source store"
+        "--model {id} summarises only public AMI text (the reference transcripts or \
+         Earshot's replays of AMI audio) or the owner's own meetings: pass --source \
+         reference, earshot, {ROOM_SOURCE} or store"
     );
     let defaults = Options::default();
     // A prompt variant is allowed (T12.17, evaluation only): the rules change, the plan
@@ -1750,7 +1869,20 @@ pub fn run_agent_cli(root: &Path, opts: &Options, agent: AgentCli) -> Result<()>
         if let Some(v) = &stored {
             check_overwrite(&file, v, &jobs, &meetings, opts)?;
         }
+        let replays: Vec<OsString> = if has_replays(&jobs) {
+            let dir = replay_dir(&out, opts.replays.as_deref(), &jobs);
+            ensure!(
+                dir.is_dir(),
+                "{} holds no replays: make them with a local run first (an agent-CLI run \
+                 never replays)",
+                dir.display()
+            );
+            vec!["--earshot-inputs".into(), dir.into()]
+        } else {
+            Vec::new()
+        };
         let status = Command::new(&exe)
+            .args(replays)
             .args(agent_cli_args(
                 agent,
                 &annotations,
@@ -1931,8 +2063,8 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
     );
 
     let mut replays = Vec::new();
-    let earshot_dir = out.join("earshot");
-    if jobs.iter().any(|(_, s)| s == "earshot") && !opts.rescore && !opts.stored_only() {
+    let earshot_dir = replay_dir(&out, opts.replays.as_deref(), &jobs);
+    if has_replays(&jobs) && !opts.rescore && !opts.stored_only() {
         let msgs = build(
             root,
             &build_args(
@@ -1950,12 +2082,31 @@ pub fn run(root: &Path, opts: &Options) -> Result<()> {
             .with_context(|| format!("copy {} to {}", built.display(), exe.display()))?;
         // The copy runs outside cargo: llama.cpp's DLLs go beside it (T6.21b).
         crate::llama_dlls::install_beside(&msgs, &exe)?;
-        let test = meetings
-            .iter()
-            .find(|(s, _)| s == "test")
-            .map(|(_, m)| m.clone())
-            .unwrap_or_default();
-        replays = replay_meetings(&exe, &test, &fixtures, &out, cuda, opts.rerun_earshot)?;
+        if jobs.iter().any(|(_, s)| s == ROOM_SOURCE) {
+            let all: Vec<String> = meetings.iter().flat_map(|(_, m)| m.clone()).collect();
+            replays = replay_room(
+                &exe,
+                &all,
+                &fixtures,
+                &earshot_dir,
+                cuda,
+                opts.rerun_earshot,
+            )?;
+        } else {
+            let test = meetings
+                .iter()
+                .find(|(s, _)| s == "test")
+                .map(|(_, m)| m.clone())
+                .unwrap_or_default();
+            replays = replay_meetings(
+                &exe,
+                &test,
+                &fixtures,
+                &earshot_dir,
+                cuda,
+                opts.rerun_earshot,
+            )?;
+        }
         let _ = std::fs::remove_file(&exe);
     }
     if opts.replay_only {
@@ -2210,6 +2361,18 @@ mod tests {
         assert!(jobs(&["dev".into()], &["earshot".into()]).is_err());
         assert!(jobs(&["train".into()], &[]).is_err());
         assert!(jobs(&[], &["asr".into()]).is_err());
+        // The in-room replays (T12.87) run on any split, never beside the call replays.
+        assert_eq!(
+            jobs(&["dev".into()], &[ROOM_SOURCE.into()]).unwrap(),
+            [("dev".to_string(), ROOM_SOURCE.to_string())]
+        );
+        assert!(jobs(&["test".into()], &["earshot".into(), ROOM_SOURCE.into()]).is_err());
+        let room = [("dev".to_string(), ROOM_SOURCE.to_string())];
+        assert!(has_replays(&room) && !has_replays(&all[..2]));
+        let out = Path::new("o");
+        assert_eq!(replay_dir(out, None, &room), out.join("room"));
+        assert_eq!(replay_dir(out, None, &all), out.join("earshot"));
+        assert_eq!(replay_dir(out, Some(Path::new("r")), &room), Path::new("r"));
         // The owner's own meetings (T12.25a): one job of their own, split real.
         let real = [("real".to_string(), "store".to_string())];
         assert_eq!(jobs(&[], &["store".into()]).unwrap(), real);
@@ -3272,20 +3435,23 @@ mod tests {
         };
         refused(claude(&["claude-code", "qwen3.5-4b-q4_k_m"]), "alone");
         refused(claude(&["claude-code/--tools"]), "claude-code model");
-        // Only the public AMI reference transcripts: the default (both sources) and the
-        // Earshot source are refused.
-        for sources in [
-            vec![],
-            vec!["earshot".to_string()],
-            vec!["reference".into(), "earshot".into()],
-        ] {
+        // Only public AMI text (T12.87: Earshot's replays of AMI audio included): no
+        // source given and the owner's meetings beside AMI are refused.
+        for sources in [vec![], vec!["reference".to_string(), "store".into()]] {
             refused(
                 Options {
                     sources,
                     ..claude(&["claude-code"])
                 },
-                "reference transcripts",
+                "public AMI text",
             );
+        }
+        for source in ["earshot", ROOM_SOURCE] {
+            check_claude_code(&Options {
+                sources: vec![source.into()],
+                ..claude(&["claude-code"])
+            })
+            .unwrap();
         }
         let c = || claude(&["claude-code"]);
         // A prompt variant is allowed (T12.17, evaluation only).
@@ -3474,10 +3640,10 @@ mod tests {
         refused(claude(&["codex/-s"]), "codex model");
         refused(
             Options {
-                sources: vec!["earshot".into()],
+                sources: vec![],
                 ..c()
             },
-            "reference transcripts",
+            "public AMI text",
         );
         check_agent_cli(
             &Options {
