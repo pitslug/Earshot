@@ -29,6 +29,7 @@ import {
   type PostStep,
   type RecoveredRecording,
   type RememberOutcome,
+  type ShellEvent,
   type SummaryEvent,
   type SummaryView,
   type SyncEvent,
@@ -290,6 +291,11 @@ export interface MockIpcData {
   waitingFor?: Record<string, string>;
   /** Offers to stop this long into a meeting (the preview's `?callEnded=1`). */
   callEndOfferAfterMs?: number;
+  /** Asks whether to record a call this long after the window listens for the tray's events, when
+   * the offer is on and nothing records (T12.86; the preview's `?callStarted=1`). */
+  callStartOfferAfterMs?: number;
+  /** The General page's "Offer to record when a call starts" as stored (default: on). */
+  callStartOffer?: boolean;
   /** The folders (default: `SAMPLE_FOLDERS` with the sample meetings, none with given ones). */
   folders?: FolderListItem[];
   /** The database was saved by a newer Earshot: the meeting and folder lists reject with
@@ -394,6 +400,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   // The running meeting: its row and the timers to cancel at stop.
   let live: { row: MeetingListItem; cancel: (() => void)[] } | null = null;
   let processing = false;
+  // T12.86: the offer to record a call, and the question while it is open.
+  let callStartOn = data.callStartOffer ?? true;
+  let callStartOpen = false;
+  let callStartScheduled = false;
+  const shellListeners = new Set<(event: ShellEvent) => void>();
+  const emitShell = (event: ShellEvent) => {
+    for (const l of [...shellListeners]) l(event);
+  };
   const modelsMock = createModelsMock(
     data.machine ?? "surface",
     timer,
@@ -758,7 +772,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
 
   // The mock's whole-list Dictionary write is not an `Ipc` command (T11.3e).
   const { setSummaryVocabulary: _wholeList, ...summaryCommands } = summariesMock;
-  return {
+  const ipc: Ipc = {
     ...modelsMock,
     ...summaryCommands,
     // The live switch follows the order (`live_summaries_allowed`), and a writer saved by the page
@@ -979,8 +993,38 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       call("installUpdate");
       if (data.update?.failInstall !== undefined) fail("busy", data.update.failInstall, true);
     },
-    // The tray, the shortcut and notifications do not exist in the preview: nothing is sent.
-    onShellEvent: async () => () => {},
+    // The tray, the shortcut and notifications do not exist in the preview: the only thing sent is
+    // the scripted offer to record a call (T12.86), once.
+    onShellEvent: async (handler) => {
+      shellListeners.add(handler);
+      if (data.callStartOfferAfterMs !== undefined && !callStartScheduled) {
+        callStartScheduled = true;
+        timer.setTimeout(() => {
+          if (!callStartOn || live !== null) return;
+          callStartOpen = true;
+          emitShell({ type: "CallStartOffer", open: true });
+        }, data.callStartOfferAfterMs);
+      }
+      return () => {
+        shellListeners.delete(handler);
+      };
+    },
+    // As the app: a closed question takes no answer, and the app starts the meeting itself.
+    answerCallStart: async (start) => {
+      call("answerCallStart", start);
+      if (!callStartOpen) return false;
+      callStartOpen = false;
+      emitShell({ type: "CallStartOffer", open: false });
+      // The meeting starts in the background; a refusal reaches the window as the app's StartFailed.
+      if (start) ipc.startMeeting("Call", null, false).catch(() => {});
+      return true;
+    },
+    callStartOffer: async () => callStartOn,
+    setCallStartOffer: async (on) => {
+      call("setCallStartOffer", on);
+      callStartOn = on;
+      return callStartOn;
+    },
     // The only tick that changes anything in the preview brings the summary another computer
     // was asked for (T12.81).
     onSyncEvent: async (handler) => {
@@ -1560,4 +1604,5 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       };
     },
   };
+  return ipc;
 }

@@ -467,6 +467,18 @@ export const commands = {
 	 *  the meeting can be re-transcribed from its page (module docs).
 	 */
 	quitApp: () => typedError<null, IpcError>(__TAURI_INVOKE("quit_app")),
+	/**
+	 *  The answer to the call-start question (T12.86) from the window's banner: `start` starts a call
+	 *  meeting. A question already closed takes no answer (`false`).
+	 */
+	answerCallStart: (start: boolean) => __TAURI_INVOKE<boolean>("answer_call_start", { start }),
+	/**  Whether Earshot offers to start recording when a call starts (T12.86; on unless turned off). */
+	callStartOffer: () => typedError<boolean, IpcError>(__TAURI_INVOKE("call_start_offer")),
+	/**
+	 *  Turns the offer to start recording when a call starts on or off, at once; returns it as
+	 *  stored.
+	 */
+	setCallStartOffer: (on: boolean) => typedError<boolean, IpcError>(__TAURI_INVOKE("set_call_start_offer", { on })),
 };
 
 /** Events */
@@ -2034,7 +2046,14 @@ message: string } |
  *  Start-up recovery gave an interrupted recording its audio back (T9.18): read the
  *  notices (`recovered_recordings`) and show them.
  */
-{ type: "RecordingsRecovered" };
+{ type: "RecordingsRecovered" } | 
+/**
+ *  The question "a call started: start recording?" opened or closed (T12.86). Answered with
+ *  `answer_call_start`.
+ */
+{ type: "CallStartOffer"; 
+/**  The question is open. */
+open: boolean };
 
 /**  One row of the Speakers panel. */
 export type SpeakerCard = {

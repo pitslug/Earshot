@@ -615,8 +615,33 @@ impl RenderSessionPoller {
         })
     }
 
+    /// The same poller over the capture (microphone) sessions, [`capture_session_peaks`]: which
+    /// call app has a microphone open (T12.86, the offer to start recording). Its thread is
+    /// `earshot-call-mics`.
+    ///
+    /// # Errors
+    /// The thread could not be started.
+    pub fn start_microphones(interval: Duration) -> Result<Self, CaptureError> {
+        Self::start_named("earshot-call-mics", interval, || {
+            let com = ComApartment::init_mta();
+            move || match &com {
+                Ok(com) => capture_session_peaks(com).map_err(|e| e.detail()),
+                Err(e) => Err(e.detail()),
+            }
+        })
+    }
+
     /// [`start`](Self::start) with the reader `make` builds on the polling thread.
     fn start_with<R: FnMut() -> SessionReading>(
+        interval: Duration,
+        make: impl FnOnce() -> R + Send + 'static,
+    ) -> Result<Self, CaptureError> {
+        Self::start_named("earshot-call-sessions", interval, make)
+    }
+
+    /// [`start_with`](Self::start_with) on a thread named `name` (fixed text).
+    fn start_named<R: FnMut() -> SessionReading>(
+        name: &'static str,
         interval: Duration,
         make: impl FnOnce() -> R + Send + 'static,
     ) -> Result<Self, CaptureError> {
@@ -624,7 +649,7 @@ impl RenderSessionPoller {
         let (tx, readings) = mpsc::channel();
         let flag = Arc::clone(&stop);
         std::thread::Builder::new()
-            .name("earshot-call-sessions".into())
+            .name(name.into())
             .spawn(move || poll_render_sessions(interval, &flag, &tx, make()))
             .map_err(CaptureError::Thread)?;
         Ok(Self { stop, readings })

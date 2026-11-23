@@ -358,6 +358,7 @@ fn main() {
             app.manage(Arc::clone(&shell));
             let tray = shell.build_tray();
             shell.register_shortcut();
+            shell.spawn_call_start_watch();
             // The window starts hidden: started by Windows it stays so (T7.5), unless there is
             // no tray to open it from.
             if !by_windows || tray.is_err() {

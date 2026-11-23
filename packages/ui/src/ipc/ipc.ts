@@ -94,6 +94,14 @@ export interface IpcCommands
   cancelFinishing(meeting: string): Promise<void>;
   /** "Keep recording" on the offer to stop when a call seems to have ended. */
   keepRecording(): Promise<void>;
+  /** Answers the offer to record a call that seems to have started (T12.86): with `start`, the
+   * app starts the meeting itself. Resolves to whether the answer was taken (a closed question
+   * takes none). */
+  answerCallStart(start: boolean): Promise<boolean>;
+  /** Whether Earshot offers to record when a call starts (the General page; on by default). */
+  callStartOffer(): Promise<boolean>;
+  /** Stores whether Earshot offers to record when a call starts; resolves with it as stored. */
+  setCallStartOffer(on: boolean): Promise<boolean>;
   /** Shows the window as the compact listening card, or the full app. */
   setCompact(compact: boolean): Promise<void>;
   /** Puts the native title bar on a theme, or back on the system's (`null`). */

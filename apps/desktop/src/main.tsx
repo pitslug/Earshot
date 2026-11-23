@@ -14,7 +14,7 @@ import { createRoot } from "react-dom/client";
 // (`pnpm --filter @earshot/desktop dev`) it previews the UI on sample data, and "New
 // meeting" plays a scripted meeting in real time. The preview's Models page shows a
 // Surface-like computer (NPU); `?machine=desktop` shows a desktop with an NVIDIA card.
-// `?firstRun=1` opens on the first-run wizard. `?inRoom=1` shows finished meetings as recorded in the room, `?inRoom=recognised` with the first voice named by the user's voiceprint; `?selfNamed=1` adds a separate person with the user's name (T12.44). `?callEnded=1` asks whether to stop 3 s into a call. `?cuda=unavailable` shows the CUDA section as it is
+// `?firstRun=1` opens on the first-run wizard. `?inRoom=1` shows finished meetings as recorded in the room, `?inRoom=recognised` with the first voice named by the user's voiceprint; `?selfNamed=1` adds a separate person with the user's name (T12.44). `?callEnded=1` asks whether to stop 3 s into a call, `?callStarted=1` whether to record a call 3 s after opening (T12.86). `?cuda=unavailable` shows the CUDA section as it is
 // until the download exists, `?cuda=checking` while the start tries its files. `?newerData=1`
 // shows the screen for a database saved by a newer Earshot, `?dataFolder=1` the one for a data
 // folder that could not be opened, `?summary=failed` / `?summary=postFailed` a meeting whose
@@ -44,6 +44,7 @@ async function previewIpc(): Promise<Ipc> {
       ? { persons: [...samplePersons(), { id: "9e000000-0000-7000-8000-000000000009", name: "Casey", has_voiceprint: true, is_me: false, meetings: 1 }] }
       : {}),
     callEndOfferAfterMs: query.get("callEnded") === "1" ? 3_000 : undefined,
+    callStartOfferAfterMs: query.get("callStarted") === "1" ? 3_000 : undefined,
     newerData: query.get("newerData") === "1",
     dataFolderFails: query.get("dataFolder") === "1",
     provisionalWords: previews === "battery" || previews === "waiting" ? previews : undefined,

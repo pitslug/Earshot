@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createManualTimer } from "../time";
 import { commands } from "./bindings";
-import { EVENT_METHODS, IpcFailure, type MeetingEvent, type ModelJobEvent, NEWER_DATA_KIND } from "./ipc";
+import { EVENT_METHODS, IpcFailure, type MeetingEvent, type ModelJobEvent, NEWER_DATA_KIND, type ShellEvent } from "./ipc";
 import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
 import { POST_STEPS, POST_STEP_MS, SCRIPT_LINES, createMockIpc, sampleMeetings } from "./mock";
 import { CHECK_RUNNING_MESSAGE, DOWNLOADING_MESSAGE, MOCK_FALLBACK_MODEL, MODEL_STEP_MS } from "./mockModels";
@@ -492,5 +492,39 @@ describe("mock keep-local refusals", () => {
     await expect(ipc.allowSummaryWriter(id)).rejects.toMatchObject({
       error: { kind: keepLocalCases.still_working.kind, message: keepLocalCases.still_working.message },
     });
+  });
+});
+
+describe("mock IPC, the offer to record a call (T12.86)", () => {
+  it("asks once when scripted, takes one answer, and starts the call on yes", async () => {
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ timer, meetings: [], callStartOfferAfterMs: 3_000 });
+    const shell: ShellEvent[] = [];
+    const meeting: MeetingEvent[] = [];
+    await ipc.onShellEvent((e) => shell.push(e));
+    await ipc.onMeetingEvent((e) => meeting.push(e));
+    // A closed question takes no answer.
+    expect(await ipc.answerCallStart(true)).toBe(false);
+    timer.advance(3_000);
+    expect(shell).toEqual([{ type: "CallStartOffer", open: true }]);
+    expect(await ipc.answerCallStart(true)).toBe(true);
+    expect(shell.at(-1)).toEqual({ type: "CallStartOffer", open: false });
+    await Promise.resolve();
+    timer.advance(1_000);
+    expect(meeting.some((e) => e.type === "Started" && e.mode === "Call")).toBe(true);
+    expect(await ipc.answerCallStart(false)).toBe(false);
+  });
+
+  it("does not ask while the offer is off, and stores the switch", async () => {
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ timer, meetings: [], callStartOfferAfterMs: 3_000, callStartOffer: false });
+    expect(await ipc.callStartOffer()).toBe(false);
+    const shell: ShellEvent[] = [];
+    await ipc.onShellEvent((e) => shell.push(e));
+    timer.advance(3_000);
+    expect(shell).toEqual([]);
+    expect(await ipc.setCallStartOffer(true)).toBe(true);
+    expect(await ipc.callStartOffer()).toBe(true);
+    expect(await createMockIpc().callStartOffer()).toBe(true);
   });
 });

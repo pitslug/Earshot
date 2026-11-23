@@ -172,7 +172,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::cuda_settings::remove_cuda_part,
             crate::cuda_settings::open_cuda_terms,
             crate::cuda_settings::restart_app,
-            crate::shell::quit_app
+            crate::shell::quit_app,
+            crate::shell::answer_call_start,
+            crate::general::call_start_offer,
+            crate::general::set_call_start_offer
         ])
         .events(collect_events![
             MeetingEvent,

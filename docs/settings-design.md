@@ -69,7 +69,7 @@ In this order:
 
 | Page | Holds | Comes from |
 |---|---|---|
-| General | Start with Windows, closing, shortcut, theme, updates, setup guide | General |
+| General | Start with Windows, closing, the offer to record when a call starts (T12.86), shortcut, theme, updates, setup guide | General |
 | Audio | Unchanged | Audio |
 | System | Hardware, recommendation, speech helpers, where it runs, the model check, CUDA, benchmark | Models, Benchmark |
 | Transcription | Languages first, transcription models, show words while talking, when speakers are found | Models, General, Speakers |

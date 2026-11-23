@@ -377,6 +377,9 @@ export function AppShell({
   // The last meeting the screen followed, kept across the reset a new start makes.
   const lastMeeting = useRef<{ id: string; finishing: boolean } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  // T12.86: the app asks whether to record a call that seems to have started. The app starts the
+  // meeting on the answer; the window only shows the question.
+  const [callStartAsked, setCallStartAsked] = useState(false);
   // Recordings Earshot was closed during whose audio was saved at this start (T9.18), each told
   // once: the app hands each over one time only, so a result is never dropped.
   const [recovered, setRecovered] = useState<RecoveredRecording[]>([]);
@@ -564,6 +567,7 @@ export function AppShell({
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
       setStartError(null);
+      setCallStartAsked(false);
     }
     // Followed here, not on a render: an end and the next start can arrive before React draws.
     if (event.type === "Ended" && lastMeeting.current?.id === event.meeting) {
@@ -937,6 +941,9 @@ export function AppShell({
             // The wizard stays, whatever step it is on: it says why above itself.
             setView((v) => (v === "first-run" ? v : "detail"));
             break;
+          case "CallStartOffer":
+            setCallStartAsked(e.open);
+            break;
         }
       })
       .then((s) => {
@@ -983,6 +990,29 @@ export function AppShell({
     </Dialog>
   );
 
+  // The question closes on the press whatever the answer does: a failed or refused answer
+  // starts nothing, and the app asks again at the next call.
+  const answerCallStart = (start: boolean) => {
+    setCallStartAsked(false);
+    ipc.answerCallStart(start).catch(() => {});
+  };
+  const callStartBar = callStartAsked && (
+    <MessageBar intent="info" layout="multiline" role="status">
+      <MessageBarBody>
+        <MessageBarTitle>A call seems to have started.</MessageBarTitle>
+        Do you want Earshot to record it?
+      </MessageBarBody>
+      <MessageBarActions>
+        <Button size="small" appearance="primary" onClick={() => answerCallStart(true)}>
+          Start recording
+        </Button>
+        <Button size="small" appearance="transparent" onClick={() => answerCallStart(false)}>
+          Not now
+        </Button>
+      </MessageBarActions>
+    </MessageBar>
+  );
+
   // Only the offer closes: the recording goes on, so a failure here costs nothing.
   const keepRecording = () => {
     live.closeCallEndOffer();
@@ -1021,6 +1051,7 @@ export function AppShell({
             </MessageBarActions>
           </MessageBar>
         )}
+        {callStartBar}
         <div className={styles.wizardBody}>
           <FirstRunWizard
             onDone={(noModel) => {
@@ -1229,6 +1260,7 @@ export function AppShell({
             </MessageBarActions>
           </MessageBar>
         )}
+        {callStartBar}
         {startError !== null && (
           <MessageBar intent="error">
             <MessageBarBody>

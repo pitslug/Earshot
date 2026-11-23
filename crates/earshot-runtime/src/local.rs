@@ -238,6 +238,9 @@ pub(crate) enum DeviceRecord {
     /// `first-run`: whether the first-run wizard is done, and its "never" answers (T9.1d;
     /// [`crate::first_run`]).
     FirstRun,
+    /// `settings/call-start-offer`: whether Earshot offers to start recording when a call starts
+    /// (T12.86).
+    CallStartOffer,
     /// `settings/cuda-summaries`: whether summaries run on CUDA (T8.4af).
     #[cfg(feature = "engines")]
     CudaSummaries,
@@ -336,6 +339,7 @@ impl DeviceRecord {
         DeviceRecord::SummaryStyle,
         DeviceRecord::SummaryTemplate,
         DeviceRecord::FirstRun,
+        DeviceRecord::CallStartOffer,
         DeviceRecord::CudaSummaries,
         DeviceRecord::CudaTranscription,
         DeviceRecord::Previews,
@@ -406,6 +410,7 @@ impl DeviceRecord {
                 DeviceRecord::SummaryStyle => crate::summary_style::SUMMARY_STYLE_KEY,
                 DeviceRecord::SummaryTemplate => crate::summary_style::SUMMARY_TEMPLATE_KEY,
                 DeviceRecord::FirstRun => crate::first_run::FIRST_RUN_KEY,
+                DeviceRecord::CallStartOffer => crate::call_start::OFFER_KEY,
                 #[cfg(feature = "engines")]
                 DeviceRecord::CudaSummaries => crate::cuda_switch::CUDA_SUMMARIES_KEY,
                 #[cfg(feature = "engines")]

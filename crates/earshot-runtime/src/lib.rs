@@ -49,6 +49,7 @@ pub mod backends;
 #[cfg(feature = "engines")]
 pub mod benchmark;
 pub mod call_end;
+pub mod call_start;
 #[cfg(feature = "engines")]
 pub mod catalogue;
 pub mod claude_code;

@@ -118,6 +118,12 @@ pub enum ShellEvent {
     /// Start-up recovery gave an interrupted recording its audio back (T9.18): read the
     /// notices (`recovered_recordings`) and show them.
     RecordingsRecovered,
+    /// The question "a call started: start recording?" opened or closed (T12.86). Answered with
+    /// `answer_call_start`.
+    CallStartOffer {
+        /// The question is open.
+        open: bool,
+    },
 }
 
 /// Where the current meeting is, as the tray shows it.
@@ -330,6 +336,10 @@ pub enum ToastClick {
     StopRecording,
     /// Keep recording: the other answer to it.
     KeepRecording,
+    /// Start recording: the answer to the call-start question (T12.86).
+    StartRecording,
+    /// Not now: the other answer to it.
+    NotNow,
 }
 
 impl ToastClick {
@@ -342,6 +352,8 @@ impl ToastClick {
             Self::NameVoices => "names",
             Self::StopRecording => "stop",
             Self::KeepRecording => "keep",
+            Self::StartRecording => "start",
+            Self::NotNow => "not-now",
         }
     }
 
@@ -353,6 +365,8 @@ impl ToastClick {
             "names" => Self::NameVoices,
             "stop" => Self::StopRecording,
             "keep" => Self::KeepRecording,
+            "start" => Self::StartRecording,
+            "not-now" => Self::NotNow,
             _ => Self::Window,
         }
     }
@@ -543,6 +557,54 @@ pub fn call_end_toast() -> Toast {
     }
 }
 
+/// The notification that a call seems to have started (T12.86): fixed copy, never the call app's
+/// name or anything about the call, and it stays on screen until answered or taken back.
+#[must_use]
+pub fn call_start_toast() -> Toast {
+    Toast {
+        title: "A call seems to have started".into(),
+        body: "Do you want Earshot to record it?".into(),
+        click: ToastClick::Window,
+        buttons: vec![
+            ("Start recording", ToastClick::StartRecording),
+            ("Not now", ToastClick::NotNow),
+        ],
+        stays: true,
+    }
+}
+
+/// What a click answers on the call-start question: `Some(true)` start, `Some(false)` not now.
+/// `None` for any other click, and for one on a question that has closed: a late click must never
+/// start a recording.
+#[must_use]
+pub fn call_start_answer(click: ToastClick, open: bool) -> Option<bool> {
+    match click {
+        ToastClick::StartRecording if open => Some(true),
+        ToastClick::NotNow if open => Some(false),
+        _ => None,
+    }
+}
+
+/// The call-start reading of one microphone poll (T12.86): `None` when the poller has nothing
+/// new.
+#[must_use]
+pub fn mic_reading(
+    latest: Option<Result<Vec<earshot_capture_wasapi::SessionPeak>, String>>,
+) -> Option<earshot_runtime::call_start::MicReading> {
+    use earshot_runtime::call_start::MicReading;
+    latest.map(|r| match r {
+        Ok(sessions) if earshot_capture_wasapi::dedicated_call_app_has_mic(&sessions) => {
+            MicReading::CallApp
+        }
+        Ok(_) => MicReading::NoCallApp,
+        Err(_) => MicReading::Unknown,
+    })
+}
+
+/// How often the call-start watch looks at its poller and the setting (the poller itself reads
+/// every [`earshot_capture_wasapi::session::CALL_POLL_INTERVAL`]).
+const CALL_START_STEP: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// The notification that nobody answered and the recording stopped by itself.
 #[must_use]
 pub fn call_end_stopped_toast() -> Toast {
@@ -679,6 +741,10 @@ pub struct Shell {
     has_tray: AtomicBool,
     /// The call-end question is open ([`call_end_open_after`]).
     call_end_open: AtomicBool,
+    /// The call-start question is open (T12.86).
+    call_start_open: AtomicBool,
+    /// The call-start rule, fed by [`Shell::spawn_call_start_watch`] and answered by the user.
+    call_start: Mutex<earshot_runtime::call_start::CallStartWatch>,
     /// The call-end offer stopped this recording, or every track stopped recording (T9.17): its own
     /// notification said so, and [`ended_toast`] says nothing more.
     end_already_told: AtomicBool,
@@ -697,6 +763,10 @@ impl Shell {
             latch: Mutex::new(KeyLatch::default()),
             has_tray: AtomicBool::new(false),
             call_end_open: AtomicBool::new(false),
+            call_start_open: AtomicBool::new(false),
+            call_start: Mutex::new(earshot_runtime::call_start::CallStartWatch::new(
+                earshot_runtime::call_start::CallStartConfig::default(),
+            )),
             end_already_told: AtomicBool::new(false),
             #[cfg(windows)]
             toasts: crate::toast_win::Toaster::default(),
@@ -852,12 +922,20 @@ impl Shell {
     }
 
     fn start_meeting(self: &Arc<Self>) {
+        self.start_meeting_in(None);
+    }
+
+    /// [`Self::start_meeting`] in `mode`, or the Audio page's stored mode when `None`.
+    fn start_meeting_in(self: &Arc<Self>, mode: Option<crate::meeting_events::CaptureMode>) {
         let started = self
             .app
             .state::<AppState>()
             .services()
             .and_then(|services| {
-                let mode = crate::audio_settings::stored_capture_mode(&services)?;
+                let mode = match mode {
+                    Some(mode) => mode,
+                    None => crate::audio_settings::stored_capture_mode(&services)?,
+                };
                 self.driver().start(
                     &services,
                     StartRequest {
@@ -883,6 +961,117 @@ impl Shell {
         self.refresh_tray();
         self.show_window();
         let _ = ShellEvent::StartFailed { message }.emit(&self.app);
+    }
+
+    /// Starts the call-start watch's thread (T12.86): it reads the microphone sessions while the
+    /// General page's offer is on, and asks when a call app opens the microphone with no meeting
+    /// recording. It runs for the process's life; a panic costs one step, never the thread.
+    pub fn spawn_call_start_watch(self: &Arc<Self>) {
+        let me = Arc::clone(self);
+        let _ = std::thread::Builder::new()
+            .name("earshot-call-start".into())
+            .spawn(move || {
+                let mut poller = None;
+                loop {
+                    let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        me.call_start_step(&mut poller);
+                    }));
+                    if step.is_err() {
+                        poller = None;
+                    }
+                    std::thread::sleep(CALL_START_STEP);
+                }
+            });
+    }
+
+    #[cfg(windows)]
+    fn call_start_step(
+        self: &Arc<Self>,
+        poller: &mut Option<earshot_capture_wasapi::RenderSessionPoller>,
+    ) {
+        let on = self
+            .app
+            .state::<AppState>()
+            .services()
+            .ok()
+            .and_then(|s| earshot_runtime::call_start::offer_on(&s.store()).ok())
+            .unwrap_or(false);
+        if !on {
+            // Turned off (or no store): no readings, and an open question goes.
+            *poller = None;
+            *self.call_start_watch() = earshot_runtime::call_start::CallStartWatch::new(
+                earshot_runtime::call_start::CallStartConfig::default(),
+            );
+            if self.call_start_open.swap(false, Ordering::SeqCst) {
+                self.call_start_closed();
+            }
+            return;
+        }
+        if poller.is_none() {
+            *poller = earshot_capture_wasapi::RenderSessionPoller::start_microphones(
+                earshot_capture_wasapi::session::CALL_POLL_INTERVAL,
+            )
+            .ok();
+        }
+        let Some(reading) = poller.as_mut().and_then(|p| mic_reading(p.latest())) else {
+            return;
+        };
+        let recording = matches!(self.tracker().phase(), Phase::Starting | Phase::Recording)
+            || self.driver().phase() == DriverPhase::Recording;
+        let change = self.call_start_watch().reading(reading, recording);
+        match change {
+            Some(earshot_runtime::call_start::CallStartChange::Offer) => {
+                self.call_start_open.store(true, Ordering::SeqCst);
+                let _ = ShellEvent::CallStartOffer { open: true }.emit(&self.app);
+                if !self.window_watched() {
+                    self.notify(&call_start_toast(), None);
+                }
+            }
+            Some(earshot_runtime::call_start::CallStartChange::Withdraw) => {
+                self.call_start_open.store(false, Ordering::SeqCst);
+                self.call_start_closed();
+            }
+            None => {}
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn call_start_step(self: &Arc<Self>, _: &mut Option<()>) {}
+
+    fn call_start_watch(
+        &self,
+    ) -> std::sync::MutexGuard<'_, earshot_runtime::call_start::CallStartWatch> {
+        self.call_start
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The question closed: the window's banner and the notification go.
+    fn call_start_closed(self: &Arc<Self>) {
+        let _ = ShellEvent::CallStartOffer { open: false }.emit(&self.app);
+        self.take_back_call_end_toast();
+    }
+
+    /// The user's answer to the call-start question, from the banner or the notification. A
+    /// question already closed takes no answer: a late press must never start a recording.
+    /// Returns whether it was taken.
+    pub fn answer_call_start(self: &Arc<Self>, start: bool) -> bool {
+        if !self.call_start_open.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        self.call_start_watch().answered();
+        self.call_start_closed();
+        if start && self.tracker().begin_start() {
+            self.refresh_tray();
+            let me = Arc::clone(self);
+            let spawned = std::thread::Builder::new()
+                .name("earshot-shell-start".into())
+                .spawn(move || me.start_meeting_in(Some(crate::meeting_events::CaptureMode::Call)));
+            if spawned.is_err() {
+                self.start_failed("Earshot could not start the meeting.".into());
+            }
+        }
+        true
     }
 
     /// "Quit Earshot": at once with no meeting, else the window asks first.
@@ -996,7 +1185,7 @@ impl Shell {
                     Arc::new(move |click| clicked.toast_clicked(click, meeting.as_deref())),
                 );
                 // The question may have closed while this thread was starting.
-                if toast.stays && !me.call_end_open.load(Ordering::SeqCst) {
+                if toast.stays && !me.question_open() {
                     me.toasts.hide_staying();
                 }
             });
@@ -1010,7 +1199,7 @@ impl Shell {
             .name("earshot-toast".into())
             .spawn(move || {
                 // A new question may have opened since: its notification stays.
-                if !me.call_end_open.load(Ordering::SeqCst) {
+                if !me.question_open() {
                     me.toasts.hide_staying();
                 }
             });
@@ -1019,11 +1208,26 @@ impl Shell {
     #[cfg(not(windows))]
     fn take_back_call_end_toast(self: &Arc<Self>) {}
 
+    /// A staying notification's question is open: the call-end or the call-start one (never both:
+    /// one asks only while recording, the other only while not).
+    #[cfg(windows)]
+    fn question_open(&self) -> bool {
+        self.call_end_open.load(Ordering::SeqCst) || self.call_start_open.load(Ordering::SeqCst)
+    }
+
     #[cfg(not(windows))]
     fn notify(self: &Arc<Self>, _: &Toast, _: Option<String>) {}
 
     #[cfg(windows)]
-    fn toast_clicked(&self, click: ToastClick, meeting: Option<&str>) {
+    fn toast_clicked(self: &Arc<Self>, click: ToastClick, meeting: Option<&str>) {
+        if matches!(click, ToastClick::StartRecording | ToastClick::NotNow) {
+            if let Some(start) =
+                call_start_answer(click, self.call_start_open.load(Ordering::SeqCst))
+            {
+                self.answer_call_start(start);
+            }
+            return;
+        }
         if matches!(click, ToastClick::StopRecording | ToastClick::KeepRecording) {
             match call_end_answer(click, self.call_end_open.load(Ordering::SeqCst)) {
                 // It may have just ended by itself; the UI shows that either way.
@@ -1060,6 +1264,14 @@ impl Shell {
             let _ = window.hide();
         }
     }
+}
+
+/// The answer to the call-start question (T12.86) from the window's banner: `start` starts a call
+/// meeting. A question already closed takes no answer (`false`).
+#[tauri::command]
+#[specta::specta]
+pub fn answer_call_start(shell: State<'_, Arc<Shell>>, start: bool) -> bool {
+    shell.inner().answer_call_start(start)
 }
 
 /// Quits Earshot: a recording meeting is stopped and finalised first. Its later steps are cut;

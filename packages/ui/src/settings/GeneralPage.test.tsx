@@ -1,13 +1,13 @@
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
+import { type Ipc, IpcFailure, type MockIpcData, createMockIpc } from "../ipc";
 import { MOCK_VERSION } from "../ipc/mockSettings";
 import { openSettings, renderApp } from "../test/app";
 import { THEME_KEY } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
-import { START_EXPLAINED, THEME_SYSTEM_EXPLAINED, TRAY_EXPLAINED, shortcutExplained } from "./GeneralPage";
+import { CALL_START_EXPLAINED, START_EXPLAINED, THEME_SYSTEM_EXPLAINED, TRAY_EXPLAINED, shortcutExplained } from "./GeneralPage";
 
 async function open(data: MockIpcData = {}): Promise<{ ipc: Ipc; user: ReturnType<typeof userEvent.setup> }> {
   const timer = createManualTimer(1_000_000);
@@ -82,5 +82,88 @@ describe("Settings, General", () => {
     expect(
       screen.getByText("This setting could not be read: the Windows folder is unknown (SystemRoot)"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Settings, General, the offer to record a call (T12.86)", () => {
+  const offer = () => screen.getByRole("switch", { name: "Offer to record when a call starts" });
+
+  it("shows the stored value, on by default, with what it does", async () => {
+    await open();
+    expect(await screen.findByRole("switch", { name: "Offer to record when a call starts" })).toBeChecked();
+    expect(screen.getByText(CALL_START_EXPLAINED)).toBeInTheDocument();
+    cleanup();
+    await open({ callStartOffer: false });
+    expect(await screen.findByRole("switch", { name: "Offer to record when a call starts" })).not.toBeChecked();
+  });
+
+  it("applies a change at once and shows the value the app stored", async () => {
+    const calls: unknown[][] = [];
+    const s = await open({ onCall: (c) => calls.push(c) });
+    await s.user.click(await screen.findByRole("switch", { name: "Offer to record when a call starts" }));
+    await waitFor(() => expect(offer()).not.toBeChecked());
+    expect(calls).toContainEqual(["setCallStartOffer", false]);
+    expect(await s.ipc.callStartOffer()).toBe(false);
+    await s.user.click(offer());
+    await waitFor(() => expect(offer()).toBeChecked());
+    expect(calls).toContainEqual(["setCallStartOffer", true]);
+  });
+
+  it("shows what the app stored even when it differs from the press", async () => {
+    const timer = createManualTimer(1_000_000);
+    const base = createMockIpc({ meetings: [], timer });
+    // An app that keeps the offer on whatever is asked.
+    renderApp({ ...base, setCallStartOffer: async () => true }, { timer });
+    const user = userEvent.setup();
+    await openSettings(user, "General");
+    await user.click(await screen.findByRole("switch", { name: "Offer to record when a call starts" }));
+    await waitFor(() => expect(offer()).toBeEnabled());
+    expect(offer()).toBeChecked();
+  });
+
+  it("writes nothing and shows no switch before the stored value is read", async () => {
+    const timer = createManualTimer(1_000_000);
+    const base = createMockIpc({ meetings: [], timer });
+    let release: (on: boolean) => void = () => {};
+    const writes: boolean[] = [];
+    renderApp(
+      {
+        ...base,
+        callStartOffer: () => new Promise<boolean>((resolve) => (release = resolve)),
+        setCallStartOffer: async (on) => {
+          writes.push(on);
+          return on;
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "General");
+    await screen.findByRole("switch", { name: "Start Earshot with Windows" });
+    expect(screen.queryByRole("switch", { name: "Offer to record when a call starts" })).toBeNull();
+    expect(screen.getByText("Reading the call setting")).toBeInTheDocument();
+    act(() => release(false));
+    expect(await screen.findByRole("switch", { name: "Offer to record when a call starts" })).not.toBeChecked();
+    expect(writes).toEqual([]);
+  });
+
+  it("says when the change was refused and keeps the stored value", async () => {
+    const timer = createManualTimer(1_000_000);
+    const base = createMockIpc({ meetings: [], timer });
+    renderApp(
+      {
+        ...base,
+        setCallStartOffer: async () => {
+          throw new IpcFailure({ kind: "internal", message: "The setting could not be stored.", retryable: false });
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "General");
+    await user.click(await screen.findByRole("switch", { name: "Offer to record when a call starts" }));
+    expect(await screen.findByText("The setting could not be stored.")).toBeInTheDocument();
+    expect(offer()).toBeChecked();
+    expect(offer()).toBeEnabled();
   });
 });

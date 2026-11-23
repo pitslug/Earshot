@@ -67,6 +67,7 @@ pub use recording::{
 pub use session::{
     AudioSession, CALL_POLL_INTERVAL, CallAppWatch, CaptureMode, FallbackReason, LoopbackChoice,
     LoopbackRequest, ProcessTarget, SelectError, SessionPeak, choose_loopback,
+    dedicated_call_app_has_mic,
 };
 pub use timeline::{PacketInfo, PacketRecord, QPC_UNITS_PER_SEC, TrackTimeline};
 

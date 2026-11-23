@@ -227,6 +227,59 @@ describe("the window hears the tray, the shortcut and notifications", () => {
   });
 });
 
+describe("the offer to record a call that started (T12.86)", () => {
+  const offer = () => screen.queryByText("A call seems to have started.");
+
+  it("shows while the question is open and hides when the app closes it", async () => {
+    const s = await open();
+    expect(offer()).toBeNull();
+    s.send({ type: "CallStartOffer", open: true });
+    const bar = (await screen.findByText("A call seems to have started.")).closest("[role=status]");
+    expect(bar).not.toBeNull();
+    expect(within(bar as HTMLElement).getByText("Do you want Earshot to record it?")).toBeInTheDocument();
+    s.send({ type: "CallStartOffer", open: false });
+    await waitFor(() => expect(offer()).toBeNull());
+  });
+
+  it("answers yes with Start recording and hides, starting nothing itself", async () => {
+    const onCall = vi.fn();
+    const s = await open({ onCall });
+    s.send({ type: "CallStartOffer", open: true });
+    await s.user.click(await screen.findByRole("button", { name: "Start recording" }));
+    await waitFor(() => expect(offer()).toBeNull());
+    const asked = onCall.mock.calls.map((c) => c[0]);
+    expect(asked).toContainEqual(["answerCallStart", true]);
+    expect(asked.some((c) => c[0] === "startMeeting")).toBe(false);
+  });
+
+  it("answers no with Not now and hides", async () => {
+    const onCall = vi.fn();
+    const s = await open({ onCall });
+    s.send({ type: "CallStartOffer", open: true });
+    await s.user.click(await screen.findByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(offer()).toBeNull());
+    expect(onCall.mock.calls.map((c) => c[0])).toContainEqual(["answerCallStart", false]);
+  });
+
+  it("hides when a meeting starts", async () => {
+    const s = await open();
+    s.send({ type: "CallStartOffer", open: true });
+    await screen.findByText("A call seems to have started.");
+    s.meeting({ type: "Started", meeting: "m-from-the-answer", mode: "Call", tracks: ["You", "Them"] });
+    expect(await screen.findByRole("button", { name: "Stop meeting" })).toBeInTheDocument();
+    expect(offer()).toBeNull();
+  });
+
+  it("hides when the answer fails, without an error", async () => {
+    const s = await open({ onCall: (c) => {
+      if (c[0] === "answerCallStart") throw new Error("invented failure");
+    } });
+    s.send({ type: "CallStartOffer", open: true });
+    await s.user.click(await screen.findByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(offer()).toBeNull());
+  });
+});
+
 describe("a recording Earshot was closed during", () => {
   it("is told once at the start, opens its meeting, and is not told again", async () => {
     const [target] = sampleMeetings();

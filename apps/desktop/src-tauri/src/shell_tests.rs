@@ -319,6 +319,8 @@ fn shell_toast_clicks_round_trip_through_their_arguments() {
         ToastClick::NameVoices,
         ToastClick::StopRecording,
         ToastClick::KeepRecording,
+        ToastClick::StartRecording,
+        ToastClick::NotNow,
     ] {
         assert_eq!(ToastClick::from_argument(click.argument()), click);
     }
@@ -484,4 +486,70 @@ fn shell_sync_quit_waits_for_gone_presence_only_inside_the_exit_limit() {
     assert_eq!(gone_wait(EXIT_SAVE_LIMIT), Duration::ZERO);
     assert_eq!(gone_wait(EXIT_SAVE_LIMIT * 2), Duration::ZERO);
     assert!(QUIT_GONE_WAIT < EXIT_SAVE_LIMIT);
+}
+
+#[test]
+fn shell_call_start_toast_is_fixed_copy_that_stays() {
+    let t = call_start_toast();
+    assert_eq!(t.title, "A call seems to have started");
+    assert_eq!(t.body, "Do you want Earshot to record it?");
+    assert_eq!(t.click, ToastClick::Window);
+    assert_eq!(
+        t.buttons,
+        vec![
+            ("Start recording", ToastClick::StartRecording),
+            ("Not now", ToastClick::NotNow),
+        ]
+    );
+    assert!(t.stays);
+}
+
+#[test]
+fn shell_call_start_answers_only_an_open_question() {
+    assert_eq!(
+        call_start_answer(ToastClick::StartRecording, true),
+        Some(true)
+    );
+    assert_eq!(call_start_answer(ToastClick::NotNow, true), Some(false));
+    // A late click on a question that closed never starts a recording.
+    assert_eq!(call_start_answer(ToastClick::StartRecording, false), None);
+    assert_eq!(call_start_answer(ToastClick::NotNow, false), None);
+    for other in [
+        ToastClick::Window,
+        ToastClick::Meeting,
+        ToastClick::StopRecording,
+        ToastClick::KeepRecording,
+    ] {
+        assert_eq!(call_start_answer(other, true), None);
+    }
+}
+
+#[test]
+fn shell_mic_reading_counts_a_dedicated_call_app_only() {
+    use earshot_runtime::call_start::MicReading;
+    let session = |name: &str, active: bool| earshot_capture_wasapi::SessionPeak {
+        endpoint: "Microphone".into(),
+        endpoint_id: "{mic}".into(),
+        pid: 10,
+        process_name: name.into(),
+        active,
+        peak: None,
+    };
+    assert_eq!(mic_reading(None), None);
+    assert_eq!(
+        mic_reading(Some(Ok(vec![session("ms-teams.exe", true)]))),
+        Some(MicReading::CallApp)
+    );
+    assert_eq!(
+        mic_reading(Some(Ok(vec![session("ms-teams.exe", false)]))),
+        Some(MicReading::NoCallApp)
+    );
+    assert_eq!(
+        mic_reading(Some(Ok(vec![session("msedge.exe", true)]))),
+        Some(MicReading::NoCallApp)
+    );
+    assert_eq!(
+        mic_reading(Some(Err("unreadable".into()))),
+        Some(MicReading::Unknown)
+    );
 }

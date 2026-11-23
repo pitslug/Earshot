@@ -499,6 +499,34 @@ fn store_previews(
     previews_view(services)
 }
 
+/// Whether Earshot offers to start recording when a call starts (T12.86; on unless turned off).
+#[tauri::command]
+#[specta::specta]
+pub async fn call_start_offer(
+    state: tauri::State<'_, crate::ipc::AppState>,
+) -> Result<bool, IpcError> {
+    let services = state.services()?;
+    crate::ipc::blocking(move || Ok(earshot_runtime::call_start::offer_on(&services.store())?))
+        .await
+}
+
+/// Turns the offer to start recording when a call starts on or off, at once; returns it as
+/// stored.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_call_start_offer(
+    state: tauri::State<'_, crate::ipc::AppState>,
+    on: bool,
+) -> Result<bool, IpcError> {
+    let services = state.services()?;
+    crate::ipc::blocking(move || {
+        let mut db = services.store();
+        earshot_runtime::call_start::set_offer_on(&mut db, on)?;
+        Ok(earshot_runtime::call_start::offer_on(&db)?)
+    })
+    .await
+}
+
 /// Turns "start Earshot with Windows" on or off (`autostart` when Windows refuses).
 #[tauri::command]
 #[specta::specta]

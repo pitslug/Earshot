@@ -1,5 +1,5 @@
 // Settings, General (docs/ui-design.md "Settings", T7.4h, T9.1n, T12.5b): start Earshot with
-// Windows, closing to the tray, the shortcut, the theme (the system's, light or dark), updates
+// Windows, closing to the tray, the offer to record a call (T12.86), the shortcut, the theme (the system's, light or dark), updates
 // and the setup guide.
 
 import {
@@ -87,6 +87,60 @@ function ThemeSection() {
   );
 }
 
+/** What "Offer to record when a call starts" does (T12.86). */
+export const CALL_START_EXPLAINED =
+  "When Teams, Zoom or another call app starts a call, Earshot asks whether to record it. Nothing records until you say so.";
+
+/** The offer to record a call: read on its own, applied at once, shown as stored. */
+function CallStartSection() {
+  const styles = useStyles();
+  const ipc = useIpc();
+  const [load, setLoad] = useLoad((ipc) => ipc.callStartOffer());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (load.status !== "loaded") {
+    return (
+      <NotLoaded
+        load={load}
+        size="small"
+        loading="Reading the call setting"
+        failed="The call setting could not be read"
+      />
+    );
+  }
+  const set = async (on: boolean) => {
+    setBusy(true);
+    try {
+      setLoad({ status: "loaded", view: await ipc.setCallStartOffer(on) });
+      setError(null);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Switch
+        label="Offer to record when a call starts"
+        checked={load.view}
+        disabled={busy}
+        onChange={(_, d) => void set(d.checked)}
+      />
+      <Caption1 className={styles.muted}>{CALL_START_EXPLAINED}</Caption1>
+      {error !== null && (
+        <MessageBar intent="error">
+          <MessageBarBody>
+            <MessageBarTitle>This setting was not changed</MessageBarTitle>
+            {error}
+          </MessageBarBody>
+        </MessageBar>
+      )}
+    </>
+  );
+}
+
 export interface GeneralPageProps {
   /** Opens the first-run wizard again. */
   onOpenSetup?: () => void;
@@ -149,6 +203,9 @@ export function GeneralPage({ onOpenSetup }: GeneralPageProps) {
           <Caption1 className={styles.muted}>This setting could not be read: {view.start_error}</Caption1>
         )}
         <Caption1 className={styles.muted}>{TRAY_EXPLAINED}</Caption1>
+      </Section>
+      <Section title="Calls">
+        <CallStartSection />
       </Section>
       <Section title="Keyboard shortcut">
         <Body1 className={styles.text}>{shortcutExplained(view.shortcut)}</Body1>

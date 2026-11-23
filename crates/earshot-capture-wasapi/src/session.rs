@@ -183,6 +183,18 @@ impl CallAppWatch {
     }
 }
 
+/// Whether a dedicated known call app (any [`KNOWN_CALL_APPS`] entry that is not a browser) has an
+/// active microphone session among `capture` (T12.86). Measured on a real Teams call: the app opens
+/// the microphone when the call is answered, not while it rings. Browsers never count: a browser
+/// holds a microphone for many things besides calls.
+pub fn dedicated_call_app_has_mic(capture: &[SessionPeak]) -> bool {
+    capture.iter().any(|s| {
+        s.pid != 0
+            && s.active
+            && known_call_app(&s.process_name).is_some_and(|(_, app)| !app.browser)
+    })
+}
+
 /// A call application recognised by its executable names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CallApp {
@@ -505,6 +517,37 @@ mod tests {
         assert!(w.active(&[teams, zoom.clone()]));
         assert!(w.active(std::slice::from_ref(&zoom)));
         assert!(!w.active(&[peak(11, "zoom.exe", false)]));
+    }
+
+    #[test]
+    fn call_app_mic_counts_only_an_active_dedicated_app() {
+        assert!(!dedicated_call_app_has_mic(&[]));
+        assert!(!dedicated_call_app_has_mic(&[peak(
+            10,
+            "ms-teams.exe",
+            false
+        )]));
+        assert!(!dedicated_call_app_has_mic(&[peak(
+            10,
+            "earshot.exe",
+            true
+        )]));
+        assert!(!dedicated_call_app_has_mic(&[peak(
+            0,
+            "ms-teams.exe",
+            true
+        )]));
+        assert!(!dedicated_call_app_has_mic(&[peak(12, "msedge.exe", true)]));
+        assert!(!dedicated_call_app_has_mic(&[peak(
+            13,
+            "msedgewebview2.exe",
+            true
+        )]));
+        assert!(dedicated_call_app_has_mic(&[
+            peak(10, "earshot.exe", true),
+            peak(11, "ms-teams.exe", true)
+        ]));
+        assert!(dedicated_call_app_has_mic(&[peak(14, "Zoom.exe", true)]));
     }
 
     #[test]

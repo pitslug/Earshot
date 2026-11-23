@@ -41,6 +41,9 @@ export function createTauriIpc(): Ipc {
     keepRecording: async () => {
       await commands.keepRecording();
     },
+    answerCallStart: (start) => commands.answerCallStart(start),
+    callStartOffer: async () => unwrap(await commands.callStartOffer()),
+    setCallStartOffer: async (on) => unwrap(await commands.setCallStartOffer(on)),
     setCompact: async (compact) => {
       unwrap(await commands.setCompact(compact));
     },

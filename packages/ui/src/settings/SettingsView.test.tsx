@@ -108,7 +108,7 @@ describe("Settings", () => {
   it("puts each part on the page the design gives it", async () => {
     const expected: Record<"surface" | "desktop", Partial<Record<SettingsSection, string[]>>> = {
       surface: {
-        General: ["Start", "Keyboard shortcut", "Theme", "Updates", "Setup guide"],
+        General: ["Start", "Calls", "Keyboard shortcut", "Theme", "Updates", "Setup guide"],
         System: [
           "This is your hardware",
           "What every meeting needs",
