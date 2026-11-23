@@ -1411,3 +1411,18 @@ Marks 2 and 3 go into `real.<label>.json` beside the packets and are counted by 
 - **Choice among passing candidates (replaces part 3 for `system.md`):** the one with more real items caught (9B plus 4B); on a tie, fewer made up; on a further tie, `misheard-around`. Parts 1 and 5 are unchanged.
 
 **Limits, stated now.** Five meetings judged; one judge per meeting; Claude judges Claude and the local models; blinding hides labels, not length or style; Claude's two identical T12.17 dev runs differed by 5 caught actions over 20 meetings, so a Claude difference of one or two items is noise; AMI's mis-hearings come from a scripted design vocabulary, not the owner's short-word mix-ups.
+
+**Result (2026-11-24): nothing adopted; stopped by the owner before judging.** The local runs finished on one build (`target/sum-eval/t1287-local-<prompt>`); automatic counts over the 15 dev meetings, `--source room`, `--backend cuda`:
+
+| Writer, prompt | Valid | Coverage rule (decisions + actions) |
+|---|---|---|
+| 9B `current` | 15/15 | 27 + 5 = 32 |
+| 9B `misheard` | 15/15 | 21 + 3 = 24 (-8) |
+| 9B `misheard-around` | 15/15 | 21 + 5 = 26 (-6) |
+| 9B `misheard-all` (informational) | 15/15 | 26 + 5 = 31 |
+| 4B `current` | 14/15 (IS1008b invalid) | 19 + 3 = 22 |
+| 4B `misheard` | 14/15 (ES2011c invalid) | 21 + 4 = 25 |
+| 4B `misheard-around` | 15/15 | 21 + 3 = 24 |
+| 4B `misheard-all` (informational) | 15/15 | 23 + 3 = 26 |
+
+Both judged candidates fail part 1(b) on the 9B's coverage guard (at most 3 below the control: 8 and 6 below), so under the rule `system.md` stays whatever judging would show. The mis-heard count (part 1(a)) was never measured: the owner stopped the round before the blinded judging, because the failure is the local writer's, the local writer is paused (wait for a better model or use Claude, which read the owner's mis-hearing right unprompted), and AMI's simple vocabulary may hold few mis-hearings of the kind seen. Reading of the counts (a judgement): telling the 9B to keep doubtful words out made it list fewer items overall, not only doubtful ones, and the decision rule of `misheard-all` brought most of them back. The candidates stay as evaluation-only `PromptVariant`s and the `room` source and `--count-marks` stay for a later round; re-open only if mis-heard words in summaries become a problem again or a new local model arrives.
