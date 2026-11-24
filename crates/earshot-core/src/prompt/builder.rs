@@ -22,7 +22,7 @@ use crate::summary::{
     Citable, SegmentNumbers, SummaryError, SummaryErrorKind, SummaryV1, llm_json_schema,
     to_numbered_json,
 };
-use crate::vocabulary::names::NameFilter;
+use crate::vocabulary::names::{NameFilter, NameMatch};
 
 /// Who a chat message is from (OpenAI chat completions roles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,7 +157,7 @@ pub struct SummaryInput {
     pub vocabulary: Vocabulary,
     /// Every saved person's name a request may be given (T12.91): each request carries only
     /// the names its own text calls for ([`crate::vocabulary::names`], at most
-    /// [`MAX_PEOPLE_PER_REQUEST`] beside the names a merge's parts carried). Empty (the
+    /// [`MAX_PEOPLE_PER_REQUEST`], the names a merge's parts carried included). Empty (the
     /// default) adds nothing. Left out of the JSON when empty, so serialised inputs from
     /// before T12.91 read and write unchanged.
     #[serde(default, skip_serializing_if = "People::is_empty")]
@@ -209,55 +209,70 @@ impl SummaryInput {
         texts
     }
 
-    /// The names a request showing `texts` carries beside `carried`
+    /// The names a request showing `texts` and told to carry `carried` holds
     /// ([`NameFilter::choose`] with [`MAX_PEOPLE_PER_REQUEST`]); empty without names.
     fn chosen_names(
         filter: Option<&NameFilter>,
         texts: &[&str],
-        carried: &[String],
-    ) -> Vec<String> {
+        carried: &[CarriedName],
+    ) -> Vec<CarriedName> {
         filter.map_or_else(Vec::new, |f| {
             f.choose(texts, carried, MAX_PEOPLE_PER_REQUEST)
         })
     }
 
     /// An upper bound on what the names block of any request adds to its system message
-    /// (estimated tokens, the line break before it included) when it carries every name of
-    /// `carried` and at most [`MAX_PEOPLE_PER_REQUEST`] others: 0 without names. Estimates
-    /// are subadditive, so the block's markers plus the costliest lines bound any block.
-    fn people_bound(&self, carried: &[String]) -> usize {
+    /// (estimated tokens, the line break before it included): no request holds more than
+    /// [`MAX_PEOPLE_PER_REQUEST`] names (a merge's carried names included), so the block's
+    /// markers plus the costliest [`MAX_PEOPLE_PER_REQUEST`] lines bound every block
+    /// (estimates are subadditive). 0 without names. It never grows with the parts a merge
+    /// carries names from, so names can never make a plan fail on a long meeting.
+    fn people_bound(&self) -> usize {
         if self.people.is_empty() {
             return 0;
         }
         let line = |n: &str| estimate_tokens(&people_line(n)) + estimate_tokens("\n");
         let (before, after) = PEOPLE.split_once("{{names}}").unwrap_or((PEOPLE, ""));
-        let mut others: Vec<usize> = self
-            .people
-            .names()
-            .iter()
-            .filter(|n| !carried.contains(n))
-            .map(|n| line(n))
-            .collect();
-        others.sort_unstable_by(|a, b| b.cmp(a));
+        let mut lines: Vec<usize> = self.people.names().iter().map(|n| line(n)).collect();
+        lines.sort_unstable_by(|a, b| b.cmp(a));
         estimate_tokens("\n")
             + estimate_tokens(before)
             + estimate_tokens(after)
-            + carried.iter().map(|n| line(n)).sum::<usize>()
-            + others.iter().take(MAX_PEOPLE_PER_REQUEST).sum::<usize>()
+            + lines.iter().take(MAX_PEOPLE_PER_REQUEST).sum::<usize>()
     }
 }
 
-/// Every name of `parts` (the names each part of a merge carried, [`Prompt::people`]), each
-/// once, in first-seen order: what [`reduce_prompt_carrying`] is given for a group.
+/// A saved person's name a request carried, with the strongest match it had where it was
+/// chosen ([`Prompt::carried`]): what a merge of that request's reply is given.
+pub type CarriedName = (String, NameMatch);
+
+/// Every name of `parts` (the names each part of a merge carried, [`Prompt::carried`]), each
+/// once with the strongest match any part had for it, strongest first: by that strength, then
+/// the names more parts carried, ties in first-seen order. What [`reduce_prompt_carrying`] is
+/// given for a group; a merge told to carry more than [`MAX_PEOPLE_PER_REQUEST`] names keeps
+/// those its own texts match and then the first of this order ([`NameFilter::choose`]).
 #[must_use]
-pub fn carried_names(parts: &[Vec<String>]) -> Vec<String> {
-    let mut all: Vec<String> = Vec::new();
-    for n in parts.iter().flatten() {
-        if !all.contains(n) {
-            all.push(n.clone());
+pub fn carried_names(parts: &[Vec<CarriedName>]) -> Vec<CarriedName> {
+    let mut all: Vec<(CarriedName, usize)> = Vec::new();
+    for part in parts {
+        let mut seen: Vec<&String> = Vec::new();
+        for (n, m) in part {
+            if seen.contains(&n) {
+                continue;
+            }
+            seen.push(n);
+            match all.iter_mut().find(|((a, _), _)| a == n) {
+                Some(((_, best), count)) => {
+                    *best = (*best).max(*m);
+                    *count += 1;
+                }
+                None => all.push(((n.clone(), *m), 1)),
+            }
         }
     }
-    all
+    // Stable: equal strengths and counts keep first-seen order.
+    all.sort_by_key(|&((_, m), count)| std::cmp::Reverse((m, count)));
+    all.into_iter().map(|(c, _)| c).collect()
 }
 
 /// The model's context window and the ceiling of one reply.
@@ -408,8 +423,11 @@ pub struct Prompt {
     pub cites: Citable,
     /// The saved people's names this request carries (T12.91; empty for none), in the
     /// order of [`SummaryInput::people`]. A merge of this request's reply carries them too
-    /// ([`reduce_prompt_carrying`]).
+    /// ([`reduce_prompt_carrying`], through [`Prompt::carried`]).
     pub people: Vec<String>,
+    /// Per name of `people`, the strongest match it had here (its match in this request's
+    /// texts or, for a name a merge carried, the strength it was carried with).
+    pub people_matches: Vec<NameMatch>,
 }
 
 impl Prompt {
@@ -424,12 +442,24 @@ impl Prompt {
             max_output_tokens,
             cites,
             people: Vec::new(),
+            people_matches: Vec::new(),
         }
     }
 
+    /// The names this request carries with their strengths: what a merge of its reply is
+    /// given ([`carried_names`]).
+    #[must_use]
+    pub fn carried(&self) -> Vec<CarriedName> {
+        self.people
+            .iter()
+            .cloned()
+            .zip(self.people_matches.iter().copied())
+            .collect()
+    }
+
     /// This request carrying `people` (already in its messages).
-    fn carrying(mut self, people: Vec<String>) -> Self {
-        self.people = people;
+    fn carrying(mut self, people: Vec<CarriedName>) -> Self {
+        (self.people, self.people_matches) = people.into_iter().unzip();
         self
     }
 }
@@ -538,7 +568,7 @@ pub fn plan_with_rules(
             None,
         ))
         // Whatever names a chunk's request carries (0 when there are no names).
-        + input.people_bound(&[])
+        + input.people_bound()
         + estimate_tokens(&user_text(
             input,
             &[],
@@ -832,8 +862,10 @@ pub fn reduce_groups_with_rules(
 }
 
 /// [`reduce_groups_with_rules`] for partials whose requests carried saved people's names
-/// (T12.91): `carried` is every name any of `partials` carried ([`carried_names`]), so every
-/// group's [`reduce_prompt_carrying`] fits with the names it keeps. Production merges go
+/// (T12.91): `carried` is every name any of `partials` carried ([`carried_names`]). Every
+/// group's [`reduce_prompt_carrying`] holds at most [`MAX_PEOPLE_PER_REQUEST`] names, which
+/// the grouping counts, so however many parts carry names the plan never fails because of
+/// them. Production merges go
 /// through this and [`reduce_prompt_carrying`]; [`reduce_groups`] carries no names from the
 /// parts.
 ///
@@ -843,7 +875,7 @@ pub fn reduce_groups_carrying(
     input: &SummaryInput,
     rules: SummaryRules,
     partials: &[SummaryV1],
-    carried: &[String],
+    carried: &[CarriedName],
     budget: ContextBudget,
 ) -> Result<Vec<Range<usize>>, PromptError> {
     reduce_groups_merging(input, rules, partials, carried, budget, Merge::Plain)
@@ -907,7 +939,7 @@ fn reduce_groups_merging(
     input: &SummaryInput,
     rules: SummaryRules,
     partials: &[SummaryV1],
-    carried: &[String],
+    carried: &[CarriedName],
     budget: ContextBudget,
     merge: Merge,
 ) -> Result<Vec<Range<usize>>, PromptError> {
@@ -937,9 +969,9 @@ fn reduce_groups_merging(
             &[],
             merge.style(input, MergeLevel::Last),
         ))
-        // Whatever names a group's merge carries: its parts' names and the names its
-        // partials match (0 when there are no names).
-        + input.people_bound(carried)
+        // Whatever names a group's merge carries: at most the cap, its parts' names
+        // included (0 when there are no names).
+        + input.people_bound()
         + estimate_tokens(&reduce_user_text(input, &[], &numbers));
     // Six-digit part numbers bound the label of any position.
     let cost = |p: &SummaryV1| estimate_tokens(&partial_block(999_999, 999_999, p, &numbers));
@@ -1022,15 +1054,17 @@ pub fn reduce_prompt_with_rules(
 }
 
 /// [`reduce_prompt_with_rules`] for partials whose requests carried saved people's names
-/// (T12.91): the merge carries every name of `carried` (the names its parts carried,
-/// [`carried_names`]) and the names its partials, the meeting details and the notes match, so
-/// a name chosen in a map step is never lost at the merge. Production merges go through this.
+/// (T12.91): the merge holds the names its partials, the meeting details and the notes
+/// match, by strength, then the names of `carried` (the names its parts carried, with the
+/// strength each was found with, [`carried_names`]) they do not match, at most
+/// [`MAX_PEOPLE_PER_REQUEST`] in all ([`NameFilter::choose`]), so a name found in a map step
+/// reaches the merge. Production merges go through this.
 #[must_use]
 pub fn reduce_prompt_carrying(
     input: &SummaryInput,
     rules: SummaryRules,
     partials: &[SummaryV1],
-    carried: &[String],
+    carried: &[CarriedName],
     budget: ContextBudget,
     level: MergeLevel,
 ) -> Prompt {
@@ -1063,7 +1097,7 @@ fn reduce_prompt_merging(
     input: &SummaryInput,
     rules: SummaryRules,
     partials: &[SummaryV1],
-    carried: &[String],
+    carried: &[CarriedName],
     budget: ContextBudget,
     merge: Merge,
     level: MergeLevel,
@@ -1201,7 +1235,7 @@ fn system_text(
     user_name: Option<&str>,
     extra: Option<&str>,
     vocabulary: &Vocabulary,
-    people: &[String],
+    people: &[CarriedName],
     style: Option<(StylePreset, &SummaryStyle)>,
 ) -> String {
     let mut s = rules.replace("{{schema}}", schema_text());
@@ -1219,7 +1253,8 @@ fn system_text(
         s.push('\n');
         s.push_str(&block);
     }
-    if let Some(block) = super::people::people_block(people) {
+    let names: Vec<String> = people.iter().map(|(n, _)| n.clone()).collect();
+    if let Some(block) = super::people::people_block(&names) {
         s.push('\n');
         s.push_str(&block);
     }

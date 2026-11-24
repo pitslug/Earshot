@@ -33,6 +33,8 @@ fn summary_vocabulary_view_starts_empty_and_saves_checked_words() {
             not_in_use: 0,
             not_in_use_note: None,
             people: vec![],
+            people_left_out: 0,
+            people_left_out_note: None,
         }
     );
     let saved = set_words(&svc, &owned(&[" Quillmarsh ", "", "QXR-7", "qxr-7"])).unwrap();
@@ -76,6 +78,7 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
         vec![],
         0,
         owned(&["Vantrel Oskarine"]),
+        0,
     ))
     .unwrap();
     assert_eq!(
@@ -89,6 +92,8 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
             "not_in_use": 0,
             "not_in_use_note": null,
             "people": ["Vantrel Oskarine"],
+            "people_left_out": 0,
+            "people_left_out_note": null,
         })
     );
 }
@@ -97,12 +102,19 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
 fn summary_vocabulary_saved_people_follow_the_shared_case_table() {
     let table = crate::testutil::summary_cases();
     let cases = table["people"]["cases"].as_array().unwrap();
-    assert!(cases.len() >= 7, "the table lost cases");
+    assert!(cases.len() >= 8, "the table lost cases");
     for case in cases {
         let strings = |k: &str| -> Vec<String> { serde_json::from_value(case[k].clone()).unwrap() };
         let dictionary = earshot_core::prompt::Vocabulary::new(strings("dictionary")).unwrap();
         let got = earshot_core::prompt::People::new(strings("names"), &dictionary);
         assert_eq!(got.names(), strings("people"), "{}", case["name"]);
+        let left_out = earshot_core::prompt::People::left_out(strings("names"));
+        assert_eq!(
+            u64::try_from(left_out).ok(),
+            case["left_out"].as_u64(),
+            "{}",
+            case["name"]
+        );
     }
 }
 
@@ -122,6 +134,58 @@ fn summary_vocabulary_lists_the_saved_people_a_summary_may_be_given() {
     let added = add_word(&svc, "tamsin brevik").unwrap();
     assert!(added.view.people.is_empty());
     assert!(remove_word(&svc, "tamsin brevik").unwrap().people == owned(&["Tamsin Brevik"]));
+}
+
+#[test]
+fn summary_vocabulary_says_how_many_saved_names_it_left_out_and_why() {
+    // T12.91a: a name holding an invisible formatting character (a zero-width non-joiner,
+    // legitimate in some scripts) is never given to a summary; the page says how many, in
+    // fixed words that hold no name.
+    let table = crate::testutil::summary_cases();
+    let copy = &table["messages"]["people_left_out"];
+    assert_eq!(people_left_out_note(0), None);
+    assert_eq!(people_left_out_note(1).as_deref(), copy["one"].as_str());
+    let many = copy["many"].as_str().unwrap();
+    assert!(many.contains("{n}"));
+    assert_eq!(people_left_out_note(4), Some(many.replace("{n}", "4")));
+    let dir = TempDir::new("summary-vocabulary");
+    let svc = services(&dir);
+    earshot_runtime::my_voice::set_my_name(&svc, "Nim\u{200c}a Rostavel").unwrap();
+    add_person(&svc, "Vantrel Oskarine");
+    let v = vocabulary_view(&svc).unwrap();
+    assert_eq!(v.people, owned(&["Vantrel Oskarine"]));
+    assert_eq!(v.people_left_out, 1);
+    assert_eq!(v.people_left_out_note.as_deref(), copy["one"].as_str());
+    // The view the window gets carries the listed name and no text of the left-out one.
+    let json = serde_json::to_string(&v).unwrap();
+    assert!(json.contains("Vantrel Oskarine"), "{json}");
+    assert!(
+        !json.contains("Rostavel") && !json.contains("Nim"),
+        "{json}"
+    );
+    earshot_runtime::my_voice::set_my_name(&svc, "Nima Rostavel").unwrap();
+    let v = vocabulary_view(&svc).unwrap();
+    assert_eq!(v.people, owned(&["Nima Rostavel", "Vantrel Oskarine"]));
+    assert_eq!((v.people_left_out, v.people_left_out_note), (0, None));
+}
+
+/// Saves a person named `name` with no voice, as the People page lists them.
+fn add_person(svc: &Services, name: &str) {
+    use earshot_core::model::Stamp;
+    use earshot_core::voiceprint::{Person, VoiceprintRepo};
+    use rand_core::SeedableRng;
+    let clock = std::sync::Arc::clone(&svc.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(name.len() as u64 + 7);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    store
+        .put_person(Person::new(name, false, &mut stamp))
+        .unwrap();
 }
 
 #[test]
@@ -165,7 +229,7 @@ fn summary_vocabulary_words_not_in_use_follow_the_shared_table() {
     assert!(many.contains("{n}"));
     assert_eq!(not_in_use_note(7), Some(many.replace("{n}", "7")));
     // A view counts them and says so.
-    let v = view(&owned(&["QXR-7"]), vec![], 3, vec![]);
+    let v = view(&owned(&["QXR-7"]), vec![], 3, vec![], 0);
     assert_eq!(v.not_in_use, 3);
     assert_eq!(v.not_in_use_note, Some(many.replace("{n}", "3")));
 }

@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use earshot_core::asr::MeetingTime;
 use earshot_core::identity::EntityId;
 use earshot_core::prompt::{
-    ContextBudget, MAX_PEOPLE_PER_REQUEST, MeetingInfo, MergeLevel, People, PromptPlan,
-    PromptSegment, SummaryInput, Template, Vocabulary, carried_names, plan, plan_chunks,
-    reduce_prompt, reduce_prompt_carrying, time_chunks,
+    CarriedName, ContextBudget, MAX_PEOPLE_PER_REQUEST, MAX_PERSON_NAME_CHARS, MeetingInfo,
+    MergeLevel, People, PromptPlan, PromptSegment, SummaryInput, Template, Vocabulary,
+    carried_names, plan, plan_chunks, reduce_prompt, reduce_prompt_carrying, time_chunks,
 };
 use earshot_core::summary::SummaryV1;
 use earshot_core::vocabulary::names::{NameFilter, listed_words};
@@ -368,7 +368,7 @@ fn measure(
     out.single = c;
     // The last merge over the map parts, with partials that name nobody: what the parts
     // carried is all it holds.
-    let parts: Vec<Vec<String>> = maps.iter().map(|m| m.prompt.people.clone()).collect();
+    let parts: Vec<Vec<CarriedName>> = maps.iter().map(|m| m.prompt.carried()).collect();
     let partials = vec![SummaryV1::default(); maps.len()];
     let merge = reduce_prompt_carrying(
         &input,
@@ -449,9 +449,89 @@ struct Recall {
     single_uncapped: usize,
 }
 
+/// Which commit the run measured: `git rev-parse HEAD`, with `-dirty` when `git status
+/// --porcelain` lists anything (a tracked change or an untracked file), read before the run
+/// so the report it writes is not counted. `unknown` when git cannot say.
+fn commit() -> String {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+    };
+    match (git(&["rev-parse", "HEAD"]), git(&["status", "--porcelain"])) {
+        (Some(head), Some(status)) if !head.is_empty() => {
+            if status.is_empty() {
+                head
+            } else {
+                format!("{head}-dirty")
+            }
+        }
+        _ => "unknown".to_owned(),
+    }
+}
+
+/// `at` (seconds since the Unix epoch) as a UTC time, `YYYY-MM-DDTHH:MM:SSZ` (the civil
+/// date from days, after Howard Hinnant's `civil_from_days`).
+fn utc(at: u64) -> String {
+    let (days, secs) = (at / 86_400, at % 86_400);
+    let z = i64::try_from(days).expect("a date") + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        secs / 3_600,
+        secs / 60 % 60,
+        secs % 60
+    )
+}
+
+/// The run's provenance: what it measured and when.
+#[derive(Debug, Clone, Serialize)]
+struct Provenance {
+    /// [`commit`] when the run started.
+    commit: String,
+    /// When the run started, UTC.
+    started_utc: String,
+}
+
+impl Provenance {
+    fn now() -> Self {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        Provenance {
+            commit: commit(),
+            started_utc: utc(at),
+        }
+    }
+}
+
+/// Every shipped constant the run read, as it read them.
+#[derive(Debug, Serialize)]
+struct Shipped {
+    /// `earshot_core::prompt::MAX_PEOPLE_PER_REQUEST`.
+    max_people_per_request: usize,
+    /// `earshot_core::prompt::MAX_PERSON_NAME_CHARS`.
+    max_person_name_chars: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct Report {
     tool: &'static str,
+    /// What the run measured and when (T12.91a).
+    provenance: Provenance,
+    /// The shipped constants it read (T12.91a).
+    shipped: Shipped,
     source: String,
     meetings: usize,
     listed_invented: usize,
@@ -470,7 +550,12 @@ struct Report {
     rule_failures: Vec<String>,
 }
 
-fn report(source: String, all: &[MeetingCounts], invented: usize) -> Report {
+fn report(
+    provenance: Provenance,
+    source: String,
+    all: &[MeetingCounts],
+    invented: usize,
+) -> Report {
     let maps: Vec<&RequestCounts> = all.iter().flat_map(|m| &m.maps).collect();
     let singles: Vec<&RequestCounts> = all.iter().map(|m| &m.single).collect();
     let merges: Vec<&RequestCounts> = all.iter().map(|m| &m.merge).collect();
@@ -527,6 +612,11 @@ fn report(source: String, all: &[MeetingCounts], invented: usize) -> Report {
     }
     Report {
         tool: "summary_names (T12.91)",
+        provenance,
+        shipped: Shipped {
+            max_people_per_request: MAX_PEOPLE_PER_REQUEST,
+            max_person_name_chars: MAX_PERSON_NAME_CHARS,
+        },
         source,
         meetings: all.len(),
         listed_invented: invented,
@@ -701,6 +791,7 @@ fn args() -> Result<Args, String> {
 
 fn run() -> Result<(), String> {
     let a = args()?;
+    let provenance = Provenance::now();
     let invented = invented_names();
     let (source, all) = if a.dry_run {
         (
@@ -723,7 +814,7 @@ fn run() -> Result<(), String> {
             all,
         )
     };
-    let r = report(source, &all, invented.len());
+    let r = report(provenance, source, &all, invented.len());
     let json = serde_json::to_string_pretty(&r).map_err(|e| e.to_string())? + "\n";
     match a.out {
         Some(out) => {
@@ -793,6 +884,29 @@ mod tests {
     }
 
     #[test]
+    fn summary_names_reports_say_when_and_on_what_they_ran() {
+        assert_eq!(utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc(1_795_564_799), "2026-11-24T23:59:59Z");
+        let p = Provenance::now();
+        assert!(p.started_utc.ends_with('Z') && p.started_utc.len() == 20);
+        let hex = p.commit.trim_end_matches("-dirty");
+        assert!(
+            p.commit == "unknown"
+                || (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit())),
+            "{}",
+            p.commit
+        );
+        let r = report(p, "t".into(), &[], 0);
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            json["shipped"]["max_people_per_request"],
+            MAX_PEOPLE_PER_REQUEST
+        );
+        assert!(json["provenance"]["commit"].is_string());
+    }
+
+    #[test]
     fn summary_names_a_misheard_surname_keeps_its_sound() {
         for name in invented_names() {
             let surname = name.split(' ').nth(1).unwrap();
@@ -842,7 +956,7 @@ mod tests {
             unspoken(&them, &["Avrel Quillmarsh"], &[&mention], &suggester),
             (2, 1)
         );
-        let r = report("t".into(), &[m], invented.len());
+        let r = report(Provenance::now(), "t".into(), &[m], invented.len());
         assert_eq!(r.exact.mentions, MENTIONED);
         let json = serde_json::to_string(&r).unwrap();
         // Counts only: no invented name reaches the report.

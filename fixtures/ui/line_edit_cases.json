@@ -1,5 +1,5 @@
 {
-  "about": "Moving and splitting a transcript line (T12.90, T12.90a). apps/desktop/src-tauri (detail_tests.rs) runs every case through the shipped `edit::move_line`, `edit::split_line`, `edit::edit_segment`, `edit::movable_speakers` and `edit::can_split_line` and through `meeting_detail` (its `movable_by_track` and `splittable`), and packages/ui/src/ipc/lineEdits.test.ts through the mock's `getMeeting`, `moveLine`, `splitLine` and `editSegment`, so the browser preview cannot offer a move or split the app would refuse, nor refuse one it would make. Each case is a meeting: `speakers` are every live speaker row in creation order (`role` is the runtime's SpeakerRole, `person` whether it is linked to a person of its own name), `lines` the transcript in order (`track` mic or far, `speaker` null for a line no speaker was found for, `words` the recogniser's words, which a split needs to equal the white-space tokens of `text`). `offers` (a line's Move to speaker list, the line's own speaker left out, in speaker order), `splittable` and `listed` (the speaker cards the detail shows: speakers with a line) are checked at the start and after any step that names them. A step is `move` (`to` a speaker label, `new` or an unknown label), `split` (before white-space token `token`) or `edit`; its `result` is `moved`, `unchanged`, `new_speaker` (the row a New speaker made, `as` its label for later steps), `split` (the two parts' texts, `as` the second part's label) or `error` (the IPC refusal kind). Every name and word is invented.",
+  "about": "Moving and splitting a transcript line (T12.90, T12.90a). apps/desktop/src-tauri (detail_tests.rs) runs every case through the shipped `edit::move_line`, `edit::split_line`, `edit::edit_segment`, `edit::movable_speakers` and `edit::can_split_line` and through `meeting_detail` (its `movable_by_track` and `splittable`), and packages/ui/src/ipc/lineEdits.test.ts through the mock's `getMeeting`, `moveLine`, `splitLine` and `editSegment`, so the browser preview cannot offer a move or split the app would refuse, nor refuse one it would make. Each case is a meeting: `speakers` are every live speaker row in creation order (`role` is the runtime's SpeakerRole, `person` whether it is linked to a person of its own name), `lines` the transcript in order (`track` mic or far, `speaker` null for a line no speaker was found for, `words` the recogniser's words, which a split needs to equal the white-space tokens of `text`). `offers` (a line's Move to speaker list, the line's own speaker left out, in speaker order), `by_track` (the detail's `movable_by_track` by track, mic or far: every live track of the meeting, one with no line included, T12.91a), `splittable` and `listed` (the speaker cards the detail shows: speakers with a line) are checked at the start and after any step that names them. A step is `move` (`to` a speaker label, `new` or an unknown label), `split` (before white-space token `token`) or `edit`; its `result` is `moved`, `unchanged`, `new_speaker` (the row a New speaker made, `as` its label for later steps), `split` (the two parts' texts, `as` the second part's label) or `error` (the IPC refusal kind). Every name and word is invented.",
   "cases": [
     {
       "name": "a call: offers by line and by role, moves, new speakers and splits",
@@ -22,6 +22,7 @@
       "offers": { "l1": ["s3"], "l2": ["priya", "s1"], "l3": ["s2", "s1"], "l4": ["priya", "s1"], "l5": ["s3"] },
       "splittable": { "l1": true, "l2": true, "l3": true, "l4": false, "l5": true },
       "listed": ["me", "priya", "s2"],
+      "by_track": { "mic": ["me", "s3"], "far": ["priya", "s2", "s1"] },
       "steps": [
         { "op": "move", "line": "l3", "to": "s3", "result": "error", "error": "speaker_not_on_track" },
         { "op": "move", "line": "l3", "to": "ghost", "result": "error", "error": "speaker_not_found" },
@@ -161,6 +162,32 @@
         { "op": "move", "line": "d1", "to": "s2", "result": "error", "error": "draft_transcript" },
         { "op": "move", "line": "d2", "to": "new", "result": "error", "error": "draft_transcript" },
         { "op": "split", "line": "d1", "token": 1, "result": "error", "error": "draft_transcript" }
+      ]
+    },
+    {
+      "name": "a call: the far end has no line yet and still lists its voices",
+      "in_room": false,
+      "draft": false,
+      "speakers": [
+        { "id": "me", "name": "Me", "role": "Me", "person": true },
+        { "id": "s1", "name": "Speaker 1", "role": "Remote", "person": false },
+        { "id": "s2", "name": "Speaker 2", "role": "Local", "person": false }
+      ],
+      "lines": [
+        { "id": "l1", "track": "mic", "speaker": "me", "text": "is the quarry road open", "words": ["is", "the", "quarry", "road", "open"] }
+      ],
+      "offers": { "l1": ["s2"] },
+      "splittable": { "l1": true },
+      "listed": ["me"],
+      "by_track": { "mic": ["me", "s2"], "far": ["s1"] },
+      "steps": [
+        { "op": "move", "line": "l1", "to": "s1", "result": "error", "error": "speaker_not_on_track" },
+        {
+          "op": "move", "line": "l1", "to": "s2", "result": "moved",
+          "offers": { "l1": ["me"] },
+          "listed": ["s2"],
+          "by_track": { "mic": ["me", "s2"], "far": ["s1"] }
+        }
       ]
     }
   ]

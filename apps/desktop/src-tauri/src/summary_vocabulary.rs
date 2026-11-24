@@ -38,6 +38,12 @@ pub struct SummaryVocabularyView {
     /// `earshot_runtime::word_choices::summary_people`): shown read only; each request
     /// carries only the names that match what was said.
     pub people: Vec<String>,
+    /// Saved names left out of `people` for what they hold (a control or invisible formatting
+    /// character, such as a zero-width joiner, or more than 100 characters; T12.91a,
+    /// `earshot_runtime::word_choices::people_left_out`): never given to a summary.
+    pub people_left_out: u32,
+    /// What the page says about them ([`people_left_out_note`]); `None` when none is left out.
+    pub people_left_out_note: Option<String>,
 }
 
 /// The page's line for one word not in use (`fixtures/ui/summary_settings_cases.json`,
@@ -46,6 +52,23 @@ pub const NOT_IN_USE_ONE: &str = "1 word is not in use: the Dictionaries of your
 
 /// The page's line for `{n}` words not in use (`messages.not_in_use.many`).
 pub const NOT_IN_USE_MANY: &str = "{n} words are not in use: the Dictionaries of your computers together pass the limits. Remove words to make room for them.";
+
+/// The page's line for one saved name left out of the Saved people list
+/// (`fixtures/ui/summary_settings_cases.json`, `messages.people_left_out.one`).
+pub const PEOPLE_LEFT_OUT_ONE: &str = "1 saved name is not listed and is never given to a summary: it holds an invisible formatting character (such as a zero-width joiner) or a control character, or is longer than 100 characters.";
+
+/// The page's line for `{n}` saved names left out (`messages.people_left_out.many`).
+pub const PEOPLE_LEFT_OUT_MANY: &str = "{n} saved names are not listed and are never given to a summary: each holds an invisible formatting character (such as a zero-width joiner) or a control character, or is longer than 100 characters.";
+
+/// The page's line for `n` saved names left out of the Saved people list; `None` for 0.
+#[must_use]
+pub fn people_left_out_note(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some(PEOPLE_LEFT_OUT_ONE.to_owned()),
+        n => Some(PEOPLE_LEFT_OUT_MANY.replace("{n}", &n.to_string())),
+    }
+}
 
 /// The page's line for `n` stored words not in use; `None` for 0.
 #[must_use]
@@ -66,6 +89,7 @@ fn view(
     unknown: Vec<String>,
     not_in_use: usize,
     people: Vec<String>,
+    people_left_out: usize,
 ) -> SummaryVocabularyView {
     SummaryVocabularyView {
         words: words.to_vec(),
@@ -76,6 +100,8 @@ fn view(
         not_in_use: limit(not_in_use),
         not_in_use_note: not_in_use_note(not_in_use),
         people,
+        people_left_out: limit(people_left_out),
+        people_left_out_note: people_left_out_note(people_left_out),
     }
 }
 
@@ -101,11 +127,13 @@ pub fn vocabulary_view(services: &Services) -> Result<SummaryVocabularyView, Ipc
     let db = services.store();
     let state = vocabulary::dictionary_state(&db)?;
     let people = earshot_runtime::word_choices::summary_people(&db, &state.words)?;
+    let left_out = earshot_runtime::word_choices::summary_people_left_out(&db)?;
     Ok(view(
         state.words.words(),
         state.unknown.iter().map(ToString::to_string).collect(),
         state.not_in_use,
         people.names().to_vec(),
+        left_out,
     ))
 }
 

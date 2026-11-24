@@ -233,10 +233,11 @@ export function roleOf(detail: MeetingDetail, s: SpeakerCard): MockRole {
 /** Whether track `track` of a row is the mic (`TrackId::Mic`; in the room every line is). */
 const onMic = (track: TranscriptRow["track"]) => track !== "Them";
 
-/** `edit::movable_by_track`: for each track a line is on, the speakers that belong to it (a
- * line there, or no line at all and a role of that track: Remote the far end, Local and Me the
- * mic, Room the mic of an in-room meeting), in the cards' order, with their names. Nothing in a
- * draft. */
+/** `edit::movable_by_track`: for each of the meeting's tracks (a line is on it, or it is one
+ * the meeting recorded: the mic, and in a call the far end, `SAMPLE_TRACKS` when no line names
+ * one of that kind), the speakers that belong to it (a line there, or no line at all and a role
+ * of that track: Remote the far end, Local and Me the mic, Room the mic of an in-room meeting),
+ * in the cards' order, with their names. Nothing in a draft. */
 export function movableByTrack(detail: MeetingDetail): MeetingDetail["movable_by_track"] {
   if (detail.header.transcript !== "Final") return {};
   const inRoom = detail.header.mode === "InRoom";
@@ -245,6 +246,13 @@ export function movableByTrack(detail: MeetingDetail): MeetingDetail["movable_by
   const micTrack = new Map<string, boolean>();
   for (const r of detail.transcript) {
     micTrack.set(r.track_id, onMic(r.track));
+  }
+  // A live track with no line still gets its list (T12.91a), as the runtime lists the
+  // meeting's live tracks.
+  const kinds = new Set(micTrack.values());
+  if (!kinds.has(true)) micTrack.set(SAMPLE_TRACKS.mic, true);
+  if (!inRoom && !kinds.has(false)) micTrack.set(SAMPLE_TRACKS.far, false);
+  for (const r of detail.transcript) {
     if (r.speaker_id === null) continue;
     withLines.add(r.speaker_id);
     const set = onTrack.get(r.track_id) ?? new Set<string>();

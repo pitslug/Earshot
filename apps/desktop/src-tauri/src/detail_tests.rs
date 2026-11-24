@@ -2060,6 +2060,8 @@ struct LineCase {
     speakers: BTreeMap<String, EntityId>,
     names: BTreeMap<String, String>,
     lines: BTreeMap<String, EntityId>,
+    /// The meeting's tracks by label (`mic`, and `far` in a call).
+    tracks: BTreeMap<String, EntityId>,
     rng: ChaCha8Rng,
 }
 
@@ -2168,11 +2170,16 @@ fn line_case(svc: &Services, case: &serde_json::Value, seed: u64) -> LineCase {
             .put_segment(SegmentRow::new(m.id, pass, s, stamp.hlc, stamp.clock))
             .unwrap();
     }
+    let mut tracks = BTreeMap::from([("mic".to_owned(), mic.id)]);
+    if let Some(far) = &far {
+        tracks.insert("far".to_owned(), far.id);
+    }
     LineCase {
         meeting: m.id,
         speakers,
         names,
         lines,
+        tracks,
         rng: ChaCha8Rng::seed_from_u64(seed + 1),
     }
 }
@@ -2247,6 +2254,23 @@ fn check_line_case(svc: &Services, c: &LineCase, expect: &serde_json::Value, at:
             );
         }
     }
+    if let Some(by_track) = expect["by_track"].as_object() {
+        for (track, want) in by_track {
+            let want: Vec<&str> = want
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let id = c.tracks[track].to_string();
+            let listed = d
+                .movable_by_track
+                .get(&id)
+                .unwrap_or_else(|| panic!("{at}: no list for the {track} track"));
+            let got: Vec<String> = listed.iter().map(|s| c.label_of(&s.id)).collect();
+            assert_eq!(got, want, "{at}: by_track {track}");
+        }
+    }
     if let Some(listed) = expect["listed"].as_array() {
         let want: Vec<&str> = listed.iter().map(|v| v.as_str().unwrap()).collect();
         let got: Vec<String> = d.speakers.iter().map(|s| c.label_of(&s.id)).collect();
@@ -2263,7 +2287,7 @@ fn detail_line_edits_match_the_shared_cases() {
     let table: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let cases = table["cases"].as_array().unwrap();
-    assert!(cases.len() >= 4);
+    assert!(cases.len() >= 5);
     for (n, case) in cases.iter().enumerate() {
         let name = case["name"].as_str().unwrap();
         let dir = TempDir::new("detail-line-cases");

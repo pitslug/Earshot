@@ -27,6 +27,7 @@ interface Step {
   offers?: Record<string, string[]>;
   splittable?: Record<string, boolean>;
   listed?: string[];
+  by_track?: Record<string, string[]>;
 }
 
 const ITEM: MeetingListItem = {
@@ -131,7 +132,7 @@ describe("line edits", () => {
       const names = new Map(c.speakers.map((s) => [s.id, s.name]));
       const label = (id: string) => speakerLabel.get(id) ?? `unlabelled ${id}`;
 
-      const check = async (expect_: Pick<Step, "offers" | "splittable" | "listed">, at: string) => {
+      const check = async (expect_: Pick<Step, "offers" | "splittable" | "listed" | "by_track">, at: string) => {
         const d = await ipc.getMeeting(ITEM.id);
         for (const [line, want] of Object.entries(expect_.offers ?? {})) {
           const shown = offersOf(d, lineId.get(line) ?? line);
@@ -141,6 +142,12 @@ describe("line edits", () => {
         for (const [line, want] of Object.entries(expect_.splittable ?? {})) {
           const r = d.transcript.find((x) => x.segment_id === (lineId.get(line) ?? line));
           expect(r?.splittable, `${at}: splittable ${line}`).toBe(want);
+        }
+        for (const [track, want] of Object.entries(expect_.by_track ?? {})) {
+          const id = track === "mic" ? SAMPLE_TRACKS.mic : SAMPLE_TRACKS.far;
+          const listed = d.movable_by_track[id];
+          expect(listed, `${at}: a list for the ${track} track`).toBeDefined();
+          expect((listed ?? []).map((s) => label(s.id)), `${at}: by_track ${track}`).toEqual(want);
         }
         if (expect_.listed !== undefined) {
           expect(d.speakers.map((s) => label(s.id)), `${at}: speakers listed`).toEqual(expect_.listed);

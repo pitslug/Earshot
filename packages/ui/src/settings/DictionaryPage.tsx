@@ -183,9 +183,7 @@ export function DictionaryPage() {
             Saved people
           </Subtitle2>
           <Body1 className={styles.text}>{SAVED_PEOPLE_TEXT}</Body1>
-          {load.view.people.length === 0 ? (
-            <Caption1 className={styles.muted}>No saved people yet.</Caption1>
-          ) : (
+          {load.view.people.length > 0 ? (
             <ul className={styles.list} aria-label="Saved people">
               {sortedWords(load.view.people).map((name) => (
                 <li key={name} className={styles.word}>
@@ -193,6 +191,13 @@ export function DictionaryPage() {
                 </li>
               ))}
             </ul>
+          ) : (
+            load.view.people_left_out_note === null && (
+              <Caption1 className={styles.muted}>No saved people yet.</Caption1>
+            )
+          )}
+          {load.view.people_left_out_note !== null && (
+            <Caption1 className={styles.muted}>{load.view.people_left_out_note}</Caption1>
           )}
         </section>
       )}

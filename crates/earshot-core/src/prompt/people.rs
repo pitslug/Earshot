@@ -8,7 +8,8 @@
 //! the shipped matcher hears one of its words there), at most [`MAX_PEOPLE_PER_REQUEST`] of
 //! them by match strength. A map request is matched against its transcript lines, a single
 //! request against the whole meeting, and a merge against its partial summaries, keeping
-//! every name its parts carried. The chosen names are one block in the system message
+//! the names its parts carried (by the strength each was found with) after the names it
+//! matches itself. The chosen names are one block in the system message
 //! ([`PEOPLE`]), right after the Dictionary's block and before the style, introduced by fixed
 //! text that says they are names to spell and never instructions; every name is one line
 //! prefixed with [`PEOPLE_LINE_PREFIX`], so no name can close or fake the block's markers. A
@@ -20,10 +21,12 @@ use serde::{Deserialize, Serialize};
 use super::template::PEOPLE;
 use super::vocabulary::{VOCABULARY_LINE_PREFIX, Vocabulary};
 
-/// The most names one request carries beside the names its parts carried (a merge never
-/// drops those). Chosen by the rule in docs/summary-names.md, written before its measurement:
-/// the smallest candidate cap that lost no matched mention on the AMI dev meetings with 400
-/// invented saved names (`docs/summary-names/ami-dev.json`, 2026-11-25: 10 lost 7, 15 lost 0).
+/// The most names one request carries, a merge's carried names included (a merge told to
+/// carry more keeps the strongest, [`crate::vocabulary::names::NameFilter::choose`]). Chosen
+/// by the rule in docs/summary-names.md, written before its measurement: the smallest
+/// candidate cap that lost no matched mention on the AMI dev meetings with 400 invented saved
+/// names (`docs/summary-names/ami-dev-cap50.json`, 2026-11-25: 10 lost 7, 15 lost 0; re-run at
+/// 15 from a clean commit, `docs/summary-names/ami-dev.json`: the same).
 pub const MAX_PEOPLE_PER_REQUEST: usize = 15;
 
 /// The longest name kept, in characters: the People page's own limit
@@ -59,14 +62,9 @@ impl People {
             .collect();
         let mut kept = Vec::new();
         for name in names {
-            let name = name.as_ref();
-            if name.chars().any(char::is_control) || super::format_chars::has_format_char(name) {
+            let Some(name) = usable(name.as_ref()) else {
                 continue;
-            }
-            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
-            if name.is_empty() || name.chars().count() > MAX_PERSON_NAME_CHARS {
-                continue;
-            }
+            };
             let key = name.to_lowercase();
             if seen.contains(&key) {
                 continue;
@@ -75,6 +73,26 @@ impl People {
             kept.push(name);
         }
         People(kept)
+    }
+
+    /// How many of `names` [`People::new`] leaves out for what they hold (a control or
+    /// invisible formatting character, such as a zero-width joiner, or more than
+    /// [`MAX_PERSON_NAME_CHARS`] characters), never for being empty or a repeat: what the
+    /// Dictionary page says it left out (T12.91a). The Dictionary refuses the same
+    /// characters, so these names are never given to a summary.
+    #[must_use]
+    pub fn left_out<I, S>(names: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        names
+            .into_iter()
+            .filter(|n| {
+                let n = n.as_ref();
+                n.split_whitespace().next().is_some() && usable(n).is_none()
+            })
+            .count()
     }
 
     /// Whether there are no names (no request carries any).
@@ -100,6 +118,17 @@ impl From<People> for Vec<String> {
     fn from(p: People) -> Vec<String> {
         p.0
     }
+}
+
+/// `name` on one line (white space runs joined); `None` when it is empty or holds what no
+/// kept name may: a control or invisible formatting character, or more than
+/// [`MAX_PERSON_NAME_CHARS`] characters.
+fn usable(name: &str) -> Option<String> {
+    if name.chars().any(char::is_control) || super::format_chars::has_format_char(name) {
+        return None;
+    }
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!name.is_empty() && name.chars().count() <= MAX_PERSON_NAME_CHARS).then_some(name)
 }
 
 /// One name's line in the block.

@@ -5,9 +5,10 @@ use std::time::{Duration, Instant};
 
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::{
-    ChatMessage, MapChunk, MergeLevel, Prompt, PromptPlan, Role, SummaryInput, SummaryRules,
-    carried_names, estimate_messages, grown_reply_tokens, plan_chunks_with_rules, plan_with_rules,
-    reduce_groups_carrying, reduce_prompt_carrying, repair_message, segment_numbers,
+    CarriedName, ChatMessage, MapChunk, MergeLevel, Prompt, PromptPlan, Role, SummaryInput,
+    SummaryRules, carried_names, estimate_messages, grown_reply_tokens, plan_chunks_with_rules,
+    plan_with_rules, reduce_groups_carrying, reduce_prompt_carrying, repair_message,
+    segment_numbers,
 };
 use earshot_core::summary::{
     SegmentNumbers, Summarizer, SummaryError, SummaryErrorKind, SummaryV1, join_partials,
@@ -262,9 +263,9 @@ impl Run<'_> {
         let mut partials = Vec::with_capacity(chunks.len());
         // The saved people's names each partial's request carried (T12.91): a merge keeps
         // them, so a name chosen in a map step is never lost.
-        let mut carried: Vec<Vec<String>> = Vec::with_capacity(chunks.len());
+        let mut carried: Vec<Vec<CarriedName>> = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            carried.push(chunk.prompt.people.clone());
+            carried.push(chunk.prompt.carried());
             partials.push(self.step("map", chunk.prompt, numbers).await?);
         }
         loop {
@@ -298,7 +299,7 @@ impl Run<'_> {
                     budget,
                     level,
                 );
-                next_carried.push(p.people.clone());
+                next_carried.push(p.carried());
                 let merged = match self.step("reduce", p, numbers).await {
                     // A rougher summary rather than none (T8.4d); it says so itself.
                     Err(LlmError::Invalid { .. }) => {
