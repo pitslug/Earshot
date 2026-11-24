@@ -2459,6 +2459,12 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: Cancel (and the instruction) sit on their own row outside the word grid, styled as a command (Fluent `subtle` or `secondary` with a dismiss icon), not as a word; keyboard order unchanged (words, then Cancel); Escape still cancels. Judge in the Vite preview, light and dark.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; preview screenshots light and dark
 
+- [ ] T12.95 Settings pages share one set of widths
+  - found (0.4.2 hand test, 2026-11-25): on the System page the benchmark result box is capped at 520 px while the CUDA and model boxes above fill the page (860 px), so its values wrap; across Settings, text runs to 62ch or 70ch and boxes and fields to 420, 520 or 860 px, each page choosing its own.
+  - deps: T7.4f
+  - do: define the widths once in `packages/ui/src/settings/parts.tsx` (text measure, box, field; and the page's own 860 px), each with a one-line comment on what it is for; every Settings page and part (`packages/ui/src/settings/*.tsx` and the first-run wizard's reuse of them) uses those names, no literal `maxWidth` left in a Settings file; boxes (results, cards, sections drawn with a border) fill the page width like the model and CUDA cards; text paragraphs keep a readable measure; narrow controls (a select, a short field) stay narrow. A test or lint that fails on a literal `maxWidth` in `packages/ui/src/settings/` outside `parts.tsx`. Judge every Settings page in the Vite preview, light and dark, before and after.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; preview screenshots of each Settings page
+
 - [ ] T12.92 A line edit and a re-transcription on two computers leave one version of the words
   - found (T12.90's lane review; decided by the owner 2026-11-24): sync keeps the newest copy of each row (`apply_remote` step 6). When device A edits, moves or splits a final line (`edit_segment`, `use_word`, `move_line`, `split_line`; all set `text_edited_at`) while device B re-transcribes the same meeting before they sync, B's pass tombstones A's row (or not, by stamp) and writes fresh rows over the same span, and A's edited row (or a split's second part, which B never saw) arrives live beside them: the same words twice. A split also carries `word-choices` and `unknown-lines` only on the splitting device (both device-local).
   - deps: T12.90, T11.3
