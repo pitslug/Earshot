@@ -57,6 +57,33 @@ describe("Dictionary", () => {
     expect(screen.queryByRole("list", { name: "Saved people" })).not.toBeInTheDocument();
   });
 
+  it("says how many saved names it left out, and why, without naming them (T12.91a)", async () => {
+    setup({
+      persons: [
+        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p2", name: "Vantrel Oskarine", is_me: false, has_voiceprint: false, meetings: 2 },
+      ],
+    });
+    const list = await screen.findByRole("list", { name: "Saved people" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Vantrel Oskarine"]);
+    expect(screen.getByText(table.messages.people_left_out.one)).toBeInTheDocument();
+    expect(table.messages.people_left_out.one).not.toMatch(/Rostavel|—/);
+  });
+
+  it("does not say no one is saved when every saved name was left out (T12.91a)", async () => {
+    setup({
+      persons: [
+        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p2", name: "Kam‍Pellory Vane", is_me: false, has_voiceprint: false, meetings: 1 },
+      ],
+    });
+    expect(
+      await screen.findByText(table.messages.people_left_out.many.replace("{n}", "2")),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No saved people yet.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Saved people" })).not.toBeInTheDocument();
+  });
+
   it("says how many words are not in use when the joined list passes a limit (T11.3e)", async () => {
     setup({ summaries: { vocabulary: ["Quillmarsh", "QXR-7"], notInUse: 3 } });
     const bar = await screen.findByLabelText("Words not in use");
@@ -198,6 +225,8 @@ describe("Dictionary", () => {
         not_in_use: 0,
         not_in_use_note: null,
         people: [],
+        people_left_out: 0,
+        people_left_out_note: null,
       }),
     }));
     expect(await screen.findByText("The stored dictionary is not used")).toBeInTheDocument();

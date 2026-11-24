@@ -26,11 +26,8 @@
 //!   any map or merge instruction and before the style.
 //! - [`People`]: every saved person's name (T12.91); each request carries only the names its
 //!   own text calls for, in one block right after the Dictionary's
-//!   ([`MAX_PEOPLE_PER_REQUEST`]; a merge keeps the names its parts carried,
-//!   [`reduce_prompt_carrying`]).
-//! - [`People`]: every saved person's name (T12.91); each request carries only the names its
-//!   own text calls for, in one block right after the Dictionary's ([`MAX_PEOPLE_PER_REQUEST`];
-//!   a merge keeps the names its parts carried, [`reduce_prompt_carrying`]).
+//!   ([`MAX_PEOPLE_PER_REQUEST`]; a merge keeps the names its parts carried first, the
+//!   strongest of them when they pass the cap, [`reduce_prompt_carrying`]).
 //! - [`repair_message`]: the follow-up that feeds validator errors back to the model.
 //! - [`estimate_tokens`]: a pessimistic token estimate without a tokenizer.
 //!

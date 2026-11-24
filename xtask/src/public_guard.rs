@@ -1848,6 +1848,25 @@ mod tests {
         assert!(!hook.contains('\r'));
     }
 
+    /// The SHA-256 of `crates/earshot-core/examples/summary_names/seeds.toml` that
+    /// [`public_guard_summary_names_seeds_hold_no_private_name`] last passed on.
+    const SUMMARY_NAMES_SEEDS_SHA256: &str =
+        "7212b14e2cc39046089fd4b4a374dcbcb091350c2dafba5b52472f013d12427c";
+
+    /// The seeds the ignored private-list check passed on are the seeds committed now
+    /// (T12.91a): any change to the file fails here until that check is run again.
+    #[test]
+    fn public_guard_summary_names_seeds_are_the_ones_checked_against_the_private_list() {
+        let seeds = include_bytes!("../../crates/earshot-core/examples/summary_names/seeds.toml");
+        let digest = crate::download::hex(&<sha2::Sha256 as sha2::Digest>::digest(seeds));
+        assert_eq!(
+            digest, SUMMARY_NAMES_SEEDS_SHA256,
+            "summary_names/seeds.toml changed: re-run the ignored check \
+             (cargo test -p xtask summary_names_seeds -- --ignored, where the private names \
+             list exists), then update SUMMARY_NAMES_SEEDS_SHA256"
+        );
+    }
+
     /// T12.91's invented names (`crates/earshot-core/examples/summary_names/seeds.toml`) hold
     /// no entry of the private names list: every seed word and every first and last name pair
     /// (a superset of the names the tool builds) is checked. Prints counts only. Ignored: the

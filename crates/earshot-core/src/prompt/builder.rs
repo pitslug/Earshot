@@ -157,7 +157,7 @@ pub struct SummaryInput {
     pub vocabulary: Vocabulary,
     /// Every saved person's name a request may be given (T12.91): each request carries only
     /// the names its own text calls for ([`crate::vocabulary::names`], at most
-    /// [`MAX_PEOPLE_PER_REQUEST`] beside the names a merge's parts carried). Empty (the
+    /// [`MAX_PEOPLE_PER_REQUEST`], the names a merge's parts carried included). Empty (the
     /// default) adds nothing. Left out of the JSON when empty, so serialised inputs from
     /// before T12.91 read and write unchanged.
     #[serde(default, skip_serializing_if = "People::is_empty")]
@@ -209,7 +209,7 @@ impl SummaryInput {
         texts
     }
 
-    /// The names a request showing `texts` carries beside `carried`
+    /// The names a request showing `texts` and told to carry `carried` holds
     /// ([`NameFilter::choose`] with [`MAX_PEOPLE_PER_REQUEST`]); empty without names.
     fn chosen_names(
         filter: Option<&NameFilter>,
@@ -222,42 +222,50 @@ impl SummaryInput {
     }
 
     /// An upper bound on what the names block of any request adds to its system message
-    /// (estimated tokens, the line break before it included) when it carries every name of
-    /// `carried` and at most [`MAX_PEOPLE_PER_REQUEST`] others: 0 without names. Estimates
-    /// are subadditive, so the block's markers plus the costliest lines bound any block.
-    fn people_bound(&self, carried: &[String]) -> usize {
+    /// (estimated tokens, the line break before it included): no request holds more than
+    /// [`MAX_PEOPLE_PER_REQUEST`] names (a merge's carried names included), so the block's
+    /// markers plus the costliest [`MAX_PEOPLE_PER_REQUEST`] lines bound every block
+    /// (estimates are subadditive). 0 without names. It never grows with the parts a merge
+    /// carries names from, so names can never make a plan fail on a long meeting.
+    fn people_bound(&self) -> usize {
         if self.people.is_empty() {
             return 0;
         }
         let line = |n: &str| estimate_tokens(&people_line(n)) + estimate_tokens("\n");
         let (before, after) = PEOPLE.split_once("{{names}}").unwrap_or((PEOPLE, ""));
-        let mut others: Vec<usize> = self
-            .people
-            .names()
-            .iter()
-            .filter(|n| !carried.contains(n))
-            .map(|n| line(n))
-            .collect();
-        others.sort_unstable_by(|a, b| b.cmp(a));
+        let mut lines: Vec<usize> = self.people.names().iter().map(|n| line(n)).collect();
+        lines.sort_unstable_by(|a, b| b.cmp(a));
         estimate_tokens("\n")
             + estimate_tokens(before)
             + estimate_tokens(after)
-            + carried.iter().map(|n| line(n)).sum::<usize>()
-            + others.iter().take(MAX_PEOPLE_PER_REQUEST).sum::<usize>()
+            + lines.iter().take(MAX_PEOPLE_PER_REQUEST).sum::<usize>()
     }
 }
 
 /// Every name of `parts` (the names each part of a merge carried, [`Prompt::people`]), each
-/// once, in first-seen order: what [`reduce_prompt_carrying`] is given for a group.
+/// once, strongest first: names more parts carried first, ties in first-seen order. What
+/// [`reduce_prompt_carrying`] is given for a group; a merge told to carry more than
+/// [`MAX_PEOPLE_PER_REQUEST`] names keeps those its own texts match and then the first of
+/// this order ([`NameFilter::choose`]).
 #[must_use]
 pub fn carried_names(parts: &[Vec<String>]) -> Vec<String> {
-    let mut all: Vec<String> = Vec::new();
-    for n in parts.iter().flatten() {
-        if !all.contains(n) {
-            all.push(n.clone());
+    let mut all: Vec<(String, usize)> = Vec::new();
+    for part in parts {
+        let mut seen: Vec<&String> = Vec::new();
+        for n in part {
+            if seen.contains(&n) {
+                continue;
+            }
+            seen.push(n);
+            match all.iter_mut().find(|(a, _)| a == n) {
+                Some((_, count)) => *count += 1,
+                None => all.push((n.clone(), 1)),
+            }
         }
     }
-    all
+    // Stable: equal counts keep first-seen order.
+    all.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+    all.into_iter().map(|(n, _)| n).collect()
 }
 
 /// The model's context window and the ceiling of one reply.
@@ -538,7 +546,7 @@ pub fn plan_with_rules(
             None,
         ))
         // Whatever names a chunk's request carries (0 when there are no names).
-        + input.people_bound(&[])
+        + input.people_bound()
         + estimate_tokens(&user_text(
             input,
             &[],
@@ -832,8 +840,10 @@ pub fn reduce_groups_with_rules(
 }
 
 /// [`reduce_groups_with_rules`] for partials whose requests carried saved people's names
-/// (T12.91): `carried` is every name any of `partials` carried ([`carried_names`]), so every
-/// group's [`reduce_prompt_carrying`] fits with the names it keeps. Production merges go
+/// (T12.91): `carried` is every name any of `partials` carried ([`carried_names`]). Every
+/// group's [`reduce_prompt_carrying`] holds at most [`MAX_PEOPLE_PER_REQUEST`] names, which
+/// the grouping counts, so however many parts carry names the plan never fails because of
+/// them. Production merges go
 /// through this and [`reduce_prompt_carrying`]; [`reduce_groups`] carries no names from the
 /// parts.
 ///
@@ -937,9 +947,9 @@ fn reduce_groups_merging(
             &[],
             merge.style(input, MergeLevel::Last),
         ))
-        // Whatever names a group's merge carries: its parts' names and the names its
-        // partials match (0 when there are no names).
-        + input.people_bound(carried)
+        // Whatever names a group's merge carries: at most the cap, its parts' names
+        // included (0 when there are no names).
+        + input.people_bound()
         + estimate_tokens(&reduce_user_text(input, &[], &numbers));
     // Six-digit part numbers bound the label of any position.
     let cost = |p: &SummaryV1| estimate_tokens(&partial_block(999_999, 999_999, p, &numbers));
@@ -1022,9 +1032,12 @@ pub fn reduce_prompt_with_rules(
 }
 
 /// [`reduce_prompt_with_rules`] for partials whose requests carried saved people's names
-/// (T12.91): the merge carries every name of `carried` (the names its parts carried,
-/// [`carried_names`]) and the names its partials, the meeting details and the notes match, so
-/// a name chosen in a map step is never lost at the merge. Production merges go through this.
+/// (T12.91): the merge carries the names of `carried` (the names its parts carried,
+/// [`carried_names`]), then the names its partials, the meeting details and the notes match,
+/// at most [`MAX_PEOPLE_PER_REQUEST`] in all, so a name chosen in a map step reaches the
+/// merge. Told to carry more than the cap, it keeps the strongest: those its own texts match,
+/// by strength, then the first of `carried` ([`NameFilter::choose`]). Production merges go
+/// through this.
 #[must_use]
 pub fn reduce_prompt_carrying(
     input: &SummaryInput,

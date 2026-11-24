@@ -20,7 +20,7 @@ import {
 } from "./ipc";
 import { isLocalHost } from "./localHost";
 import type { SampleMachine } from "./mockModels";
-import { peopleOf } from "./mockWords";
+import { peopleLeftOut, peopleOf } from "./mockWords";
 import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 import type { SummaryVocabularyAdded, SummaryVocabularyView } from "./summaryVocabulary";
 
@@ -62,6 +62,14 @@ export function notInUseNote(n: number): string | null {
   if (n <= 0) return null;
   if (n === 1) return table.messages.not_in_use.one;
   return table.messages.not_in_use.many.replace("{n}", String(n));
+}
+
+/** What the Dictionary page says about `n` saved names left out of its Saved people list (the
+ * app's copy, `summary_vocabulary::people_left_out_note`, T12.91a); `null` for none. */
+export function peopleLeftOutNote(n: number): string | null {
+  if (n <= 0) return null;
+  if (n === 1) return table.messages.people_left_out.one;
+  return table.messages.people_left_out.many.replace("{n}", String(n));
 }
 
 /** The longest summary style the app accepts (`earshot_core::prompt::MAX_STYLE_CHARS`). */
@@ -357,6 +365,8 @@ export function createSummariesMock(
     not_in_use: notInUse,
     not_in_use_note: notInUseNote(notInUse),
     people: peopleOf(vocabulary, persons()),
+    people_left_out: peopleLeftOut(persons()),
+    people_left_out_note: peopleLeftOutNote(peopleLeftOut(persons())),
   });
   const store = () => {
     if (data.keyStoreError !== undefined) {

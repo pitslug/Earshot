@@ -985,3 +985,62 @@ async fn chunked_runs_map_every_time_chunk_with_the_production_requests_then_red
     assert!(t.run.result.is_ok());
     assert_eq!(step_names(&t), ["single"]);
 }
+
+/// The first segment number a request's user message shows: a transcript line `[n] ...`
+/// or, in a merge request, a partial summary's first citation.
+fn first_cited(r: &RecordedRequest) -> usize {
+    let user = messages(r).pop().expect("a user message").1;
+    user.split('[')
+        .skip(1)
+        .find_map(|rest| rest.split(']').next()?.trim().parse().ok())
+        .expect("a segment number")
+}
+
+#[tokio::test]
+async fn a_long_meeting_naming_many_people_never_fails_to_plan() {
+    // T12.91a: 96 windows, each naming the cap's worth of distinct saved people, under a
+    // 16k context. Merges used to carry every name of their parts, so the merge plan failed
+    // on every run; now every request holds at most the cap.
+    let cap = earshot_core::prompt::MAX_PEOPLE_PER_REQUEST;
+    let windows = 96;
+    let names: Vec<String> = (0..windows * cap)
+        .map(|i| format!("Avelorianne{i:04} Brintwhistle-Quarrington{i:04}"))
+        .collect();
+    let mut input = SummaryInput {
+        people: earshot_core::prompt::People::new(&names, &Default::default()),
+        ..meeting(windows)
+    };
+    for (w, s) in input.segments.iter_mut().enumerate() {
+        s.text = format!("We asked {}.", names[w * cap..(w + 1) * cap].join(", "));
+    }
+    let ranges: Vec<std::ops::Range<usize>> = (0..windows).map(|w| w..w + 1).collect();
+    let server = MockServer::start_with(|r| {
+        MockResponse::completion(&summary_json(&[first_cited(r)]), "stop")
+    })
+    .unwrap();
+    let mut allow = Allowlist::new();
+    allow.allow_url(&server.endpoint()).unwrap();
+    let net = NetClient::new(NetConfig::new(allow, Arc::new(ManualClock::new(T0)))).unwrap();
+    let mut config = LlmConfig::new(server.endpoint().as_str(), "test-model").unwrap();
+    config.budget = ContextBudget {
+        context_window: 16_384,
+        max_output_tokens: 4_096,
+    };
+    let summarizer = LlmSummarizer::new(ChatClient::new(net, config));
+    let t = summarizer
+        .summarize_chunks_timed(&input, &ranges, &CancelToken::new())
+        .await;
+    t.run.result.as_ref().unwrap();
+    assert_eq!(t.run.report.map_parts, windows);
+    assert!(t.run.report.reduce_steps > 0);
+    let held = |r: &RecordedRequest| {
+        messages(r)[0]
+            .1
+            .lines()
+            .filter(|l| l.starts_with("| Avelorianne"))
+            .count()
+    };
+    let reqs = server.requests();
+    assert!(reqs[..windows].iter().all(|r| held(r) == cap));
+    assert!(reqs.iter().all(|r| held(r) <= cap));
+}

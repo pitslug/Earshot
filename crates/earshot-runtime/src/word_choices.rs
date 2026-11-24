@@ -203,6 +203,27 @@ pub fn people_of(dictionary: &Vocabulary, persons: &[Person]) -> People {
     )
 }
 
+/// How many names of [`named_persons`] [`people_of`] leaves out for what they hold
+/// ([`People::left_out`]: a control or invisible formatting character, or a name too long):
+/// what the Dictionary page says about them (T12.91a).
+#[must_use]
+pub fn people_left_out(persons: &[Person]) -> usize {
+    People::left_out(
+        named_persons(persons)
+            .iter()
+            .map(|p| p.display_name.as_str()),
+    )
+}
+
+/// [`people_left_out`] as stored now, from a store the caller has locked.
+///
+/// # Errors
+/// Store errors.
+pub fn summary_people_left_out(store: &Store) -> Result<usize, RuntimeError> {
+    let persons = store.persons().map_err(RuntimeError::Voiceprint)?;
+    Ok(people_left_out(&persons))
+}
+
 /// [`people_of`] as stored now, from a store the caller has locked, beside `dictionary` (the
 /// Dictionary words the summary uses).
 ///

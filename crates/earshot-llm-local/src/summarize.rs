@@ -1441,6 +1441,40 @@ mod tests {
     }
 
     #[test]
+    fn summarize_chunks_a_long_meeting_naming_many_people_never_fails_to_plan() {
+        // T12.91a: 96 windows, each naming the cap's worth of distinct saved people. Merges
+        // used to carry every name of their parts, so the merge plan failed on every run;
+        // now every request holds at most the cap.
+        let cap = earshot_core::prompt::MAX_PEOPLE_PER_REQUEST;
+        let windows = 96;
+        let names: Vec<String> = (0..windows * cap)
+            .map(|i| format!("Avelorianne{i:04} Brintwhistle-Quarrington{i:04}"))
+            .collect();
+        let mut inp = SummaryInput {
+            people: earshot_core::prompt::People::new(&names, &Default::default()),
+            ..input(windows)
+        };
+        for (w, s) in inp.segments.iter_mut().enumerate() {
+            s.text = format!("we asked {}", names[w * cap..(w + 1) * cap].join(", "));
+        }
+        let ranges: Vec<std::ops::Range<usize>> = (0..windows).map(|w| w..w + 1).collect();
+        let mut m = Fake::new(16_384, 1.0);
+        let run = summarize_chunks(&mut m, &inp, &options(), &ranges);
+        run.result.unwrap();
+        assert_eq!(run.report.map_parts, windows);
+        assert!(run.report.reduce_steps > 0);
+        let held = |c: &(Vec<ChatMessage>, String, String, usize)| {
+            c.0[0]
+                .content
+                .lines()
+                .filter(|l| l.starts_with("| Avelorianne"))
+                .count()
+        };
+        assert!(m.calls[..windows].iter().all(|c| held(c) == cap));
+        assert!(m.calls.iter().all(|c| held(c) <= cap));
+    }
+
+    #[test]
     fn summarize_chunks_sends_the_inputs_prompt_variant_in_every_request() {
         // Only the brief rules shorten the tldr to one sentence.
         let brief_rule = "Keep `tldr` to one sentence.";

@@ -6,7 +6,7 @@
 //! tokens:
 //!
 //! 1. [`NameMatch::Exact`]: the name's words appear as consecutive tokens (case ignored,
-//!    punctuation around a token and a trailing possessive `'s` dropped, as
+//!    punctuation around a token and a trailing possessive `'s` or `’s` dropped, as
 //!    [`token_key`] does);
 //! 2. [`NameMatch::Word`]: one of the name's words appears as a token, compared the same
 //!    way; a name word that is a common word ([`super::suggest::is_common`], the matcher's
@@ -19,11 +19,15 @@
 //!    name is chosen by sound exactly where the transcript would suggest it.
 //!
 //! A name's match is its strongest; matches rank by strength (exact first), then by the
-//! order of the names as given. [`NameFilter::choose`] keeps every name a request is told
-//! to carry (the names the parts of a merge carried, so a name chosen in a map step is never
-//! lost at the merge) and adds matched names in rank order until the request holds `cap`
-//! names; carried names are never dropped for the cap. The chosen names come back in the
-//! order of the names as given, so a block is stable however the names were found.
+//! order of the names as given. [`NameFilter::choose`] first takes the names a request is
+//! told to carry (the names the parts of a merge carried, so a name chosen in a map step
+//! reaches the merge), then adds matched names in rank order, until the request holds `cap`
+//! names. A merge of many parts can be told to carry more than `cap` names; it keeps the
+//! strongest of them: those its own texts match, by strength, then the rest in the order it
+//! was given them (`earshot_core::prompt::carried_names`: the names more parts carried
+//! first). So no request ever holds more than `cap` names, and a long meeting's plan never
+//! fails because of names. The chosen names come back in the order of the names as given,
+//! so a block is stable however the names were found.
 
 use std::collections::HashSet;
 
@@ -57,15 +61,25 @@ pub fn listed_words<D: AsRef<str>, N: AsRef<str>>(dictionary: &[D], names: &[N])
         .collect()
 }
 
+/// The apostrophes a possessive is written with: the straight one and U+2019 (the
+/// typographic one, which word processors and some recognisers write).
+const APOSTROPHES: [char; 2] = ['\'', '\u{2019}'];
+
 /// A token as names are compared with it: its core ([`split_punctuation`]) in lower case,
-/// without a trailing possessive (`'s` or a lone `'`). Empty for a token with no core.
+/// without a trailing possessive (`'s` or a lone `'`, written with either apostrophe of
+/// [`APOSTROPHES`]). Empty for a token with no core.
 #[must_use]
 pub fn token_key(token: &str) -> String {
     let (_, core, _) = split_punctuation(token);
     let lower = core.to_lowercase();
-    let lower = lower.strip_suffix("'s").unwrap_or(&lower);
-    let lower = lower.strip_suffix('\'').unwrap_or(lower);
-    lower.to_owned()
+    let mut key = lower.as_str();
+    if let Some(stem) = key
+        .strip_suffix('s')
+        .and_then(|rest| rest.strip_suffix(APOSTROPHES))
+    {
+        key = stem;
+    }
+    key.strip_suffix(APOSTROPHES).unwrap_or(key).to_owned()
 }
 
 /// One name as the filter compares it.
@@ -192,9 +206,10 @@ impl NameFilter {
         ranked
     }
 
-    /// The names a request carries (module doc): every name of `carried` that is one of the
-    /// filter's names (compared exactly), then the names matching `texts` in rank order while
-    /// fewer than `cap` are held; in the names' order.
+    /// The names a request carries (module doc), at most `cap`: the names of `carried` that
+    /// are the filter's names (compared exactly), strongest first (matched by `texts`, by
+    /// strength, then unmatched, each in `carried`'s order), then the names matching `texts`
+    /// in rank order; in the names' order.
     #[must_use]
     pub fn choose<T: AsRef<str>, C: AsRef<str>>(
         &self,
@@ -202,17 +217,25 @@ impl NameFilter {
         carried: &[C],
         cap: usize,
     ) -> Vec<String> {
-        let mut chosen = vec![false; self.names.len()];
-        let mut held = 0;
+        let ranked = self.matches(texts);
+        let mut strength: Vec<Option<NameMatch>> = vec![None; self.names.len()];
+        for &(i, m) in &ranked {
+            strength[i] = Some(m);
+        }
+        let mut wanted: Vec<usize> = Vec::new();
         for c in carried {
             if let Some(i) = self.names.iter().position(|n| n.form == c.as_ref())
-                && !chosen[i]
+                && !wanted.contains(&i)
             {
-                chosen[i] = true;
-                held += 1;
+                wanted.push(i);
             }
         }
-        for (i, _) in self.matches(texts) {
+        // Stable: equal strengths keep `carried`'s order; unmatched (`None`) come last.
+        wanted.sort_by_key(|&i| std::cmp::Reverse(strength[i]));
+        wanted.extend(ranked.iter().map(|&(i, _)| i));
+        let mut chosen = vec![false; self.names.len()];
+        let mut held = 0;
+        for i in wanted {
             if held >= cap {
                 break;
             }
@@ -265,6 +288,13 @@ mod tests {
         assert_eq!(token_key("\"Oskarine's,"), "oskarine");
         assert_eq!(token_key("Vantrels'"), "vantrels");
         assert_eq!(token_key("(KAM)"), "kam");
+        // The typographic apostrophe (U+2019) reads as the straight one.
+        assert_eq!(token_key("Oskarine\u{2019}s,"), "oskarine");
+        assert_eq!(token_key("Vantrels\u{2019}"), "vantrels");
+        assert_eq!(token_key("\u{2018}Vantrel\u{2019}s\u{2019}"), "vantrel");
+        // Only a possessive is dropped: a word ending in s keeps it.
+        assert_eq!(token_key("Pellors"), "pellors");
+        assert_eq!(token_key("Pellors's"), "pellors");
         assert_eq!(token_key("--"), "");
     }
 
@@ -328,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn vocabulary_names_choose_keeps_carried_names_and_caps_new_ones_by_rank() {
+    fn vocabulary_names_choose_prefers_carried_names_and_caps_every_name_by_rank() {
         let names = [
             "Ada Brisk",
             "Bozzle Fenwright",
@@ -341,14 +371,31 @@ mod tests {
         assert_eq!(f.choose(&text, NONE, 2), ["Kam Pellory", "Oskarine Vale"]);
         assert_eq!(f.choose(&text, NONE, 1), ["Oskarine Vale"]);
         assert!(f.choose(&text, NONE, 0).is_empty());
-        // Carried names are kept beyond the cap and count toward it.
+        // Carried names come before new matches and count toward the cap.
         assert_eq!(
             f.choose(&text, &["Ada Brisk"], 2),
             ["Ada Brisk", "Oskarine Vale"]
         );
+        // More carried names than the cap: the strongest are kept (matched by the texts, by
+        // strength, then the rest in the carried order), never more than the cap.
+        let carried = ["Ada Brisk", "Bozzle Fenwright", "Kam Pellory"];
+        assert_eq!(f.choose(&text, &carried, 1), ["Kam Pellory"]);
         assert_eq!(
-            f.choose(&text, &["Ada Brisk", "Bozzle Fenwright", "Kam Pellory"], 1),
+            f.choose(&text, &carried, 2),
+            ["Bozzle Fenwright", "Kam Pellory"]
+        );
+        assert_eq!(
+            f.choose(&text, &carried, 3),
             ["Ada Brisk", "Bozzle Fenwright", "Kam Pellory"]
+        );
+        assert_eq!(
+            f.choose(NONE, &carried, 2),
+            ["Ada Brisk", "Bozzle Fenwright"]
+        );
+        assert_eq!(
+            f.choose(NONE, &["Kam Pellory", "Ada Brisk"], 1),
+            ["Kam Pellory"],
+            "unmatched carried names keep the carried order"
         );
         // A carried name that is not one of the names is ignored.
         assert!(f.choose(NONE, &["Somebody Else"], 5).is_empty());

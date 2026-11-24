@@ -125,7 +125,7 @@ describe("the Summaries mock against the app's case table", () => {
   });
 
   it("lists the saved people's names as the app does (T12.91)", async () => {
-    expect(table.people.cases.length).toBeGreaterThanOrEqual(7);
+    expect(table.people.cases.length).toBeGreaterThanOrEqual(8);
     for (const c of table.people.cases) {
       const persons = c.names.map((name, i) => ({
         id: `p${String(i).padStart(3, "0")}`,
@@ -137,6 +137,11 @@ describe("the Summaries mock against the app's case table", () => {
       // Names in the table are already in the People page's order.
       const mock = createSummariesMock({ vocabulary: c.dictionary }, "surface", () => persons);
       expect((await mock.summaryVocabulary()).people, c.name).toEqual(c.people);
+      const view = await mock.summaryVocabulary();
+      expect(view.people_left_out, c.name).toBe(c.left_out);
+      const copy = table.messages.people_left_out;
+      const note = c.left_out === 0 ? null : c.left_out === 1 ? copy.one : copy.many.replace("{n}", String(c.left_out));
+      expect(view.people_left_out_note, c.name).toBe(note);
     }
   });
 

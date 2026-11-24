@@ -2497,6 +2497,14 @@ export type SummaryVocabularyView = {
 	 *  carries only the names that match what was said.
 	 */
 	people: string[],
+	/**
+	 *  Saved names left out of `people` for what they hold (a control or invisible formatting
+	 *  character, such as a zero-width joiner, or more than 100 characters; T12.91a,
+	 *  `earshot_runtime::word_choices::people_left_out`): never given to a summary.
+	 */
+	people_left_out: number,
+	/**  What the page says about them ([`people_left_out_note`]); `None` when none is left out. */
+	people_left_out_note: string | null,
 };
 
 /**  A pairing code to show for adding a device. */

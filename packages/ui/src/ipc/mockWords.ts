@@ -23,6 +23,22 @@ function namedPersons(persons: PersonItem[]): PersonItem[] {
     });
 }
 
+/** `name` on one line (white space runs joined), or `null` when it is empty or holds a control
+ * or invisible formatting character or more than 100 characters (`prompt::people::usable`). */
+function usableName(name: string): string | null {
+  if (/[\p{Cc}\p{Cf}]/u.test(name)) return null;
+  const joined = name.split(/\p{White_Space}+/u).filter((w) => w !== "").join(" ");
+  return joined === "" || [...joined].length > 100 ? null : joined;
+}
+
+/** `word_choices::people_left_out` (T12.91a, `prompt::People::left_out`): how many names of
+ * `namedPersons` `peopleOf` leaves out for what they hold, never for being empty or a repeat. */
+export function peopleLeftOut(persons: PersonItem[]): number {
+  return namedPersons(persons).filter(
+    (p) => p.name.split(/\p{White_Space}+/u).some((w) => w !== "") && usableName(p.name) === null,
+  ).length;
+}
+
 /** `word_choices::people_of` (T12.91, `prompt::People::new`): the whole names of
  * `namedPersons`, white space joined, names that are empty, longer than 100 characters or hold
  * a control or invisible formatting character left out, and a name that repeats an earlier one
@@ -31,9 +47,8 @@ export function peopleOf(dictionary: string[], persons: PersonItem[]): string[] 
   const seen = new Set(dictionary.map((w) => w.toLowerCase()));
   const out: string[] = [];
   for (const p of namedPersons(persons)) {
-    if (/[\p{Cc}\p{Cf}]/u.test(p.name)) continue;
-    const name = p.name.split(/\p{White_Space}+/u).filter((w) => w !== "").join(" ");
-    if (name === "" || [...name].length > 100) continue;
+    const name = usableName(p.name);
+    if (name === null) continue;
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
