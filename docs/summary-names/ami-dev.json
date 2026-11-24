@@ -1,0 +1,109 @@
+{
+  "tool": "summary_names (T12.91)",
+  "provenance": {
+    "commit": "eecb50184aaffcb8027de00e7f2f1c07a0e62e27",
+    "started_utc": "2026-11-24T15:47:05Z"
+  },
+  "shipped": {
+    "max_people_per_request": 15,
+    "max_person_name_chars": 100
+  },
+  "source": "AMI dev (ami-sum dev split), reference transcripts, speakers by global_name",
+  "meetings": 20,
+  "listed_invented": 400,
+  "shipped_cap": 15,
+  "map_seconds": 600,
+  "map": {
+    "requests": 71,
+    "chosen": {
+      "median": 9,
+      "max": 15
+    },
+    "matched": {
+      "median": 9,
+      "max": 15
+    },
+    "namesakes": {
+      "median": 2,
+      "max": 5
+    },
+    "spurious": {
+      "median": 0,
+      "max": 3
+    },
+    "growth_tokens": {
+      "median": 241,
+      "max": 278
+    }
+  },
+  "single": {
+    "requests": 20,
+    "chosen": {
+      "median": 15,
+      "max": 15
+    },
+    "matched": {
+      "median": 21,
+      "max": 24
+    },
+    "namesakes": {
+      "median": 3,
+      "max": 3
+    },
+    "spurious": {
+      "median": 0,
+      "max": 0
+    },
+    "growth_tokens": {
+      "median": 283,
+      "max": 287
+    }
+  },
+  "merge": {
+    "requests": 20,
+    "chosen": {
+      "median": 15,
+      "max": 15
+    },
+    "matched": {
+      "median": 15,
+      "max": 15
+    },
+    "namesakes": {
+      "median": 3,
+      "max": 3
+    },
+    "spurious": {
+      "median": 0,
+      "max": 0
+    },
+    "growth_tokens": {
+      "median": 283,
+      "max": 287
+    }
+  },
+  "exact": {
+    "mentions": 160,
+    "map_uncapped": 160,
+    "single_uncapped": 160
+  },
+  "misheard": {
+    "mentions": 160,
+    "map_uncapped": 154,
+    "single_uncapped": 160
+  },
+  "lost_at_cap": {
+    "5": 141,
+    "10": 7,
+    "15": 0,
+    "20": 0,
+    "25": 0,
+    "30": 0,
+    "40": 0,
+    "50": 0,
+    "75": 0,
+    "100": 0
+  },
+  "rule_cap": 15,
+  "rule_failures": []
+}

@@ -68,24 +68,26 @@ The report holds counts only: no transcript text and no name. `--dry-run` measur
 
 ## Result
 
-Two runs, both raw and unmodified.
+Three runs, each raw and unmodified. The ranking of a merge's names changed after the first two (T12.91a, a fix found in review, below); that is not a change to the rule: no rule, bound or candidate cap changed, and the rule's inputs (map requests, recall, `lost_at_cap`) are the same in all three runs.
 
 - **First run, at the placeholder cap (50):** `summary-names/ami-dev-cap50.json` (renamed from `ami-dev.json` in T12.91a), run 2026-11-25 on the ARM64 Surface. It chose the cap. It records no commit or time of its own: that the rule above was committed before it ran (`ceedec8`, then `ced36d0` with the result) rests on the commit order alone, and the commit times cannot prove it.
-- **Re-run at the shipped cap (15):** `summary-names/ami-dev.json`, which records the commit it measured, `9071682a254c3cce1b163e895f1503f3b7a36ec1` (T12.91a, no uncommitted change: the tool adds `-dirty` otherwise), its start time (2026-11-24T15:23:02Z) and the shipped constants it read (`max_people_per_request` 15). That commit holds the rule above unchanged except one sentence of Data: T12.91a changed "They are never real people's names" to "They are not taken from any real list of people", which claims only what the seed check shows; no rule, bound or candidate changed. That commit also holds T12.91a's merge change (a merge holds at most the cap), which is why its last merge differs from the first run's.
+- **Second run, at the shipped cap (15), intermediate merge ranking:** `summary-names/ami-dev-9071682.json` records the commit it measured, `9071682a254c3cce1b163e895f1503f3b7a36ec1` (no uncommitted change: the tool adds `-dirty` otherwise), its start time (2026-11-24T15:23:02Z) and the cap it read (15). Its merge capped carried names but put every carried name before the merge's own matches and ranked unmatched carried names by how many parts carried them, so its last merge kept namesakes and spurious names over injected names found whole (namesakes 5 / 6, spurious 0 / 3 at 15 names).
+- **Third run, at the shipped cap (15), shipped merge ranking:** `summary-names/ami-dev.json` records commit `eecb50184aaffcb8027de00e7f2f1c07a0e62e27` (clean), start time 2026-11-24T15:47:05Z and cap 15. Its merge holds the names its own texts match first, then carried names by the strongest match each was found with, then by how many parts carried them. The tool's merge is given partial summaries that name nobody, so here that is the meeting's four speakers (matched by the attendees) and then the injected names, found whole in the map steps, before their namesakes.
 
-The cap does not move the rule's inputs: map requests, recall and `lost_at_cap` are measured with no cap or chose fewer than 15 names, and are the same in both runs.
+Both commits hold the rule above unchanged. T12.91a briefly reworded one sentence of Data in the second run's commit; it is restored as written before the first run, and the correction is under Limits.
 
-**The filter passes every bound and the rule picks a cap of 15, in both runs.** `MAX_PEOPLE_PER_REQUEST` is set to 15.
+**The filter passes every bound and the rule picks a cap of 15, in every run.** `MAX_PEOPLE_PER_REQUEST` is set to 15.
 
 | Request | Count | Chosen (median / max) | Namesakes | Spurious | Growth, est. tokens (median / max) |
 |---|---|---|---|---|---|
-| map (both runs) | 71 | 9 / 15 | 2 / 5 | 0 / 3 | 241 / 278 |
+| map (every run; at most 15 names, none cut) | 71 | 9 / 15 | 2 / 5 | 0 / 3 | 241 / 278 |
 | single, at cap 50 (first run) | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
-| single, at cap 15 (re-run, shipped) | 20 | 15 / 15 | 3 / 3 | 0 / 0 | 283 / 287 |
+| single, at cap 15 (second and third runs, shipped) | 20 | 15 / 15 | 3 / 3 | 0 / 0 | 283 / 287 |
 | last merge, at cap 50, every carried name kept (first run) | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
-| last merge, at cap 15, carried names capped (re-run, shipped) | 20 | 15 / 15 | 5 / 6 | 0 / 3 | 283 / 286 |
+| last merge, at cap 15, carried names first by part count (second run) | 20 | 15 / 15 | 5 / 6 | 0 / 3 | 283 / 286 |
+| last merge, at cap 15, own matches then carried names by strength (third run, shipped) | 20 | 15 / 15 | 3 / 3 | 0 / 0 | 283 / 287 |
 
-| Condition | Result (both runs) |
+| Condition | Result (every run) |
 |---|---|
 | Whole-name recall 100% | holds: 160 of 160 in map and single requests |
 | Misheard recall in map requests at least 50% | holds: 154 of 160 (96%); 160 of 160 in single requests |
@@ -94,7 +96,7 @@ The cap does not move the rule's inputs: map requests, recall and `lost_at_cap` 
 | Median spurious per map request at most 3 | holds: 0 |
 | A candidate cap qualifies | holds: 5 loses 141 mentions, 10 loses 7, 15 and above lose none |
 
-Most of each request's growth is the block's fixed text (191); the names themselves cost about 50 tokens in a map request and 130 in a whole-meeting one. At cap 50 the single and merge requests chose the meeting's own four speakers as well as the injected names and their namesakes, which is why they held about 21; at the shipped cap they hold 15, the weakest matches (namesakes and spurious names) cut first. The six misheard surnames a map request missed were all caught by the single request; why each was missed in its window was not traced (a shared sound key, which makes the matcher decline, is the likely cause).
+Most of each request's growth is the block's fixed text (191); the names themselves cost about 50 tokens in a map request and 130 in a whole-meeting one. At cap 50 the single and merge requests chose the meeting's own four speakers as well as the injected names and their namesakes, which is why they held about 21; at the shipped cap the single request holds 15, its weakest matches (namesakes and spurious names) cut first, and since the third run's ranking so does the last merge (the second run's merge, which ranked carried names by part count alone, cut injected names instead). The six misheard surnames a map request missed were all caught by the single request; why each was missed in its window was not traced (a shared sound key, which makes the matcher decline, is the likely cause).
 
 **Limits.** Reference transcripts (Earshot's own recognition was not used, because invented names are never spoken in AMI and the mishearings are injected); one list shape; English meetings only.
 
