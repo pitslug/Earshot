@@ -29,6 +29,9 @@
 //!   Search and export read the edited text through [`MeetingView`]. A text edit later than
 //!   the summary marks the summary out of date ([`MeetingView::summary_out_of_date`]), and
 //!   nothing is summarised by itself.
+//! - Lines (T12.90): [`move_line`] moves a final line to another speaker of its track or to
+//!   a new "Speaker N"; [`split_line`] splits a final line before a word, by its word times.
+//!   Both keep the words and count as the user's edit, as a text edit does.
 //! - Suggested words (T12.15e): [`use_word`], [`put_back_word`], [`keep_word`] change one
 //!   token of a final line through [`edit_segment`]'s rules and record the choice in
 //!   `crate::word_choices`, in one transaction.
@@ -58,9 +61,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use earshot_core::asr::MeetingTime;
 #[cfg(feature = "engines")]
 use earshot_core::asr::{CancelToken, TranscribeOptions, Transcriber};
+use earshot_core::asr::{MeetingTime, Segment, mean_probability};
 use earshot_core::audio::f32_to_i16;
 use earshot_core::capture::TrackId;
 use earshot_core::diar::{EmbeddingModelId, SpeakerRole};
@@ -200,9 +203,15 @@ pub enum EditError {
     /// allowing the writer now would change nothing for it
     /// ([`crate::keep_local::allow_writer`], T12.45).
     MeetingStillWorking(EntityId),
-    /// The line (the id) already has a speaker: only a line with no speaker (an unknown
-    /// speaker, T12.65) is given one from the line ([`assign_line_speaker`]).
-    LineHasSpeaker(EntityId),
+    /// The speaker (the id) has no line on the track of the line being moved: a line moves
+    /// only to a speaker heard on its own track ([`move_line`], T12.90).
+    SpeakerNotOnTrack(EntityId),
+    /// The line (the id) has no word times that match its text (its text was edited), so
+    /// where to split it is unknown ([`split_line`], T12.90).
+    SplitNeedsWordTimes(EntityId),
+    /// The position is not inside the line (the id): a split goes before its second word or
+    /// a later one ([`split_line`], T12.90).
+    SplitOutOfRange(EntityId),
     /// The speaker (the id) is the meeting's "Me" row, or linked to the user: "Not <name>"
     /// is for someone else ([`not_this_person`], T12.77); "This isn't me" ([`unmark_me`])
     /// covers the user's own row.
@@ -323,9 +332,18 @@ impl fmt::Display for EditError {
                 write!(f, "segment {id} has no word at that position")
             }
             Self::WordNotListed => f.write_str("the word is not on the word list"),
-            Self::LineHasSpeaker(id) => {
-                write!(f, "segment {id} already has a speaker")
-            }
+            Self::SpeakerNotOnTrack(id) => write!(
+                f,
+                "speaker {id} has no line on this line's track; a line moves only within its track"
+            ),
+            Self::SplitNeedsWordTimes(id) => write!(
+                f,
+                "segment {id} has no word times that match its text; split it before editing its words"
+            ),
+            Self::SplitOutOfRange(id) => write!(
+                f,
+                "segment {id} has no word at that position to split before"
+            ),
             Self::NoWordChoice(id) => {
                 write!(
                     f,
@@ -477,45 +495,307 @@ pub fn edit_segment_offering(
     })
 }
 
-/// Gives line `segment` of `meeting`'s final transcript, a line with no speaker (T12.65: an
-/// unknown speaker, `MeetingView::is_unknown_speaker`), to `speaker`, one of the meeting's
-/// live speakers, in one transaction. The line counts as the user's edit from then on
-/// (`SegmentRow::text_edited_at`), so a later final pass keeps it with its speaker as it keeps
-/// a corrected line. Returns whether the row changed.
+/// Where [`move_line`] moves a line to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineSpeaker {
+    /// A live speaker of the meeting on the line's track ([`movable_speakers`]).
+    Existing(EntityId),
+    /// A new speaker row, named by [`first_free_speaker_name`].
+    New,
+}
+
+/// Moves line `segment` of `meeting`'s final transcript to `target` (T12.90), in one
+/// transaction. Works on a line with a speaker and on one with none (an unknown speaker,
+/// T12.65). The line keeps its id, text, words and times, and counts as the user's edit from
+/// then on (`SegmentRow::text_edited_at`): a later final pass keeps it with its speaker as it
+/// keeps a corrected line, and an older summary reads as out of date. Returns whether the row
+/// changed (the line's own speaker writes nothing).
+///
+/// Only within the line's track ([`movable_speakers`]): a far-end line never moves to a mic
+/// speaker or back. A speaker left with no line at all still belongs to its role's track, so
+/// a move can be undone. [`LineSpeaker::New`] makes a speaker row with the next free
+/// "Speaker N", no person, and the role of the line's speaker (never a second "Me"), else the
+/// role the final pass gives a voice on that track ([`new_speaker_role`]); for a line that
+/// already is the only line of an unnamed speaker other than "Me" it writes nothing (a second
+/// click on New speaker makes no further row).
+///
+/// No voice sample, voiceprint or identity entry changes: a moved line is text the user put
+/// under another name, not a voice anyone enrolled, and a speaker left with no line stays as
+/// it is (the meeting detail lists only speakers with lines, and the next final pass decides
+/// about its voice).
 ///
 /// Refused as a line edit is ([`edit_segment`]): only the final transcript, and not while a
 /// live session, final pass or summary works on the meeting.
 ///
 /// # Errors
-/// [`EditError::LineHasSpeaker`] for a line that already has a speaker,
-/// [`EditError::SpeakerNotFound`] for a speaker not of this meeting, and [`edit_segment`]'s.
-pub fn assign_line_speaker(
+/// [`EditError::SpeakerNotFound`] for a speaker not of this meeting,
+/// [`EditError::SpeakerNotOnTrack`] for one that belongs to another track, and
+/// [`edit_segment`]'s.
+pub fn move_line(
     services: &Services,
     meeting: EntityId,
     segment: EntityId,
-    speaker: EntityId,
+    target: LineSpeaker,
 ) -> Result<bool, RuntimeError> {
     let _claim = line_edit_claim(services, meeting)?;
     write(services, |tx, stamp| {
         let (mut row, _) = final_line(tx, meeting, segment)?;
-        if row.segment.speaker_id == Some(speaker) {
-            return Ok(false);
-        }
-        if row.segment.speaker_id.is_some() {
-            return Err(EditError::LineHasSpeaker(segment).into());
-        }
-        let known = tx
+        let speakers: Vec<Speaker> = tx
             .speakers(meeting)?
             .into_iter()
-            .any(|s| s.id == speaker && !s.meta.deleted);
-        if !known {
-            return Err(EditError::SpeakerNotFound(speaker).into());
-        }
+            .filter(|s| !s.meta.deleted)
+            .collect();
+        let speaker = match target {
+            LineSpeaker::Existing(speaker) => {
+                if row.segment.speaker_id == Some(speaker) {
+                    return Ok(false);
+                }
+                if !speakers.iter().any(|s| s.id == speaker) {
+                    return Err(EditError::SpeakerNotFound(speaker).into());
+                }
+                let finals = live_finals(tx, meeting)?;
+                let tracks = tx.tracks(meeting)?;
+                if !speakers_on_track(&finals, &speakers, &tracks, row.segment.track)
+                    .contains(&speaker)
+                {
+                    return Err(EditError::SpeakerNotOnTrack(speaker).into());
+                }
+                speaker
+            }
+            LineSpeaker::New => {
+                let current = row
+                    .segment
+                    .speaker_id
+                    .and_then(|id| speakers.iter().find(|s| s.id == id));
+                // The line already has an unnamed speaker of its own: nothing to make. "Me" is
+                // the user, never a voice of its own, so its last line still moves.
+                if let Some(own) = current
+                    && own.role != SpeakerRole::Me
+                    && own.person_id.is_none()
+                    && !live_finals(tx, meeting)?
+                        .iter()
+                        .any(|s| s.id != segment && s.speaker_id == Some(own.id))
+                {
+                    return Ok(false);
+                }
+                let tracks = tx.tracks(meeting)?;
+                let kind = track_kind(&tracks, row.segment.track);
+                let role =
+                    new_speaker_role(current.map(|s| s.role), records_in_room(&tracks), kind);
+                let taken: Vec<String> = speakers.iter().map(|s| s.display_name.clone()).collect();
+                let new = Speaker::new(meeting, role, first_free_speaker_name(&taken), None, stamp);
+                let id = new.id;
+                tx.put_speaker(new)?;
+                id
+            }
+        };
         row.segment.speaker_id = Some(speaker);
         row.meta.touch(stamp.hlc, stamp.clock);
         row.text_edited_at = Some(row.meta.updated_at);
         tx.put_segment(row)?;
         Ok(true)
+    })
+}
+
+/// The role of a speaker [`move_line`] makes for a line: its current speaker's role, except
+/// that there is one "Me" row per meeting, so a line moved off "Me" (or with no speaker) gets
+/// the role the final pass gives a voice on its track: [`SpeakerRole::Room`] in the room
+/// (`diar::in_person`), [`SpeakerRole::Remote`] on the far end and [`SpeakerRole::Local`] on
+/// the mic of a call (`diar::two_track`'s roles for a voice it does not call "Me").
+#[must_use]
+pub fn new_speaker_role(current: Option<SpeakerRole>, in_room: bool, kind: TrackId) -> SpeakerRole {
+    match current {
+        Some(role) if role != SpeakerRole::Me => role,
+        _ if in_room => SpeakerRole::Room,
+        _ => match kind {
+            TrackId::Reference => SpeakerRole::Remote,
+            TrackId::Mic => SpeakerRole::Local,
+        },
+    }
+}
+
+/// The meeting's live final-transcript rows.
+fn live_finals(tx: &StoreTx<'_>, meeting: EntityId) -> Result<Vec<Segment>, RuntimeError> {
+    Ok(tx
+        .segments(meeting)?
+        .into_iter()
+        .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
+        .map(|r| r.segment)
+        .collect())
+}
+
+/// The kind of track `track` among `tracks` (the mic when it is not there).
+fn track_kind(tracks: &[Track], track: EntityId) -> TrackId {
+    tracks
+        .iter()
+        .find(|t| t.id == track)
+        .map_or(TrackId::Mic, |t| t.kind)
+}
+
+/// The live speakers of `speakers` that belong to track `track`: the one track rule of
+/// [`move_line`] and [`movable_speakers`]. A speaker belongs to a track when it has a live line
+/// of the final transcript (`finals`) on it, or, with no live final line anywhere (every line
+/// moved away), when its role does: [`SpeakerRole::Remote`] the far end,
+/// [`SpeakerRole::Local`] and [`SpeakerRole::Me`] the mic, [`SpeakerRole::Room`] the mic of
+/// an in-room meeting ([`records_in_room`] over `tracks`). So a move can always be undone.
+fn speakers_on_track(
+    finals: &[Segment],
+    speakers: &[Speaker],
+    tracks: &[Track],
+    track: EntityId,
+) -> BTreeSet<EntityId> {
+    let kind = track_kind(tracks, track);
+    let in_room = records_in_room(tracks);
+    let with_lines: BTreeSet<EntityId> = finals.iter().filter_map(|s| s.speaker_id).collect();
+    let on_track: BTreeSet<EntityId> = finals
+        .iter()
+        .filter(|s| s.track == track)
+        .filter_map(|s| s.speaker_id)
+        .collect();
+    speakers
+        .iter()
+        .filter(|s| !s.meta.deleted)
+        .filter(|s| {
+            on_track.contains(&s.id)
+                || (!with_lines.contains(&s.id)
+                    && match s.role {
+                        SpeakerRole::Remote => kind == TrackId::Reference,
+                        SpeakerRole::Local | SpeakerRole::Me => kind == TrackId::Mic,
+                        SpeakerRole::Room => in_room && kind == TrackId::Mic,
+                    })
+        })
+        .map(|s| s.id)
+        .collect()
+}
+
+/// The speakers [`move_line`] would move `line` to with [`LineSpeaker::Existing`], in the
+/// order of `speakers`: the live ones that belong to the line's track (a line of `segments`,
+/// the final transcript, on it, or no line anywhere and a role of that track), other than the
+/// line's own speaker. What the line's menu offers.
+#[must_use]
+pub fn movable_speakers(
+    segments: &[Segment],
+    speakers: &[Speaker],
+    tracks: &[Track],
+    line: &Segment,
+) -> Vec<EntityId> {
+    let on_track = speakers_on_track(segments, speakers, tracks, line.track);
+    speakers
+        .iter()
+        .filter(|s| !s.meta.deleted && Some(s.id) != line.speaker_id && on_track.contains(&s.id))
+        .map(|s| s.id)
+        .collect()
+}
+
+/// Whether [`split_line`] can split `line` at all: its words still match its text token for
+/// token (an edited line has none), and it has two tokens or more.
+#[must_use]
+pub fn can_split_line(line: &Segment) -> bool {
+    words_match_tokens(line) && line.words.len() >= 2
+}
+
+/// Whether `line`'s words are its white-space tokens, one to one and in order: only then do
+/// the word times say where each token falls.
+fn words_match_tokens(line: &Segment) -> bool {
+    !line.words.is_empty()
+        && line.text.split_whitespace().count() == line.words.len()
+        && line
+            .text
+            .split_whitespace()
+            .zip(&line.words)
+            .all(|(t, w)| t == w.text)
+}
+
+/// Splits line `segment` of `meeting`'s final transcript before its white-space token `token`
+/// (T12.90), in one transaction, and returns the second line's id. The first part keeps the
+/// line's id (summary citations still find it), speaker and track, the tokens before `token`
+/// and their words; the second part is a new row of the same track and speaker with the rest.
+/// The cut `p` is where the second part's first word starts, kept inside the line's span: the
+/// first part runs from the line's start to its last word's end or `p`, whichever is later,
+/// and the second from `p` to the line's end. Each part is at least 1 ms long, even when the
+/// words are untimed (start == end), so the two still cover the line's span and a
+/// re-transcription leaves out the new words under them (`post::drop_words_under_edits`
+/// ignores an edited segment with no length). Each part's confidence is the mean of its
+/// words. Both count as the
+/// user's edit (`SegmentRow::text_edited_at`), so a re-transcription keeps them. Word choices
+/// (`crate::word_choices`) on the later tokens move to the second line, renumbered from 0.
+/// The times come only from the line's own words: a line whose text was edited has none,
+/// and is refused rather than given invented times.
+///
+/// Split, then [`move_line`] the second part: the fix for a word cut onto the wrong side of
+/// a change of speaker.
+///
+/// Refused as a line edit is ([`edit_segment`]).
+///
+/// # Errors
+/// [`EditError::SplitOutOfRange`] for a token outside `1..` the line's token count,
+/// [`EditError::SplitNeedsWordTimes`] for a line whose words no longer match its text, and
+/// [`edit_segment`]'s.
+pub fn split_line(
+    services: &Services,
+    meeting: EntityId,
+    segment: EntityId,
+    token: usize,
+) -> Result<EntityId, RuntimeError> {
+    let _claim = line_edit_claim(services, meeting)?;
+    write(services, |tx, stamp| {
+        let (mut row, lines) = final_line(tx, meeting, segment)?;
+        if !words_match_tokens(&row.segment) {
+            return Err(EditError::SplitNeedsWordTimes(segment).into());
+        }
+        let ranges = token_ranges(&row.segment.text);
+        if token == 0 || token >= ranges.len() {
+            return Err(EditError::SplitOutOfRange(segment).into());
+        }
+        let text = row.segment.text.clone();
+        let rest = row.segment.words.split_off(token);
+        let (start, end) = (row.segment.start, row.segment.end.max(row.segment.start));
+        let one_ms = Duration::from_millis(1);
+        let cut = rest[0].start.clamp(start, end);
+        let second = Segment {
+            id: EntityId::generate(stamp.clock, &mut *stamp.rng),
+            track: row.segment.track,
+            start: cut,
+            end: end.max(cut + one_ms),
+            text: text[ranges[token].start..].trim().to_owned(),
+            confidence: mean_probability(&rest),
+            words: rest,
+            speaker_id: row.segment.speaker_id,
+        };
+        let first = &mut row.segment;
+        first.text = text[..ranges[token - 1].end].trim().to_owned();
+        let first_end = first.words[token - 1].end.max(cut);
+        first.end = if first_end <= start {
+            start + one_ms
+        } else {
+            first_end
+        };
+        first.confidence = mean_probability(&first.words);
+        let second_id = second.id;
+
+        let mut choices = holding_choices(tx, meeting, &lines)?;
+        for c in &mut choices {
+            if c.segment == segment && c.token >= token {
+                c.segment = second_id;
+                c.token -= token;
+            }
+        }
+        put_choices(tx, meeting, &choices)?;
+        crate::unknown_lines::carry_split_tx(tx, meeting, segment, second_id)?;
+
+        row.meta.touch(stamp.hlc, stamp.clock);
+        row.text_edited_at = Some(row.meta.updated_at);
+        tx.put_segment(row)?;
+        let mut new = SegmentRow::new(
+            meeting,
+            TranscriptPass::Final,
+            second,
+            stamp.hlc,
+            stamp.clock,
+        );
+        new.text_edited_at = Some(new.meta.updated_at);
+        tx.put_segment(new)?;
+        Ok(second_id)
     })
 }
 

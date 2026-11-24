@@ -57,6 +57,7 @@ import {
   type JobKind,
   IpcFailure,
   ORDER_COPY,
+  SPLIT_NEEDS_WORD_TIMES_COPY,
   type StepChoice,
   type LinkChoice,
   type MeetingDetail,
@@ -343,6 +344,31 @@ const useStyles = makeStyles({
   },
   lineEdit: {
     opacity: 0,
+  },
+  // The line's Edit and More buttons, side by side (T12.90).
+  lineActions: {
+    display: "flex",
+    columnGap: tokens.spacingHorizontalXXS,
+  },
+  // The More button is one character wide, so the two buttons cost a line little more room
+  // than the Edit button alone did (T12.90).
+  lineMore: {
+    minWidth: "28px",
+    paddingLeft: tokens.spacingHorizontalXS,
+    paddingRight: tokens.spacingHorizontalXS,
+  },
+  // A line's words as split points (T12.90).
+  splitPoints: {
+    display: "flex",
+    flexDirection: "column",
+    rowGap: tokens.spacingVerticalXS,
+  },
+  splitWords: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "baseline",
+    columnGap: tokens.spacingHorizontalXS,
+    rowGap: tokens.spacingVerticalXS,
   },
   // A summary text with its Edit buttons at the end (T12.16). Hidden, a button takes no width,
   // so the text and citations read as before; hover or focus shows it.
@@ -1062,11 +1088,11 @@ export function MeetingDetailView({
                       return { error: failureText(e) };
                     }
                   }}
-                  onAssignSpeaker={(segment, speaker) =>
-                    void save(
-                      () => ipc.assignLineSpeaker(id, segment, speaker),
-                      "The line was not given a speaker",
-                    )
+                  onMoveLine={(segment, speaker) =>
+                    void save(() => ipc.moveLine(id, segment, speaker), "The line was not moved")
+                  }
+                  onSplitLine={(segment, token) =>
+                    save(() => ipc.splitLine(id, segment, token), "The line was not split")
                   }
                   wordActions={(segment) => ({
                     onUse: (token, word) =>
@@ -1614,7 +1640,8 @@ function TranscriptTab({
   wordActions,
   onAddWord,
   onRemoveWord,
-  onAssignSpeaker,
+  onMoveLine,
+  onSplitLine,
   rowRef,
   locked,
 }: {
@@ -1632,13 +1659,19 @@ function TranscriptTab({
   /** "Remove from Dictionary" and "Undo" (T12.15f); the detail is read again before it
    * resolves. */
   onRemoveWord(word: string): Promise<{ error: string } | null>;
-  /** Gives a line with an unknown speaker (T12.65) to one of the meeting's speakers; the detail
-   * is read again after it. */
-  onAssignSpeaker(segment: string, speaker: string): void;
+  /** Moves a line to `speaker` (one of its `movable_to`), or to a new speaker for `null`
+   * (T12.90; also gives a line with an unknown speaker one, T12.65); the detail is read again
+   * after it. */
+  onMoveLine(segment: string, speaker: string | null): void;
+  /** Splits a line before token `token` (T12.90); whether it was split (the detail is read
+   * again first). */
+  onSplitLine(segment: string, token: number): Promise<boolean>;
   rowRef(segment: string, el: HTMLDivElement | null): void;
 }) {
   const styles = useStyles();
   const [editing, setEditing] = useState<string | null>(null);
+  // T12.90: the line whose words are offered as split points.
+  const [splitting, setSplitting] = useState<string | null>(null);
   // T12.15f: the bar under a line just edited, the note after a Dictionary action and the word
   // menu. The bar and the note stay until the user moves on (another edit, a Dictionary action
   // on another line, Not now).
@@ -1691,7 +1724,10 @@ function TranscriptTab({
       closeBar: (segment) => latest.current?.closeBar(segment),
       keep: (segment, token) => latest.current?.keep(segment, token),
       undo: (segment, word) => latest.current?.undo(segment, word),
-      assign: (segment, speaker) => latest.current?.assign(segment, speaker),
+      move: (segment, speaker) => latest.current?.move(segment, speaker),
+      startSplit: (segment) => latest.current?.startSplit(segment),
+      split: (segment, token) => latest.current?.split(segment, token),
+      cancelSplit: (segment) => latest.current?.cancelSplit(segment),
       rowRef: (segment, el) => rowRefLatest.current(segment, el),
       wordActions: (segment) =>
         latest.current?.wordActions(segment) ?? { onUse: noop, onPutBack: noop, onKeep: noop },
@@ -1779,6 +1815,7 @@ function TranscriptTab({
       keyDown: (r, e) => onRowKeyDown(r)(e),
       startEdit: (segment) => {
         setEditing(segment);
+        setSplitting(null);
         setOffer(null);
         setNote(null);
       },
@@ -1799,17 +1836,25 @@ function TranscriptTab({
       keep: (segment, token) =>
         void Promise.resolve(wordActions(segment).onKeep(token)).then(() => setFocusNext({ edit: segment })),
       undo: (segment, word) => void undo(segment, word),
-      assign: onAssignSpeaker,
+      move: onMoveLine,
+      startSplit: (segment) => {
+        setSplitting(segment);
+        setEditing(null);
+      },
+      split: (segment, token) =>
+        void onSplitLine(segment, token).then((done) => {
+          if (done) {
+            setSplitting(null);
+            setFocusNext({ edit: segment });
+          }
+        }),
+      cancelSplit: (segment) => {
+        setSplitting(null);
+        setFocusNext({ edit: segment });
+      },
       wordActions,
     };
   });
-  // The speakers a line with an unknown speaker can be given to (T12.65), one array per
-  // detail, so other lines' props stay the same.
-  const choices = useMemo<SpeakerChoice[]>(
-    () => detail.speakers.map((s) => ({ id: s.id, name: s.name })),
-    [detail.speakers],
-  );
-
   if (detail.transcript.length === 0) {
     return <Body1 className={styles.muted}>No speech was transcribed in this meeting.</Body1>;
   }
@@ -1825,9 +1870,9 @@ function TranscriptTab({
             index={i}
             cited={r.segment_id === cited}
             editing={editing === r.segment_id}
+            splitting={splitting === r.segment_id}
             canEdit={canEdit}
             locked={locked}
-            speakers={r.unknown_speaker ? choices : NO_CHOICES}
             wordList={detail.word_list}
             dictionary={detail.dictionary}
             offered={offer?.segment === r.segment_id ? offer.words : null}
@@ -1861,13 +1906,66 @@ function TranscriptTab({
 
 const noop = () => {};
 
-/** A speaker a line with an unknown speaker can be given to. */
-interface SpeakerChoice {
-  id: string;
-  name: string;
+/** A line's words as split points (T12.90): from the second word on, each word is a button
+ * that splits the line before it. Escape or Cancel leaves without splitting. */
+function SplitPoints({
+  index,
+  text,
+  locked,
+  onSplit,
+  onCancel,
+}: {
+  index: number;
+  text: string;
+  locked: boolean;
+  onSplit(token: number): void;
+  onCancel(): void;
+}) {
+  const styles = useStyles();
+  const words = tokensOf(text);
+  const first = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => first.current?.focus(), []);
+  return (
+    <div
+      role="group"
+      aria-label={`Split line ${index + 1}`}
+      className={styles.splitPoints}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && e.currentTarget.contains(e.target as Node)) {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+    >
+      <Caption1 className={styles.muted}>Choose the word the new line starts with.</Caption1>
+      <span className={styles.splitWords}>
+        {words.map((w, t) =>
+          t === 0 ? (
+            <span key={t}>{w}</span>
+          ) : (
+            <Button
+              key={t}
+              ref={t === 1 ? first : undefined}
+              size="small"
+              appearance="outline"
+              aria-label={`Split before word ${t + 1}: ${w}`}
+              disabledFocusable={locked}
+              onClick={() => onSplit(t)}
+            >
+              {w}
+            </Button>
+          ),
+        )}
+      </span>
+      <span>
+        <Button size="small" onClick={onCancel}>
+          Cancel
+        </Button>
+      </span>
+    </div>
+  );
 }
 
-const NO_CHOICES: SpeakerChoice[] = [];
 
 /** The Edit button of line `segment` inside `root`: where focus goes when the control that had
  * it is gone or took none. */
@@ -1888,8 +1986,14 @@ interface LineHandlers {
   /** "Keep" on a suggestion: the mark leaves the line, so focus goes to its Edit button. */
   keep(segment: string, token: number): void;
   undo(segment: string, word: string): void;
-  /** Gives a line with an unknown speaker to `speaker` (T12.65). */
-  assign(segment: string, speaker: string): void;
+  /** Moves a line to `speaker`, or to a new speaker for `null` (T12.90). */
+  move(segment: string, speaker: string | null): void;
+  /** Offers the line's words as split points (T12.90). */
+  startSplit(segment: string): void;
+  /** Splits the line before token `token`. */
+  split(segment: string, token: number): void;
+  /** Leaves the split points; focus goes back to the line's Edit button. */
+  cancelSplit(segment: string): void;
   rowRef(segment: string, el: HTMLDivElement | null): void;
   wordActions(segment: string): WordActions;
 }
@@ -1902,9 +2006,9 @@ const TranscriptLine = memo(function TranscriptLine({
   index: i,
   cited,
   editing,
+  splitting,
   canEdit,
   locked,
-  speakers,
   wordList,
   dictionary,
   offered,
@@ -1917,12 +2021,11 @@ const TranscriptLine = memo(function TranscriptLine({
   index: number;
   cited: boolean;
   editing: boolean;
+  /** The line's words are offered as split points (T12.90). */
+  splitting: boolean;
   canEdit: boolean;
-  /** The meeting is busy: Edit and the word choices are off. */
+  /** The meeting is busy: Edit, Move, Split and the word choices are off. */
   locked: boolean;
-  /** For a line with an unknown speaker (T12.65): the speakers it can be given to; empty for
-   * every other line. */
-  speakers: SpeakerChoice[];
   wordList: string[];
   dictionary: string[];
   /** The words the bar under this line offers, `null` without the bar. */
@@ -1949,6 +2052,19 @@ const TranscriptLine = memo(function TranscriptLine({
     [dictionary, h, segment],
   );
   const rowRef = useCallback((el: HTMLDivElement | null) => h.rowRef(segment, el), [h, segment]);
+  // T12.90: where the line can move (the runtime's list, names included: a speaker left with
+  // no line has no card), then a new speaker.
+  const moveItems = (
+    <>
+      {r.movable_to.map((s) => (
+        <MenuItem key={s.id} onClick={() => h.move(segment, s.id)}>
+          {s.name}
+        </MenuItem>
+      ))}
+      <MenuItem onClick={() => h.move(segment, null)}>New speaker</MenuItem>
+    </>
+  );
+  const quiet = !editing && !splitting;
   return (
     <div
       role="row"
@@ -1963,7 +2079,7 @@ const TranscriptLine = memo(function TranscriptLine({
       </Caption1>
       <Body1Strong role="cell" className={styles.speaker}>
         {r.speaker}
-        {r.unknown_speaker && canEdit && !editing && speakers.length > 0 && (
+        {r.unknown_speaker && canEdit && quiet && (
           <Menu>
             <MenuTrigger disableButtonEnhancement>
               <Button
@@ -1976,13 +2092,7 @@ const TranscriptLine = memo(function TranscriptLine({
               </Button>
             </MenuTrigger>
             <MenuPopover>
-              <MenuList>
-                {speakers.map((s) => (
-                  <MenuItem key={s.id} onClick={() => h.assign(segment, s.id)}>
-                    {s.name}
-                  </MenuItem>
-                ))}
-              </MenuList>
+              <MenuList>{moveItems}</MenuList>
             </MenuPopover>
           </Menu>
         )}
@@ -1995,6 +2105,16 @@ const TranscriptLine = memo(function TranscriptLine({
             multiline
             onSave={(text) => h.saveEdit(segment, text)}
             onCancel={h.cancelEdit}
+          />
+        </div>
+      ) : splitting ? (
+        <div role="cell" className={styles.text}>
+          <SplitPoints
+            index={i}
+            text={r.text}
+            locked={locked}
+            onSplit={(token) => h.split(segment, token)}
+            onCancel={() => h.cancelSplit(segment)}
           />
         </div>
       ) : (
@@ -2015,8 +2135,8 @@ const TranscriptLine = memo(function TranscriptLine({
         </Body1>
       )}
       {/* Not a cell: a row's cells are its time, speaker and words. */}
-      <span>
-        {canEdit && !editing && (
+      <span className={styles.lineActions}>
+        {canEdit && quiet && (
           <Button
             size="small"
             appearance="subtle"
@@ -2029,6 +2149,44 @@ const TranscriptLine = memo(function TranscriptLine({
           >
             Edit
           </Button>
+        )}
+        {canEdit && quiet && (
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <Button
+                size="small"
+                appearance="subtle"
+                className={mergeClasses(styles.lineEdit, styles.lineMore, "earshot-line-edit")}
+                aria-label={`More actions for line ${i + 1}`}
+                disabledFocusable={locked}
+              >
+                ⋯
+              </Button>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                <Menu>
+                  <MenuTrigger disableButtonEnhancement>
+                    <MenuItem>Move to speaker</MenuItem>
+                  </MenuTrigger>
+                  <MenuPopover>
+                    <MenuList>{moveItems}</MenuList>
+                  </MenuPopover>
+                </Menu>
+                {r.splittable ? (
+                  <MenuItem onClick={() => h.startSplit(segment)}>Split line</MenuItem>
+                ) : (
+                  // A line of two words or more whose words were edited: why it cannot be split
+                  // is the item's own text, so it reads out with it. One word has nothing to split.
+                  tokensOf(r.text).length >= 2 && (
+                    <MenuItem disabled subText={SPLIT_NEEDS_WORD_TIMES_COPY}>
+                      Split line
+                    </MenuItem>
+                  )
+                )}
+              </MenuList>
+            </MenuPopover>
+          </Menu>
         )}
       </span>
       {canEdit && !editing && (offered !== null || note !== null) && (

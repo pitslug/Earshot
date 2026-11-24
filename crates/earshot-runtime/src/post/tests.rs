@@ -4100,9 +4100,9 @@ fn post_the_default_floor_gives_a_short_turn_voice_to_a_speaker_as_before() {
 
 #[test]
 fn post_an_unknown_speaker_line_is_given_a_speaker_through_edit() {
-    // T12.65: `edit::assign_line_speaker` gives the unknown line to a speaker of the meeting in
-    // one transaction, marks it edited, and refuses a line with a speaker, a stranger, and a
-    // busy meeting.
+    // T12.65: `edit::move_line` (T12.90) gives the unknown line to a speaker of the meeting in
+    // one transaction, marks it edited, and refuses a stranger, a speaker of the other track
+    // and a busy meeting.
     let dir = TempDir::new();
     let svc = services(&dir);
     let (meeting, mic, them) = meeting_rows(&svc);
@@ -4130,12 +4130,13 @@ fn post_an_unknown_speaker_line_is_given_a_speaker_through_edit() {
     let named = finals.iter().find(|s| s.text.contains("first")).unwrap();
     let far = named.speaker_id.unwrap();
     let stranger = EntityId::from_bytes([7; 16]);
+    use crate::edit::LineSpeaker::Existing;
     assert!(matches!(
-        crate::edit::assign_line_speaker(&svc, meeting, aside, stranger),
+        crate::edit::move_line(&svc, meeting, aside, Existing(stranger)),
         Err(RuntimeError::Edit(crate::edit::EditError::SpeakerNotFound(id))) if id == stranger
     ));
     assert!(matches!(
-        crate::edit::assign_line_speaker(&svc, meeting, named.id, far),
+        crate::edit::move_line(&svc, meeting, named.id, Existing(far)),
         Ok(false)
     ));
     {
@@ -4143,19 +4144,20 @@ fn post_an_unknown_speaker_line_is_given_a_speaker_through_edit() {
             .lease_meeting_for(meeting, crate::MeetingJob::Processing)
             .unwrap();
         assert!(matches!(
-            crate::edit::assign_line_speaker(&svc, meeting, aside, far),
+            crate::edit::move_line(&svc, meeting, aside, Existing(far)),
             Err(RuntimeError::MeetingBusy { .. })
         ));
     }
-    assert!(crate::edit::assign_line_speaker(&svc, meeting, aside, far).unwrap());
+    assert!(crate::edit::move_line(&svc, meeting, aside, Existing(far)).unwrap());
     let rows = svc.store().segments(meeting).unwrap();
     let row = rows.iter().find(|r| r.segment.id == aside).unwrap();
     assert_eq!(row.segment.speaker_id, Some(far));
     assert!(row.text_edited_at.is_some());
     let mic_speaker = finals.iter().find(|s| s.text.contains("hello")).unwrap();
     assert!(matches!(
-        crate::edit::assign_line_speaker(&svc, meeting, aside, mic_speaker.speaker_id.unwrap()),
-        Err(RuntimeError::Edit(crate::edit::EditError::LineHasSpeaker(id))) if id == aside
+        crate::edit::move_line(&svc, meeting, aside, Existing(mic_speaker.speaker_id.unwrap())),
+        Err(RuntimeError::Edit(crate::edit::EditError::SpeakerNotOnTrack(id)))
+            if Some(id) == mic_speaker.speaker_id
     ));
 }
 

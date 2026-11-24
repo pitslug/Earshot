@@ -66,10 +66,15 @@ export const commands = {
 	 */
 	editSegment: (meeting: string, segment: string, text: string) => typedError<string[], IpcError>(__TAURI_INVOKE("edit_segment", { meeting, segment, text })),
 	/**
-	 *  Gives a line of `meeting`'s final transcript that has an unknown speaker (T12.65) to one
-	 *  of the meeting's speakers.
+	 *  Moves a line of `meeting`'s final transcript to `speaker`, a speaker heard on the line's
+	 *  track, or to a new "Speaker N" when `speaker` is `None` (T12.90, `edit::move_line`).
 	 */
-	assignLineSpeaker: (meeting: string, segment: string, speaker: string) => typedError<null, IpcError>(__TAURI_INVOKE("assign_line_speaker", { meeting, segment, speaker })),
+	moveLine: (meeting: string, segment: string, speaker: string | null) => typedError<null, IpcError>(__TAURI_INVOKE("move_line", { meeting, segment, speaker })),
+	/**
+	 *  Splits a line of `meeting`'s final transcript before its white-space token `token`
+	 *  (T12.90, `edit::split_line`); returns the second line's id.
+	 */
+	splitLine: (meeting: string, segment: string, token: number) => typedError<string, IpcError>(__TAURI_INVOKE("split_line", { meeting, segment, token })),
 	/**
 	 *  "Use it", or another word from the list (T12.15e): word `token` of a final transcript line
 	 *  becomes `word`, which must be on the word list.
@@ -1721,6 +1726,17 @@ export type ModelsView = {
 	in_use: InUseView,
 };
 
+/**
+ *  A speaker a line can move to (T12.90). Carries its name because a speaker left with no line
+ *  has no card in the Speakers panel.
+ */
+export type MovableSpeaker = {
+	/**  Speaker id (hyphenated UUID). */
+	id: string,
+	/**  The name the transcript shows for them. */
+	name: string,
+};
+
 /**  What "Not <name>" did (T12.77b7): counts and a flag only. */
 export type NotThisPersonResult = {
 	/**  Voice samples of this meeting's voice taken back. */
@@ -2599,7 +2615,7 @@ export type TranscriptRow = {
 	/**
 	 *  A final line diarisation gave to none of its speakers (T12.65): shown as
 	 *  `earshot_core::diar::UNKNOWN_SPEAKER`, and the user can give it a speaker from the
-	 *  line (`assign_line_speaker`).
+	 *  line (`move_line`).
 	 */
 	unknown_speaker: boolean,
 	/**  Where it was heard. */
@@ -2607,10 +2623,22 @@ export type TranscriptRow = {
 	/**  The text. */
 	text: string,
 	/**
-	 *  The user edited the text (T12.16): it is kept by a re-transcription, and it has no
-	 *  per-word times.
+	 *  The user edited the line (T12.16; its text, speaker or a split, T12.90): it is kept
+	 *  by a re-transcription.
 	 */
 	edited: boolean,
+	/**
+	 *  The speakers this line can move to (T12.90, `edit::movable_speakers`: those that belong
+	 *  to its track, other than its own, a speaker left with no line included), in the meeting's
+	 *  speaker order, with the names the transcript shows; empty in a draft. A new speaker is
+	 *  offered for every final line.
+	 */
+	movable_to: MovableSpeaker[],
+	/**
+	 *  The line can be split before a word (T12.90, `edit::can_split_line`: its words still
+	 *  match its text); false in a draft.
+	 */
+	splittable: boolean,
 	/**
 	 *  Words the word list suggests a listed word for (T12.15e), in token order; empty in a
 	 *  draft.

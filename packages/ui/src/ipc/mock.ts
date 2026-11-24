@@ -7,6 +7,9 @@ import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
 import { type Timer, realTimer } from "../time";
 import {
   RECOGNISED_ME_COPY,
+  SPEAKER_NOT_ON_TRACK_COPY,
+  SPLIT_NEEDS_WORD_TIMES_COPY,
+  SPLIT_OUT_OF_RANGE_COPY,
   type AppInfo,
   type CaptureMode,
   type DeleteAsk,
@@ -39,11 +42,12 @@ import { dictionaryWord, splitToken, tokensOf, withoutEndQuotes } from "../detai
 import { DELETE_COPY } from "../shell/deleteCopy";
 import { marksAfterEdit, withWord, wordListOf, wordsToOffer } from "./mockWords";
 import {
-  assignedLine,
   ignoredVoice,
   linked,
   markedMe,
   merged,
+  movedLine,
+  newSpeakerCard,
   notThisPersonVoice,
   renamed,
   resummarised,
@@ -51,7 +55,9 @@ import {
   sampleInRoomDetail,
   sampleRecognisedInRoomDetail,
   samplePersons,
+  splitRow,
   unmarkedMe,
+  withLineOffers,
   withUnknownLine,
 } from "./mockDetail";
 import type { FolderListItem } from "./folders";
@@ -609,6 +615,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const update = (id: string, f: (d: MeetingDetail) => MeetingDetail) => {
     details.set(id, f(detailOf(id)));
   };
+  // T12.90: the lines whose text was changed (an edit, a word choice), so they have no word
+  // times and cannot be split; and the ids a split or a new speaker takes.
+  const textEdited = new Set<string>();
+  let lineIds = 0;
   // T12.15e: the word list, as `word_choices::word_list` builds it.
   const wordList = async () => wordListOf((await summariesMock.summaryVocabulary()).words, persons);
   // Suggestions a "Use it" took, so "Put back" shows them again (the mock runs no matcher).
@@ -1043,7 +1053,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       // T12.15f: the Dictionary's entries, for Add or Remove on a word.
       const dictionary = final ? (await summariesMock.summaryVocabulary()).words : [];
       return structuredClone({
-        ...d,
+        ...withLineOffers(d, textEdited),
         kept_local,
         word_list,
         dictionary,
@@ -1083,6 +1093,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       update(meeting, (d) => {
         const row = d.transcript.find((r) => r.segment_id === segment);
         if (!row || row.text === t) return d;
+        textEdited.add(segment);
         return marksAfterEdit(
           {
             ...d,
@@ -1095,25 +1106,44 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       });
       return offer;
     },
-    // T12.65: `edit::assign_line_speaker`, refusals first, as its one transaction.
-    assignLineSpeaker: async (meeting, segment, speaker) => {
-      call("assignLineSpeaker", meeting, segment, speaker);
-      const d = detailOf(meeting);
-      if (d.header.transcript === "Draft") {
-        fail("draft_transcript", "The words can be corrected once the final transcript is ready.");
+    // T12.90: `edit::move_line` and `edit::split_line`, refusals first, each as its one
+    // transaction. Where a line may go and whether it splits are the detail's own offers
+    // (`withLineOffers`), as the runtime decides them.
+    moveLine: async (meeting, segment, speaker) => {
+      call("moveLine", meeting, segment, speaker);
+      const d = withLineOffers(detailOf(meeting), textEdited);
+      const row = lineOf(meeting, segment);
+      const offers = d.transcript.find((r) => r.segment_id === segment) ?? row;
+      if (speaker === null) {
+        // The line already is the only line of an unnamed voice other than the user's: nothing.
+        const own = d.speakers.find((s) => s.id === row.speaker_id);
+        const alone = !d.transcript.some((r) => r.segment_id !== segment && r.speaker_id === row.speaker_id);
+        if (own !== undefined && own.kind !== "Me" && own.person === null && alone) return;
+        lineIds += 1;
+        const id = `5a000000-0000-7000-8000-${String(0x900 + lineIds).padStart(12, "0")}`;
+        update(meeting, (d) => movedLine(d, segment, newSpeakerCard(d, id, row.track)));
+        return;
       }
-      const row =
-        d.transcript.find((r) => r.segment_id === segment) ??
-        fail("segment_not_found", "This line is no longer in the transcript. It may have been transcribed again.");
       if (row.speaker_id === speaker) return;
-      if (row.speaker_id !== null) {
-        fail("line_has_speaker", "This line already has a speaker. Rename or merge speakers in Speakers instead.");
-      }
       const card =
         d.speakers.find((s) => s.id === speaker) ??
         fail("speaker_not_found", "This speaker is no longer in the meeting.");
-      update(meeting, (d) => assignedLine(d, segment, card));
-    },    // T12.15f: `vocabulary::add_word` and `remove_word`, through the Dictionary page's own
+      if (!offers.movable_to.some((m) => m.id === speaker)) fail("speaker_not_on_track", SPEAKER_NOT_ON_TRACK_COPY);
+      update(meeting, (d) => movedLine(d, segment, card));
+    },
+    splitLine: async (meeting, segment, token) => {
+      call("splitLine", meeting, segment, token);
+      const row = lineOf(meeting, segment);
+      if (textEdited.has(segment)) fail("split_needs_word_times", SPLIT_NEEDS_WORD_TIMES_COPY);
+      if (token < 1 || token >= tokensOf(row.text).length) {
+        fail("split_out_of_range", SPLIT_OUT_OF_RANGE_COPY);
+      }
+      lineIds += 1;
+      const second = `5e000000-0000-7000-8000-${String(0x900 + lineIds).padStart(12, "0")}`;
+      update(meeting, (d) => splitRow(d, segment, token, second));
+      return second;
+    },
+    // T12.15f: `vocabulary::add_word` and `remove_word`, through the Dictionary page's own
     // one-word commands (T11.3e: its checks, messages and the refusal while words are not in
     // use).
     addDictionaryWord: async (token) => {
@@ -1150,6 +1180,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       update(meeting, (d) => {
         const next = withWord(d, segment, token, listed, decoded);
         const changed = next.transcript.find((r) => r.segment_id === segment)?.text !== row.text;
+        if (changed) textEdited.add(segment);
         return changed
           ? { ...next, summary_stale: d.summary !== null || d.summary_stale, summary_stale_names: false }
           : next;
@@ -1164,6 +1195,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const key = `${meeting}/${segment}/${token}`;
       const suggestion = usedSuggestions.get(key);
       usedSuggestions.delete(key);
+      textEdited.add(segment);
       update(meeting, (d) => {
         const next = withWord(d, segment, token, choice.decoded, choice.decoded);
         return {

@@ -633,9 +633,10 @@ fn detail_a_name_the_summary_used_changing_marks_it_out_of_date_with_its_own_rea
 
 #[test]
 fn detail_a_line_with_no_speaker_is_an_unknown_speaker_the_user_can_assign() {
-    // T12.65: a final line the final pass gave no speaker, on a track whose other lines have
-    // one, shows as the unknown speaker; giving it Priya from the line names it and marks it
-    // edited, and a line with a speaker is refused as user copy.
+    // T12.65: a final line the final pass gave no speaker shows as the unknown speaker; moving
+    // it from the line (T12.90) names it and marks it edited. Priya and Speaker 2 have no line
+    // left here, so they are offered by their far-end role, and a line moved to a speaker of
+    // another track is refused as user copy.
     let dir = TempDir::new("detail-unknown");
     let svc = services(&dir);
     let f = call_meeting(&svc, 46);
@@ -677,16 +678,99 @@ fn detail_a_line_with_no_speaker_is_an_unknown_speaker_the_user_can_assign() {
     assert!(!d.transcript[1].unknown_speaker);
     assert_eq!(d.transcript[1].speaker, "Them");
 
-    assert!(edit::assign_line_speaker(&svc, f.meeting, f.segments[2], f.priya).unwrap());
+    let offered: Vec<(String, String)> = d.transcript[2]
+        .movable_to
+        .iter()
+        .map(|m| (m.id.clone(), m.name.clone()))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            (f.priya.to_string(), "Priya Shah".to_owned()),
+            (f.unnamed.to_string(), "Speaker 2".to_owned())
+        ]
+    );
+    assert!(
+        edit::move_line(
+            &svc,
+            f.meeting,
+            f.segments[2],
+            edit::LineSpeaker::Existing(f.priya)
+        )
+        .unwrap()
+    );
     let d = meeting_detail(&svc, f.meeting).unwrap();
     let row = &d.transcript[2];
     assert!(!row.unknown_speaker);
     assert_eq!(row.speaker, "Priya Shah");
     assert!(row.edited);
-    let e: IpcError = edit::assign_line_speaker(&svc, f.meeting, f.segments[0], f.priya)
+    let e: IpcError = edit::move_line(
+        &svc,
+        f.meeting,
+        f.segments[0],
+        edit::LineSpeaker::Existing(f.priya),
+    )
+    .unwrap_err()
+    .into();
+    assert_eq!(e.kind, "speaker_not_on_track");
+}
+
+#[test]
+fn detail_each_final_line_says_where_it_can_move_and_whether_it_splits() {
+    // T12.90: the menu's offers come from the runtime's rules: speakers heard on the line's
+    // track other than its own, and a split only while the words match the text.
+    let dir = TempDir::new("detail-lines");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 47);
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let ids = |v: &[crate::detail::MovableSpeaker]| {
+        v.iter()
+            .map(|m| (m.id.parse::<EntityId>().unwrap(), m.name.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        d.transcript[0].movable_to.is_empty(),
+        "Me is the mic's one speaker"
+    );
+    assert_eq!(
+        ids(&d.transcript[1].movable_to),
+        [(f.priya, "Priya Shah".to_owned())]
+    );
+    assert_eq!(
+        ids(&d.transcript[2].movable_to),
+        [(f.unnamed, "Speaker 2".to_owned())]
+    );
+    assert!(d.transcript.iter().all(|r| r.splittable));
+    assert!(edit::edit_segment(&svc, f.meeting, f.segments[2], "yes that works").unwrap());
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    assert!(
+        !d.transcript[2].splittable,
+        "an edited line has no word times"
+    );
+    let e: IpcError = edit::split_line(&svc, f.meeting, f.segments[2], 1)
         .unwrap_err()
         .into();
-    assert_eq!(e.kind, "line_has_speaker");
+    assert_eq!(e.kind, "split_needs_word_times");
+    assert_eq!(e.message, crate::detail::SPLIT_NEEDS_WORD_TIMES_COPY);
+    let second = edit::split_line(&svc, f.meeting, f.segments[3], 2).unwrap();
+    let d = meeting_detail(&svc, f.meeting).unwrap();
+    let texts: Vec<&str> = d.transcript.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "shall we split the order",
+            "we could split the order and air freight the seals so that commissioning still lands before christmas this year",
+            "yes that works",
+            "then lets",
+            "confirm friday"
+        ]
+    );
+    assert_eq!(d.transcript[4].segment_id, second.to_string());
+    assert!(d.transcript[3].edited && d.transcript[4].edited);
+    let e: IpcError = edit::split_line(&svc, f.meeting, second, 0)
+        .unwrap_err()
+        .into();
+    assert_eq!(e.kind, "split_out_of_range");
 }
 
 #[test]
@@ -1114,6 +1198,46 @@ fn detail_recognised_me_copy_is_the_ui_copy() {
 }
 
 #[test]
+fn detail_line_move_and_split_copy_is_the_ui_copy() {
+    // The UI's text and the mock's refusals (T12.90, constants of the same names in
+    // packages/ui/src/ipc/ipc.ts) say exactly this.
+    let ts = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/ui/src/ipc/ipc.ts"),
+    )
+    .unwrap();
+    for (name, copy) in [
+        (
+            "SPLIT_NEEDS_WORD_TIMES_COPY",
+            crate::detail::SPLIT_NEEDS_WORD_TIMES_COPY,
+        ),
+        (
+            "SPEAKER_NOT_ON_TRACK_COPY",
+            crate::detail::SPEAKER_NOT_ON_TRACK_COPY,
+        ),
+        (
+            "SPLIT_OUT_OF_RANGE_COPY",
+            crate::detail::SPLIT_OUT_OF_RANGE_COPY,
+        ),
+    ] {
+        let at = ts
+            .find(&format!("export const {name} ="))
+            .unwrap_or_else(|| panic!("{name} is not in ipc.ts"));
+        let literal = format!("\"{copy}\"");
+        let end = ts[at..].find(';').unwrap() + at;
+        assert!(ts[at..end].contains(&literal), "{name}: {literal}");
+    }
+    assert_eq!(
+        edit_error(&EditError::SpeakerNotOnTrack(EntityId::from_bytes([1; 16]))).message,
+        crate::detail::SPEAKER_NOT_ON_TRACK_COPY
+    );
+    assert_eq!(
+        edit_error(&EditError::SplitOutOfRange(EntityId::from_bytes([1; 16]))).message,
+        crate::detail::SPLIT_OUT_OF_RANGE_COPY
+    );
+}
+
+#[test]
 fn detail_mark_me_returns_the_persons_named_after_the_user_to_merge() {
     let dir = TempDir::new("detail-merge-me");
     let svc = services(&dir);
@@ -1212,7 +1336,9 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::WordNotListed, "word_not_listed"),
         (EditError::NoWordChoice(id), "no_word_choice"),
         (EditError::MeetingStillWorking(id), "meeting_still_working"),
-        (EditError::LineHasSpeaker(id), "line_has_speaker"),
+        (EditError::SpeakerNotOnTrack(id), "speaker_not_on_track"),
+        (EditError::SplitNeedsWordTimes(id), "split_needs_word_times"),
+        (EditError::SplitOutOfRange(id), "split_out_of_range"),
         (EditError::UserRow(id), "user_row"),
     ];
     for (e, kind) in all {

@@ -10,6 +10,9 @@ import {
   type MockIpcData,
   POST_STEP_MS,
   SAMPLE_SPEAKERS,
+  SPEAKER_NOT_ON_TRACK_COPY,
+  SPLIT_NEEDS_WORD_TIMES_COPY,
+  SPLIT_OUT_OF_RANGE_COPY,
   UNKNOWN_SPEAKER,
   createMockIpc,
   sampleDetail,
@@ -829,7 +832,8 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     expect(mark).toHaveTextContent(/^Reed$/);
     expect(mark).toHaveAttribute("data-word-mark", "suggestion");
     expect(lineCell().textContent).toBe(LINE8_TEXT);
-    screen.getByRole("button", { name: "Edit line 7" }).focus();
+    // Line 7's last control is its More button (T12.90).
+    screen.getByRole("button", { name: "More actions for line 7" }).focus();
     await user.tab();
     expect(mark).toHaveFocus();
   });
@@ -1410,19 +1414,21 @@ describe("MeetingDetailView, a line with an unknown speaker (T12.65)", () => {
     expect(screen.getAllByRole("button", { name: /^Choose who said line/ })).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Choose who said line 6" }));
     const menu = await screen.findByRole("menu");
+    // The far end's speakers (T12.90: Speaker 3, whose only line this is, by its far-end
+    // card), then a new speaker.
     expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
-      "Me",
       "Priya Shah",
       "Speaker 2",
       "Speaker 3",
+      "New speaker",
     ]);
-    await user.click(within(menu).getByRole("menuitem", { name: "Speaker 3" }));
-    await waitFor(() => expect(within(row(6)).getAllByRole("cell")[1]).toHaveTextContent("Speaker 3"));
+    await user.click(within(menu).getByRole("menuitem", { name: "Speaker 2" }));
+    await waitFor(() => expect(within(row(6)).getAllByRole("cell")[1]).toHaveTextContent("Speaker 2"));
     expect(within(row(6)).getAllByRole("cell")[1]).not.toHaveTextContent(UNKNOWN_SPEAKER);
     expect(row(6)).toHaveTextContent("(edited)");
     expect(screen.queryByRole("button", { name: /^Choose who said line/ })).toBeNull();
-    expect(calls.filter((c) => c[0] === "assignLineSpeaker")).toEqual([
-      ["assignLineSpeaker", ITEM.id, sampleDetail(ITEM).transcript[5].segment_id, SAMPLE_SPEAKERS.third],
+    expect(calls.filter((c) => c[0] === "moveLine")).toEqual([
+      ["moveLine", ITEM.id, sampleDetail(ITEM).transcript[5].segment_id, SAMPLE_SPEAKERS.second],
     ]);
   });
 
@@ -1459,18 +1465,172 @@ describe("MeetingDetailView, a line with an unknown speaker (T12.65)", () => {
     expect(choose).toHaveAttribute("aria-disabled", "true");
     await user.click(choose);
     expect(screen.queryByRole("menu")).toBeNull();
-    expect(calls.some((c) => c[0] === "assignLineSpeaker")).toBe(false);
+    // T12.90: every line's More menu is off too.
+    const more = screen.getByRole("button", { name: "More actions for line 1" });
+    expect(more).toHaveAttribute("aria-disabled", "true");
+    await user.click(more);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(calls.some((c) => c[0] === "moveLine" || c[0] === "splitLine")).toBe(false);
   });
 
-  it("the mock refuses a line that already has a speaker, as the runtime does", async () => {
+  it("the mock refuses a speaker of the other track and an unknown speaker, as the runtime does", async () => {
     const ipc = createMockIpc({ meetings: [ITEM], details: { [ITEM.id]: unknown() } });
     const line1 = sampleDetail(ITEM).transcript[0].segment_id;
-    await expect(ipc.assignLineSpeaker(ITEM.id, line1, SAMPLE_SPEAKERS.third)).rejects.toMatchObject({
-      error: { kind: "line_has_speaker" },
+    await expect(ipc.moveLine(ITEM.id, line1, SAMPLE_SPEAKERS.me)).rejects.toMatchObject({
+      error: { kind: "speaker_not_on_track", message: SPEAKER_NOT_ON_TRACK_COPY },
+    });
+    await expect(ipc.splitLine(ITEM.id, line1, 0)).rejects.toMatchObject({
+      error: { kind: "split_out_of_range", message: SPLIT_OUT_OF_RANGE_COPY },
     });
     const line6 = sampleDetail(ITEM).transcript[5].segment_id;
-    await expect(ipc.assignLineSpeaker(ITEM.id, line6, "5a000000-0000-7000-8000-00000000ffff")).rejects.toMatchObject({
+    await expect(ipc.moveLine(ITEM.id, line6, "5a000000-0000-7000-8000-00000000ffff")).rejects.toMatchObject({
       error: { kind: "speaker_not_found" },
     });
+  });
+});
+
+describe("MeetingDetailView, moving and splitting a line (T12.90)", () => {
+  const row = (n: number) => within(screen.getByRole("table", { name: "Transcript" })).getAllByRole("row")[n - 1];
+  const speakerOf = (n: number) => within(row(n)).getAllByRole("cell")[1];
+
+  async function transcript(data: MockIpcData = {}) {
+    const s = await setup(data);
+    await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    return s;
+  }
+
+  /** Opens line `n`'s "Move to speaker" list and returns its item names. */
+  async function moveMenu(user: ReturnType<typeof userEvent.setup>, n: number) {
+    await user.click(screen.getByRole("button", { name: `More actions for line ${n}` }));
+    await user.click(await screen.findByRole("menuitem", { name: "Move to speaker" }));
+    await screen.findByRole("menuitem", { name: "New speaker" });
+    const menus = screen.getAllByRole("menu");
+    return within(menus[menus.length - 1])
+      .getAllByRole("menuitem")
+      .map((m) => m.textContent);
+  }
+
+  it("moves a line to another speaker of its side of the call", async () => {
+    const { user, calls } = await transcript();
+    expect(await moveMenu(user, 1)).toEqual(["Priya Shah", "Speaker 3", "New speaker"]);
+    await user.click(screen.getByRole("menuitem", { name: "Priya Shah" }));
+    await waitFor(() => expect(speakerOf(1)).toHaveTextContent("Priya Shah"));
+    expect(row(1)).toHaveTextContent("(edited)");
+    expect(calls.filter((c) => c[0] === "moveLine")).toEqual([
+      ["moveLine", ITEM.id, sampleDetail(ITEM).transcript[0].segment_id, SAMPLE_SPEAKERS.priya],
+    ]);
+  });
+
+  it("moves a line to a new speaker", async () => {
+    const { user, calls } = await transcript();
+    await moveMenu(user, 1);
+    await user.click(screen.getByRole("menuitem", { name: "New speaker" }));
+    await waitFor(() => expect(speakerOf(1)).toHaveTextContent("Speaker 1"));
+    expect(calls.filter((c) => c[0] === "moveLine")).toEqual([
+      ["moveLine", ITEM.id, sampleDetail(ITEM).transcript[0].segment_id, null],
+    ]);
+    // The new voice is in the Speakers panel, needing a name.
+    expect(screen.getByRole("button", { name: "Speakers, 3 need names" })).toBeInTheDocument();
+  });
+
+  it("offers a speaker whose last line moved away, so the move can be undone", async () => {
+    const { user } = await transcript();
+    // Line 6 is Speaker 3's only line.
+    await moveMenu(user, 6);
+    await user.click(screen.getByRole("menuitem", { name: "Priya Shah" }));
+    await waitFor(() => expect(speakerOf(6)).toHaveTextContent("Priya Shah"));
+    expect(await moveMenu(user, 6)).toEqual(["Speaker 2", "Speaker 3", "New speaker"]);
+    await user.click(screen.getByRole("menuitem", { name: "Speaker 3" }));
+    await waitFor(() => expect(speakerOf(6)).toHaveTextContent("Speaker 3"));
+  });
+
+  it("makes one new speaker however often New speaker is chosen", async () => {
+    const { user, calls } = await transcript();
+    await moveMenu(user, 1);
+    await user.click(screen.getByRole("menuitem", { name: "New speaker" }));
+    await waitFor(() => expect(speakerOf(1)).toHaveTextContent("Speaker 1"));
+    await moveMenu(user, 1);
+    await user.click(screen.getByRole("menuitem", { name: "New speaker" }));
+    await waitFor(() => expect(calls.filter((c) => c[0] === "moveLine")).toHaveLength(2));
+    expect(speakerOf(1)).toHaveTextContent("Speaker 1");
+    expect(screen.getByRole("button", { name: "Speakers, 3 need names" })).toBeInTheDocument();
+  });
+
+  it("offers only the speakers heard on the line's own track", async () => {
+    const { user } = await transcript();
+    // "Me" is the only voice on the mic: the far end's speakers are not offered.
+    expect(await moveMenu(user, 2)).toEqual(["New speaker"]);
+  });
+
+  it("splits a line before the chosen word", async () => {
+    const { user, calls } = await transcript();
+    await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Split line" }));
+    const group = screen.getByRole("group", { name: "Split line 1" });
+    // From the second word on, each word is a split point; the first takes focus.
+    expect(within(group).queryByRole("button", { name: /^Split before word 1:/ })).toBeNull();
+    expect(within(group).getByRole("button", { name: "Split before word 2: the" })).toHaveFocus();
+    await user.click(within(group).getByRole("button", { name: "Split before word 3: lead" }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Split line 1" })).toBeNull());
+    expect(calls.filter((c) => c[0] === "splitLine")).toEqual([
+      ["splitLine", ITEM.id, sampleDetail(ITEM).transcript[0].segment_id, 2],
+    ]);
+    const table = screen.getByRole("table", { name: "Transcript" });
+    expect(within(table).getAllByRole("row")).toHaveLength(9);
+    expect(within(row(1)).getAllByRole("cell")[2].textContent).toBe("So the(edited)");
+    expect(within(row(2)).getAllByRole("cell")[2].textContent).toMatch(/^lead time on the second pump set/);
+    expect(speakerOf(2)).toHaveTextContent("Speaker 2");
+    expect(screen.getByRole("button", { name: "Edit line 1" })).toHaveFocus();
+  });
+
+  it("leaves the split points with Escape without splitting", async () => {
+    const { user, calls } = await transcript();
+    await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Split line" }));
+    expect(screen.getByRole("group", { name: "Split line 1" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("group", { name: "Split line 1" })).toBeNull();
+    expect(calls.some((c) => c[0] === "splitLine")).toBe(false);
+    expect(screen.getByRole("button", { name: "Edit line 1" })).toHaveFocus();
+  });
+
+  it("offers no split on a line whose words were edited", async () => {
+    const { user, ipc } = await transcript();
+    await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
+    expect(await screen.findByRole("menuitem", { name: "Split line" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Edit line 1" }));
+    const field = screen.getByRole("textbox", { name: "Line 1" });
+    await user.clear(field);
+    await user.type(field, "So the lead time is now eleven weeks.");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(row(1)).toHaveTextContent("(edited)"));
+    await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
+    await screen.findByRole("menuitem", { name: "Move to speaker" });
+    // "Split line" stays in the menu, disabled, saying why in its own text.
+    const split = screen.getByRole("menuitem", { name: /^Split line/ });
+    expect(split).toHaveAttribute("aria-disabled", "true");
+    expect(split).toHaveTextContent(SPLIT_NEEDS_WORD_TIMES_COPY);
+    await user.click(split);
+    expect(screen.queryByRole("group", { name: "Split line 1" })).toBeNull();
+    // The mock refuses it as the runtime does, with the same copy.
+    await expect(ipc.splitLine(ITEM.id, sampleDetail(ITEM).transcript[0].segment_id, 1)).rejects.toMatchObject({
+      error: { kind: "split_needs_word_times", message: SPLIT_NEEDS_WORD_TIMES_COPY },
+    });
+  });
+
+  it("offers no split on a one-word line", async () => {
+    const d = sampleDetail(ITEM);
+    const oneWord = { ...d, transcript: d.transcript.map((r, i) => (i === 0 ? { ...r, text: "Okay." } : r)) };
+    const { user } = await transcript({ details: { [ITEM.id]: oneWord } });
+    await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
+    await screen.findByRole("menuitem", { name: "Move to speaker" });
+    expect(screen.queryByRole("menuitem", { name: /^Split line/ })).toBeNull();
+  });
+
+  it("offers no move or split on a draft transcript", async () => {
+    const draft = { ...sampleDetail(ITEM), header: { ...sampleDetail(ITEM).header, transcript: "Draft" as const } };
+    await transcript({ details: { [ITEM.id]: draft } });
+    expect(screen.queryByRole("button", { name: /^More actions for line/ })).toBeNull();
   });
 });
