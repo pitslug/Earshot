@@ -23,9 +23,10 @@ use super::vocabulary::{VOCABULARY_LINE_PREFIX, Vocabulary};
 
 /// The most names one request carries, a merge's carried names included (a merge told to
 /// carry more keeps the strongest, [`crate::vocabulary::names::NameFilter::choose`]). Chosen
-/// by the rule in docs/summary-names.md, written before its measurement:
-/// the smallest candidate cap that lost no matched mention on the AMI dev meetings with 400
-/// invented saved names (`docs/summary-names/ami-dev-cap50.json`, 2026-11-25: 10 lost 7, 15 lost 0).
+/// by the rule in docs/summary-names.md, written before its measurement: the smallest
+/// candidate cap that lost no matched mention on the AMI dev meetings with 400 invented saved
+/// names (`docs/summary-names/ami-dev-cap50.json`, 2026-11-25: 10 lost 7, 15 lost 0; re-run at
+/// 15 from a clean commit, `docs/summary-names/ami-dev.json`: the same).
 pub const MAX_PEOPLE_PER_REQUEST: usize = 15;
 
 /// The longest name kept, in characters: the People page's own limit

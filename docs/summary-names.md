@@ -68,26 +68,33 @@ The report holds counts only: no transcript text and no name. `--dry-run` measur
 
 ## Result
 
-Everything above was committed unchanged before the run (`ceedec8`). Raw report, unmodified: `summary-names/ami-dev-cap50.json` (renamed from `ami-dev.json` in T12.91a; 20 AMI dev meetings, reference transcripts, 400 invented names, run 2026-11-25 on the ARM64 Surface).
+Two runs, both raw and unmodified.
 
-**The filter passes every bound and the rule picks a cap of 15.** `MAX_PEOPLE_PER_REQUEST` is set to 15.
+- **First run, at the placeholder cap (50):** `summary-names/ami-dev-cap50.json` (renamed from `ami-dev.json` in T12.91a), run 2026-11-25 on the ARM64 Surface. It chose the cap. It records no commit or time of its own: that the rule above was committed before it ran (`ceedec8`, then `ced36d0` with the result) rests on the commit order alone, and the commit times cannot prove it.
+- **Re-run at the shipped cap (15):** `summary-names/ami-dev.json`, which records the commit it measured, `9071682a254c3cce1b163e895f1503f3b7a36ec1` (T12.91a, no uncommitted change: the tool adds `-dirty` otherwise), its start time (2026-11-24T15:23:02Z) and the shipped constants it read (`max_people_per_request` 15). That commit holds the rule above unchanged except one sentence of Data: T12.91a changed "They are never real people's names" to "They are not taken from any real list of people", which claims only what the seed check shows; no rule, bound or candidate changed. That commit also holds T12.91a's merge change (a merge holds at most the cap), which is why its last merge differs from the first run's.
+
+The cap does not move the rule's inputs: map requests, recall and `lost_at_cap` are measured with no cap or chose fewer than 15 names, and are the same in both runs.
+
+**The filter passes every bound and the rule picks a cap of 15, in both runs.** `MAX_PEOPLE_PER_REQUEST` is set to 15.
 
 | Request | Count | Chosen (median / max) | Namesakes | Spurious | Growth, est. tokens (median / max) |
 |---|---|---|---|---|---|
-| map | 71 | 9 / 15 | 2 / 5 | 0 / 3 | 241 / 278 |
-| single | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
-| last merge | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
+| map (both runs) | 71 | 9 / 15 | 2 / 5 | 0 / 3 | 241 / 278 |
+| single, at cap 50 (first run) | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
+| single, at cap 15 (re-run, shipped) | 20 | 15 / 15 | 3 / 3 | 0 / 0 | 283 / 287 |
+| last merge, at cap 50, every carried name kept (first run) | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
+| last merge, at cap 15, carried names capped (re-run, shipped) | 20 | 15 / 15 | 5 / 6 | 0 / 3 | 283 / 286 |
 
-| Condition | Result |
+| Condition | Result (both runs) |
 |---|---|
 | Whole-name recall 100% | holds: 160 of 160 in map and single requests |
 | Misheard recall in map requests at least 50% | holds: 154 of 160 (96%); 160 of 160 in single requests |
 | Median map growth at most 400 | holds: 241 |
-| No request grows by more than 1,500 | holds: largest 343 |
+| No request grows by more than 1,500 | holds: largest 343 at cap 50, 287 at cap 15 |
 | Median spurious per map request at most 3 | holds: 0 |
 | A candidate cap qualifies | holds: 5 loses 141 mentions, 10 loses 7, 15 and above lose none |
 
-Most of each request's growth is the block's fixed text (191); the names themselves cost about 50 tokens in a map request and 130 in a whole-meeting one. The single and merge requests choose the meeting's own four speakers as well as the injected names, which is why they hold about 21. The six misheard surnames a map request missed were all caught by the single request; why each was missed in its window was not traced (a shared sound key, which makes the matcher decline, is the likely cause).
+Most of each request's growth is the block's fixed text (191); the names themselves cost about 50 tokens in a map request and 130 in a whole-meeting one. At cap 50 the single and merge requests chose the meeting's own four speakers as well as the injected names and their namesakes, which is why they held about 21; at the shipped cap they hold 15, the weakest matches (namesakes and spurious names) cut first. The six misheard surnames a map request missed were all caught by the single request; why each was missed in its window was not traced (a shared sound key, which makes the matcher decline, is the likely cause).
 
 **Limits.** Reference transcripts (Earshot's own recognition was not used, because invented names are never spoken in AMI and the mishearings are injected); one list shape; English meetings only.
 
