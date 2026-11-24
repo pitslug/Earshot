@@ -206,7 +206,9 @@ describe("MeetingDetailView", () => {
     await user.click(within(await accessibleDialog()).getByRole("button", { name: "Delete meeting" }));
     expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
     expect(screen.getByText(refusal)).toBeInTheDocument();
-    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    // The closed modal's aria-hidden on the page lifts on tabster's deferred pass; the text
+    // queries above see through it, a role query does not.
+    await user.click((await screen.findAllByRole("button", { name: "Dismiss" }))[0]);
     expect(screen.queryByText("The meeting was not deleted")).toBeNull();
   });
 
