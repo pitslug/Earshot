@@ -37,7 +37,7 @@ mod stream_tests;
 mod tests;
 
 pub use assign::{
-    SNAP_PAUSE_MS, Snap, UNKNOWN_SPEAKER, UnassignedLabelling, assign_words,
+    EDGE_SNAP, SNAP_PAUSE_MS, Snap, UNKNOWN_SPEAKER, UnassignedLabelling, assign_words,
     label_segment_speakers, label_segment_speakers_unassigned, label_segments, snap_changes,
 };
 pub use cluster::{

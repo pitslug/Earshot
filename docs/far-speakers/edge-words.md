@@ -95,3 +95,31 @@ T6.9a found that snapping a speaker change to the nearest sentence end or pause 
 If all hold, `label_segment_speakers` applies the picked variant to each track's words in time order before splitting segments, with unit tests (the symptom, a real one-word answer kept, a change out of reach kept, runs never emptied), and `cargo xtask accept m3` and `cargo xtask accept m6` must end unchanged or better; if they do not, the change is withdrawn and reported. If any condition fails, nothing ships and the result is written below.
 
 **Tool.** `edge_words --stage2` (one run: baseline and variants, verdict inside), report `edge-words-stage2.json`, counts only.
+
+## Stage 2 result
+
+Everything above was committed unchanged before the run. Raw report, unmodified: `edge-words-stage2.json` (ARM64 Surface CPU, full data, today's word ends). Its baseline equals stage 1's on the three shared sets, count for count.
+
+**Every condition holds: the picked variant ships.** The pick on `ami_mix` and `ami_sdm` is reach 2, `sentence` (65 + 52 edge errors pooled, the fewest).
+
+| Set | Measure | Baseline | Reach 1 sentence | Reach 1 clause | **Reach 2 sentence** | Reach 2 clause |
+|---|---|---|---|---|---|---|
+| `ami_held` (10 meetings) | edge errors | 434 | 312 | 331 | **267** | 304 |
+| `ami_held` | wrong / WDER | 2436 / 5.702% | 5.416% | 5.442% | **2229 / 5.217%** | 5.295% |
+| `ami_held` | change recall | 56.84% | 57.00% | 57.80% | **59.62%** | 59.67% |
+| `ami_held` | short true turns kept (of 1025) | 422 | 437 | 429 | **438** | 431 |
+| `ami_mix` | edge errors / WDER | 102 / 6.610% | 72 / 6.275% | 78 / 6.359% | **65 / 6.255%** | 73 / 6.359% |
+| `ami_sdm` | edge errors / WDER | 81 / 6.871% | 58 / 6.616% | 61 / 6.689% | **52 / 6.579%** | 57 / 6.640% |
+| `scenes` | edge errors / WDER | 6 / 0.635% | 3 / 0.611% | 3 / 0.611% | **3 / 0.611%** | 3 / 0.611% |
+
+| Condition | Result |
+|---|---|
+| 1. `ami_held` fewer edge errors and lower WDER | holds (434 to 267, 5.70% to 5.22%) |
+| 2. `ami_mix` and `ami_sdm` pooled fewer edge errors, each WDER not higher | holds |
+| 3. `scenes` not worse | holds |
+| 4. Short true turns kept within 2% | holds (more are kept on every AMI set) |
+| 5. Change recall within 1 point | holds (it rises on every AMI set) |
+
+Commas as sentence ends do worse than full stops alone in every AMI set: a comma ends a clause the same speaker usually goes on with. Snapping also finds more true speaker changes, because a change one or two words off is no longer counted as missed.
+
+Shipped: `diar::EDGE_SNAP` (reach 2, sentence ends), applied by `label_segment_speakers` over each track's words in time order across segments; changes into or out of speech the diarisation left without a speaker (`label_segment_speakers_unassigned`, dormant today) are left where they are, because the rule was measured between real speakers only. `cargo xtask accept m3` and `cargo xtask accept m6` pass unchanged after it (m3: `dia.der_ami_ihm` 11.48%, `dia.der_ami_sdm` 17.12%, both as before; m3 scores turns, not word labels).

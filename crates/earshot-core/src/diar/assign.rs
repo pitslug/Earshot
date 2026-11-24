@@ -7,6 +7,12 @@
 //! boundary) goes to the speaker of the nearest turn; on equal distance, to the previous
 //! word's speaker if tied, otherwise to the speaker of the earlier turn. A zero-length
 //! word counts as overlapping the turns that contain its instant.
+//!
+//! [`label_segment_speakers`] (and so [`label_segments`]) then moves each speaker change of a
+//! track that falls inside a sentence, with no pause, to the nearest sentence end or pause at
+//! most two words away ([`snap_changes`] with [`EDGE_SNAP`], T12.88): the overlap rule alone
+//! gave a sentence's last word to the next speaker wherever the diarisation drew the turn
+//! boundary a little early.
 
 use super::pipeline::SpeakerTurn;
 
@@ -83,6 +89,14 @@ fn pick(
 /// `NO_PAUSE_MS`, the rule of [`snap_changes`]).
 pub const SNAP_PAUSE_MS: u64 = 300;
 
+/// The snap the final pass applies (T12.88 stage 2, picked by the rule of
+/// `docs/far-speakers/edge-words.md` and judged on ten held-out AMI dev meetings: edge errors
+/// 434 to 267, words given the wrong speaker 5.70% to 5.22%).
+pub const EDGE_SNAP: Snap = Snap {
+    reach: 2,
+    clause_ends: false,
+};
+
 /// How far [`snap_changes`] may move a speaker change, and which word ends support one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Snap {
@@ -118,6 +132,18 @@ fn supported(words: &[Word], i: usize, clause_ends: bool) -> bool {
 /// [`assign_words`] gives them; the result has the same length.
 #[must_use]
 pub fn snap_changes(words: &[Word], labels: &[Option<usize>], snap: Snap) -> Vec<Option<usize>> {
+    snap_changes_except(words, labels, snap, None)
+}
+
+/// [`snap_changes`], leaving every change into or out of label `keep` where it is (the
+/// unassigned speech of [`label_segment_speakers_unassigned`]: the rule was measured between
+/// real speakers only).
+fn snap_changes_except(
+    words: &[Word],
+    labels: &[Option<usize>],
+    snap: Snap,
+    keep: Option<usize>,
+) -> Vec<Option<usize>> {
     let mut out = labels.to_vec();
     if snap.reach == 0 || words.len() != labels.len() {
         return out;
@@ -126,6 +152,9 @@ pub fn snap_changes(words: &[Word], labels: &[Option<usize>], snap: Snap) -> Vec
     let changes: Vec<usize> = (1..out.len()).filter(|&i| out[i] != out[i - 1]).collect();
     for c in changes {
         if out[c] == out[c - 1] || ok(c) {
+            continue;
+        }
+        if keep.is_some() && (out[c] == keep || out[c - 1] == keep) {
             continue;
         }
         let (before, after) = (out[c - 1], out[c]);
@@ -153,7 +182,7 @@ pub fn snap_changes(words: &[Word], labels: &[Option<usize>], snap: Snap) -> Vec
 }
 
 /// Sets [`Segment::speaker_id`] from `turns`, splitting a segment wherever its words
-/// change speaker.
+/// change speaker after the changes snap to sentence ends and pauses (module docs).
 ///
 /// - `speaker_id(k)` maps diarisation speaker `k` to the id to store (for example the
 ///   matched person's speaker id); `None` leaves the field unset.
@@ -209,7 +238,7 @@ pub fn label_segment_speakers_unassigned(
         end: s.end,
     }));
     let (mut words, mut ids) = (0, Vec::new());
-    let parts = label_segment_speakers(segments, &all, new_id)
+    let parts = label_segment_speakers_keeping(segments, &all, new_id, Some(pseudo))
         .into_iter()
         .map(|(seg, k)| {
             if k == Some(pseudo) {
@@ -249,24 +278,60 @@ pub fn label_segment_speakers(
     turns: &[SpeakerTurn],
     new_id: &mut dyn FnMut() -> EntityId,
 ) -> Vec<(Segment, Option<usize>)> {
+    label_segment_speakers_keeping(segments, turns, new_id, None)
+}
+
+/// [`label_segment_speakers`], whose snapping leaves changes into or out of `keep` alone.
+fn label_segment_speakers_keeping(
+    segments: Vec<Segment>,
+    turns: &[SpeakerTurn],
+    new_id: &mut dyn FnMut() -> EntityId,
+    keep: Option<usize>,
+) -> Vec<(Segment, Option<usize>)> {
+    // Every word's speaker by the overlap rule, segment by segment (a wordless segment's own
+    // label carries the tie rule on, as before).
     let mut prev: Option<usize> = None;
-    let mut out = Vec::with_capacity(segments.len());
-    for seg in segments {
+    let mut per_segment: Vec<Vec<Option<usize>>> = Vec::with_capacity(segments.len());
+    let mut wordless: Vec<Option<usize>> = Vec::with_capacity(segments.len());
+    for seg in &segments {
         if seg.words.is_empty() {
             let k = pick(seg.start, seg.end, turns, prev);
             prev = k.or(prev);
+            wordless.push(k);
+            per_segment.push(Vec::new());
+            continue;
+        }
+        wordless.push(None);
+        per_segment.push(
+            seg.words
+                .iter()
+                .map(|w| {
+                    let k = pick(w.start, w.end, turns, prev);
+                    prev = k.or(prev);
+                    k
+                })
+                .collect(),
+        );
+    }
+    // Then the track's speaker changes snap to sentence ends and pauses across segments
+    // (T12.88 stage 2, [`EDGE_SNAP`]).
+    let words: Vec<Word> = segments
+        .iter()
+        .flat_map(|s| s.words.iter().cloned())
+        .collect();
+    let flat: Vec<Option<usize>> = per_segment.iter().flatten().copied().collect();
+    let mut snapped = snap_changes_except(&words, &flat, EDGE_SNAP, keep).into_iter();
+    for labels in &mut per_segment {
+        for l in labels.iter_mut() {
+            *l = snapped.next().flatten();
+        }
+    }
+    let mut out = Vec::with_capacity(segments.len());
+    for ((seg, labels), k) in segments.into_iter().zip(per_segment).zip(wordless) {
+        if seg.words.is_empty() {
             out.push((seg, k));
             continue;
         }
-        let labels: Vec<Option<usize>> = seg
-            .words
-            .iter()
-            .map(|w| {
-                let k = pick(w.start, w.end, turns, prev);
-                prev = k.or(prev);
-                k
-            })
-            .collect();
         if labels.iter().all(|l| *l == labels[0]) {
             out.push((seg, labels[0]));
             continue;

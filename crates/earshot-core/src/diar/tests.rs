@@ -1578,6 +1578,66 @@ fn diar_label_segments_splits_at_speaker_changes() {
 }
 
 #[test]
+fn diar_label_segments_snap_a_sentences_last_word_back_across_segments() {
+    // The diarisation's turn boundary falls inside "them." (speaker 1 from 1700 ms), so the
+    // overlap rule alone gives it to speaker 1 and the line splits before it.
+    let turns = vec![turn(0, 0, 1700), turn(1, 1700, 4000)];
+    let first = segment(
+        1,
+        vec![
+            Word::new("a", 1000, 1200, 0.9),
+            Word::new("concern", 1200, 1400, 0.9),
+            Word::new("for", 1400, 1600, 0.9),
+        ],
+    );
+    let second = segment(
+        2,
+        vec![
+            Word::new("them.", 1600, 2000, 0.9),
+            Word::new("I", 2000, 2100, 0.9),
+            Word::new("think", 2100, 2400, 0.9),
+        ],
+    );
+    let words: Vec<Word> = first.words.iter().chain(&second.words).cloned().collect();
+    assert_eq!(
+        assign_words(&words, &turns),
+        vec![Some(0), Some(0), Some(0), Some(1), Some(1), Some(1)],
+        "the overlap rule alone moves the word"
+    );
+    let mut next = 50u8;
+    let mut new_id = || {
+        next += 1;
+        id(next)
+    };
+    let out = label_segment_speakers(vec![first, second], &turns, &mut new_id);
+    let lines: Vec<(&str, Option<usize>)> =
+        out.iter().map(|(s, k)| (s.text.as_str(), *k)).collect();
+    assert_eq!(
+        lines,
+        vec![
+            ("a concern for", Some(0)),
+            ("them.", Some(0)),
+            ("I think", Some(1))
+        ]
+    );
+    // A change already on a sentence end is left where the overlap rule put it.
+    let turns = vec![turn(0, 0, 2000), turn(1, 2000, 4000)];
+    let seg = segment(
+        3,
+        vec![
+            Word::new("is", 1500, 1700, 0.9),
+            Word::new("it?", 1700, 1900, 0.9),
+            Word::new("Yes.", 2100, 2300, 0.9),
+            Word::new("Good", 2300, 2500, 0.9),
+        ],
+    );
+    let out = label_segment_speakers(vec![seg], &turns, &mut new_id);
+    let lines: Vec<(&str, Option<usize>)> =
+        out.iter().map(|(s, k)| (s.text.as_str(), *k)).collect();
+    assert_eq!(lines, vec![("is it?", Some(0)), ("Yes. Good", Some(1))]);
+}
+
+#[test]
 fn diar_label_segments_keeps_unsplit_segments_intact() {
     let turns = vec![turn(0, 0, 5000)];
     let mut seg = segment(

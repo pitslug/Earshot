@@ -1,9 +1,9 @@
 {
   "milestone": "m6",
   "requested_backend": null,
-  "timestamp": "2026-11-18T07:43:33Z",
+  "timestamp": "2026-11-24T11:23:27Z",
   "host": "aarch64-pc-windows-msvc",
-  "commit": "99e19c8-dirty",
+  "commit": "1e00619-dirty",
   "backends": [
     "cpu"
   ],
@@ -60,12 +60,12 @@
     {
       "name": "export",
       "pass": true,
-      "detail": "1 file(s) in the vault; note Meetings/2026-11-18 07-43 Replayed call.md; missing []"
+      "detail": "1 file(s) in the vault; note Meetings/2026-11-24 11-23 Replayed call.md; missing []"
     },
     {
       "name": "network",
       "pass": true,
-      "detail": "1 audit entries, 1 requests at the mock, 0 not a successful POST to 127.0.0.1:57073/v1/chat/completions"
+      "detail": "1 audit entries, 1 requests at the mock, 0 not a successful POST to 127.0.0.1:51678/v1/chat/completions"
     }
   ],
   "pass": true
