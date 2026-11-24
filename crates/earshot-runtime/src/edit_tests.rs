@@ -1263,6 +1263,10 @@ mod names_tests;
 #[path = "edit_samples_tests.rs"]
 mod samples_tests;
 
+/// T12.90: moving and splitting a line.
+#[path = "edit_lines_tests.rs"]
+mod lines_tests;
+
 /// T12.77b5: the scan that keeps speaker person changes on `set_row_person`.
 #[path = "edit_scan_tests.rs"]
 mod scan_tests;

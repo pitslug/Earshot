@@ -115,10 +115,16 @@ export interface IpcCommands
    * (T12.15f: words the edit wrote, neither common nor on the word list; nothing is added).
    * Rejects with `invalid_text`, `segment_not_found` or `draft_transcript`. */
   editSegment(meeting: string, segment: string, text: string): Promise<string[]>;
-  /** Gives a final line with an unknown speaker (T12.65, `TranscriptRow.unknown_speaker`) to
-   * `speaker`, one of the meeting's speakers; the line is marked edited. Rejects with
-   * `line_has_speaker`, `speaker_not_found`, `segment_not_found` or `draft_transcript`. */
-  assignLineSpeaker(meeting: string, segment: string, speaker: string): Promise<void>;
+  /** Moves a final line (T12.90) to `speaker`, the id of one of `TranscriptRow.movable_to`, or to a new
+   * "Speaker N" when `speaker` is `null`; the line keeps its words and is marked edited. Also
+   * gives a line with an unknown speaker (T12.65) one. Rejects with `speaker_not_on_track`,
+   * `speaker_not_found`, `segment_not_found` or `draft_transcript`. */
+  moveLine(meeting: string, segment: string, speaker: string | null): Promise<void>;
+  /** Splits a final line before its white-space token `token` (T12.90; only a
+   * `TranscriptRow.splittable` line); resolves with the second line's id. Both parts are marked
+   * edited. Rejects with `split_out_of_range`, `split_needs_word_times`, `segment_not_found` or
+   * `draft_transcript`. */
+  splitLine(meeting: string, segment: string, token: number): Promise<string>;
   /** "Use it", or another word from `MeetingDetail.word_list` (T12.15e): word `token` of a
    * final line becomes `word`, its punctuation kept; the line is marked edited. Rejects with
    * `word_not_listed`, `word_not_found`, `segment_not_found` or `draft_transcript`. */
@@ -361,6 +367,20 @@ export const NEWER_DATA_KIND = "newer_data";
  * refusal and the Speakers panel's tooltip (`detail::RECOGNISED_ME_COPY`, same text). */
 export const RECOGNISED_ME_COPY =
   'Earshot recognised your voice here from your voiceprint. To change this, forget your voice in Settings, People, then choose "This isn\'t me".';
+
+/** Why a line cannot be split (T12.90): the runtime's refusal and the text under the line
+ * menu's disabled "Split line" (`detail::SPLIT_NEEDS_WORD_TIMES_COPY`, same text, pinned by a
+ * detail test). */
+export const SPLIT_NEEDS_WORD_TIMES_COPY =
+  "This line was edited, so Earshot no longer knows where its words fall. Split it before editing its words.";
+
+/** A move refused because the speaker no longer belongs to the line's track (T12.90;
+ * `detail::SPEAKER_NOT_ON_TRACK_COPY`, same text, pinned by a detail test). */
+export const SPEAKER_NOT_ON_TRACK_COPY = "That speaker is no longer on this side of the meeting. Open the menu again.";
+
+/** A split position outside the line (T12.90; `detail::SPLIT_OUT_OF_RANGE_COPY`, same text,
+ * pinned by a detail test). */
+export const SPLIT_OUT_OF_RANGE_COPY = "Choose a word inside the line to split before.";
 
 /** The error kind every command fails with when the data folder could not be opened at the
  * start (`ipc::DATA_FOLDER_KIND` in Rust, T9.23): the app shows its own screen, whose Try

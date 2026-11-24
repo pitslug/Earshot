@@ -409,13 +409,15 @@ pub struct SegmentRow {
     pub pass: TranscriptPass,
     /// The segment; `segment.id` is the row id.
     pub segment: Segment,
-    /// When the user last changed this segment's text (T12.16); `None` for text exactly as
-    /// the recogniser wrote it. An edited segment keeps its id, track, start and end (so
-    /// summary citations still find it and its audio is the same stretch) and has no words:
+    /// When the user last changed this segment (T12.16); `None` for a segment exactly as the
+    /// recogniser wrote it. A text edit keeps the id, track, start and end (so summary
+    /// citations still find it and its audio is the same stretch) and drops the words:
     /// per-word times described the recogniser's words, which the user's text no longer is,
-    /// so they are dropped rather than kept beside text they do not match. `confidence`
-    /// stays the recogniser's for the replaced text. A re-transcription keeps an edited
-    /// segment (`earshot_runtime::post`).
+    /// so they are not kept beside text they do not match, and `confidence` stays the
+    /// recogniser's for the replaced text. Moving a line to another speaker or splitting it
+    /// (T12.90) keeps the words, because they still match the text exactly (a split's parts
+    /// take their times from them). So an edited segment may or may not have words. A
+    /// re-transcription keeps an edited segment (`earshot_runtime::post`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_edited_at: Option<HlcTimestamp>,
 }

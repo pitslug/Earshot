@@ -5,6 +5,9 @@ export {
   IpcFailure,
   NEWER_DATA_KIND,
   RECOGNISED_ME_COPY,
+  SPEAKER_NOT_ON_TRACK_COPY,
+  SPLIT_NEEDS_WORD_TIMES_COPY,
+  SPLIT_OUT_OF_RANGE_COPY,
   errorText,
   everyCommandIsInIpc,
 } from "./ipc";

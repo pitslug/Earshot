@@ -129,20 +129,38 @@ pub struct TranscriptRow {
     pub speaker: String,
     /// A final line diarisation gave to none of its speakers (T12.65): shown as
     /// `earshot_core::diar::UNKNOWN_SPEAKER`, and the user can give it a speaker from the
-    /// line (`assign_line_speaker`).
+    /// line (`move_line`).
     pub unknown_speaker: bool,
     /// Where it was heard.
     pub track: RowTrack,
     /// The text.
     pub text: String,
-    /// The user edited the text (T12.16): it is kept by a re-transcription, and it has no
-    /// per-word times.
+    /// The user edited the line (T12.16; its text, speaker or a split, T12.90): it is kept
+    /// by a re-transcription.
     pub edited: bool,
+    /// The speakers this line can move to (T12.90, `edit::movable_speakers`: those that belong
+    /// to its track, other than its own, a speaker left with no line included), in the meeting's
+    /// speaker order, with the names the transcript shows; empty in a draft. A new speaker is
+    /// offered for every final line.
+    pub movable_to: Vec<MovableSpeaker>,
+    /// The line can be split before a word (T12.90, `edit::can_split_line`: its words still
+    /// match its text); false in a draft.
+    pub splittable: bool,
     /// Words the word list suggests a listed word for (T12.15e), in token order; empty in a
     /// draft.
     pub suggestions: Vec<WordSuggestionView>,
     /// Words changed from a suggestion (T12.15e), in token order; empty in a draft.
     pub changed_words: Vec<ChangedWordView>,
+}
+
+/// A speaker a line can move to (T12.90). Carries its name because a speaker left with no line
+/// has no card in the Speakers panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct MovableSpeaker {
+    /// Speaker id (hyphenated UUID).
+    pub id: String,
+    /// The name the transcript shows for them.
+    pub name: String,
 }
 
 /// A word of a transcript line with a listed word that sounds like it
@@ -242,6 +260,20 @@ pub struct SpeakerCard {
 /// refusal's copy and the Speakers panel's tooltip (mirrored in TypeScript).
 pub const RECOGNISED_ME_COPY: &str = "Earshot recognised your voice here from your voiceprint. \
      To change this, forget your voice in Settings, People, then choose \"This isn't me\".";
+
+/// Why a line cannot be split (T12.90): the refusal's copy and the text under the line
+/// menu's disabled "Split line" (mirrored in TypeScript, `SPLIT_NEEDS_WORD_TIMES_COPY`).
+pub const SPLIT_NEEDS_WORD_TIMES_COPY: &str = "This line was edited, so Earshot no longer knows \
+     where its words fall. Split it before editing its words.";
+
+/// A move refused because the speaker no longer belongs to the line's track (T12.90): the
+/// menu was out of date (mirrored in TypeScript, `SPEAKER_NOT_ON_TRACK_COPY`).
+pub const SPEAKER_NOT_ON_TRACK_COPY: &str =
+    "That speaker is no longer on this side of the meeting. Open the menu again.";
+
+/// A split position outside the line (T12.90; mirrored in TypeScript,
+/// `SPLIT_OUT_OF_RANGE_COPY`).
+pub const SPLIT_OUT_OF_RANGE_COPY: &str = "Choose a word inside the line to split before.";
 
 /// The meeting's header line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -683,11 +715,12 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "This voice is you. Only a voice named as someone else can be put back as an \
              unnamed speaker.",
         ),
-        // T12.65: only an unknown speaker's line is given a speaker from the line.
-        EditError::LineHasSpeaker(_) => err(
-            "line_has_speaker",
-            "This line already has a speaker. Rename or merge speakers in Speakers instead.",
-        ),
+        // T12.90: moving and splitting a line.
+        EditError::SpeakerNotOnTrack(_) => err("speaker_not_on_track", SPEAKER_NOT_ON_TRACK_COPY),
+        EditError::SplitNeedsWordTimes(_) => {
+            err("split_needs_word_times", SPLIT_NEEDS_WORD_TIMES_COPY)
+        }
+        EditError::SplitOutOfRange(_) => err("split_out_of_range", SPLIT_OUT_OF_RANGE_COPY),
     }
 }
 
@@ -983,6 +1016,8 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         Some(TrackId::Reference) => RowTrack::Them,
         _ => RowTrack::You,
     };
+    let is_final = view.pass == Some(TranscriptPass::Final);
+    let labels: BTreeMap<EntityId, String> = view.labels().into_iter().collect();
     let transcript: Vec<TranscriptRow> = view
         .segments
         .iter()
@@ -995,6 +1030,18 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             track: track_of(s),
             text: s.text.clone(),
             edited: view.edited.contains_key(&s.id),
+            movable_to: if is_final {
+                edit::movable_speakers(&view.segments, &view.speakers, &view.tracks, s)
+                    .into_iter()
+                    .map(|id| MovableSpeaker {
+                        id: id.to_string(),
+                        name: labels.get(&id).cloned().unwrap_or_default(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            splittable: is_final && edit::can_split_line(s),
             suggestions: words.lines.get(&s.id).map_or_else(Vec::new, |l| {
                 l.suggestions
                     .iter()

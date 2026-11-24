@@ -1,6 +1,7 @@
 // Sample meeting details for the mock IPC (component tests and the browser preview): a
 // vendor call with a summary, two voices that need names and a voiceprint match.
 
+import { tokensOf } from "../detail/dictionaryWord";
 import type {
   Citation,
   MeetingDetail,
@@ -106,6 +107,8 @@ export function transcriptOf(lines: typeof LINES, speakers: SpeakerCard[]): Tran
       track: who === "me" ? "You" : "Them",
       text,
       edited: false,
+      movable_to: [],
+      splittable: false,
       suggestions: [],
       changed_words: [],
     };
@@ -199,17 +202,111 @@ export function withUnknownLine(detail: MeetingDetail, index: number): MeetingDe
   };
 }
 
-/** `assignLineSpeaker` on the sample: the line takes `speaker`'s name and counts as edited. */
-export function assignedLine(detail: MeetingDetail, segment: string, speaker: SpeakerCard): MeetingDetail {
+/** What each line's menu offers (T12.90), as the detail reads them: `edit::movable_speakers`
+ * (the speakers with a line on the same track, or with no line at all and a card of that track,
+ * other than the line's own, in the cards' order, with their names) and `edit::can_split_line`
+ * (the mock keeps no word times: a line whose text was edited, `textEdited`, has none; any other
+ * line of two words or more has them). Nothing in a draft. The mock has no roles: a card is of
+ * the mic when it is the user's or heard on the mic, else of the far end. */
+export function withLineOffers(detail: MeetingDetail, textEdited: ReadonlySet<string> = new Set()): MeetingDetail {
+  const final = detail.header.transcript === "Final";
+  const withLines = new Set(detail.transcript.map((o) => o.speaker_id));
+  const micSide = (track: TranscriptRow["track"]) => track !== "Them";
   return {
     ...detail,
+    transcript: detail.transcript.map((r) => {
+      if (!final) return { ...r, movable_to: [], splittable: false };
+      const onTrack = new Set(
+        detail.transcript.filter((o) => o.track === r.track && o.speaker_id !== null).map((o) => o.speaker_id),
+      );
+      const belongs = (s: SpeakerCard) =>
+        onTrack.has(s.id) || (!withLines.has(s.id) && (s.kind === "Me" || s.source === "Mic") === micSide(r.track));
+      return {
+        ...r,
+        movable_to: detail.speakers
+          .filter((s) => s.id !== r.speaker_id && belongs(s))
+          .map((s) => ({ id: s.id, name: s.name })),
+        splittable: !textEdited.has(r.segment_id) && tokensOf(r.text).length >= 2,
+      };
+    }),
+  };
+}
+
+/** The out-of-date marks a transcript change gives a summary. */
+const transcriptChanged = (detail: MeetingDetail): Pick<MeetingDetail, "summary_stale" | "summary_stale_names"> => ({
+  summary_stale: detail.summary !== null || detail.summary_stale,
+  summary_stale_names: false,
+});
+
+/** `moveLine` on the sample: the line takes `speaker`'s name and counts as edited; a speaker
+ * card not yet listed (a new "Speaker N") joins the panel. */
+export function movedLine(detail: MeetingDetail, segment: string, speaker: SpeakerCard): MeetingDetail {
+  const listed = detail.speakers.some((s) => s.id === speaker.id);
+  return {
+    ...detail,
+    speakers: listed ? detail.speakers : [...detail.speakers, speaker],
     transcript: detail.transcript.map((r) =>
       r.segment_id === segment
         ? { ...r, speaker_id: speaker.id, speaker: speaker.name, unknown_speaker: false, edited: true }
         : r,
     ),
-    summary_stale: detail.summary !== null || detail.summary_stale,
-    summary_stale_names: false,
+    ...transcriptChanged(detail),
+  };
+}
+
+/** A new speaker card for a line on `track` (`edit::move_line`'s `New`): the next free
+ * "Speaker N" (`first_free_speaker_name`), no person, needing a name. */
+export function newSpeakerCard(detail: MeetingDetail, id: string, track: TranscriptRow["track"]): SpeakerCard {
+  const taken = new Set(detail.speakers.map((s) => s.name));
+  let n = 1;
+  while (taken.has(`Speaker ${n}`)) n += 1;
+  return {
+    id,
+    name: `Speaker ${n}`,
+    kind: "Other",
+    person: null,
+    source: track === "Them" ? "FarEnd" : "Mic",
+    share_percent: 0,
+    sample_line: "",
+    needs_name: true,
+    ignored: false,
+    can_ignore: false,
+    can_not_this_person: false,
+    voice_saved_here: false,
+    can_mark_me: false,
+    can_unmark_me: false,
+    recognised_me: false,
+  };
+}
+
+/** `splitLine` on the sample: line `segment` split before token `token` (both parts edited);
+ * the second part, id `second`, starts part way to the next line (the mock keeps no word
+ * times), and the word marks after the split go with it, renumbered. */
+export function splitRow(detail: MeetingDetail, segment: string, token: number, second: string): MeetingDetail {
+  const i = detail.transcript.findIndex((r) => r.segment_id === segment);
+  const r = detail.transcript[i];
+  const tokens = tokensOf(r.text);
+  const next = detail.transcript[i + 1]?.start_ms ?? r.start_ms + 1_000 * tokens.length;
+  const first: TranscriptRow = {
+    ...r,
+    text: tokens.slice(0, token).join(" "),
+    edited: true,
+    suggestions: r.suggestions.filter((w) => w.token < token),
+    changed_words: r.changed_words.filter((w) => w.token < token),
+  };
+  const rest: TranscriptRow = {
+    ...r,
+    segment_id: second,
+    start_ms: r.start_ms + Math.floor(((next - r.start_ms) * token) / tokens.length),
+    text: tokens.slice(token).join(" "),
+    edited: true,
+    suggestions: r.suggestions.filter((w) => w.token >= token).map((w) => ({ ...w, token: w.token - token })),
+    changed_words: r.changed_words.filter((w) => w.token >= token).map((w) => ({ ...w, token: w.token - token })),
+  };
+  return {
+    ...detail,
+    transcript: [...detail.transcript.slice(0, i), first, rest, ...detail.transcript.slice(i + 1)],
+    ...transcriptChanged(detail),
   };
 }
 

@@ -50,7 +50,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             get_meeting,
             rename_meeting,
             edit_segment,
-            assign_line_speaker,
+            move_line,
+            split_line,
             use_word,
             put_back_word,
             keep_word,
@@ -742,25 +743,45 @@ async fn edit_segment(
     blocking(move || crate::detail::edit_line(&services, meeting, segment, &text)).await
 }
 
-/// Gives a line of `meeting`'s final transcript that has an unknown speaker (T12.65) to one
-/// of the meeting's speakers.
+/// Moves a line of `meeting`'s final transcript to `speaker`, a speaker heard on the line's
+/// track, or to a new "Speaker N" when `speaker` is `None` (T12.90, `edit::move_line`).
 #[tauri::command]
 #[specta::specta]
-async fn assign_line_speaker(
+async fn move_line(
     state: State<'_, AppState>,
     meeting: String,
     segment: String,
-    speaker: String,
+    speaker: Option<String>,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    let (meeting, segment, speaker) = (
-        parse_id(&meeting)?,
-        parse_id(&segment)?,
-        parse_id(&speaker)?,
-    );
+    let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
+    let target = match speaker {
+        Some(id) => earshot_runtime::edit::LineSpeaker::Existing(parse_id(&id)?),
+        None => earshot_runtime::edit::LineSpeaker::New,
+    };
     blocking(move || {
-        earshot_runtime::edit::assign_line_speaker(&services, meeting, segment, speaker)?;
+        earshot_runtime::edit::move_line(&services, meeting, segment, target)?;
         Ok(())
+    })
+    .await
+}
+
+/// Splits a line of `meeting`'s final transcript before its white-space token `token`
+/// (T12.90, `edit::split_line`); returns the second line's id.
+#[tauri::command]
+#[specta::specta]
+async fn split_line(
+    state: State<'_, AppState>,
+    meeting: String,
+    segment: String,
+    token: u32,
+) -> Result<String, IpcError> {
+    let services = state.services()?;
+    let (meeting, segment) = (parse_id(&meeting)?, parse_id(&segment)?);
+    blocking(move || {
+        let token = usize::try_from(token).unwrap_or(usize::MAX);
+        let id = earshot_runtime::edit::split_line(&services, meeting, segment, token)?;
+        Ok(id.to_string())
     })
     .await
 }

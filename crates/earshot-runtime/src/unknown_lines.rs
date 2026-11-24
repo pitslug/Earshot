@@ -8,8 +8,8 @@
 //! ([`crate::local::MeetingRecord::UnknownLines`]): `version u32 LE | JSON list` of segment ids.
 //! Each final pass rewrites it in its write transaction: the ids of this run's unassigned
 //! lines plus the earlier ids that are still live final rows (lines it kept, such as edited
-//! ones). A line given a speaker (`crate::edit::assign_line_speaker`) has a speaker, so its id
-//! no longer matters.
+//! ones). A line given a speaker (`crate::edit::move_line`) has a speaker, so its id no longer
+//! matters; a line split in two (`crate::edit::split_line`) passes its mark to its second part.
 //!
 //! The record holds row ids only, no text. It is loss-tolerant: a record this version cannot
 //! read is no lines, so those lines are named by their track as before, never an error. Meeting
@@ -84,6 +84,29 @@ pub(crate) fn record_tx(
     if ids.is_empty() {
         tx.delete_local_value(key.as_str())?;
     } else {
+        crate::local::set_tx(tx, &key, &encode(&ids)?)?;
+    }
+    Ok(())
+}
+
+/// Inside a split's transaction (`crate::edit::split_line`, T12.90): when line `from` is one
+/// the final pass left without a speaker, its new second part `to` is one too, so both halves
+/// keep the same name. Anything else writes nothing.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn carry_split_tx(
+    tx: &mut earshot_store::StoreTx<'_>,
+    meeting: EntityId,
+    from: EntityId,
+    to: EntityId,
+) -> Result<(), RuntimeError> {
+    let key = record_key(meeting);
+    let mut ids = tx
+        .local_value(key.as_str())?
+        .map(|b| decode(&b))
+        .unwrap_or_default();
+    if ids.contains(&from) && ids.insert(to) {
         crate::local::set_tx(tx, &key, &encode(&ids)?)?;
     }
     Ok(())
