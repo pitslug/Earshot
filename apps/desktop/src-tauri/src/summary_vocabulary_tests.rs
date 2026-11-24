@@ -150,18 +150,42 @@ fn summary_vocabulary_says_how_many_saved_names_it_left_out_and_why() {
     assert_eq!(people_left_out_note(4), Some(many.replace("{n}", "4")));
     let dir = TempDir::new("summary-vocabulary");
     let svc = services(&dir);
-    let name = "Nim\u{200c}a Rostavel";
-    earshot_runtime::my_voice::set_my_name(&svc, name).unwrap();
+    earshot_runtime::my_voice::set_my_name(&svc, "Nim\u{200c}a Rostavel").unwrap();
+    add_person(&svc, "Vantrel Oskarine");
     let v = vocabulary_view(&svc).unwrap();
-    assert!(v.people.is_empty());
+    assert_eq!(v.people, owned(&["Vantrel Oskarine"]));
     assert_eq!(v.people_left_out, 1);
     assert_eq!(v.people_left_out_note.as_deref(), copy["one"].as_str());
+    // The view the window gets carries the listed name and no text of the left-out one.
     let json = serde_json::to_string(&v).unwrap();
-    assert!(!json.contains("Rostavel"), "{json}");
+    assert!(json.contains("Vantrel Oskarine"), "{json}");
+    assert!(
+        !json.contains("Rostavel") && !json.contains("Nim"),
+        "{json}"
+    );
     earshot_runtime::my_voice::set_my_name(&svc, "Nima Rostavel").unwrap();
     let v = vocabulary_view(&svc).unwrap();
-    assert_eq!(v.people, owned(&["Nima Rostavel"]));
+    assert_eq!(v.people, owned(&["Nima Rostavel", "Vantrel Oskarine"]));
     assert_eq!((v.people_left_out, v.people_left_out_note), (0, None));
+}
+
+/// Saves a person named `name` with no voice, as the People page lists them.
+fn add_person(svc: &Services, name: &str) {
+    use earshot_core::model::Stamp;
+    use earshot_core::voiceprint::{Person, VoiceprintRepo};
+    use rand_core::SeedableRng;
+    let clock = std::sync::Arc::clone(&svc.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(name.len() as u64 + 7);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    store
+        .put_person(Person::new(name, false, &mut stamp))
+        .unwrap();
 }
 
 #[test]

@@ -58,23 +58,27 @@ describe("Dictionary", () => {
   });
 
   it("says how many saved names it left out, and why, without naming them (T12.91a)", async () => {
-    setup({
+    const { ipc } = setup({
       persons: [
-        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p1", name: "Nim\u200ca Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
         { id: "p2", name: "Vantrel Oskarine", is_me: false, has_voiceprint: false, meetings: 2 },
       ],
     });
     const list = await screen.findByRole("list", { name: "Saved people" });
     expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Vantrel Oskarine"]);
     expect(screen.getByText(table.messages.people_left_out.one)).toBeInTheDocument();
-    expect(table.messages.people_left_out.one).not.toMatch(/Rostavel|—/);
+    expect(table.messages.people_left_out.one).not.toMatch(/\u2014/);
+    // No text of the left-out name reaches the page or the view it was drawn from.
+    expect(document.body.textContent).toContain("Vantrel Oskarine");
+    expect(document.body.textContent).not.toMatch(/Rostavel|Nim/);
+    expect(JSON.stringify(await ipc.summaryVocabulary())).not.toMatch(/Rostavel|Nim/);
   });
 
   it("does not say no one is saved when every saved name was left out (T12.91a)", async () => {
     setup({
       persons: [
-        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
-        { id: "p2", name: "Kam‍Pellory Vane", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p1", name: "Nim\u200ca Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p2", name: "Kam\u200dPellory Vane", is_me: false, has_voiceprint: false, meetings: 1 },
       ],
     });
     expect(

@@ -6,8 +6,8 @@
 //! tokens:
 //!
 //! 1. [`NameMatch::Exact`]: the name's words appear as consecutive tokens (case ignored,
-//!    punctuation around a token and a trailing possessive `'s` or `’s` dropped, as
-//!    [`token_key`] does);
+//!    punctuation around a token and a trailing possessive `'s` dropped, its apostrophe
+//!    straight or typographic (U+2019), as [`token_key`] does);
 //! 2. [`NameMatch::Word`]: one of the name's words appears as a token, compared the same
 //!    way; a name word that is a common word ([`super::suggest::is_common`], the matcher's
 //!    own list) counts only where the token as written starts with an upper-case letter
@@ -19,15 +19,14 @@
 //!    name is chosen by sound exactly where the transcript would suggest it.
 //!
 //! A name's match is its strongest; matches rank by strength (exact first), then by the
-//! order of the names as given. [`NameFilter::choose`] first takes the names a request is
-//! told to carry (the names the parts of a merge carried, so a name chosen in a map step
-//! reaches the merge), then adds matched names in rank order, until the request holds `cap`
-//! names. A merge of many parts can be told to carry more than `cap` names; it keeps the
-//! strongest of them: those its own texts match, by strength, then the rest in the order it
-//! was given them (`earshot_core::prompt::carried_names`: the names more parts carried
-//! first). So no request ever holds more than `cap` names, and a long meeting's plan never
-//! fails because of names. The chosen names come back in the order of the names as given,
-//! so a block is stable however the names were found.
+//! order of the names as given. [`NameFilter::choose`] takes every name the request's own
+//! texts match first, carried or not, by strength; then the names it is told to carry (the
+//! names the parts of a merge carried, each with the strongest match it had where it was
+//! chosen, so a name found in a map step reaches the merge) that its texts do not match, by
+//! that strength and then by how many parts carried them (`earshot_core::prompt::carried_names`),
+//! until the request holds `cap` names. So no request ever holds more than `cap` names, and a
+//! long meeting's plan never fails because of names. The chosen names come back in the order
+//! of the names as given, so a block is stable however the names were found.
 
 use std::collections::HashSet;
 
@@ -206,33 +205,37 @@ impl NameFilter {
         ranked
     }
 
-    /// The names a request carries (module doc), at most `cap`: the names of `carried` that
-    /// are the filter's names (compared exactly), strongest first (matched by `texts`, by
-    /// strength, then unmatched, each in `carried`'s order), then the names matching `texts`
-    /// in rank order; in the names' order.
+    /// The names a request carries (module doc), at most `cap`, each with its strength, in
+    /// the names' order. Every name `texts` match comes first, carried or not, by strength
+    /// (ties in the names' order); then the names of `carried` (each with the strongest match
+    /// it had where it was chosen, [`carried_names`]-ordered: by that strength, then the
+    /// names more parts carried) that `texts` do not match, in `carried`'s order. A carried
+    /// name keeps the stronger of its carried strength and its match here, so a merge passes
+    /// it on to the next level. Carried names that are not the filter's names (compared
+    /// exactly) are ignored.
+    ///
+    /// [`carried_names`]: crate::prompt::carried_names
     #[must_use]
     pub fn choose<T: AsRef<str>, C: AsRef<str>>(
         &self,
         texts: &[T],
-        carried: &[C],
+        carried: &[(C, NameMatch)],
         cap: usize,
-    ) -> Vec<String> {
-        let ranked = self.matches(texts);
+    ) -> Vec<(String, NameMatch)> {
         let mut strength: Vec<Option<NameMatch>> = vec![None; self.names.len()];
-        for &(i, m) in &ranked {
-            strength[i] = Some(m);
-        }
         let mut wanted: Vec<usize> = Vec::new();
-        for c in carried {
-            if let Some(i) = self.names.iter().position(|n| n.form == c.as_ref())
-                && !wanted.contains(&i)
-            {
-                wanted.push(i);
+        for (i, m) in self.matches(texts) {
+            strength[i] = Some(m);
+            wanted.push(i);
+        }
+        for (c, m) in carried {
+            if let Some(i) = self.names.iter().position(|n| n.form == c.as_ref()) {
+                if strength[i].is_none() {
+                    wanted.push(i);
+                }
+                strength[i] = strength[i].max(Some(*m));
             }
         }
-        // Stable: equal strengths keep `carried`'s order; unmatched (`None`) come last.
-        wanted.sort_by_key(|&i| std::cmp::Reverse(strength[i]));
-        wanted.extend(ranked.iter().map(|&(i, _)| i));
         let mut chosen = vec![false; self.names.len()];
         let mut held = 0;
         for i in wanted {
@@ -247,8 +250,9 @@ impl NameFilter {
         self.names
             .iter()
             .zip(chosen)
-            .filter(|&(_, c)| c)
-            .map(|(n, _)| n.form.clone())
+            .zip(strength)
+            .filter(|((_, c), _)| *c)
+            .map(|((n, _), m)| (n.form.clone(), m.expect("a chosen name")))
             .collect()
     }
 }
@@ -259,9 +263,9 @@ pub fn choose_names<T: AsRef<str>, N: AsRef<str>, D: AsRef<str>, C: AsRef<str>>(
     texts: &[T],
     names: &[N],
     dictionary: &[D],
-    carried: &[C],
+    carried: &[(C, NameMatch)],
     cap: usize,
-) -> Vec<String> {
+) -> Vec<(String, NameMatch)> {
     NameFilter::new(names, dictionary).choose(texts, carried, cap)
 }
 
@@ -357,8 +361,15 @@ mod tests {
         assert!(g.matches(&["Cam, hello"]).is_empty());
     }
 
+    /// The names of `chosen`, in order.
+    fn names_of(chosen: &[(String, NameMatch)]) -> Vec<&str> {
+        chosen.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    const NO_CARRY: &[(&str, NameMatch)] = &[];
+
     #[test]
-    fn vocabulary_names_choose_prefers_carried_names_and_caps_every_name_by_rank() {
+    fn vocabulary_names_choose_ranks_matches_then_carried_names_and_caps_every_name() {
         let names = [
             "Ada Brisk",
             "Bozzle Fenwright",
@@ -368,39 +379,52 @@ mod tests {
         let f = NameFilter::new(&names, NONE);
         let text = ["Kam spoke to Oskarine Vale about Bozle"];
         // Ranked: Oskarine Vale (exact), Kam Pellory (word), Bozzle Fenwright (sound).
-        assert_eq!(f.choose(&text, NONE, 2), ["Kam Pellory", "Oskarine Vale"]);
-        assert_eq!(f.choose(&text, NONE, 1), ["Oskarine Vale"]);
-        assert!(f.choose(&text, NONE, 0).is_empty());
-        // Carried names come before new matches and count toward the cap.
+        let got = f.choose(&text, NO_CARRY, 2);
+        assert_eq!(names_of(&got), ["Kam Pellory", "Oskarine Vale"]);
+        assert_eq!(got[0].1, NameMatch::Word);
+        assert_eq!(names_of(&f.choose(&text, NO_CARRY, 1)), ["Oskarine Vale"]);
+        assert!(f.choose(&text, NO_CARRY, 0).is_empty());
+        // A name the texts match beats a carried name they do not (T12.91a), even one carried
+        // as an exact match.
+        let ada = [("Ada Brisk", NameMatch::Exact)];
         assert_eq!(
-            f.choose(&text, &["Ada Brisk"], 2),
-            ["Ada Brisk", "Oskarine Vale"]
-        );
-        // More carried names than the cap: the strongest are kept (matched by the texts, by
-        // strength, then the rest in the carried order), never more than the cap.
-        let carried = ["Ada Brisk", "Bozzle Fenwright", "Kam Pellory"];
-        assert_eq!(f.choose(&text, &carried, 1), ["Kam Pellory"]);
-        assert_eq!(
-            f.choose(&text, &carried, 2),
-            ["Bozzle Fenwright", "Kam Pellory"]
+            names_of(&f.choose(&text, &ada, 2)),
+            ["Kam Pellory", "Oskarine Vale"]
         );
         assert_eq!(
-            f.choose(&text, &carried, 3),
-            ["Ada Brisk", "Bozzle Fenwright", "Kam Pellory"]
+            names_of(&f.choose(&text, &ada, 4)),
+            [
+                "Ada Brisk",
+                "Bozzle Fenwright",
+                "Kam Pellory",
+                "Oskarine Vale"
+            ]
         );
+        // Unmatched carried names follow in the carried order (`carried_names` puts the
+        // strongest first) and count toward the cap.
+        let carried = [
+            ("Kam Pellory", NameMatch::Exact),
+            ("Ada Brisk", NameMatch::Word),
+        ];
+        assert_eq!(names_of(&f.choose(NONE, &carried, 1)), ["Kam Pellory"]);
         assert_eq!(
             f.choose(NONE, &carried, 2),
-            ["Ada Brisk", "Bozzle Fenwright"]
+            [
+                ("Ada Brisk".to_owned(), NameMatch::Word),
+                ("Kam Pellory".to_owned(), NameMatch::Exact)
+            ]
         );
-        assert_eq!(
-            f.choose(NONE, &["Kam Pellory", "Ada Brisk"], 1),
-            ["Kam Pellory"],
-            "unmatched carried names keep the carried order"
-        );
+        // A carried name keeps the stronger of its carried strength and its match here.
+        let bozzle = [("Bozzle Fenwright", NameMatch::Exact)];
+        let got = f.choose(&text, &bozzle, 3);
+        assert_eq!(got[0], ("Bozzle Fenwright".to_owned(), NameMatch::Exact));
         // A carried name that is not one of the names is ignored.
-        assert!(f.choose(NONE, &["Somebody Else"], 5).is_empty());
+        assert!(
+            f.choose(NONE, &[("Somebody Else", NameMatch::Exact)], 5)
+                .is_empty()
+        );
         assert_eq!(
-            choose_names(&text, &names, NONE, NONE, usize::MAX),
+            names_of(&choose_names(&text, &names, NONE, NO_CARRY, usize::MAX)),
             ["Bozzle Fenwright", "Kam Pellory", "Oskarine Vale"]
         );
     }

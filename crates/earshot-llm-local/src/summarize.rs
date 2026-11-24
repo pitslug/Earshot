@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::{
-    ChatMessage, ContextBudget, MapChunk, MergeLevel, Prompt, PromptError, PromptPlan,
+    CarriedName, ChatMessage, ContextBudget, MapChunk, MergeLevel, Prompt, PromptError, PromptPlan,
     REPAIR_MAX_TOKENS, Role, SummaryInput, carried_names, grown_reply_tokens, plan, plan_chunks,
     plan_chunks_two_call, reduce_groups_carrying, reduce_groups_two_call, reduce_prompt_carrying,
     reduce_prompt_two_call, repair_message, segment_numbers, select_prompt,
@@ -455,7 +455,7 @@ fn map_reduce(
 ) -> Result<SummaryV1, SummaryFailure> {
     // The saved people's names each part's request carries (T12.91), a part summarised
     // during the meeting included: its window's request, as this run would send it.
-    let carried: Vec<Vec<String>> = chunks.iter().map(|c| c.prompt.people.clone()).collect();
+    let carried: Vec<Vec<CarriedName>> = chunks.iter().map(|c| c.prompt.carried()).collect();
     let partials = map_parts(model, chunks, done, numbers, options, report)?;
     reduce_levels(
         model,
@@ -521,7 +521,7 @@ fn reduce_levels(
     model: &mut dyn Generate,
     input: &SummaryInput,
     mut partials: Vec<SummaryV1>,
-    mut carried: Vec<Vec<String>>,
+    mut carried: Vec<Vec<CarriedName>>,
     budget: ContextBudget,
     numbers: &SegmentNumbers,
     options: &SummaryOptions,
@@ -567,7 +567,7 @@ fn reduce_levels(
                 ),
                 Merge::TwoCall => reduce_prompt_two_call(input, &partials[g.clone()], budget),
             };
-            next_carried.push(p.people.clone());
+            next_carried.push(p.carried());
             report.reduce_steps += 1;
             let merged = match step(model, "reduce", Whole, p, numbers, options, report) {
                 // A rougher summary rather than none (T8.4d); it says so itself.

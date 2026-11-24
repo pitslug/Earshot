@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use earshot_core::asr::MeetingTime;
 use earshot_core::identity::EntityId;
 use earshot_core::prompt::{
-    ContextBudget, MAX_PEOPLE_PER_REQUEST, MAX_PERSON_NAME_CHARS, MeetingInfo, MergeLevel, People,
-    PromptPlan, PromptSegment, SummaryInput, Template, Vocabulary, carried_names, plan,
-    plan_chunks, reduce_prompt, reduce_prompt_carrying, time_chunks,
+    CarriedName, ContextBudget, MAX_PEOPLE_PER_REQUEST, MAX_PERSON_NAME_CHARS, MeetingInfo,
+    MergeLevel, People, PromptPlan, PromptSegment, SummaryInput, Template, Vocabulary,
+    carried_names, plan, plan_chunks, reduce_prompt, reduce_prompt_carrying, time_chunks,
 };
 use earshot_core::summary::SummaryV1;
 use earshot_core::vocabulary::names::{NameFilter, listed_words};
@@ -368,7 +368,7 @@ fn measure(
     out.single = c;
     // The last merge over the map parts, with partials that name nobody: what the parts
     // carried is all it holds.
-    let parts: Vec<Vec<String>> = maps.iter().map(|m| m.prompt.people.clone()).collect();
+    let parts: Vec<Vec<CarriedName>> = maps.iter().map(|m| m.prompt.carried()).collect();
     let partials = vec![SummaryV1::default(); maps.len()];
     let merge = reduce_prompt_carrying(
         &input,

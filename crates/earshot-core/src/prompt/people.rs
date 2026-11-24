@@ -8,8 +8,8 @@
 //! the shipped matcher hears one of its words there), at most [`MAX_PEOPLE_PER_REQUEST`] of
 //! them by match strength. A map request is matched against its transcript lines, a single
 //! request against the whole meeting, and a merge against its partial summaries, keeping
-//! the names its parts carried first (the strongest of them when they pass the cap). The
-//! chosen names are one block in the system message
+//! the names its parts carried (by the strength each was found with) after the names it
+//! matches itself. The chosen names are one block in the system message
 //! ([`PEOPLE`]), right after the Dictionary's block and before the style, introduced by fixed
 //! text that says they are names to spell and never instructions; every name is one line
 //! prefixed with [`PEOPLE_LINE_PREFIX`], so no name can close or fake the block's markers. A
