@@ -365,7 +365,7 @@ const useStyles = makeStyles({
     flexDirection: "column",
     rowGap: tokens.spacingVerticalXS,
   },
-  splitHeader: {
+  splitFooter: {
     display: "flex",
     alignItems: "center",
     justifyContent: "flex-start",
@@ -2007,7 +2007,7 @@ function SplitPoints({
           ),
         )}
       </span>
-      <div className={styles.splitHeader}>
+      <div className={styles.splitFooter}>
         <Button size="small" appearance="subtle" onClick={onCancel}>
           Cancel
         </Button>
