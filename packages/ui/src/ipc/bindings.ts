@@ -1343,6 +1343,15 @@ export type MeetingDetail = {
 	summary: SummaryView | null,
 	/**  The transcript in meeting order. */
 	transcript: TranscriptRow[],
+	/**
+	 *  The speakers each track's lines can move to (T12.90, `edit::movable_by_track`: those
+	 *  that belong to the track, a speaker left with no line included), by track id, in the
+	 *  meeting's speaker order, with the names the transcript shows; empty in a draft. A line's
+	 *  menu offers its `TranscriptRow::track_id`'s list without the line's own speaker
+	 *  (`edit::movable_speakers`), then a new speaker. One list per track, not per line, so a
+	 *  long meeting's detail stays small (T12.90a).
+	 */
+	movable_by_track: { [key in string]: MovableSpeaker[] },
 	/**  The speakers with a line in the transcript, in creation order. */
 	speakers: SpeakerCard[],
 	/**  The previous summary can be restored ("Switch to previous summary"). */
@@ -2620,6 +2629,11 @@ export type TranscriptRow = {
 	unknown_speaker: boolean,
 	/**  Where it was heard. */
 	track: RowTrack,
+	/**
+	 *  The track row it was heard on (hyphenated UUID): its key in
+	 *  [`MeetingDetail::movable_by_track`].
+	 */
+	track_id: string,
 	/**  The text. */
 	text: string,
 	/**
@@ -2627,13 +2641,6 @@ export type TranscriptRow = {
 	 *  by a re-transcription.
 	 */
 	edited: boolean,
-	/**
-	 *  The speakers this line can move to (T12.90, `edit::movable_speakers`: those that belong
-	 *  to its track, other than its own, a speaker left with no line included), in the meeting's
-	 *  speaker order, with the names the transcript shows; empty in a draft. A new speaker is
-	 *  offered for every final line.
-	 */
-	movable_to: MovableSpeaker[],
 	/**
 	 *  The line can be split before a word (T12.90, `edit::can_split_line`: its words still
 	 *  match its text); false in a draft.

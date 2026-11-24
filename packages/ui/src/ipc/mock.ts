@@ -46,8 +46,11 @@ import {
   linked,
   markedMe,
   merged,
+  movableByTrack,
   movedLine,
   newSpeakerCard,
+  newSpeakerRole,
+  roleOf,
   notThisPersonVoice,
   renamed,
   resummarised,
@@ -224,8 +227,12 @@ export interface MockIpcData {
   /** Recordings start-up recovery saved (T9.18): returned by the first `recoveredRecordings`
    * only, as the app takes them. */
   recovered?: RecoveredRecording[];
-  /** Meeting details by id (default: `sampleDetail` of each meeting). */
+  /** Meeting details by id (default: `sampleDetail` of each meeting). Their `speakers` are every
+   * live speaker row of the meeting: a card with no line is kept and not served (T12.90). */
   details?: Record<string, MeetingDetail>;
+  /** The recogniser's words of a line, by segment id (default: the tokens of its text), which a
+   * split needs to equal its tokens (T12.90). */
+  lineWords?: Record<string, string[]>;
   /** Finished meetings without a detail of their own were recorded in the room, with no
    * saved voice (`sampleInRoomDetail`). */
   inRoom?: boolean | "recognised";
@@ -615,9 +622,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const update = (id: string, f: (d: MeetingDetail) => MeetingDetail) => {
     details.set(id, f(detailOf(id)));
   };
-  // T12.90: the lines whose text was changed (an edit, a word choice), so they have no word
-  // times and cannot be split; and the ids a split or a new speaker takes.
-  const textEdited = new Set<string>();
+  // T12.90: each line's recogniser words (`Segment::words`), which a split needs to equal the
+  // line's white-space tokens: a line not listed has the words of its text (the sample keeps no
+  // words of its own, so it reads as freshly decoded); a text change (an edit, a word choice)
+  // clears them, as `edit::put_line_text` does, and a split shares them out. And the ids a
+  // split or a new speaker takes.
+  const lineWords = new Map<string, string[]>(Object.entries(data.lineWords ?? {}));
+  const wordsOf = (row: TranscriptRow): string[] => lineWords.get(row.segment_id) ?? tokensOf(row.text);
   let lineIds = 0;
   // T12.15e: the word list, as `word_choices::word_list` builds it.
   const wordList = async () => wordListOf((await summariesMock.summaryVocabulary()).words, persons);
@@ -1053,7 +1064,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       // T12.15f: the Dictionary's entries, for Add or Remove on a word.
       const dictionary = final ? (await summariesMock.summaryVocabulary()).words : [];
       return structuredClone({
-        ...withLineOffers(d, textEdited),
+        ...withLineOffers(d, wordsOf),
         kept_local,
         word_list,
         dictionary,
@@ -1093,7 +1104,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       update(meeting, (d) => {
         const row = d.transcript.find((r) => r.segment_id === segment);
         if (!row || row.text === t) return d;
-        textEdited.add(segment);
+        lineWords.set(segment, []);
         return marksAfterEdit(
           {
             ...d,
@@ -1106,40 +1117,49 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       });
       return offer;
     },
-    // T12.90: `edit::move_line` and `edit::split_line`, refusals first, each as its one
-    // transaction. Where a line may go and whether it splits are the detail's own offers
-    // (`withLineOffers`), as the runtime decides them.
+    // T12.90: `edit::move_line` and `edit::split_line`, refusals first (`edit::final_line`'s,
+    // then their own, in the runtime's order), each as its one transaction. The stored detail
+    // keeps every live speaker row's card (`withLineOffers` serves those with a line), so the
+    // rules read the same state the runtime's do (`fixtures/ui/line_edit_cases.json`).
     moveLine: async (meeting, segment, speaker) => {
       call("moveLine", meeting, segment, speaker);
-      const d = withLineOffers(detailOf(meeting), textEdited);
       const row = lineOf(meeting, segment);
-      const offers = d.transcript.find((r) => r.segment_id === segment) ?? row;
+      const d = detailOf(meeting);
+      const own = d.speakers.find((s) => s.id === row.speaker_id);
       if (speaker === null) {
         // The line already is the only line of an unnamed voice other than the user's: nothing.
-        const own = d.speakers.find((s) => s.id === row.speaker_id);
         const alone = !d.transcript.some((r) => r.segment_id !== segment && r.speaker_id === row.speaker_id);
-        if (own !== undefined && own.kind !== "Me" && own.person === null && alone) return;
+        if (own !== undefined && roleOf(d, own) !== "Me" && own.person === null && alone) return;
+        const role = newSpeakerRole(own ? roleOf(d, own) : null, d.header.mode === "InRoom", row.track);
         lineIds += 1;
         const id = `5a000000-0000-7000-8000-${String(0x900 + lineIds).padStart(12, "0")}`;
-        update(meeting, (d) => movedLine(d, segment, newSpeakerCard(d, id, row.track)));
+        update(meeting, (d) => movedLine(d, segment, newSpeakerCard(d, id, role)));
         return;
       }
       if (row.speaker_id === speaker) return;
       const card =
         d.speakers.find((s) => s.id === speaker) ??
         fail("speaker_not_found", "This speaker is no longer in the meeting.");
-      if (!offers.movable_to.some((m) => m.id === speaker)) fail("speaker_not_on_track", SPEAKER_NOT_ON_TRACK_COPY);
+      if (!(movableByTrack(d)[row.track_id] ?? []).some((m) => m.id === speaker)) {
+        fail("speaker_not_on_track", SPEAKER_NOT_ON_TRACK_COPY);
+      }
       update(meeting, (d) => movedLine(d, segment, card));
     },
     splitLine: async (meeting, segment, token) => {
       call("splitLine", meeting, segment, token);
       const row = lineOf(meeting, segment);
-      if (textEdited.has(segment)) fail("split_needs_word_times", SPLIT_NEEDS_WORD_TIMES_COPY);
-      if (token < 1 || token >= tokensOf(row.text).length) {
+      const words = wordsOf(row);
+      const tokens = tokensOf(row.text);
+      if (words.length === 0 || words.length !== tokens.length || tokens.some((t, i) => t !== words[i])) {
+        fail("split_needs_word_times", SPLIT_NEEDS_WORD_TIMES_COPY);
+      }
+      if (token < 1 || token >= tokens.length) {
         fail("split_out_of_range", SPLIT_OUT_OF_RANGE_COPY);
       }
       lineIds += 1;
       const second = `5e000000-0000-7000-8000-${String(0x900 + lineIds).padStart(12, "0")}`;
+      lineWords.set(segment, words.slice(0, token));
+      lineWords.set(second, words.slice(token));
       update(meeting, (d) => splitRow(d, segment, token, second));
       return second;
     },
@@ -1180,7 +1200,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       update(meeting, (d) => {
         const next = withWord(d, segment, token, listed, decoded);
         const changed = next.transcript.find((r) => r.segment_id === segment)?.text !== row.text;
-        if (changed) textEdited.add(segment);
+        if (changed) lineWords.set(segment, []);
         return changed
           ? { ...next, summary_stale: d.summary !== null || d.summary_stale, summary_stale_names: false }
           : next;
@@ -1195,7 +1215,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       const key = `${meeting}/${segment}/${token}`;
       const suggestion = usedSuggestions.get(key);
       usedSuggestions.delete(key);
-      textEdited.add(segment);
+      lineWords.set(segment, []);
       update(meeting, (d) => {
         const next = withWord(d, segment, token, choice.decoded, choice.decoded);
         return {

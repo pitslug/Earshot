@@ -27,6 +27,7 @@ export type {
   HandoverItem,
   KeptLocalView,
   ExportDone,
+  MovableSpeaker,
   JobEvent,
   JobKind,
   LinkChoice,

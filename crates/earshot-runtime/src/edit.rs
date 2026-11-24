@@ -632,46 +632,113 @@ fn track_kind(tracks: &[Track], track: EntityId) -> TrackId {
         .map_or(TrackId::Mic, |t| t.kind)
 }
 
-/// The live speakers of `speakers` that belong to track `track`: the one track rule of
-/// [`move_line`] and [`movable_speakers`]. A speaker belongs to a track when it has a live line
-/// of the final transcript (`finals`) on it, or, with no live final line anywhere (every line
-/// moved away), when its role does: [`SpeakerRole::Remote`] the far end,
-/// [`SpeakerRole::Local`] and [`SpeakerRole::Me`] the mic, [`SpeakerRole::Room`] the mic of
-/// an in-room meeting ([`records_in_room`] over `tracks`). So a move can always be undone.
+/// Which speakers belong to which track: the one track rule of [`move_line`],
+/// [`movable_by_track`] and [`movable_speakers`], read once from the final transcript
+/// (`finals`) so a whole meeting's offers cost one pass over its lines (T12.90a). A speaker
+/// belongs to a track when it has a live line of the final transcript on it, or, with no live
+/// final line anywhere (every line moved away), when its role does: [`SpeakerRole::Remote`]
+/// the far end, [`SpeakerRole::Local`] and [`SpeakerRole::Me`] the mic, [`SpeakerRole::Room`]
+/// the mic of an in-room meeting ([`records_in_room`] over the tracks). So a move can always
+/// be undone.
+struct SpeakersOnTracks<'a> {
+    tracks: &'a [Track],
+    in_room: bool,
+    /// Speakers with a live final line anywhere.
+    with_lines: BTreeSet<EntityId>,
+    /// Speakers with a live final line, by the track it is on.
+    on_track: BTreeMap<EntityId, BTreeSet<EntityId>>,
+}
+
+impl<'a> SpeakersOnTracks<'a> {
+    fn new(finals: &[Segment], tracks: &'a [Track]) -> Self {
+        let mut with_lines = BTreeSet::new();
+        let mut on_track: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
+        for s in finals {
+            if let Some(speaker) = s.speaker_id {
+                with_lines.insert(speaker);
+                on_track.entry(s.track).or_default().insert(speaker);
+            }
+        }
+        Self {
+            tracks,
+            in_room: records_in_room(tracks),
+            with_lines,
+            on_track,
+        }
+    }
+
+    /// Whether live speaker `s` belongs to track `track`.
+    fn belongs(&self, s: &Speaker, track: EntityId) -> bool {
+        if s.meta.deleted {
+            return false;
+        }
+        if self
+            .on_track
+            .get(&track)
+            .is_some_and(|on| on.contains(&s.id))
+        {
+            return true;
+        }
+        let kind = track_kind(self.tracks, track);
+        !self.with_lines.contains(&s.id)
+            && match s.role {
+                SpeakerRole::Remote => kind == TrackId::Reference,
+                SpeakerRole::Local | SpeakerRole::Me => kind == TrackId::Mic,
+                SpeakerRole::Room => self.in_room && kind == TrackId::Mic,
+            }
+    }
+}
+
+/// The live speakers of `speakers` that belong to track `track` ([`SpeakersOnTracks`]).
 fn speakers_on_track(
     finals: &[Segment],
     speakers: &[Speaker],
     tracks: &[Track],
     track: EntityId,
 ) -> BTreeSet<EntityId> {
-    let kind = track_kind(tracks, track);
-    let in_room = records_in_room(tracks);
-    let with_lines: BTreeSet<EntityId> = finals.iter().filter_map(|s| s.speaker_id).collect();
-    let on_track: BTreeSet<EntityId> = finals
-        .iter()
-        .filter(|s| s.track == track)
-        .filter_map(|s| s.speaker_id)
-        .collect();
+    let rule = SpeakersOnTracks::new(finals, tracks);
     speakers
         .iter()
-        .filter(|s| !s.meta.deleted)
-        .filter(|s| {
-            on_track.contains(&s.id)
-                || (!with_lines.contains(&s.id)
-                    && match s.role {
-                        SpeakerRole::Remote => kind == TrackId::Reference,
-                        SpeakerRole::Local | SpeakerRole::Me => kind == TrackId::Mic,
-                        SpeakerRole::Room => in_room && kind == TrackId::Mic,
-                    })
-        })
+        .filter(|s| rule.belongs(s, track))
         .map(|s| s.id)
+        .collect()
+}
+
+/// The speakers that belong to each live track of `tracks` and to each track a line of
+/// `segments` (the final transcript) is on, in the order of `speakers`, the rule read once
+/// (T12.90a). A line's menu offers its track's list without the line's own speaker
+/// ([`movable_speakers`]), so the meeting detail sends one list per track rather than one per
+/// line.
+#[must_use]
+pub fn movable_by_track(
+    segments: &[Segment],
+    speakers: &[Speaker],
+    tracks: &[Track],
+) -> BTreeMap<EntityId, Vec<EntityId>> {
+    let rule = SpeakersOnTracks::new(segments, tracks);
+    let ids: BTreeSet<EntityId> = tracks
+        .iter()
+        .filter(|t| !t.meta.deleted)
+        .map(|t| t.id)
+        .chain(segments.iter().map(|s| s.track))
+        .collect();
+    ids.into_iter()
+        .map(|track| {
+            let on: Vec<EntityId> = speakers
+                .iter()
+                .filter(|s| rule.belongs(s, track))
+                .map(|s| s.id)
+                .collect();
+            (track, on)
+        })
         .collect()
 }
 
 /// The speakers [`move_line`] would move `line` to with [`LineSpeaker::Existing`], in the
 /// order of `speakers`: the live ones that belong to the line's track (a line of `segments`,
 /// the final transcript, on it, or no line anywhere and a role of that track), other than the
-/// line's own speaker. What the line's menu offers.
+/// line's own speaker. What the line's menu offers; [`movable_by_track`] gives every line's
+/// list at once.
 #[must_use]
 pub fn movable_speakers(
     segments: &[Segment],
@@ -679,10 +746,10 @@ pub fn movable_speakers(
     tracks: &[Track],
     line: &Segment,
 ) -> Vec<EntityId> {
-    let on_track = speakers_on_track(segments, speakers, tracks, line.track);
+    let rule = SpeakersOnTracks::new(segments, tracks);
     speakers
         .iter()
-        .filter(|s| !s.meta.deleted && Some(s.id) != line.speaker_id && on_track.contains(&s.id))
+        .filter(|s| Some(s.id) != line.speaker_id && rule.belongs(s, line.track))
         .map(|s| s.id)
         .collect()
 }

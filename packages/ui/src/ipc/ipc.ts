@@ -115,7 +115,8 @@ export interface IpcCommands
    * (T12.15f: words the edit wrote, neither common nor on the word list; nothing is added).
    * Rejects with `invalid_text`, `segment_not_found` or `draft_transcript`. */
   editSegment(meeting: string, segment: string, text: string): Promise<string[]>;
-  /** Moves a final line (T12.90) to `speaker`, the id of one of `TranscriptRow.movable_to`, or to a new
+  /** Moves a final line (T12.90) to `speaker`, the id of one of its track's
+   * `MeetingDetail.movable_by_track` other than its own speaker, or to a new
    * "Speaker N" when `speaker` is `null`; the line keeps its words and is marked edited. Also
    * gives a line with an unknown speaker (T12.65) one. Rejects with `speaker_not_on_track`,
    * `speaker_not_found`, `segment_not_found` or `draft_transcript`. */

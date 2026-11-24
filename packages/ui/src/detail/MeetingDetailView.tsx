@@ -9,6 +9,7 @@ import {
   Body1,
   Body1Strong,
   Button,
+  type ButtonProps,
   Caption1,
   CompoundButton,
   Input,
@@ -62,6 +63,7 @@ import {
   type LinkChoice,
   type MeetingDetail,
   type MeetingListItem,
+  type MovableSpeaker,
   type PersonItem,
   type SummaryFieldRef,
   type SummaryView,
@@ -1659,7 +1661,7 @@ function TranscriptTab({
   /** "Remove from Dictionary" and "Undo" (T12.15f); the detail is read again before it
    * resolves. */
   onRemoveWord(word: string): Promise<{ error: string } | null>;
-  /** Moves a line to `speaker` (one of its `movable_to`), or to a new speaker for `null`
+  /** Moves a line to `speaker` (one of its track's `movable_by_track`), or to a new speaker for `null`
    * (T12.90; also gives a line with an unknown speaker one, T12.65); the detail is read again
    * after it. */
   onMoveLine(segment: string, speaker: string | null): void;
@@ -1868,6 +1870,7 @@ function TranscriptTab({
             key={r.segment_id}
             row={r}
             index={i}
+            movable={detail.movable_by_track[r.track_id] ?? NO_SPEAKERS}
             cited={r.segment_id === cited}
             editing={editing === r.segment_id}
             splitting={splitting === r.segment_id}
@@ -1905,6 +1908,42 @@ function TranscriptTab({
 }
 
 const noop = () => {};
+
+/** No speaker to move a line to: one array, so a line's props stay equal (T9.24). */
+const NO_SPEAKERS: MovableSpeaker[] = [];
+
+/** A line's menu, mounted only once its button is first pressed (T12.90a): a transcript of
+ * thousands of lines mounts no Fluent menu (each with its positioning and focus hooks) until one
+ * is wanted. Until then the button stands alone; pressing it, or the down arrow on it, mounts the
+ * menu already open on it, and it stays mounted for that line. `items` runs only while mounted. */
+function LineMenu({ button, items }: { button: ButtonProps; items: () => ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  if (!mounted) {
+    return (
+      <Button
+        {...button}
+        // As Fluent's trigger marks a closed menu's button.
+        aria-haspopup="menu"
+        onClick={() => setMounted(true)}
+        onKeyDown={(e: { key: string; preventDefault(): void }) => {
+          if (e.key !== "ArrowDown") return;
+          e.preventDefault();
+          setMounted(true);
+        }}
+      />
+    );
+  }
+  return (
+    <Menu defaultOpen>
+      <MenuTrigger disableButtonEnhancement>
+        <Button {...button} />
+      </MenuTrigger>
+      <MenuPopover>
+        <MenuList>{items()}</MenuList>
+      </MenuPopover>
+    </Menu>
+  );
+}
 
 /** A line's words as split points (T12.90): from the second word on, each word is a button
  * that splits the line before it. Escape or Cancel leaves without splitting. */
@@ -2004,6 +2043,7 @@ interface LineHandlers {
 const TranscriptLine = memo(function TranscriptLine({
   row: r,
   index: i,
+  movable,
   cited,
   editing,
   splitting,
@@ -2019,6 +2059,9 @@ const TranscriptLine = memo(function TranscriptLine({
 }: {
   row: TranscriptRow;
   index: number;
+  /** The speakers lines of this line's track can move to (T12.90, the detail's
+   * `movable_by_track`), its own speaker included: the menu leaves it out. */
+  movable: MovableSpeaker[];
   cited: boolean;
   editing: boolean;
   /** The line's words are offered as split points (T12.90). */
@@ -2052,15 +2095,18 @@ const TranscriptLine = memo(function TranscriptLine({
     [dictionary, h, segment],
   );
   const rowRef = useCallback((el: HTMLDivElement | null) => h.rowRef(segment, el), [h, segment]);
-  // T12.90: where the line can move (the runtime's list, names included: a speaker left with
-  // no line has no card), then a new speaker.
-  const moveItems = (
+  // T12.90: where the line can move (the runtime's list for its track without its own speaker,
+  // names included: a speaker left with no line has no card), then a new speaker. Built only
+  // while a menu is open (`LineMenu`).
+  const moveItems = () => (
     <>
-      {r.movable_to.map((s) => (
-        <MenuItem key={s.id} onClick={() => h.move(segment, s.id)}>
-          {s.name}
-        </MenuItem>
-      ))}
+      {movable
+        .filter((s) => s.id !== r.speaker_id)
+        .map((s) => (
+          <MenuItem key={s.id} onClick={() => h.move(segment, s.id)}>
+            {s.name}
+          </MenuItem>
+        ))}
       <MenuItem onClick={() => h.move(segment, null)}>New speaker</MenuItem>
     </>
   );
@@ -2080,21 +2126,16 @@ const TranscriptLine = memo(function TranscriptLine({
       <Body1Strong role="cell" className={styles.speaker}>
         {r.speaker}
         {r.unknown_speaker && canEdit && quiet && (
-          <Menu>
-            <MenuTrigger disableButtonEnhancement>
-              <Button
-                size="small"
-                appearance="subtle"
-                aria-label={`Choose who said line ${i + 1}`}
-                disabledFocusable={locked}
-              >
-                Choose
-              </Button>
-            </MenuTrigger>
-            <MenuPopover>
-              <MenuList>{moveItems}</MenuList>
-            </MenuPopover>
-          </Menu>
+          <LineMenu
+            button={{
+              size: "small",
+              appearance: "subtle",
+              "aria-label": `Choose who said line ${i + 1}`,
+              disabledFocusable: locked,
+              children: "Choose",
+            }}
+            items={moveItems}
+          />
         )}
       </Body1Strong>
       {editing ? (
@@ -2151,26 +2192,23 @@ const TranscriptLine = memo(function TranscriptLine({
           </Button>
         )}
         {canEdit && quiet && (
-          <Menu>
-            <MenuTrigger disableButtonEnhancement>
-              <Button
-                size="small"
-                appearance="subtle"
-                className={mergeClasses(styles.lineEdit, styles.lineMore, "earshot-line-edit")}
-                aria-label={`More actions for line ${i + 1}`}
-                disabledFocusable={locked}
-              >
-                ⋯
-              </Button>
-            </MenuTrigger>
-            <MenuPopover>
-              <MenuList>
+          <LineMenu
+            button={{
+              size: "small",
+              appearance: "subtle",
+              className: mergeClasses(styles.lineEdit, styles.lineMore, "earshot-line-edit"),
+              "aria-label": `More actions for line ${i + 1}`,
+              disabledFocusable: locked,
+              children: "⋯",
+            }}
+            items={() => (
+              <>
                 <Menu>
                   <MenuTrigger disableButtonEnhancement>
                     <MenuItem>Move to speaker</MenuItem>
                   </MenuTrigger>
                   <MenuPopover>
-                    <MenuList>{moveItems}</MenuList>
+                    <MenuList>{moveItems()}</MenuList>
                   </MenuPopover>
                 </Menu>
                 {r.splittable ? (
@@ -2184,9 +2222,9 @@ const TranscriptLine = memo(function TranscriptLine({
                     </MenuItem>
                   )
                 )}
-              </MenuList>
-            </MenuPopover>
-          </Menu>
+              </>
+            )}
+          />
         )}
       </span>
       {canEdit && !editing && (offered !== null || note !== null) && (

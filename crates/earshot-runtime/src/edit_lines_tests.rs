@@ -147,6 +147,58 @@ fn edit_move_line_to_a_speaker_of_the_same_track_keeps_the_line_and_marks_it_edi
     assert!(!movable(&svc, m, &line_with(&svc, m, "and the notes")).contains(&me));
 }
 
+#[test]
+fn edit_movable_by_track_is_every_lines_offer_without_its_own_speaker() {
+    // T12.90a: the detail sends one list per track; a line's menu leaves its own speaker out.
+    // That gives every line exactly `movable_speakers`, before and after lines move away.
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 1290);
+    let bob = add_speaker(
+        &svc,
+        m,
+        TrackId::Reference,
+        "Bob",
+        "and the notes",
+        9_000,
+        1291,
+    );
+    add_speaker(&svc, m, TrackId::Mic, "Sam", "over here", 12_000, 1292);
+    let check = |at: &str| {
+        let v = view(&svc, m);
+        let by_track = movable_by_track(&v.segments, &v.speakers, &v.tracks);
+        let live_tracks: Vec<EntityId> = v
+            .tracks
+            .iter()
+            .filter(|t| !t.meta.deleted)
+            .map(|t| t.id)
+            .collect();
+        assert!(
+            live_tracks.iter().all(|t| by_track.contains_key(t)),
+            "{at}: a list for every live track"
+        );
+        for line in &v.segments {
+            let shown: Vec<EntityId> = by_track[&line.track]
+                .iter()
+                .copied()
+                .filter(|id| Some(*id) != line.speaker_id)
+                .collect();
+            assert_eq!(
+                shown,
+                movable_speakers(&v.segments, &v.speakers, &v.tracks, line),
+                "{at}: {}",
+                line.text
+            );
+        }
+    };
+    check("at the start");
+    let line = line_with(&svc, m, "yes friday works for the release");
+    assert!(move_line(&svc, m, line.id, LineSpeaker::Existing(bob)).unwrap());
+    check("after a move leaves Alice with no line");
+    assert!(move_line(&svc, m, line.id, LineSpeaker::New).unwrap());
+    check("after a new speaker");
+}
+
 /// What the menu of `line` offers, by the detail's call of the rule.
 fn movable(svc: &Services, meeting: EntityId, line: &Segment) -> Vec<EntityId> {
     let v = view(svc, meeting);

@@ -1,0 +1,167 @@
+{
+  "about": "Moving and splitting a transcript line (T12.90, T12.90a). apps/desktop/src-tauri (detail_tests.rs) runs every case through the shipped `edit::move_line`, `edit::split_line`, `edit::edit_segment`, `edit::movable_speakers` and `edit::can_split_line` and through `meeting_detail` (its `movable_by_track` and `splittable`), and packages/ui/src/ipc/lineEdits.test.ts through the mock's `getMeeting`, `moveLine`, `splitLine` and `editSegment`, so the browser preview cannot offer a move or split the app would refuse, nor refuse one it would make. Each case is a meeting: `speakers` are every live speaker row in creation order (`role` is the runtime's SpeakerRole, `person` whether it is linked to a person of its own name), `lines` the transcript in order (`track` mic or far, `speaker` null for a line no speaker was found for, `words` the recogniser's words, which a split needs to equal the white-space tokens of `text`). `offers` (a line's Move to speaker list, the line's own speaker left out, in speaker order), `splittable` and `listed` (the speaker cards the detail shows: speakers with a line) are checked at the start and after any step that names them. A step is `move` (`to` a speaker label, `new` or an unknown label), `split` (before white-space token `token`) or `edit`; its `result` is `moved`, `unchanged`, `new_speaker` (the row a New speaker made, `as` its label for later steps), `split` (the two parts' texts, `as` the second part's label) or `error` (the IPC refusal kind). Every name and word is invented.",
+  "cases": [
+    {
+      "name": "a call: offers by line and by role, moves, new speakers and splits",
+      "in_room": false,
+      "draft": false,
+      "speakers": [
+        { "id": "me", "name": "Me", "role": "Me", "person": true },
+        { "id": "priya", "name": "Priya Shah", "role": "Remote", "person": true },
+        { "id": "s2", "name": "Speaker 2", "role": "Remote", "person": false },
+        { "id": "s1", "name": "Speaker 1", "role": "Remote", "person": false },
+        { "id": "s3", "name": "Speaker 3", "role": "Local", "person": false }
+      ],
+      "lines": [
+        { "id": "l1", "track": "mic", "speaker": "me", "text": "shall we ship the gravel on friday", "words": ["shall", "we", "ship", "the", "gravel", "on", "friday"] },
+        { "id": "l2", "track": "far", "speaker": "s2", "text": "yes friday works", "words": ["yes", "friday", "works"] },
+        { "id": "l3", "track": "far", "speaker": "priya", "text": "and the hedge plan too", "words": ["and", "the", "hedge", "plan", "too"] },
+        { "id": "l4", "track": "far", "speaker": "s2", "text": "well, that settles it", "words": ["well", "that", "settles", "it"] },
+        { "id": "l5", "track": "mic", "speaker": "me", "text": "then we  wait", "words": ["then", "we", "wait"] }
+      ],
+      "offers": { "l1": ["s3"], "l2": ["priya", "s1"], "l3": ["s2", "s1"], "l4": ["priya", "s1"], "l5": ["s3"] },
+      "splittable": { "l1": true, "l2": true, "l3": true, "l4": false, "l5": true },
+      "listed": ["me", "priya", "s2"],
+      "steps": [
+        { "op": "move", "line": "l3", "to": "s3", "result": "error", "error": "speaker_not_on_track" },
+        { "op": "move", "line": "l3", "to": "ghost", "result": "error", "error": "speaker_not_found" },
+        { "op": "move", "line": "l3", "to": "priya", "result": "unchanged" },
+        {
+          "op": "move", "line": "l3", "to": "s2", "result": "moved",
+          "offers": { "l1": ["s3"], "l2": ["priya", "s1"], "l3": ["priya", "s1"] },
+          "listed": ["me", "s2"]
+        },
+        {
+          "op": "move", "line": "l3", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n1", "name": "Speaker 4", "role": "Remote" },
+          "offers": { "l2": ["priya", "s1", "n1"], "l3": ["priya", "s2", "s1"] },
+          "listed": ["me", "s2", "n1"]
+        },
+        { "op": "move", "line": "l3", "to": "new", "result": "unchanged" },
+        {
+          "op": "move", "line": "l5", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n2", "name": "Speaker 5", "role": "Local" },
+          "offers": { "l1": ["s3", "n2"], "l5": ["me", "s3"] },
+          "listed": ["me", "s2", "n1", "n2"]
+        },
+        { "op": "split", "line": "l4", "token": 2, "result": "error", "error": "split_needs_word_times" },
+        { "op": "split", "line": "l2", "token": 0, "result": "error", "error": "split_out_of_range" },
+        { "op": "split", "line": "l2", "token": 3, "result": "error", "error": "split_out_of_range" },
+        {
+          "op": "split", "line": "l5", "token": 1, "result": "split",
+          "split": { "as": "l5b", "texts": ["then", "we  wait"] },
+          "splittable": { "l5": false, "l5b": true },
+          "offers": { "l5b": ["me", "s3"] }
+        },
+        {
+          "op": "move", "line": "l5b", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n3", "name": "Speaker 6", "role": "Local" },
+          "listed": ["me", "s2", "n1", "n2", "n3"]
+        },
+        {
+          "op": "edit", "line": "l2", "text": "yes friday works fine", "result": "moved",
+          "splittable": { "l2": false }
+        },
+        { "op": "split", "line": "l2", "token": 1, "result": "error", "error": "split_needs_word_times" },
+        { "op": "move", "line": "nope", "to": "s2", "result": "error", "error": "segment_not_found" },
+        { "op": "split", "line": "nope", "token": 1, "result": "error", "error": "segment_not_found" }
+      ]
+    },
+    {
+      "name": "in the room: a line with no speaker and the user's only line move to new room voices",
+      "in_room": true,
+      "draft": false,
+      "speakers": [
+        { "id": "r1", "name": "Speaker 1", "role": "Room", "person": false },
+        { "id": "r2", "name": "Speaker 2", "role": "Room", "person": false },
+        { "id": "me", "name": "Me", "role": "Me", "person": true }
+      ],
+      "lines": [
+        { "id": "m1", "track": "mic", "speaker": "r1", "text": "over here by the gate", "words": ["over", "here", "by", "the", "gate"] },
+        { "id": "m2", "track": "mic", "speaker": "me", "text": "i will bring the van", "words": ["i", "will", "bring", "the", "van"] },
+        { "id": "m3", "track": "mic", "speaker": null, "text": "maybe later", "words": ["maybe", "later"] }
+      ],
+      "offers": { "m1": ["r2", "me"], "m2": ["r1", "r2"], "m3": ["r1", "r2", "me"] },
+      "splittable": { "m1": true, "m2": true, "m3": true },
+      "listed": ["r1", "me"],
+      "steps": [
+        {
+          "op": "move", "line": "m3", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n1", "name": "Speaker 3", "role": "Room" },
+          "listed": ["r1", "me", "n1"]
+        },
+        {
+          "op": "move", "line": "m2", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n2", "name": "Speaker 4", "role": "Room" },
+          "offers": { "m1": ["r2", "me", "n1", "n2"], "m2": ["r1", "r2", "me", "n1"] },
+          "listed": ["r1", "n1", "n2"]
+        },
+        {
+          "op": "split", "line": "m3", "token": 1, "result": "split",
+          "split": { "as": "m3b", "texts": ["maybe", "later"] },
+          "splittable": { "m3": false, "m3b": false }
+        }
+      ]
+    },
+    {
+      "name": "a call: a line alone under a named person or no speaker still gets a new far-end voice",
+      "in_room": false,
+      "draft": false,
+      "speakers": [
+        { "id": "p", "name": "Priya Shah", "role": "Remote", "person": true },
+        { "id": "u", "name": "Speaker 1", "role": "Remote", "person": false },
+        { "id": "me", "name": "Me", "role": "Me", "person": true }
+      ],
+      "lines": [
+        { "id": "q1", "track": "far", "speaker": "p", "text": "see you then", "words": ["see", "you", "then"] },
+        { "id": "u1", "track": "far", "speaker": "u", "text": "right", "words": ["right"] },
+        { "id": "x1", "track": "far", "speaker": null, "text": "who said that", "words": ["who", "said", "that"] },
+        { "id": "z1", "track": "mic", "speaker": "me", "text": "it was me", "words": ["it", "was", "me"] }
+      ],
+      "offers": { "q1": ["u"], "u1": ["p"], "x1": ["p", "u"], "z1": [] },
+      "splittable": { "q1": true, "u1": false, "x1": true, "z1": true },
+      "listed": ["p", "u", "me"],
+      "steps": [
+        { "op": "move", "line": "u1", "to": "new", "result": "unchanged" },
+        { "op": "split", "line": "u1", "token": 1, "result": "error", "error": "split_out_of_range" },
+        {
+          "op": "move", "line": "q1", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n1", "name": "Speaker 2", "role": "Remote" },
+          "offers": { "u1": ["p", "n1"], "x1": ["p", "u", "n1"] },
+          "listed": ["u", "me", "n1"]
+        },
+        {
+          "op": "move", "line": "x1", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n2", "name": "Speaker 3", "role": "Remote" },
+          "listed": ["u", "me", "n1", "n2"]
+        },
+        {
+          "op": "move", "line": "z1", "to": "new", "result": "new_speaker",
+          "new_speaker": { "as": "n3", "name": "Speaker 4", "role": "Local" },
+          "offers": { "z1": ["me"] },
+          "listed": ["u", "n1", "n2", "n3"]
+        }
+      ]
+    },
+    {
+      "name": "a draft: nothing is offered and every edit is refused",
+      "in_room": false,
+      "draft": true,
+      "speakers": [
+        { "id": "me", "name": "Me", "role": "Me", "person": true },
+        { "id": "s2", "name": "Speaker 2", "role": "Remote", "person": false }
+      ],
+      "lines": [
+        { "id": "d1", "track": "mic", "speaker": "me", "text": "a quick word", "words": ["a", "quick", "word"] },
+        { "id": "d2", "track": "far", "speaker": "s2", "text": "go ahead", "words": ["go", "ahead"] }
+      ],
+      "offers": { "d1": [], "d2": [] },
+      "splittable": { "d1": false, "d2": false },
+      "steps": [
+        { "op": "move", "line": "d1", "to": "s2", "result": "error", "error": "draft_transcript" },
+        { "op": "move", "line": "d2", "to": "new", "result": "error", "error": "draft_transcript" },
+        { "op": "split", "line": "d1", "token": 1, "result": "error", "error": "draft_transcript" }
+      ]
+    }
+  ]
+}

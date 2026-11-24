@@ -678,8 +678,7 @@ fn detail_a_line_with_no_speaker_is_an_unknown_speaker_the_user_can_assign() {
     assert!(!d.transcript[1].unknown_speaker);
     assert_eq!(d.transcript[1].speaker, "Them");
 
-    let offered: Vec<(String, String)> = d.transcript[2]
-        .movable_to
+    let offered: Vec<(String, String)> = offers(&d, 2)
         .iter()
         .map(|m| (m.id.clone(), m.name.clone()))
         .collect();
@@ -728,18 +727,9 @@ fn detail_each_final_line_says_where_it_can_move_and_whether_it_splits() {
             .map(|m| (m.id.parse::<EntityId>().unwrap(), m.name.clone()))
             .collect::<Vec<_>>()
     };
-    assert!(
-        d.transcript[0].movable_to.is_empty(),
-        "Me is the mic's one speaker"
-    );
-    assert_eq!(
-        ids(&d.transcript[1].movable_to),
-        [(f.priya, "Priya Shah".to_owned())]
-    );
-    assert_eq!(
-        ids(&d.transcript[2].movable_to),
-        [(f.unnamed, "Speaker 2".to_owned())]
-    );
+    assert!(offers(&d, 0).is_empty(), "Me is the mic's one speaker");
+    assert_eq!(ids(&offers(&d, 1)), [(f.priya, "Priya Shah".to_owned())]);
+    assert_eq!(ids(&offers(&d, 2)), [(f.unnamed, "Speaker 2".to_owned())]);
     assert!(d.transcript.iter().all(|r| r.splittable));
     assert!(edit::edit_segment(&svc, f.meeting, f.segments[2], "yes that works").unwrap());
     let d = meeting_detail(&svc, f.meeting).unwrap();
@@ -2048,4 +2038,427 @@ fn detail_no_voice_sample_result_serialises_a_vector() {
         );
         assert!(!floats(&v), "{text}");
     }
+}
+
+/// What line `row` of `d` offers in its Move to speaker menu, read as the UI reads it: its
+/// track's list without the line's own speaker.
+fn offers(d: &MeetingDetail, row: usize) -> Vec<MovableSpeaker> {
+    let r = &d.transcript[row];
+    d.movable_by_track
+        .get(&r.track_id)
+        .map_or_else(Vec::new, |v| {
+            v.iter()
+                .filter(|s| Some(&s.id) != r.speaker_id.as_ref())
+                .cloned()
+                .collect()
+        })
+}
+
+/// A meeting of `fixtures/ui/line_edit_cases.json` as the store holds it: ids by case label.
+struct LineCase {
+    meeting: EntityId,
+    speakers: BTreeMap<String, EntityId>,
+    names: BTreeMap<String, String>,
+    lines: BTreeMap<String, EntityId>,
+    rng: ChaCha8Rng,
+}
+
+impl LineCase {
+    fn label_of(&self, id: &str) -> String {
+        self.speakers
+            .iter()
+            .find(|(_, v)| v.to_string() == id)
+            .map_or_else(|| format!("unlabelled {id}"), |(k, _)| k.clone())
+    }
+
+    /// The id of speaker or line `label`, or a fresh one no row has (an unknown label).
+    fn id(&mut self, label: &str, clock: &dyn Clock) -> EntityId {
+        self.speakers
+            .get(label)
+            .or_else(|| self.lines.get(label))
+            .copied()
+            .unwrap_or_else(|| EntityId::generate(clock, &mut self.rng))
+    }
+}
+
+fn case_role(role: &str) -> SpeakerRole {
+    match role {
+        "Me" => SpeakerRole::Me,
+        "Local" => SpeakerRole::Local,
+        "Remote" => SpeakerRole::Remote,
+        "Room" => SpeakerRole::Room,
+        other => panic!("unknown role {other}"),
+    }
+}
+
+/// Writes case `case` as the final pass (or, for a draft, the live pass) leaves a meeting.
+fn line_case(svc: &Services, case: &serde_json::Value, seed: u64) -> LineCase {
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let m = Meeting::new("Line edits", T0, 600, Template::General, &mut stamp);
+    store.put_meeting(m.clone()).unwrap();
+    let mic = Track::new(m.id, TrackId::Mic, None, ClockDomain::Replay, &mut stamp);
+    store.put_track(mic.clone()).unwrap();
+    let far = (!case["in_room"].as_bool().unwrap()).then(|| {
+        let t = Track::new(
+            m.id,
+            TrackId::Reference,
+            None,
+            ClockDomain::Replay,
+            &mut stamp,
+        );
+        store.put_track(t.clone()).unwrap();
+        t
+    });
+    let mut speakers = BTreeMap::new();
+    let mut names = BTreeMap::new();
+    for s in case["speakers"].as_array().unwrap() {
+        let (label, name) = (s["id"].as_str().unwrap(), s["name"].as_str().unwrap());
+        let role = case_role(s["role"].as_str().unwrap());
+        let person = s["person"].as_bool().unwrap().then(|| {
+            let p = Person::new(name, role == SpeakerRole::Me, &mut stamp);
+            store.put_person(p.clone()).unwrap();
+            p.id
+        });
+        let row = Speaker::new(m.id, role, name, person, &mut stamp);
+        store.put_speaker(row.clone()).unwrap();
+        speakers.insert(label.to_owned(), row.id);
+        names.insert(label.to_owned(), name.to_owned());
+    }
+    let pass = if case["draft"].as_bool().unwrap() {
+        TranscriptPass::Live
+    } else {
+        TranscriptPass::Final
+    };
+    let mut lines = BTreeMap::new();
+    for (i, l) in case["lines"].as_array().unwrap().iter().enumerate() {
+        let track = match l["track"].as_str().unwrap() {
+            "mic" => &mic,
+            "far" => far.as_ref().expect("a far-end line in the room"),
+            other => panic!("unknown track {other}"),
+        };
+        let start = 1_000 + 6_000 * i as u64;
+        let words: Vec<Word> = l["words"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(k, w)| {
+                let at = start + 400 * k as u64;
+                Word::new(w.as_str().unwrap(), at, at + 300, 0.9)
+            })
+            .collect();
+        let mut s = Segment::from_words(
+            EntityId::generate(stamp.clock, &mut *stamp.rng),
+            track.id,
+            words,
+            MeetingTime::from_millis(start),
+        );
+        l["text"].as_str().unwrap().clone_into(&mut s.text);
+        s.speaker_id = l["speaker"].as_str().map(|label| speakers[label]);
+        lines.insert(l["id"].as_str().unwrap().to_owned(), s.id);
+        store
+            .put_segment(SegmentRow::new(m.id, pass, s, stamp.hlc, stamp.clock))
+            .unwrap();
+    }
+    LineCase {
+        meeting: m.id,
+        speakers,
+        names,
+        lines,
+        rng: ChaCha8Rng::seed_from_u64(seed + 1),
+    }
+}
+
+/// Checks `expect`'s `offers`, `splittable` and `listed` against the meeting detail and the
+/// runtime's own rule functions over the same view.
+fn check_line_case(svc: &Services, c: &LineCase, expect: &serde_json::Value, at: &str) {
+    let d = meeting_detail(svc, c.meeting).unwrap();
+    let view = MeetingView::load_named(&svc.store(), c.meeting)
+        .unwrap()
+        .unwrap();
+    let row_of = |label: &str| {
+        let id = c.lines[label].to_string();
+        d.transcript
+            .iter()
+            .position(|r| r.segment_id == id)
+            .unwrap_or_else(|| panic!("{at}: no line {label}"))
+    };
+    if let Some(offered) = expect["offers"].as_object() {
+        for (line, want) in offered {
+            let want: Vec<String> = want
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect();
+            let shown = offers(&d, row_of(line));
+            let got: Vec<String> = shown.iter().map(|s| c.label_of(&s.id)).collect();
+            assert_eq!(got, want, "{at}: offers of {line}");
+            for s in &shown {
+                assert_eq!(
+                    s.name,
+                    c.names[&c.label_of(&s.id)],
+                    "{at}: name of {}",
+                    s.id
+                );
+            }
+            let segment = view
+                .segments
+                .iter()
+                .find(|s| s.id == c.lines[line])
+                .unwrap();
+            let rule: Vec<String> = if d.header.transcript == Some(TranscriptKind::Final) {
+                edit::movable_speakers(&view.segments, &view.speakers, &view.tracks, segment)
+                    .iter()
+                    .map(|id| c.label_of(&id.to_string()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            assert_eq!(rule, want, "{at}: movable_speakers of {line}");
+        }
+    }
+    if let Some(splits) = expect["splittable"].as_object() {
+        for (line, want) in splits {
+            let want = want.as_bool().unwrap();
+            assert_eq!(
+                d.transcript[row_of(line)].splittable,
+                want,
+                "{at}: splittable {line}"
+            );
+            let segment = view
+                .segments
+                .iter()
+                .find(|s| s.id == c.lines[line])
+                .unwrap();
+            let is_final = d.header.transcript == Some(TranscriptKind::Final);
+            assert_eq!(
+                is_final && edit::can_split_line(segment),
+                want,
+                "{at}: can_split_line {line}"
+            );
+        }
+    }
+    if let Some(listed) = expect["listed"].as_array() {
+        let want: Vec<&str> = listed.iter().map(|v| v.as_str().unwrap()).collect();
+        let got: Vec<String> = d.speakers.iter().map(|s| c.label_of(&s.id)).collect();
+        assert_eq!(got, want, "{at}: speakers listed");
+    }
+}
+
+/// `fixtures/ui/line_edit_cases.json`, which the UI's `ipc/lineEdits.test.ts` runs through the
+/// mock: every case through the shipped move, split and edit functions and the detail.
+#[test]
+fn detail_line_edits_match_the_shared_cases() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../fixtures/ui/line_edit_cases.json");
+    let table: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let cases = table["cases"].as_array().unwrap();
+    assert!(cases.len() >= 4);
+    for (n, case) in cases.iter().enumerate() {
+        let name = case["name"].as_str().unwrap();
+        let dir = TempDir::new("detail-line-cases");
+        let svc = services(&dir);
+        let mut c = line_case(&svc, case, 300 + 10 * n as u64);
+        check_line_case(&svc, &c, case, &format!("{name}, at the start"));
+        let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+        for (k, step) in case["steps"].as_array().unwrap().iter().enumerate() {
+            let at = format!("{name}, step {}", k + 1);
+            let line = c.id(step["line"].as_str().unwrap(), &*clock);
+            let before: BTreeSet<EntityId> = svc
+                .store()
+                .speakers(c.meeting)
+                .unwrap()
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            let outcome: Result<serde_json::Value, RuntimeError> = match step["op"]
+                .as_str()
+                .unwrap()
+            {
+                "move" => {
+                    let to = step["to"].as_str().unwrap();
+                    let target = if to == "new" {
+                        edit::LineSpeaker::New
+                    } else {
+                        edit::LineSpeaker::Existing(c.id(to, &*clock))
+                    };
+                    edit::move_line(&svc, c.meeting, line, target).map(serde_json::Value::Bool)
+                }
+                "split" => {
+                    let token = usize::try_from(step["token"].as_u64().unwrap()).unwrap();
+                    edit::split_line(&svc, c.meeting, line, token)
+                        .map(|id| serde_json::Value::String(id.to_string()))
+                }
+                "edit" => edit::edit_segment(&svc, c.meeting, line, step["text"].as_str().unwrap())
+                    .map(serde_json::Value::Bool),
+                other => panic!("{at}: unknown op {other}"),
+            };
+            match step["result"].as_str().unwrap() {
+                "error" => {
+                    let e: IpcError = outcome.expect_err(&at).into();
+                    assert_eq!(e.kind, step["error"].as_str().unwrap(), "{at}");
+                }
+                "moved" => assert_eq!(outcome.expect(&at), serde_json::Value::Bool(true), "{at}"),
+                "unchanged" => {
+                    assert_eq!(outcome.expect(&at), serde_json::Value::Bool(false), "{at}");
+                }
+                "new_speaker" => {
+                    assert_eq!(outcome.expect(&at), serde_json::Value::Bool(true), "{at}");
+                    let made: Vec<Speaker> = svc
+                        .store()
+                        .speakers(c.meeting)
+                        .unwrap()
+                        .into_iter()
+                        .filter(|s| !before.contains(&s.id))
+                        .collect();
+                    assert_eq!(made.len(), 1, "{at}: one new speaker row");
+                    let want = &step["new_speaker"];
+                    assert_eq!(made[0].display_name, want["name"].as_str().unwrap(), "{at}");
+                    assert_eq!(
+                        made[0].role,
+                        case_role(want["role"].as_str().unwrap()),
+                        "{at}"
+                    );
+                    assert_eq!(made[0].person_id, None, "{at}");
+                    let label = want["as"].as_str().unwrap().to_owned();
+                    c.names.insert(label.clone(), made[0].display_name.clone());
+                    c.speakers.insert(label, made[0].id);
+                }
+                "split" => {
+                    let second: EntityId = outcome.expect(&at).as_str().unwrap().parse().unwrap();
+                    let want = &step["split"];
+                    let rows = svc.store().segments(c.meeting).unwrap();
+                    let text = |id: EntityId| {
+                        rows.iter()
+                            .find(|r| r.segment.id == id)
+                            .unwrap()
+                            .segment
+                            .text
+                            .clone()
+                    };
+                    let texts: Vec<&str> = want["texts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap())
+                        .collect();
+                    assert_eq!([text(line), text(second)], [texts[0], texts[1]], "{at}");
+                    c.lines
+                        .insert(want["as"].as_str().unwrap().to_owned(), second);
+                }
+                other => panic!("{at}: unknown result {other}"),
+            }
+            check_line_case(&svc, &c, step, &at);
+        }
+    }
+}
+
+/// A long synthetic meeting for [`detail_timing_long_meeting_prints_its_cost`]: `lines` final
+/// lines alternating over a mic and a far-end track, six speakers (Me and one more voice on the
+/// mic, four on the far end), twelve words each.
+fn long_meeting(svc: &Services, lines: usize) -> EntityId {
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(90);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let mut m = Meeting::new("Long review", T0, 600, Template::General, &mut stamp);
+    m.duration_ms = Some(lines as u64 * 4_000);
+    let mic = Track::new(m.id, TrackId::Mic, None, ClockDomain::Replay, &mut stamp);
+    let them = Track::new(
+        m.id,
+        TrackId::Reference,
+        None,
+        ClockDomain::Replay,
+        &mut stamp,
+    );
+    store.put_meeting(m.clone()).unwrap();
+    store.put_track(mic.clone()).unwrap();
+    store.put_track(them.clone()).unwrap();
+    let mic_speakers = [
+        Speaker::new(m.id, SpeakerRole::Me, "Me", None, &mut stamp),
+        Speaker::new(m.id, SpeakerRole::Local, "Speaker 1", None, &mut stamp),
+    ];
+    let far_speakers: Vec<Speaker> = (2..6)
+        .map(|n| {
+            Speaker::new(
+                m.id,
+                SpeakerRole::Remote,
+                format!("Speaker {n}"),
+                None,
+                &mut stamp,
+            )
+        })
+        .collect();
+    for s in mic_speakers.iter().chain(&far_speakers) {
+        store.put_speaker(s.clone()).unwrap();
+    }
+    let text = "the gravel order goes out on friday and the hedge plan waits a week";
+    for i in 0..lines {
+        let start = i as u64 * 4_000;
+        let (track, speaker) = if i % 2 == 0 {
+            (&mic, &mic_speakers[(i / 2) % 2])
+        } else {
+            (&them, &far_speakers[(i / 2) % 4])
+        };
+        let mut s = Segment::from_words(
+            EntityId::generate(stamp.clock, &mut *stamp.rng),
+            track.id,
+            words(text, start, 250),
+            MeetingTime::from_millis(start),
+        );
+        s.speaker_id = Some(speaker.id);
+        store
+            .put_segment(SegmentRow::new(
+                m.id,
+                TranscriptPass::Final,
+                s,
+                stamp.hlc,
+                stamp.clock,
+            ))
+            .unwrap();
+    }
+    m.id
+}
+
+#[test]
+#[ignore = "timing, prints only: cargo test -p earshot-desktop --bin earshot detail_timing -- --ignored --nocapture"]
+fn detail_timing_long_meeting_prints_its_cost() {
+    // T12.90a: what one `meeting_detail` costs on a meeting of 3,000 final lines, and the size of
+    // its JSON. Informational: nothing is asserted beyond the line count.
+    let dir = TempDir::new("detail-timing");
+    let svc = services(&dir);
+    let m = long_meeting(&svc, 3_000);
+    let d = meeting_detail(&svc, m).unwrap();
+    assert_eq!(d.transcript.len(), 3_000);
+    let mut times = Vec::new();
+    for _ in 0..7 {
+        let t = std::time::Instant::now();
+        let d = meeting_detail(&svc, m).unwrap();
+        times.push(t.elapsed());
+        std::hint::black_box(d);
+    }
+    times.sort();
+    let json = serde_json::to_vec(&d).unwrap();
+    println!(
+        "detail_timing: 3000 lines, median {:?}, min {:?}, max {:?}, json {} bytes",
+        times[times.len() / 2],
+        times[0],
+        times[times.len() - 1],
+        json.len()
+    );
 }

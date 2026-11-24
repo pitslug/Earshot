@@ -133,16 +133,14 @@ pub struct TranscriptRow {
     pub unknown_speaker: bool,
     /// Where it was heard.
     pub track: RowTrack,
+    /// The track row it was heard on (hyphenated UUID): its key in
+    /// [`MeetingDetail::movable_by_track`].
+    pub track_id: String,
     /// The text.
     pub text: String,
     /// The user edited the line (T12.16; its text, speaker or a split, T12.90): it is kept
     /// by a re-transcription.
     pub edited: bool,
-    /// The speakers this line can move to (T12.90, `edit::movable_speakers`: those that belong
-    /// to its track, other than its own, a speaker left with no line included), in the meeting's
-    /// speaker order, with the names the transcript shows; empty in a draft. A new speaker is
-    /// offered for every final line.
-    pub movable_to: Vec<MovableSpeaker>,
     /// The line can be split before a word (T12.90, `edit::can_split_line`: its words still
     /// match its text); false in a draft.
     pub splittable: bool,
@@ -311,6 +309,13 @@ pub struct MeetingDetail {
     pub summary: Option<SummaryView>,
     /// The transcript in meeting order.
     pub transcript: Vec<TranscriptRow>,
+    /// The speakers each track's lines can move to (T12.90, `edit::movable_by_track`: those
+    /// that belong to the track, a speaker left with no line included), by track id, in the
+    /// meeting's speaker order, with the names the transcript shows; empty in a draft. A line's
+    /// menu offers its `TranscriptRow::track_id`'s list without the line's own speaker
+    /// (`edit::movable_speakers`), then a new speaker. One list per track, not per line, so a
+    /// long meeting's detail stays small (T12.90a).
+    pub movable_by_track: BTreeMap<String, Vec<MovableSpeaker>>,
     /// The speakers with a line in the transcript, in creation order.
     pub speakers: Vec<SpeakerCard>,
     /// The previous summary can be restored ("Switch to previous summary").
@@ -1018,6 +1023,23 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
     };
     let is_final = view.pass == Some(TranscriptPass::Final);
     let labels: BTreeMap<EntityId, String> = view.labels().into_iter().collect();
+    let movable_by_track: BTreeMap<String, Vec<MovableSpeaker>> = if is_final {
+        edit::movable_by_track(&view.segments, &view.speakers, &view.tracks)
+            .into_iter()
+            .map(|(track, ids)| {
+                let speakers = ids
+                    .into_iter()
+                    .map(|id| MovableSpeaker {
+                        id: id.to_string(),
+                        name: labels.get(&id).cloned().unwrap_or_default(),
+                    })
+                    .collect();
+                (track.to_string(), speakers)
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
     let transcript: Vec<TranscriptRow> = view
         .segments
         .iter()
@@ -1028,19 +1050,9 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             speaker: view.speaker_name(s),
             unknown_speaker: view.is_unknown_speaker(s),
             track: track_of(s),
+            track_id: s.track.to_string(),
             text: s.text.clone(),
             edited: view.edited.contains_key(&s.id),
-            movable_to: if is_final {
-                edit::movable_speakers(&view.segments, &view.speakers, &view.tracks, s)
-                    .into_iter()
-                    .map(|id| MovableSpeaker {
-                        id: id.to_string(),
-                        name: labels.get(&id).cloned().unwrap_or_default(),
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            },
             splittable: is_final && edit::can_split_line(s),
             suggestions: words.lines.get(&s.id).map_or_else(Vec::new, |l| {
                 l.suggestions
@@ -1115,6 +1127,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         ),
         summary,
         transcript,
+        movable_by_track,
         can_undo_summary,
         summary_stale,
         summary_stale_names,
