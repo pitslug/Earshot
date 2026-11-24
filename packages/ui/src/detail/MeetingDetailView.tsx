@@ -368,8 +368,7 @@ const useStyles = makeStyles({
   splitHeader: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    columnGap: tokens.spacingHorizontalM,
+    justifyContent: "flex-start",
   },
   splitWords: {
     display: "flex",
@@ -1968,6 +1967,7 @@ function SplitPoints({
 }) {
   const styles = useStyles();
   const words = tokensOf(text);
+  const captionId = useId();
   const first = useRef<HTMLButtonElement | null>(null);
   useEffect(() => first.current?.focus(), []);
   return (
@@ -1980,13 +1980,15 @@ function SplitPoints({
         }
       }}
     >
-      <div className={styles.splitHeader}>
-        <Caption1 className={styles.muted}>Choose the word the new line starts with.</Caption1>
-        <Button size="small" appearance="subtle" onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-      <span role="group" aria-label={`Split line ${index + 1}`} className={styles.splitWords}>
+      <Caption1 id={captionId} className={styles.muted}>
+        Choose the word the new line starts with.
+      </Caption1>
+      <span
+        role="group"
+        aria-label={`Split line ${index + 1}`}
+        aria-describedby={captionId}
+        className={styles.splitWords}
+      >
         {words.map((w, t) =>
           t === 0 ? (
             <span key={t}>{w}</span>
@@ -2005,6 +2007,11 @@ function SplitPoints({
           ),
         )}
       </span>
+      <div className={styles.splitHeader}>
+        <Button size="small" appearance="subtle" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }
