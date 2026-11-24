@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { ORDER_COPY, POST_STEP_MS } from "../ipc";
 import { ITEM, setup } from "../test/meetingDetail";
-import { jobNotice } from "./MeetingDetailView";
+import { STORED_TEXT, jobNotice } from "./MeetingDetailView";
 
 const menuButton = () => screen.getByRole("button", { name: /: choose who writes it$/ });
 
@@ -54,7 +54,7 @@ describe("Meeting detail, re-summarise by the order or one writer", () => {
 });
 
 describe("Re-summary job notices of the order", () => {
-  it("says what became of each step when a later step wrote it, and when none did", () => {
+  it("leaves the steps to the summary's run note when one was written, and says them when none was", () => {
     const note = ORDER_COPY.later_writer
       .replace("{writer}", ORDER_COPY.writers.local)
       .replace("{steps}", `${ORDER_COPY.writers.claude_code}: ${ORDER_COPY.words.not_signed_in}`);
@@ -68,8 +68,7 @@ describe("Re-summary job notices of the order", () => {
         note,
       },
     });
-    expect(stored.intent).toBe("warning");
-    expect(stored.text.startsWith(note)).toBe(true);
+    expect(stored).toMatchObject({ intent: "success", text: STORED_TEXT });
     const none = jobNotice({
       job: "Resummarise",
       seq: 1,

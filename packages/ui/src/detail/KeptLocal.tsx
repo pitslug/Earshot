@@ -45,7 +45,7 @@ export function KeptLocal({
   return (
     <>
       {keptLocal !== null && (
-        <MessageBar intent="info" layout="multiline">
+        <MessageBar intent="info">
           <MessageBarBody>
             <MessageBarTitle>Kept on this computer</MessageBarTitle>
             {KEPT_LOCAL_TEXT}

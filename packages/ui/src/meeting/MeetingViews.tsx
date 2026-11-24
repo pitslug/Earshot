@@ -434,7 +434,7 @@ function CallEndOffer({
   const styles = useStyles();
   return (
     <div className={styles.banners}>
-      <MessageBar intent="info" layout="multiline" role="status">
+      <MessageBar intent="info" role="status">
         <MessageBarBody>
           <MessageBarTitle>The call seems to have ended.</MessageBarTitle>
           Earshot will stop recording within 3 minutes unless you keep it going.
@@ -457,7 +457,7 @@ function TranscriptBanner({ meeting }: { meeting: LiveMeeting }) {
   if (banner === null) return null;
   return (
     <div className={styles.banners}>
-      <MessageBar intent="info" layout="multiline" role="status">
+      <MessageBar intent="info" role="status">
         <MessageBarBody>
           {banner.title !== null && <MessageBarTitle>{banner.title}</MessageBarTitle>}
           {banner.body}
@@ -837,7 +837,7 @@ export function MeetingStatus({
         </MessageBar>
       )}
       {s === null && (
-        <MessageBar intent="info" layout="multiline">
+        <MessageBar intent="info">
           <MessageBarBody>
             <MessageBarTitle>Summary in progress</MessageBarTitle>
             <span className={styles.progress}>
@@ -874,7 +874,7 @@ export function MeetingStatus({
         />
       )}
       {error && (
-        <MessageBar intent="error" layout="multiline" role="alert">
+        <MessageBar intent="error" role="alert">
           <MessageBarBody>{retryError}</MessageBarBody>
         </MessageBar>
       )}
@@ -925,7 +925,7 @@ function ResultNotice({
       return null;
     case "Skipped":
       return (
-        <MessageBar intent="info" layout="multiline" role="status">
+        <MessageBar intent="info" role="status">
           <MessageBarBody>
             <MessageBarTitle>No summary</MessageBarTitle>
             {s.reason} The transcript is saved.
@@ -935,7 +935,7 @@ function ResultNotice({
       );
     case "Failed":
       return (
-        <MessageBar intent="error" layout="multiline" role="status">
+        <MessageBar intent="error" role="status">
           <MessageBarBody>
             <MessageBarTitle>Summary failed</MessageBarTitle>
             {s.message}{" "}
@@ -953,7 +953,7 @@ function ResultNotice({
     // about what was kept beyond its own words (T9.23).
     case "RecordingFailed":
       return (
-        <MessageBar intent="error" layout="multiline" role="status">
+        <MessageBar intent="error" role="status">
           <MessageBarBody>
             <MessageBarTitle>Recording not finished</MessageBarTitle>
             {s.message}
@@ -963,7 +963,7 @@ function ResultNotice({
       );
     case "PostFailed":
       return (
-        <MessageBar intent="error" layout="multiline" role="status">
+        <MessageBar intent="error" role="status">
           <MessageBarBody>
             <MessageBarTitle>Transcript not finished</MessageBarTitle>
             {s.message}
@@ -979,7 +979,7 @@ function ResultNotice({
       return null;
     case "Cancelled":
       return (
-        <MessageBar intent="info" layout="multiline" role="status">
+        <MessageBar intent="info" role="status">
           <MessageBarBody>
             <MessageBarTitle>Summary cancelled</MessageBarTitle>
             The recording and transcript are saved. Re-summarise when you want a summary.
@@ -992,7 +992,7 @@ function ResultNotice({
       );
     case "PostCancelled":
       return (
-        <MessageBar intent="info" layout="multiline" role="status">
+        <MessageBar intent="info" role="status">
           <MessageBarBody>
             <MessageBarTitle>Transcript not finished</MessageBarTitle>
             The recording and any draft transcript are saved. Re-transcribe the meeting to get the

@@ -478,6 +478,9 @@ export function isTerminal(e: JobEvent | null): boolean {
 /** What a job's notice says while it stops (as the meeting's own Cancel finishing says). */
 export const JOB_STOPPING_TEXT = "Stopping. This can take a moment if a model is still working or loading.";
 
+/** What a re-summary's notice says once its summary is stored. */
+export const STORED_TEXT = "New summary ready.";
+
 /** The notice of a job. */
 export function jobNotice(view: JobView): Notice {
   const e = view.last;
@@ -516,16 +519,11 @@ export function jobNotice(view: JobView): Notice {
       return { key: "job", intent: "info", title: ORDER_COPY.resummarise.offloaded_title, text: e.message };
     case "Summary":
       switch (e.result.kind) {
-        // A later step of the order wrote it: what became of each step comes first (T12.63b).
+        // Short whatever the order did: what became of each step (`e.note`) is the Summary tab's
+        // run note (`MeetingDetail.summary_run`, the same `steps_text`), and the previous
+        // summary is its "Switch to previous summary" link.
         case "Stored":
-          return {
-            key: "job",
-            intent: e.note === null ? "success" : "warning",
-            text:
-              e.note === null
-                ? "New summary ready. The previous one is kept until the next re-summary."
-                : `${e.note} The previous summary is kept until the next re-summary.`,
-          };
+          return { key: "job", intent: "success", text: STORED_TEXT };
         case "Skipped":
           return {
             key: "job",
@@ -951,7 +949,7 @@ export function MeetingDetailView({
       {/* The one banner for a summary written on another computer (T12.81): on either tab, and
           gone once the summary arrives or the request settles, by sync or here. */}
       {detail?.waiting_for != null && (
-        <MessageBar intent="info" layout="multiline" role="status">
+        <MessageBar intent="info" role="status">
           <MessageBarBody>
             <MessageBarTitle>{WAITING_TITLE}</MessageBarTitle>
             {detail.waiting_for}
@@ -1492,7 +1490,7 @@ function SummaryTab({
         </MessageBar>
       )}
       {detail.summary_run !== null && detail.waiting_for === null && (
-        <MessageBar intent="info" layout="multiline" role="status">
+        <MessageBar intent="info" role="status">
           <MessageBarBody>{detail.summary_run}</MessageBarBody>
         </MessageBar>
       )}

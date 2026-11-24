@@ -230,12 +230,12 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
         </Button>
       </div>
       {props.locked && (
-        <MessageBar intent="info" layout="multiline">
+        <MessageBar intent="info">
           <MessageBarBody>{SPEAKERS_LOCKED_NOTE}</MessageBarBody>
         </MessageBar>
       )}
       {props.mergeOffer && (
-        <MessageBar intent="info" layout="multiline" aria-label="Merge into you">
+        <MessageBar intent="info" aria-label="Merge into you">
           <MessageBarBody>{mergeOfferText(props.mergeOffer)}</MessageBarBody>
           <MessageBarActions>
             <Button

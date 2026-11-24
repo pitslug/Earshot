@@ -94,6 +94,7 @@ import { openMenuFromKeyboard } from "./menuKeys";
 import { STOPPING_TEXT, deleteQuestion, stopsWork } from "./deleteQuestion";
 import { DataFolderScreen } from "./DataFolderScreen";
 import { NewerDataScreen } from "./NewerDataScreen";
+import { PAGE_MIN_WIDTH, SIDEBAR_MIN, SidebarSplitter, useSidebarWidth } from "./SidebarSplitter";
 
 const useStyles = makeStyles({
   root: {
@@ -104,9 +105,11 @@ const useStyles = makeStyles({
   pane: {
     display: "flex",
     flexDirection: "column",
-    width: "240px",
     flexShrink: 0,
-    borderRight: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    // The page keeps `PAGE_MIN_WIDTH` whatever width is stored (SidebarSplitter); in a window
+    // too narrow for both, the sidebar's minimum wins (CSS: min-width over max-width).
+    maxWidth: `calc(100vw - ${PAGE_MIN_WIDTH}px)`,
+    minWidth: `${SIDEBAR_MIN}px`,
     backgroundColor: tokens.colorNeutralBackground2,
   },
   paneTop: {
@@ -345,6 +348,7 @@ export function AppShell({
   // this the page stayed hidden from screen readers after a delete.
   useFocusFinders();
   const styles = useStyles();
+  const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const ipc = useIpc();
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -997,7 +1001,7 @@ export function AppShell({
     ipc.answerCallStart(start).catch(() => {});
   };
   const callStartBar = callStartAsked && (
-    <MessageBar intent="info" layout="multiline" role="status">
+    <MessageBar intent="info" role="status">
       <MessageBarBody>
         <MessageBarTitle>A call seems to have started.</MessageBarTitle>
         Do you want Earshot to record it?
@@ -1039,7 +1043,7 @@ export function AppShell({
     return (
       <div className={styles.wizardFrame}>
         {startError !== null && (
-          <MessageBar intent="error" layout="multiline">
+          <MessageBar intent="error">
             <MessageBarBody>
               <MessageBarTitle>The meeting could not start</MessageBarTitle>
               {startError}
@@ -1067,7 +1071,7 @@ export function AppShell({
   }
 
   const noModelBar = noModelNote && (
-    <MessageBar intent="warning" layout="multiline">
+    <MessageBar intent="warning">
       <MessageBarBody>{NO_MODEL_NOTE}</MessageBarBody>
       <MessageBarActions>
         <Button size="small" appearance="transparent" onClick={() => setNoModelNote(false)}>
@@ -1157,7 +1161,7 @@ export function AppShell({
   return (
     <div className={styles.root}>
       {quitDialog}
-      <nav className={styles.pane} aria-label="Meetings and settings">
+      <nav className={styles.pane} style={{ width: `${sidebarWidth}px` }} aria-label="Meetings and settings">
         <div className={styles.paneTop}>
           <Button
             ref={newMeetingButton}
@@ -1231,6 +1235,7 @@ export function AppShell({
           </Button>
         </div>
       </nav>
+      <SidebarSplitter width={sidebarWidth} onWidth={setSidebarWidth} />
       <main className={styles.detail}>
         {notice !== undefined && (
           <Badge appearance="tint" color="informative" className={styles.notice}>
@@ -1239,7 +1244,7 @@ export function AppShell({
         )}
         {noModelBar}
         {recovered.length > 0 && (
-          <MessageBar intent="info" layout="multiline">
+          <MessageBar intent="info">
             <MessageBarBody>
               <MessageBarTitle>Recording recovered</MessageBarTitle>
               {recoveredText(recovered[0].saved_ms)}
@@ -1278,7 +1283,7 @@ export function AppShell({
           </MessageBar>
         )}
         {folderNotice !== null && (
-          <MessageBar intent="warning" layout="multiline">
+          <MessageBar intent="warning">
             <MessageBarBody>
               <MessageBarTitle>{folderNotice.title}</MessageBarTitle>
               {folderNotice.text}
@@ -1291,7 +1296,7 @@ export function AppShell({
           </MessageBar>
         )}
         {deleteError !== null && (
-          <MessageBar intent="error" layout="multiline">
+          <MessageBar intent="error">
             <MessageBarBody>
               <MessageBarTitle>The meeting was not deleted</MessageBarTitle>
               {deleteError}
@@ -1304,7 +1309,7 @@ export function AppShell({
           </MessageBar>
         )}
         {behindIds.map((behindId) => (
-          <MessageBar key={behindId} intent="info" layout="multiline">
+          <MessageBar key={behindId} intent="info">
             <MessageBarBody>
               <MessageBarTitle>Your previous meeting is still finishing</MessageBarTitle>
               <span aria-live="polite">
