@@ -199,11 +199,18 @@ export function bannersNewestFirst(state: LiveMeeting): Banner[] {
   return [...state.banners].sort((a, b) => b.seq - a.seq);
 }
 
+/** The banner of what became of each summary writer (`summary_order::STEPS_BANNER_KEY`). */
+export const STEPS_BANNER_KEY = "summary-steps";
+
 /** The banners about the work after the recording, newest first. Those from during it are done
- * with: the recording view that showed them has gone. */
+ * with: the recording view that showed them has gone. `summary-steps` is left out: the meeting's
+ * page shows the same text with its summary (`MeetingDetail.summary_run`, `run_note` ->
+ * `steps_text`), and two copies one above the other read as two runs. */
 export function afterMeetingBanners(state: LiveMeeting): Banner[] {
   const ended = state.endedSeq;
-  return ended === null ? [] : bannersNewestFirst(state).filter((b) => b.seq > ended);
+  return ended === null
+    ? []
+    : bannersNewestFirst(state).filter((b) => b.seq > ended && b.key !== STEPS_BANNER_KEY);
 }
 
 /** "m:ss", or "h:mm:ss" from an hour. */

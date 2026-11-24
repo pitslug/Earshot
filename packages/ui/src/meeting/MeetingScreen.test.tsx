@@ -21,7 +21,7 @@ import { renderApp } from "../test/app";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
 import { MAX_TITLE, RecordingView, finishingExplanation } from "./MeetingViews";
-import { type LiveMeeting, reduce, startedMeeting } from "./liveMeeting";
+import { type LiveMeeting, STEPS_BANNER_KEY, afterMeetingBanners, reduce, startedMeeting } from "./liveMeeting";
 
 const START = new Date(2026, 10, 2, 10, 0).getTime();
 
@@ -799,6 +799,19 @@ describe("meeting screen", () => {
     expect(reduce(cleared, { type: "WarningCleared", key: "provisional-words" }, 4)).toBe(cleared);
     const again = reduce(cleared, warn("provisional-words", "Off."), 5);
     expect(again?.banners.map((b) => b.message)).toEqual(["A problem.", "Off."]);
+  });
+
+  it("leaves the writers' steps to the summary, which shows the same text", () => {
+    const started = startedMeeting("m", "Call", ["You", "Them"], 0);
+    const ended = reduce(started, { type: "Ended", meeting: "m", reason: "Stopped" }, 1);
+    const warn = (key: string, message: string): MeetingEvent => ({ type: "Warning", key, kind: "Backend", message });
+    const after = reduce(
+      reduce(ended, warn(STEPS_BANNER_KEY, "Codex wrote the summary. Desk: offline."), 2),
+      warn("summary-model", "Another banner."),
+      3,
+    );
+    expect(after?.banners.map((b) => b.key)).toEqual([STEPS_BANNER_KEY, "summary-model"]);
+    expect(after === null ? [] : afterMeetingBanners(after).map((b) => b.key)).toEqual(["summary-model"]);
   });
 
   it("shows one meter in room mode", async () => {

@@ -959,7 +959,7 @@ export function MeetingDetailView({
         </MessageBar>
       )}
       {jobBar !== null && (
-        <MessageBar intent={jobBar.intent} layout="multiline">
+        <MessageBar intent={jobBar.intent}>
           <MessageBarBody>
             {jobBar.title !== undefined && <MessageBarTitle>{jobBar.title}</MessageBarTitle>}
             {jobBar.text}
@@ -987,7 +987,7 @@ export function MeetingDetailView({
         </MessageBar>
       )}
       {notice !== null && (
-        <MessageBar intent={notice.intent} layout="multiline">
+        <MessageBar intent={notice.intent}>
           <MessageBarBody>
             {notice.title !== undefined && <MessageBarTitle>{notice.title}</MessageBarTitle>}
             {notice.text}
@@ -1478,7 +1478,7 @@ function SummaryTab({
   return (
     <>
       {detail.summary_stale && (
-        <MessageBar intent="warning" layout="multiline">
+        <MessageBar intent="warning">
           <MessageBarBody>
             {detail.summary_stale_names
               ? "This summary uses a speaker's earlier name. Re-summarise to use the current names."
