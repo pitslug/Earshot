@@ -626,5 +626,87 @@
    "stored": "",
    "error": null
   }
- ]
+ ],
+ "people": {
+  "about": "The saved people's names the Dictionary page lists and a summary may be given (T12.91, earshot_core::prompt::People::new over the saved names in the People page's order): each name on one line with white space joined, names that are empty, longer than 100 characters or hold a control or invisible formatting character left out, and a name that repeats an earlier one or a Dictionary entry in another case left out. Run through People::new (summary_vocabulary_tests.rs) and the mock's peopleOf (mockSummaries.test.ts). Every name is invented.",
+  "cases": [
+   {
+    "name": "kept as given",
+    "dictionary": [],
+    "names": [
+     "Bozzle Fenwright",
+     "Vantrel Oskarine"
+    ],
+    "people": [
+     "Bozzle Fenwright",
+     "Vantrel Oskarine"
+    ]
+   },
+   {
+    "name": "white space joined",
+    "dictionary": [],
+    "names": [
+     "  Vantrel \u00a0 Oskarine "
+    ],
+    "people": [
+     "Vantrel Oskarine"
+    ]
+   },
+   {
+    "name": "a repeat in another case left out",
+    "dictionary": [],
+    "names": [
+     "Idris Quell",
+     "IDRIS QUELL"
+    ],
+    "people": [
+     "Idris Quell"
+    ]
+   },
+   {
+    "name": "a Dictionary entry left out",
+    "dictionary": [
+     "idris quell"
+    ],
+    "names": [
+     "Idris Quell",
+     "Yarrow Penhallick"
+    ],
+    "people": [
+     "Yarrow Penhallick"
+    ]
+   },
+   {
+    "name": "control and invisible characters left out",
+    "dictionary": [],
+    "names": [
+     "Tab\tName",
+     "Zero\u200bWidth",
+     "Kam Pellory"
+    ],
+    "people": [
+     "Kam Pellory"
+    ]
+   },
+   {
+    "name": "too long left out",
+    "dictionary": [],
+    "names": [
+     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+    ],
+    "people": [
+     "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+    ]
+   },
+   {
+    "name": "empty left out",
+    "dictionary": [],
+    "names": [
+     "   "
+    ],
+    "people": []
+   }
+  ]
+ }
 }

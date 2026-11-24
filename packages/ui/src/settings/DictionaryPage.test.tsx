@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
-import { ADD_LABEL, DICTIONARY_INTRO, DictionaryPage } from "./DictionaryPage";
+import { ADD_LABEL, DICTIONARY_INTRO, DictionaryPage, SAVED_PEOPLE_TEXT } from "./DictionaryPage";
 import { ALREADY_THERE } from "./useDictionary";
 import table from "../../../../fixtures/ui/summary_settings_cases.json";
 
@@ -31,6 +31,32 @@ function shown(): string[] {
 }
 
 describe("Dictionary", () => {
+  it("lists the saved people's names read only, with where they come from (T12.91)", async () => {
+    setup({
+      persons: [
+        { id: "p1", name: "Vantrel Oskarine", is_me: false, has_voiceprint: false, meetings: 2 },
+        { id: "p2", name: "Me", is_me: true, has_voiceprint: true, meetings: 3 },
+        { id: "p3", name: "Bozzle Fenwright", is_me: false, has_voiceprint: false, meetings: 1 },
+      ],
+      summaries: { vocabulary: ["bozzle fenwright"] },
+    });
+    const list = await screen.findByRole("list", { name: "Saved people" });
+    // The default "Me" is no one's name; a name the Dictionary holds is left to it.
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Vantrel Oskarine"]);
+    expect(within(list).queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Saved people" })).toBeInTheDocument();
+    expect(screen.getByText(SAVED_PEOPLE_TEXT)).toBeInTheDocument();
+    expect(SAVED_PEOPLE_TEXT).toMatch(/People page/);
+    expect(SAVED_PEOPLE_TEXT).toMatch(/only the names that match what was said/);
+    expect(SAVED_PEOPLE_TEXT).not.toMatch(/\u2014/);
+  });
+
+  it("says when no one is saved", async () => {
+    setup({ persons: [] });
+    expect(await screen.findByText("No saved people yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Saved people" })).not.toBeInTheDocument();
+  });
+
   it("says how many words are not in use when the joined list passes a limit (T11.3e)", async () => {
     setup({ summaries: { vocabulary: ["Quillmarsh", "QXR-7"], notInUse: 3 } });
     const bar = await screen.findByLabelText("Words not in use");
@@ -171,6 +197,7 @@ describe("Dictionary", () => {
         max_chars: 1000,
         not_in_use: 0,
         not_in_use_note: null,
+        people: [],
       }),
     }));
     expect(await screen.findByText("The stored dictionary is not used")).toBeInTheDocument();

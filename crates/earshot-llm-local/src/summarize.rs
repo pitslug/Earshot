@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::{
     ChatMessage, ContextBudget, MapChunk, MergeLevel, Prompt, PromptError, PromptPlan,
-    REPAIR_MAX_TOKENS, Role, SummaryInput, grown_reply_tokens, plan, plan_chunks,
-    plan_chunks_two_call, reduce_groups, reduce_groups_two_call, reduce_prompt,
+    REPAIR_MAX_TOKENS, Role, SummaryInput, carried_names, grown_reply_tokens, plan, plan_chunks,
+    plan_chunks_two_call, reduce_groups_carrying, reduce_groups_two_call, reduce_prompt_carrying,
     reduce_prompt_two_call, repair_message, segment_numbers, select_prompt,
     selection_repair_message,
 };
@@ -453,11 +453,15 @@ fn map_reduce(
     options: &SummaryOptions,
     report: &mut SummaryReport,
 ) -> Result<SummaryV1, SummaryFailure> {
+    // The saved people's names each part's request carries (T12.91), a part summarised
+    // during the meeting included: its window's request, as this run would send it.
+    let carried: Vec<Vec<String>> = chunks.iter().map(|c| c.prompt.people.clone()).collect();
     let partials = map_parts(model, chunks, done, numbers, options, report)?;
     reduce_levels(
         model,
         input,
         partials,
+        carried,
         budget,
         numbers,
         options,
@@ -517,6 +521,7 @@ fn reduce_levels(
     model: &mut dyn Generate,
     input: &SummaryInput,
     mut partials: Vec<SummaryV1>,
+    mut carried: Vec<Vec<String>>,
     budget: ContextBudget,
     numbers: &SegmentNumbers,
     options: &SummaryOptions,
@@ -524,9 +529,16 @@ fn reduce_levels(
     merge: Merge,
     on_reduce: &mut dyn FnMut(&SummaryV1),
 ) -> Result<SummaryV1, SummaryFailure> {
+    assert_eq!(carried.len(), partials.len(), "one name list per partial");
     loop {
         let groups = match merge {
-            Merge::Plain => reduce_groups(input, &partials, budget),
+            Merge::Plain => reduce_groups_carrying(
+                input,
+                input.rules,
+                &partials,
+                &carried_names(&carried),
+                budget,
+            ),
             Merge::TwoCall => reduce_groups_two_call(input, &partials, budget),
         }
         .map_err(SummaryFailure::Plan)?;
@@ -537,15 +549,25 @@ fn reduce_levels(
             MergeLevel::Inner
         };
         let mut next = Vec::with_capacity(groups.len());
+        let mut next_carried = Vec::with_capacity(groups.len());
         for g in &groups {
             if g.len() == 1 && groups.len() > 1 {
                 next.push(partials[g.start].clone());
+                next_carried.push(carried[g.start].clone());
                 continue;
             }
             let p = match merge {
-                Merge::Plain => reduce_prompt(input, &partials[g.clone()], budget, level),
+                Merge::Plain => reduce_prompt_carrying(
+                    input,
+                    input.rules,
+                    &partials[g.clone()],
+                    &carried_names(&carried[g.clone()]),
+                    budget,
+                    level,
+                ),
                 Merge::TwoCall => reduce_prompt_two_call(input, &partials[g.clone()], budget),
             };
+            next_carried.push(p.people.clone());
             report.reduce_steps += 1;
             let merged = match step(model, "reduce", Whole, p, numbers, options, report) {
                 // A rougher summary rather than none (T8.4d); it says so itself.
@@ -562,6 +584,7 @@ fn reduce_levels(
             return Ok(next.pop().expect("one group gives one summary"));
         }
         partials = next;
+        carried = next_carried;
     }
 }
 
@@ -677,10 +700,13 @@ fn two_call(
     }
     let cap = options.limits.max_items as usize;
     let cap_hit = &mut actions.cap_hit;
+    // The two-call merge (evaluation only) carries no names from its parts.
+    let carried = vec![Vec::new(); partials.len()];
     reduce_levels(
         model,
         input,
         partials,
+        carried,
         budget,
         &numbers,
         options,
@@ -1056,6 +1082,7 @@ mod tests {
             style: Default::default(),
             style_preset: Default::default(),
             vocabulary: Default::default(),
+            people: Default::default(),
             user_name: None,
         }
     }
@@ -1368,6 +1395,49 @@ mod tests {
         run.result.unwrap();
         assert_eq!(run.report.steps[0].step, "map");
         assert_eq!(citable(&first.calls[0].2), (1..=10).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn summarize_chunks_merge_keeps_the_saved_names_its_parts_carried() {
+        // T12.91: a saved name said only in the second part reaches that map request and the
+        // merge, though no reply names them; a part summarised during the meeting carries the
+        // names its window's request would.
+        let mut inp = SummaryInput {
+            people: earshot_core::prompt::People::new(
+                ["Vantrel Oskarine", "Idris Quell"],
+                &Default::default(),
+            ),
+            ..input(30)
+        };
+        inp.segments[12].text = "Vantrel Oskarine will check item 12".into();
+        let line = "| Vantrel Oskarine";
+        let ranges = [0..10, 10..25, 25..30];
+        let system = |c: &(Vec<ChatMessage>, String, String, usize)| c.0[0].content.clone();
+        let mut m = Fake::new(16_384, 1.0);
+        summarize_chunks(&mut m, &inp, &options(), &ranges)
+            .result
+            .unwrap();
+        assert_eq!(m.calls.len(), 4);
+        assert!(!system(&m.calls[0]).contains(line));
+        assert!(system(&m.calls[1]).contains(line));
+        assert!(!system(&m.calls[2]).contains(line));
+        assert!(system(&m.calls[3]).contains(line), "the merge");
+        assert!(m.calls.iter().all(|c| !system(c).contains("Idris")));
+        let mut reused = Fake::new(16_384, 1.0);
+        let ready = SummaryV1 {
+            title: "ready".into(),
+            decisions: vec![earshot_core::summary::Decision {
+                text: "made during the meeting".into(),
+                source_segment_ids: vec![id(12)],
+            }],
+            ..SummaryV1::default()
+        };
+        let done = vec![None, Some(ready), None];
+        let run = summarize_chunks_with(&mut reused, &inp, &options(), &ranges, done);
+        run.result.unwrap();
+        assert_eq!(run.report.reused_parts, 1);
+        assert_eq!(reused.calls.len(), 3);
+        assert!(system(&reused.calls[2]).contains(line), "the merge");
     }
 
     #[test]

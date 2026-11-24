@@ -24,6 +24,13 @@
 //! - [`Vocabulary`]: the user's own words (T12.15a), spelling help for names and acronyms,
 //!   one block in the system message of every request (single, map, every merge), after
 //!   any map or merge instruction and before the style.
+//! - [`People`]: every saved person's name (T12.91); each request carries only the names its
+//!   own text calls for, in one block right after the Dictionary's
+//!   ([`MAX_PEOPLE_PER_REQUEST`]; a merge keeps the names its parts carried,
+//!   [`reduce_prompt_carrying`]).
+//! - [`People`]: every saved person's name (T12.91); each request carries only the names its
+//!   own text calls for, in one block right after the Dictionary's ([`MAX_PEOPLE_PER_REQUEST`];
+//!   a merge keeps the names its parts carried, [`reduce_prompt_carrying`]).
 //! - [`repair_message`]: the follow-up that feeds validator errors back to the model.
 //! - [`estimate_tokens`]: a pessimistic token estimate without a tokenizer.
 //!
@@ -41,6 +48,7 @@
 mod builder;
 mod chunks;
 mod format_chars;
+mod people;
 mod select;
 mod style;
 mod template;
@@ -51,12 +59,14 @@ pub use builder::{
     ChatMessage, ContextBudget, MapChunk, MeetingInfo, MergeLevel, Prompt, PromptError, PromptPlan,
     PromptSegment, REPAIR_MAX_TOKENS, REPLY_MIN_TOKENS, REPLY_PER_PARTIAL_TOKEN,
     REPLY_PER_TRANSCRIPT_TOKEN, ReplyBasis, Role, SummaryInput, TwoCallChunk, UserNote,
-    estimate_messages, grown_reply_tokens, plan, plan_chunks, plan_chunks_two_call,
-    plan_chunks_with_rules, plan_with_rules, reduce_groups, reduce_groups_two_call,
-    reduce_groups_with_rules, reduce_prompt, reduce_prompt_two_call, reduce_prompt_with_rules,
-    repair_message, reply_tokens, segment_numbers,
+    carried_names, estimate_messages, grown_reply_tokens, plan, plan_chunks, plan_chunks_two_call,
+    plan_chunks_with_rules, plan_with_rules, reduce_groups, reduce_groups_carrying,
+    reduce_groups_two_call, reduce_groups_with_rules, reduce_prompt, reduce_prompt_carrying,
+    reduce_prompt_two_call, reduce_prompt_with_rules, repair_message, reply_tokens,
+    segment_numbers,
 };
 pub use chunks::{TimeChunkError, time_chunks};
+pub use people::{MAX_PEOPLE_PER_REQUEST, MAX_PERSON_NAME_CHARS, PEOPLE_LINE_PREFIX, People};
 pub use select::{
     SELECT_REPLY_BASE_TOKENS, SELECT_REPLY_PER_ITEM_TOKENS, select_prompt, selection_repair_message,
 };

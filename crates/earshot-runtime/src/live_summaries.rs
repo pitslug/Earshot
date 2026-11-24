@@ -19,7 +19,7 @@
 //! overlap its live segments; action owners "Me"/"Them" renamed to the final speaker when
 //! there is one) and reuses it for the window it was made for ([`reusable`]). A partial that
 //! cannot be re-cited, or a record of another model, window length, Dictionary word list
-//! (T12.20) or version, is not used:
+//! (T12.20), saved people's names list (T12.91) or version, is not used:
 //! those windows are mapped again from the final transcript, so the result is never worse
 //! than the ordinary run, only slower. T8.3ja measured the reused partials against the
 //! ordinary run on AMI (`docs/live-summaries.md`).
@@ -162,12 +162,14 @@ impl fmt::Debug for LiveSummaries {
 }
 
 /// The format of the stored record; a record of another version is not reused. Version 2
-/// (T12.20) added [`LiveSummaryRecord::vocabulary`].
-pub const LIVE_SUMMARY_RECORD_VERSION: u32 = 2;
+/// (T12.20) added [`LiveSummaryRecord::vocabulary`], version 3 (T12.91)
+/// [`LiveSummaryRecord::people`].
+pub const LIVE_SUMMARY_RECORD_VERSION: u32 = 3;
 
 /// The versions [`decode`] reads: a version-1 record reads with no word list, which
-/// [`reusable`] refuses.
-const READABLE_VERSIONS: [u32; 2] = [1, LIVE_SUMMARY_RECORD_VERSION];
+/// [`reusable`] refuses; versions 1 and 2 read with no saved people's names, which is how
+/// their windows were mapped.
+const READABLE_VERSIONS: [u32; 3] = [1, 2, LIVE_SUMMARY_RECORD_VERSION];
 
 /// One window's partial summary, citing live segments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -193,6 +195,11 @@ pub struct LiveSummaryRecord {
     /// `None` when not known (a version-1 record), which is never reused.
     #[serde(default)]
     pub vocabulary: Option<Vec<String>>,
+    /// Every saved person's name the windows could carry (T12.91, `SummaryInput::people`;
+    /// each window carried only the names its own lines called for). Empty before version 3,
+    /// whose windows carried none.
+    #[serde(default)]
+    pub people: Vec<String>,
 }
 
 /// A stored record as read back: usable, or why not.
@@ -235,6 +242,10 @@ pub fn decode(bytes: &[u8]) -> StoredLiveSummaries {
             // Version 1 never recorded the words, whatever its JSON holds.
             if version == 1 {
                 record.vocabulary = None;
+            }
+            // Before version 3 no window carried a saved name.
+            if version < 3 {
+                record.people = Vec::new();
             }
             StoredLiveSummaries::Record(Box::new(record))
         }
@@ -363,6 +374,12 @@ pub fn reusable(
             reuse.not_used = Some("made before Earshot recorded the Dictionary words".into());
             return (done, reuse);
         }
+    }
+    // The same for the saved people's names (T12.91): a window may have carried a name this
+    // summary's windows would not, or missed one they would.
+    if record.people.as_slice() != input.people.names() {
+        reuse.not_used = Some("made with other saved people than this summary uses".into());
+        return (done, reuse);
     }
     for p in &record.partials {
         let Ok(r) = recite(&p.summary, live, fin) else {

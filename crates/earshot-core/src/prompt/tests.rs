@@ -117,6 +117,7 @@ fn input(template: Template) -> SummaryInput {
         style: SummaryStyle::default(),
         style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
+        people: Default::default(),
         user_name: None,
     }
 }
@@ -328,6 +329,7 @@ fn long_input(n: usize) -> SummaryInput {
         style: SummaryStyle::default(),
         style_preset: Default::default(),
         vocabulary: Vocabulary::default(),
+        people: Default::default(),
         user_name: None,
     }
 }
@@ -1208,6 +1210,9 @@ mod style_tests;
 
 // T12.15a: the user's own words.
 mod vocabulary_tests;
+
+// T12.91: saved people's names.
+mod people_tests;
 
 fn named(user_name: Option<&str>) -> SummaryInput {
     SummaryInput {

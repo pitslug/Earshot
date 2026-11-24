@@ -124,7 +124,7 @@ describe("Settings", () => {
           "When speakers are found",
         ],
         Summaries: ["Who writes the summary", "During the meeting", "Summary style"],
-        Dictionary: ["Your words"],
+        Dictionary: ["Your words", "Saved people"],
         People: ["Your name", "Your voice", "People"],
         "Notes and storage": ["Obsidian", "Recordings", "Crash logs"],
       },

@@ -14,11 +14,13 @@ import {
   type ClaudeCodeStatusView,
   type CodexStatusView,
   IpcFailure,
+  type PersonItem,
   type SummarySettingsValue,
   type SummarySettingsView,
 } from "./ipc";
 import { isLocalHost } from "./localHost";
 import type { SampleMachine } from "./mockModels";
+import { peopleOf } from "./mockWords";
 import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 import type { SummaryVocabularyAdded, SummaryVocabularyView } from "./summaryVocabulary";
 
@@ -320,6 +322,7 @@ function view(s: SummarySettingsValue): SummarySettingsView {
 export function createSummariesMock(
   data: SummariesMockData = {},
   machine: SampleMachine = "surface",
+  persons: () => PersonItem[] = () => [],
 ): SummariesMock {
   let settings: SummarySettingsValue = {
     writer: "OnThisComputer",
@@ -353,6 +356,7 @@ export function createSummariesMock(
     max_chars: MAX_VOCABULARY_CHARS,
     not_in_use: notInUse,
     not_in_use_note: notInUseNote(notInUse),
+    people: peopleOf(vocabulary, persons()),
   });
   const store = () => {
     if (data.keyStoreError !== undefined) {

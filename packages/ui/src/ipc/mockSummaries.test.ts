@@ -124,6 +124,22 @@ describe("the Summaries mock against the app's case table", () => {
     expect(await outcome(() => mock.setSummaryTemplate("terse"))).toEqual({ error: table.templates.unknown_error });
   });
 
+  it("lists the saved people's names as the app does (T12.91)", async () => {
+    expect(table.people.cases.length).toBeGreaterThanOrEqual(7);
+    for (const c of table.people.cases) {
+      const persons = c.names.map((name, i) => ({
+        id: `p${String(i).padStart(3, "0")}`,
+        name,
+        has_voiceprint: false,
+        is_me: false,
+        meetings: 1,
+      }));
+      // Names in the table are already in the People page's order.
+      const mock = createSummariesMock({ vocabulary: c.dictionary }, "surface", () => persons);
+      expect((await mock.summaryVocabulary()).people, c.name).toEqual(c.people);
+    }
+  });
+
   it("says what the app says, with its limits", async () => {
     // The fixed messages and limits are read from the table itself; what the mock builds
     // from them is checked here.

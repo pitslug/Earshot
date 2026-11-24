@@ -162,3 +162,24 @@ fn page_names_the_voice_sample_copy_names_the_people_page_that_removes_a_person(
     let people = include_str!("../../../../packages/ui/src/settings/PeoplePage.tsx");
     assert!(people.contains("Remove {removing?.name}?"));
 }
+
+/// The Dictionary page says the saved people's names come from "the People page" (T12.91):
+/// that page exists in Settings.
+#[test]
+fn page_names_the_dictionary_page_names_the_people_page_its_names_come_from() {
+    let page = include_str!("../../../../packages/ui/src/settings/DictionaryPage.tsx");
+    let text = page
+        .split_once("export const SAVED_PEOPLE_TEXT =")
+        .and_then(|(_, rest)| rest.split_once(';'))
+        .unwrap()
+        .0;
+    assert!(text.contains("saved on the People page"), "{text}");
+    assert!(stale_page_names(text).is_empty(), "{text}");
+    let settings = include_str!("../../../../packages/ui/src/settings/SettingsView.tsx");
+    let sections = settings
+        .split_once("export const SETTINGS_SECTIONS = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .unwrap()
+        .0;
+    assert!(sections.contains("\"People\""), "{sections}");
+}

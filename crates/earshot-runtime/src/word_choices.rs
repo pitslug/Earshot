@@ -8,9 +8,13 @@
 //! (the matcher reads a word listed twice as two candidates, so it would never be suggested).
 //! The user's own person is listed only once they gave it a name: the default "Me" is not a
 //! word anyone says, and a set name is said in meetings like anyone else's. People are listed
-//! by name (ASCII case ignored), as the Speakers panel lists them. The list stays on this
-//! computer: no summary input reads it (people's names reach a summary only as the speakers
-//! of that meeting), and nothing here logs a word.
+//! by name (ASCII case ignored), as the Speakers panel lists them ([`named_persons`]).
+//! Nothing here logs a word.
+//!
+//! The same persons' whole names are the saved people's names a summary may be given
+//! (T12.91, [`summary_people`]): every request carries only the names its own text calls for
+//! (`earshot_core::vocabulary::names`), so they go, like the Dictionary's words, to whatever
+//! writes the summary.
 //!
 //! The matcher is `earshot_core::vocabulary::suggest` ([`Suggester`]), unchanged.
 //!
@@ -26,10 +30,12 @@
 //! (`drop_stale_tx`), so a replaced line's words do not outlive it. The edits themselves are `crate::edit::use_word`, `put_back_word` and
 //! `keep_word`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use earshot_core::identity::EntityId;
 use earshot_core::model::{MeetingRepo, TranscriptPass};
+use earshot_core::prompt::{People, Vocabulary};
+use earshot_core::vocabulary::names::listed_words;
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
 use earshot_core::voiceprint::{DEFAULT_ME_NAME, Person, VoiceprintRepo};
 use earshot_store::Store;
@@ -156,9 +162,10 @@ pub(crate) fn drop_stale_tx(
     Ok(())
 }
 
-/// The list from the Dictionary's entries and the saved persons (module doc).
+/// The saved persons whose names count (module doc): live persons (not removed or merged
+/// away), the user's own only once they gave it a name, by name (ASCII case ignored) then id.
 #[must_use]
-pub fn list_of<S: AsRef<str>>(dictionary: &[S], persons: &[Person]) -> Vec<String> {
+pub fn named_persons(persons: &[Person]) -> Vec<&Person> {
     let mut people: Vec<&Person> = persons
         .iter()
         .filter(|p| p.is_live() && !(p.is_me && p.display_name == DEFAULT_ME_NAME))
@@ -169,18 +176,41 @@ pub fn list_of<S: AsRef<str>>(dictionary: &[S], persons: &[Person]) -> Vec<Strin
             .cmp(&b.display_name.to_ascii_lowercase())
             .then(a.id.cmp(&b.id))
     });
-    let mut seen = HashSet::new();
-    dictionary
+    people
+}
+
+/// The list from the Dictionary's entries and the saved persons (module doc): the core's
+/// word list (`earshot_core::vocabulary::names::listed_words`) over [`named_persons`].
+#[must_use]
+pub fn list_of<S: AsRef<str>>(dictionary: &[S], persons: &[Person]) -> Vec<String> {
+    let names: Vec<&str> = named_persons(persons)
         .iter()
-        .flat_map(|e| e.as_ref().split_whitespace())
-        .chain(
-            people
-                .iter()
-                .flat_map(|p| p.display_name.split_whitespace()),
-        )
-        .filter(|w| seen.insert(w.to_lowercase()))
-        .map(str::to_owned)
-        .collect()
+        .map(|p| p.display_name.as_str())
+        .collect();
+    listed_words(dictionary, &names)
+}
+
+/// The saved people's names a summary may be given (T12.91): the whole names of
+/// [`named_persons`], in that order, cleaned by [`People::new`] (a name that repeats a
+/// Dictionary entry in another case is left out: the Dictionary carries it).
+#[must_use]
+pub fn people_of(dictionary: &Vocabulary, persons: &[Person]) -> People {
+    People::new(
+        named_persons(persons)
+            .iter()
+            .map(|p| p.display_name.as_str()),
+        dictionary,
+    )
+}
+
+/// [`people_of`] as stored now, from a store the caller has locked, beside `dictionary` (the
+/// Dictionary words the summary uses).
+///
+/// # Errors
+/// Store errors.
+pub fn summary_people(store: &Store, dictionary: &Vocabulary) -> Result<People, RuntimeError> {
+    let persons = store.persons().map_err(RuntimeError::Voiceprint)?;
+    Ok(people_of(dictionary, &persons))
 }
 
 /// The list as stored now (module doc); a Dictionary value this version refuses counts as no

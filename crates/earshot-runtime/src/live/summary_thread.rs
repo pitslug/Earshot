@@ -62,6 +62,8 @@ struct Published {
     stopped: Option<String>,
     /// The Dictionary words of the published partials' inputs (the session reads them once).
     vocabulary: Option<Vec<String>>,
+    /// The saved people's names of the published partials' inputs (T12.91; read once too).
+    people: Option<Vec<String>>,
 }
 
 /// The session's summary thread (module docs).
@@ -211,6 +213,7 @@ impl SummaryThread {
             partials: std::mem::take(&mut p.partials),
             stopped: p.stopped.take(),
             vocabulary: p.vocabulary.take(),
+            people: p.people.take().unwrap_or_default(),
         });
         Finished {
             record,
@@ -271,6 +274,8 @@ fn run(
                 });
                 p.vocabulary
                     .get_or_insert_with(|| job.input.vocabulary.words().to_vec());
+                p.people
+                    .get_or_insert_with(|| job.input.people.names().to_vec());
                 None
             }
             Err(e) => Some(e),

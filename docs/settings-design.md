@@ -74,7 +74,7 @@ In this order:
 | System | Hardware, recommendation, speech helpers, where it runs, the model check, CUDA, benchmark | Models, Benchmark |
 | Transcription | Languages first, transcription models, show words while talking, when speakers are found | Models, General, Speakers |
 | Summaries | Writer; under "On this computer", the model; during the meeting; style | Summaries, Models |
-| Dictionary | Your words: names, acronyms, company and site names | New (T12.15a) |
+| Dictionary | Your words: names, acronyms, company and site names; Saved people: the names of the people saved on the People page, read only (T12.91) | New (T12.15a) |
 | People | Your name, your voice, people | Speakers |
 | Notes and storage | Obsidian, recordings retention, crash logs | Obsidian, Storage, General |
 

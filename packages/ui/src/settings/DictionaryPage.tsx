@@ -3,7 +3,8 @@
 // request so the summary spells them right (`earshot_runtime::vocabulary`). An Add field above
 // the words in alphabetical order (the owner, 2026-11-11: a long list never pushes Add off the
 // page), each word with its own Delete; both apply at once (docs/ui-design.md
-// "Settings"). Transcripts do not use the words yet (T12.15b).
+// "Settings"). Below the words, the saved people's names (T12.91), read only: they come from
+// the People page, and each summary request is given only the names that match what was said.
 
 import {
   Body1,
@@ -76,6 +77,10 @@ export const DICTIONARY_INTRO =
 /** The Add field's label. */
 export const ADD_LABEL = "Add a word";
 
+/** What the saved people's names are, above them (T12.91). */
+export const SAVED_PEOPLE_TEXT =
+  "Names of the people you saved on the People page. Change them there. A summary is given only the names that match what was said.";
+
 /** The words as the page lists them: alphabetical, ignoring case and accents (the stored order,
  * which every summary prompt uses, is unchanged). */
 export function sortedWords(words: readonly string[]): string[] {
@@ -88,6 +93,7 @@ export function DictionaryPage() {
   const page = usePageStyles();
   const state = useDictionary();
   const headingId = useId();
+  const peopleId = useId();
   const { load } = state;
 
   return (
@@ -171,6 +177,25 @@ export function DictionaryPage() {
           </>
         )}
       </section>
+      {load.status === "loaded" && (
+        <section className={styles.section} aria-labelledby={peopleId}>
+          <Subtitle2 as="h2" id={peopleId} className={styles.heading}>
+            Saved people
+          </Subtitle2>
+          <Body1 className={styles.text}>{SAVED_PEOPLE_TEXT}</Body1>
+          {load.view.people.length === 0 ? (
+            <Caption1 className={styles.muted}>No saved people yet.</Caption1>
+          ) : (
+            <ul className={styles.list} aria-label="Saved people">
+              {sortedWords(load.view.people).map((name) => (
+                <li key={name} className={styles.word}>
+                  <Body1>{name}</Body1>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
     </div>
   );
 }

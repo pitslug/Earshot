@@ -130,6 +130,7 @@ pub fn two_track(input: &SummaryInput, ends_ms: &[u64], me: &str) -> TwoTrack {
         style: input.style.clone(),
         style_preset: input.style_preset,
         vocabulary: input.vocabulary.clone(),
+        people: Default::default(),
         user_name: None,
     };
     TwoTrack {
@@ -277,6 +278,7 @@ mod tests {
             style: Default::default(),
             style_preset: Default::default(),
             vocabulary: Default::default(),
+            people: Default::default(),
             user_name: None,
         }
     }

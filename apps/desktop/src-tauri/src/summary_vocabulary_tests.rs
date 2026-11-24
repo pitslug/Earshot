@@ -32,6 +32,7 @@ fn summary_vocabulary_view_starts_empty_and_saves_checked_words() {
             max_chars: 1000,
             not_in_use: 0,
             not_in_use_note: None,
+            people: vec![],
         }
     );
     let saved = set_words(&svc, &owned(&[" Quillmarsh ", "", "QXR-7", "qxr-7"])).unwrap();
@@ -70,7 +71,13 @@ fn summary_vocabulary_refusals_are_plain_sentences_and_store_nothing() {
 
 #[test]
 fn summary_vocabulary_the_view_serialises_for_the_ui() {
-    let json = serde_json::to_value(view(&owned(&["QXR-7"]), vec![], 0)).unwrap();
+    let json = serde_json::to_value(view(
+        &owned(&["QXR-7"]),
+        vec![],
+        0,
+        owned(&["Vantrel Oskarine"]),
+    ))
+    .unwrap();
     assert_eq!(
         json,
         serde_json::json!({
@@ -81,8 +88,40 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
             "max_chars": 1000,
             "not_in_use": 0,
             "not_in_use_note": null,
+            "people": ["Vantrel Oskarine"],
         })
     );
+}
+
+#[test]
+fn summary_vocabulary_saved_people_follow_the_shared_case_table() {
+    let table = crate::testutil::summary_cases();
+    let cases = table["people"]["cases"].as_array().unwrap();
+    assert!(cases.len() >= 7, "the table lost cases");
+    for case in cases {
+        let strings = |k: &str| -> Vec<String> { serde_json::from_value(case[k].clone()).unwrap() };
+        let dictionary = earshot_core::prompt::Vocabulary::new(strings("dictionary")).unwrap();
+        let got = earshot_core::prompt::People::new(strings("names"), &dictionary);
+        assert_eq!(got.names(), strings("people"), "{}", case["name"]);
+    }
+}
+
+#[test]
+fn summary_vocabulary_lists_the_saved_people_a_summary_may_be_given() {
+    // T12.91: the saved names, read only beside the words.
+    let dir = TempDir::new("summary-vocabulary");
+    let svc = services(&dir);
+    // The default "Me" is no one's name.
+    assert!(vocabulary_view(&svc).unwrap().people.is_empty());
+    earshot_runtime::my_voice::set_my_name(&svc, "Tamsin Brevik").unwrap();
+    assert_eq!(
+        vocabulary_view(&svc).unwrap().people,
+        owned(&["Tamsin Brevik"])
+    );
+    // A name the Dictionary already holds (any case) is left to the Dictionary.
+    let added = add_word(&svc, "tamsin brevik").unwrap();
+    assert!(added.view.people.is_empty());
+    assert!(remove_word(&svc, "tamsin brevik").unwrap().people == owned(&["Tamsin Brevik"]));
 }
 
 #[test]
@@ -126,7 +165,7 @@ fn summary_vocabulary_words_not_in_use_follow_the_shared_table() {
     assert!(many.contains("{n}"));
     assert_eq!(not_in_use_note(7), Some(many.replace("{n}", "7")));
     // A view counts them and says so.
-    let v = view(&owned(&["QXR-7"]), vec![], 3);
+    let v = view(&owned(&["QXR-7"]), vec![], 3, vec![]);
     assert_eq!(v.not_in_use, 3);
     assert_eq!(v.not_in_use_note, Some(many.replace("{n}", "3")));
 }

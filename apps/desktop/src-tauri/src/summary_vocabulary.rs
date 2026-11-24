@@ -34,6 +34,10 @@ pub struct SummaryVocabularyView {
     pub not_in_use: u32,
     /// What the page says about them ([`not_in_use_note`]); `None` when every word is in use.
     pub not_in_use_note: Option<String>,
+    /// Every saved person's name a summary may be given (T12.91,
+    /// `earshot_runtime::word_choices::summary_people`): shown read only; each request
+    /// carries only the names that match what was said.
+    pub people: Vec<String>,
 }
 
 /// The page's line for one word not in use (`fixtures/ui/summary_settings_cases.json`,
@@ -57,7 +61,12 @@ fn limit(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-fn view(words: &[String], unknown: Vec<String>, not_in_use: usize) -> SummaryVocabularyView {
+fn view(
+    words: &[String],
+    unknown: Vec<String>,
+    not_in_use: usize,
+    people: Vec<String>,
+) -> SummaryVocabularyView {
     SummaryVocabularyView {
         words: words.to_vec(),
         unknown,
@@ -66,6 +75,7 @@ fn view(words: &[String], unknown: Vec<String>, not_in_use: usize) -> SummaryVoc
         max_chars: limit(MAX_VOCABULARY_CHARS),
         not_in_use: limit(not_in_use),
         not_in_use_note: not_in_use_note(not_in_use),
+        people,
     }
 }
 
@@ -88,11 +98,14 @@ fn sentence(text: &str) -> String {
 /// # Errors
 /// Store errors.
 pub fn vocabulary_view(services: &Services) -> Result<SummaryVocabularyView, IpcError> {
-    let state = vocabulary::dictionary_state(&services.store())?;
+    let db = services.store();
+    let state = vocabulary::dictionary_state(&db)?;
+    let people = earshot_runtime::word_choices::summary_people(&db, &state.words)?;
     Ok(view(
         state.words.words(),
         state.unknown.iter().map(ToString::to_string).collect(),
         state.not_in_use,
+        people.names().to_vec(),
     ))
 }
 

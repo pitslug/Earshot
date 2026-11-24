@@ -74,6 +74,7 @@ fn fin() -> (Vec<TimedSegment>, SummaryInput) {
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),
+        people: Default::default(),
         user_name: None,
     };
     (fin, input)
@@ -86,6 +87,7 @@ fn record(partials: Vec<LivePartial>) -> StoredLiveSummaries {
         partials,
         stopped: None,
         vocabulary: Some(Vec::new()),
+        people: Vec::new(),
     }))
 }
 
@@ -126,6 +128,7 @@ fn live_summary_record_round_trips_and_refuses_other_versions() {
         }],
         stopped: Some("why".into()),
         vocabulary: Some(vec!["Quillmarsh".into()]),
+        people: vec!["Vantrel Oskarine".into()],
     };
     let bytes = encode(&r).unwrap();
     assert_eq!(
@@ -158,14 +161,30 @@ fn live_summary_record_bytes_are_pinned() {
         partials: Vec::new(),
         stopped: Some("why".into()),
         vocabulary: Some(vec!["Quillmarsh".into()]),
+        people: vec!["Vantrel Oskarine".into()],
     };
-    let pinned_json = r#"{"model":"qwen","seconds":600,"partials":[],"stopped":"why","vocabulary":["Quillmarsh"]}"#;
+    let pinned_json = r#"{"model":"qwen","seconds":600,"partials":[],"stopped":"why","vocabulary":["Quillmarsh"],"people":["Vantrel Oskarine"]}"#;
     let bytes = encode(&r).unwrap();
-    assert_eq!(bytes[..4], [2, 0, 0, 0]);
+    assert_eq!(bytes[..4], [3, 0, 0, 0]);
     assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), pinned_json);
-    let mut pinned = vec![2, 0, 0, 0];
+    let mut pinned = vec![3, 0, 0, 0];
     pinned.extend_from_slice(pinned_json.as_bytes());
-    assert_eq!(decode(&pinned), StoredLiveSummaries::Record(Box::new(r)));
+    assert_eq!(
+        decode(&pinned),
+        StoredLiveSummaries::Record(Box::new(r.clone()))
+    );
+    // A version-2 record (T12.20) reads with no saved names, whatever its JSON holds: its
+    // windows carried none.
+    let v2_json = r#"{"model":"qwen","seconds":600,"partials":[],"stopped":"why","vocabulary":["Quillmarsh"],"people":["Vantrel Oskarine"]}"#;
+    let mut v2 = vec![2, 0, 0, 0];
+    v2.extend_from_slice(v2_json.as_bytes());
+    assert_eq!(
+        decode(&v2),
+        StoredLiveSummaries::Record(Box::new(LiveSummaryRecord {
+            people: Vec::new(),
+            ..r
+        }))
+    );
     // The messages of an unreadable record.
     let unreadable = |b: &[u8]| match decode(b) {
         StoredLiveSummaries::Unreadable(why) => why,
@@ -174,9 +193,9 @@ fn live_summary_record_bytes_are_pinned() {
     assert_eq!(unreadable(&[2, 0]), "the live summary record is truncated");
     assert_eq!(
         unreadable(&[7, 0, 0, 0, b'{', b'}']),
-        "live summary record version 7, this build reads 2"
+        "live summary record version 7, this build reads 3"
     );
-    assert!(unreadable(&[2, 0, 0, 0, b'{']).starts_with("the live summary record: "));
+    assert!(unreadable(&[3, 0, 0, 0, b'{']).starts_with("the live summary record: "));
 }
 
 #[test]
@@ -193,11 +212,11 @@ fn live_summary_record_of_version_1_reads_without_a_word_list() {
     };
     assert_eq!(r.vocabulary, None);
     assert_eq!(r.partials.len(), 1);
-    // Written now: version 2, with the list.
+    // Written now: version 3 (T12.91), with the list.
     let mut now = (*r).clone();
     now.vocabulary = Some(vec!["Quillmarsh".into()]);
     let bytes = encode(&now).unwrap();
-    assert_eq!(bytes[..4], 2u32.to_le_bytes());
+    assert_eq!(bytes[..4], 3u32.to_le_bytes());
     assert_eq!(decode(&bytes), StoredLiveSummaries::Record(Box::new(now)));
 }
 
@@ -246,6 +265,39 @@ fn live_summary_partials_made_with_other_words_are_redone() {
         &input,
         &ranges,
     );
+    assert!(done[0].is_some(), "{reuse:?}");
+    assert_eq!(reuse.reused, 1);
+}
+
+#[test]
+fn live_summary_partials_made_with_other_saved_people_are_redone() {
+    let (fin, mut input) = fin();
+    let ranges = earshot_core::prompt::time_chunks(&input, 3).unwrap();
+    let live = vec![timed(1, 0, 900, 2_000, "Me")];
+    let with = |people: Vec<String>| {
+        StoredLiveSummaries::Record(Box::new(LiveSummaryRecord {
+            people,
+            ..match record(vec![LivePartial {
+                window: 0,
+                summary: partial("x", &[id(1)], "Me"),
+            }]) {
+                StoredLiveSummaries::Record(r) => *r,
+                StoredLiveSummaries::Unreadable(_) => unreachable!(),
+            }
+        }))
+    };
+    // Made while someone was saved who no longer is (or the other way round): redone, since a
+    // window may have carried a name this summary's windows would not.
+    let saved = vec!["Vantrel Oskarine".to_owned()];
+    let (done, reuse) = reusable(&with(saved.clone()), "m", 3, &live, &fin, &input, &ranges);
+    assert!(done.iter().all(Option::is_none));
+    assert!(reuse.not_used.unwrap().contains("saved people"));
+    input.people = earshot_core::prompt::People::new(&saved, &input.vocabulary);
+    let (done, reuse) = reusable(&with(Vec::new()), "m", 3, &live, &fin, &input, &ranges);
+    assert!(done.iter().all(Option::is_none));
+    assert!(reuse.not_used.unwrap().contains("saved people"));
+    // The same names: reused.
+    let (done, reuse) = reusable(&with(saved), "m", 3, &live, &fin, &input, &ranges);
     assert!(done[0].is_some(), "{reuse:?}");
     assert_eq!(reuse.reused, 1);
 }

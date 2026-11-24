@@ -2255,6 +2255,7 @@ mod local {
             }],
             stopped: None,
             vocabulary: Some(Vec::new()),
+            people: Vec::new(),
         };
         crate::live_summaries::record_live_summaries(&mut svc.store(), id, &record).unwrap();
     }

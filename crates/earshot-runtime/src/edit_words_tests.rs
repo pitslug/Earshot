@@ -446,27 +446,24 @@ fn edit_retranscribe_keeps_a_changed_word_and_drops_a_kept_one() {
     );
 }
 
-#[test]
-fn edit_word_list_never_reaches_a_summary_request() {
-    let dir = TempDir::new("edit");
-    let (svc, _) = services(&dir);
-    let m = meeting(&svc, "", 911);
-    // A saved person who is not in this meeting, from another meeting.
-    let elsewhere = meeting(&svc, "Elsewhere", 912);
-    let alice = speaker(&svc, elsewhere, "Alice");
+/// Saves `name` as a person, linked from a voice of a meeting of its own (another meeting
+/// than the ones the tests summarise).
+fn save_person(svc: &Services, name: &str, seed: u64) -> EntityId {
+    let elsewhere = meeting(svc, "Elsewhere", seed);
+    let alice = speaker(svc, elsewhere, "Alice");
     link_speaker(
-        &svc,
+        svc,
         elsewhere,
         alice.id,
-        &PersonChoice::New {
-            name: "Vantrel Oskarine".into(),
-        },
+        &PersonChoice::New { name: name.into() },
     )
-    .unwrap();
-    let list = word_list(&svc.store()).unwrap();
-    assert!(list.iter().any(|w| w == "Oskarine"), "{list:?}");
+    .unwrap()
+    .person
+}
 
-    let reply = earshot_core::summary::SummaryV1 {
+/// A reply that names nobody.
+fn plain_reply() -> String {
+    serde_json::to_string(&earshot_core::summary::SummaryV1 {
         title: "Release planning".into(),
         tldr: "The team agreed to ship on Friday.".into(),
         enhanced_notes: vec![],
@@ -474,35 +471,170 @@ fn edit_word_list_never_reaches_a_summary_request() {
         action_items: vec![],
         open_questions: vec![],
         topics: vec![],
-    };
-    let server = MockServer::start(vec![MockResponse::completion(
-        &serde_json::to_string(&reply).unwrap(),
-        "stop",
-    )])
-    .unwrap();
-    let service = crate::summary::SummaryService::new(
-        &crate::summary::SummaryConfig::new(server.endpoint().as_str(), "test-model"),
-        svc.clock.clone(),
+    })
+    .unwrap()
+}
+
+/// Summarises `meeting` through the production remote path against a mock answering
+/// `replies` requests with [`plain_reply`], within `budget` (the provider's default when
+/// `None`); the request bodies in order.
+fn summary_requests(
+    svc: &Services,
+    meeting: EntityId,
+    replies: usize,
+    budget: Option<earshot_core::prompt::ContextBudget>,
+) -> Vec<String> {
+    let server = MockServer::start(
+        (0..replies)
+            .map(|_| MockResponse::completion(&plain_reply(), "stop"))
+            .collect(),
     )
     .unwrap();
+    let mut config = crate::summary::SummaryConfig::new(server.endpoint().as_str(), "test-model");
+    config.budget = budget;
+    let service = crate::summary::SummaryService::new(&config, svc.clock.clone()).unwrap();
     service
         .summarize(
-            &svc,
-            m,
+            svc,
+            meeting,
             &mut ChaCha8Rng::seed_from_u64(913),
             &CancelToken::new(),
         )
         .unwrap();
-    let requests = server.requests();
-    assert!(!requests.is_empty());
-    for r in requests {
-        let body = String::from_utf8(r.body.clone()).unwrap();
+    let bodies: Vec<String> = server
+        .requests()
+        .into_iter()
+        .map(|r| String::from_utf8(r.body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), replies);
+    bodies
+}
+
+/// The name's line in a request's names block (T12.91), as it appears in the request JSON.
+fn name_line(name: &str) -> String {
+    format!("{}{name}", earshot_core::prompt::PEOPLE_LINE_PREFIX)
+}
+
+#[test]
+fn edit_saved_people_reach_a_summary_request_that_names_them() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "", 911);
+    // Saved from other meetings; none of them speaks in this one.
+    save_person(&svc, "Vantrel Oskarine", 912);
+    save_person(&svc, "Bozzle Fenwright", 914);
+    save_person(&svc, "Idris Quell", 915);
+    let v = view(&svc, m);
+    // One is talked about by name, one as the recogniser misheard them.
+    decoded(&svc, m, v.segments[0].id, "shall we ask Bozle on friday");
+    decoded(&svc, m, v.segments[1].id, "yes Vantrel said friday works");
+    let bodies = summary_requests(&svc, m, 1, None);
+    let body = &bodies[0];
+    assert!(body.contains(&name_line("Vantrel Oskarine")), "{body}");
+    assert!(body.contains(&name_line("Bozzle Fenwright")), "{body}");
+    // Never mentioned: not given to the writer.
+    assert!(!body.contains("Quell") && !body.contains("Idris"));
+    // The default "Me" is never a saved name.
+    assert!(!body.contains(&name_line("Me")));
+}
+
+#[test]
+fn edit_saved_people_never_said_do_not_reach_a_summary_request() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "", 916);
+    save_person(&svc, "Vantrel Oskarine", 917);
+    // The transcript suggestions still list the name's words.
+    let list = word_list(&svc.store()).unwrap();
+    assert!(list.iter().any(|w| w == "Oskarine"), "{list:?}");
+    for body in summary_requests(&svc, m, 1, None) {
         assert!(
             body.contains("friday works for the release"),
             "a real request"
         );
         assert!(!body.contains("Oskarine") && !body.contains("Vantrel"));
+        assert!(!body.contains("SAVED NAMES"), "no names block at all");
     }
+}
+
+#[test]
+fn edit_saved_people_survive_a_summary_merge() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "", 918);
+    save_person(&svc, "Vantrel Oskarine", 919);
+    let v = view(&svc, m);
+    // Lines long enough that each fits a request alone and both together do not.
+    let filler = "the release plan looks good to everyone here ".repeat(40);
+    decoded(
+        &svc,
+        m,
+        v.segments[0].id,
+        &format!("shall we ship {filler}"),
+    );
+    decoded(
+        &svc,
+        m,
+        v.segments[1].id,
+        &format!("yes Vantrel Oskarine said friday works {filler}"),
+    );
+    // The smallest context in which the meeting is two map requests and a merge, found with
+    // the production planner on the production input.
+    let input = {
+        let db = svc.store();
+        let view = MeetingView::load_named(&db, m).unwrap().unwrap();
+        let vocabulary = crate::vocabulary::vocabulary(&db).unwrap().0;
+        earshot_core::prompt::SummaryInput {
+            people: crate::word_choices::summary_people(&db, &vocabulary).unwrap(),
+            ..crate::summary::evaluation_input(&view)
+        }
+    };
+    let budget = (2_000..40_000)
+        .step_by(50)
+        .map(|w| earshot_core::prompt::ContextBudget {
+            context_window: w,
+            max_output_tokens: 1_024,
+        })
+        .find(|b| {
+            matches!(
+                earshot_core::prompt::plan(&input, *b),
+                Ok(earshot_core::prompt::PromptPlan::MapReduce(c)) if c.len() == 2
+            )
+        })
+        .expect("a two-part plan");
+    let bodies = summary_requests(&svc, m, 3, Some(budget));
+    let line = name_line("Vantrel Oskarine");
+    // The first part never mentions them; the second does; the merge sees only replies
+    // that never name them, and still carries the name its part carried.
+    assert!(!bodies[0].contains(&line));
+    assert!(bodies[1].contains(&line));
+    assert!(bodies[2].contains("Partial summary 1 of 2"), "the merge");
+    assert!(bodies[2].contains(&line), "{}", bodies[2]);
+}
+
+#[test]
+fn edit_a_removed_person_no_longer_reaches_a_summary_request() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "", 920);
+    let person = save_person(&svc, "Vantrel Oskarine", 921);
+    let v = view(&svc, m);
+    decoded(
+        &svc,
+        m,
+        v.segments[1].id,
+        "yes Vantrel Oskarine said friday works",
+    );
+    let line = name_line("Vantrel Oskarine");
+    assert!(summary_requests(&svc, m, 1, None)[0].contains(&line));
+    // Removed on the People page (`Store::remove_person`): gone from every request.
+    remove_person(&svc, person).unwrap();
+    let body = &summary_requests(&svc, m, 1, None)[0];
+    assert!(
+        body.contains("Vantrel Oskarine said"),
+        "still in the transcript"
+    );
+    assert!(!body.contains(&line) && !body.contains("SAVED NAMES"));
 }
 
 #[test]

@@ -1,0 +1,21 @@
+# Seed lists of the invented names T12.91 measures with (docs/summary-names.md). Every name
+# here is invented. First names are every first_start + first_end (196) and then
+# first_common, four first names that are also common English words, standing for the names
+# a real list holds that collide with ordinary speech: 200 first names. Surnames are every
+# last_start + last_end: 400, all distinct. Name i (0 to 399) is first[i % 200] + " " +
+# last[(7 i) % 400] (`invented_names` in main.rs): every surname used once, every first name
+# twice. Checked against the private names list by
+# `cargo test -p xtask summary_names_seeds -- --ignored` (counts only).
+
+first_start = ["Av", "Bry", "Cae", "Dov", "Els", "Fen", "Gal", "Hes", "Ib", "Jor", "Kes", "Lor", "Mer", "Nol"]
+first_end = ["rel", "dex", "lo", "rin", "mar", "noc", "vric", "trin", "lane", "dris", "thal", "wen", "vic", "bris"]
+first_common = ["Will", "Mark", "Grace", "Rose"]
+
+last_start = [
+    "Quill", "Fen", "Pen", "Arden", "Blyth", "Corro", "Dun", "Ester", "Farro", "Glen",
+    "Hollow", "Iven", "Jessin", "Kettle", "Larch", "Marrow", "Nether", "Orrin", "Rook", "Salt",
+]
+last_end = [
+    "marsh", "wright", "hallick", "brook", "vale", "combe", "wind", "marrow", "vane", "well",
+    "haskin", "mere", "stock", "grove", "moor", "wick", "dene", "stead", "hallow", "reach",
+]

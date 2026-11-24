@@ -966,7 +966,7 @@ where
         .then(|| FarEndWatch::new(&cfg.voice_activity));
 
     // The rows, built but not yet committed (ids are needed for live ASR and the files).
-    let (meeting, tracks, summary_vocabulary) = {
+    let (meeting, tracks, summary_vocabulary, summary_people) = {
         let mut db = services.store();
         // The user's own words for the summary windows (T12.15a), read once at the start;
         // a setting never costs a recording, so one that cannot be read is no words.
@@ -974,6 +974,12 @@ where
             crate::vocabulary::vocabulary(&db).map_or_else(|_| Vocabulary::default(), |(v, _)| v)
         } else {
             Vocabulary::default()
+        };
+        // The saved people's names (T12.91), read once at the start the same way.
+        let summary_people = if cfg.live_summaries.is_some() {
+            crate::word_choices::summary_people(&db, &summary_vocabulary).unwrap_or_default()
+        } else {
+            earshot_core::prompt::People::default()
         };
         let (_, hlc) = db.parts();
         let mut stamp = Stamp {
@@ -997,7 +1003,7 @@ where
                 Track::new(meeting.id, id, device, cfg.clock_domain, &mut stamp)
             })
             .collect();
-        (meeting, tracks, summary_vocabulary)
+        (meeting, tracks, summary_vocabulary, summary_people)
     };
     // Held by the session thread until it ends: the meeting cannot be deleted meanwhile.
     let lease = services.lease_meeting_for(meeting.id, crate::MeetingJob::Recording)?;
@@ -1219,6 +1225,7 @@ where
         summaries_off,
         summary_rows: Vec::new(),
         summary_vocabulary,
+        summary_people,
         next_window: 0,
         summary_record: None,
         start_warnings,
@@ -1388,6 +1395,8 @@ struct Session<S> {
     summary_rows: Vec<PromptSegment>,
     /// The user's own words, given to every summary window (T12.15a; read at the start).
     summary_vocabulary: Vocabulary,
+    /// The saved people's names a summary window may carry (T12.91; read at the start).
+    summary_people: earshot_core::prompt::People,
     /// The next window not yet sent to the map worker.
     next_window: u64,
     /// What the map worker left, written at the end.
@@ -1887,6 +1896,8 @@ where
                 style: Default::default(),
                 style_preset: Default::default(),
                 vocabulary: self.summary_vocabulary.clone(),
+                // Each window carries only the names its own lines call for.
+                people: self.summary_people.clone(),
                 user_name: None,
             };
             let Ok(ranges) = time_chunks(&input, thread.seconds()) else {

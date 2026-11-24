@@ -410,6 +410,7 @@ fn meeting(n: usize) -> SummaryInput {
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),
+        people: Default::default(),
         user_name: None,
     }
 }

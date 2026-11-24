@@ -2491,6 +2491,12 @@ export type SummaryVocabularyView = {
 	not_in_use: number,
 	/**  What the page says about them ([`not_in_use_note`]); `None` when every word is in use. */
 	not_in_use_note: string | null,
+	/**
+	 *  Every saved person's name a summary may be given (T12.91,
+	 *  `earshot_runtime::word_choices::summary_people`): shown read only; each request
+	 *  carries only the names that match what was said.
+	 */
+	people: string[],
 };
 
 /**  A pairing code to show for adding a device. */

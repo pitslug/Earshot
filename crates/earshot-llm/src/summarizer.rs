@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::{
     ChatMessage, MapChunk, MergeLevel, Prompt, PromptPlan, Role, SummaryInput, SummaryRules,
-    estimate_messages, grown_reply_tokens, plan_chunks_with_rules, plan_with_rules,
-    reduce_groups_with_rules, reduce_prompt_with_rules, repair_message, segment_numbers,
+    carried_names, estimate_messages, grown_reply_tokens, plan_chunks_with_rules, plan_with_rules,
+    reduce_groups_carrying, reduce_prompt_carrying, repair_message, segment_numbers,
 };
 use earshot_core::summary::{
     SegmentNumbers, Summarizer, SummaryError, SummaryErrorKind, SummaryV1, join_partials,
@@ -260,11 +260,21 @@ impl Run<'_> {
         let budget = self.client.budget();
         self.report.map_parts = chunks.len();
         let mut partials = Vec::with_capacity(chunks.len());
+        // The saved people's names each partial's request carried (T12.91): a merge keeps
+        // them, so a name chosen in a map step is never lost.
+        let mut carried: Vec<Vec<String>> = Vec::with_capacity(chunks.len());
         for chunk in chunks {
+            carried.push(chunk.prompt.people.clone());
             partials.push(self.step("map", chunk.prompt, numbers).await?);
         }
         loop {
-            let groups = reduce_groups_with_rules(input, self.rules, &partials, budget)?;
+            let groups = reduce_groups_carrying(
+                input,
+                self.rules,
+                &partials,
+                &carried_names(&carried),
+                budget,
+            )?;
             // One group: this merge writes the summary the user sees (and carries the style).
             let level = if groups.len() == 1 {
                 MergeLevel::Last
@@ -272,19 +282,23 @@ impl Run<'_> {
                 MergeLevel::Inner
             };
             let mut next = Vec::with_capacity(groups.len());
+            let mut next_carried = Vec::with_capacity(groups.len());
             for g in &groups {
                 if g.len() == 1 && groups.len() > 1 {
                     // Carried over to the next level unchanged.
                     next.push(partials[g.start].clone());
+                    next_carried.push(carried[g.start].clone());
                     continue;
                 }
-                let p = reduce_prompt_with_rules(
+                let p = reduce_prompt_carrying(
                     input,
                     self.rules,
                     &partials[g.clone()],
+                    &carried_names(&carried[g.clone()]),
                     budget,
                     level,
                 );
+                next_carried.push(p.people.clone());
                 let merged = match self.step("reduce", p, numbers).await {
                     // A rougher summary rather than none (T8.4d); it says so itself.
                     Err(LlmError::Invalid { .. }) => {
@@ -301,6 +315,7 @@ impl Run<'_> {
                 return Ok(next.pop().expect("one group gives one summary"));
             }
             partials = next;
+            carried = next_carried;
         }
     }
 

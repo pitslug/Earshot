@@ -428,7 +428,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     data.cleanInstall,
     data.noModels,
   );
-  const summariesMock = createSummariesMock(data.summaries, data.machine ?? "surface");
+  const summariesMock = createSummariesMock(data.summaries, data.machine ?? "surface", () => persons);
   const syncMock = createSyncMock(data.sync);
   // T12.63b: the order of summary writers, with the old writer setting mirrored from it.
   const orderMock = createSummaryOrderMock(

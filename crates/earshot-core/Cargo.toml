@@ -12,6 +12,10 @@ workspace = true
 name = "aec_eval"
 test = true
 
+[[example]]
+name = "summary_names"
+test = true
+
 [dependencies]
 hound = "3.5.1"
 # zlib for openai/whisper's compression-ratio repetition check (asr::pieces); pure Rust,

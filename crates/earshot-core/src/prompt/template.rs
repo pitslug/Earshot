@@ -44,6 +44,10 @@ pub(super) const STYLE: &str = include_str!("templates/style.md");
 /// map or merge instruction and before the style; `{{words}}` is replaced by the prefixed
 /// words, one per line.
 pub(super) const VOCABULARY: &str = include_str!("templates/vocabulary.md");
+/// The saved people's names block (T12.91), right after [`VOCABULARY`] in the system message
+/// of a request that carries a name; `{{names}}` is replaced by the prefixed names, one per
+/// line.
+pub(super) const PEOPLE: &str = include_str!("templates/people.md");
 /// The rule that says how the user appears in the transcript (T9.1h).
 pub(super) const USER_NAME: &str = include_str!("templates/user.md");
 

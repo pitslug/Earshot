@@ -1116,6 +1116,9 @@ struct PromptSettings {
     style_preset: earshot_core::prompt::StylePreset,
     /// The user's own words ([`crate::vocabulary`]).
     vocabulary: Vocabulary,
+    /// Every saved person's name (T12.91, [`crate::word_choices::summary_people`]); each
+    /// request carries only the names its text calls for.
+    people: earshot_core::prompt::People,
 }
 
 /// The meeting's view with the summary style and the user's own words stored now
@@ -1132,12 +1135,14 @@ fn load_input(
     let (style, _refused) = crate::summary_style::summary_style(&db)?;
     let (style_preset, _refused) = crate::summary_style::summary_template(&db)?;
     let (vocabulary, _refused) = crate::vocabulary::vocabulary(&db)?;
+    let people = crate::word_choices::summary_people(&db, &vocabulary)?;
     Ok((
         view,
         PromptSettings {
             style,
             style_preset,
             vocabulary,
+            people,
         },
     ))
 }
@@ -1790,8 +1795,8 @@ fn store_summary_answering<R: Rng + ?Sized>(
     stored
 }
 
-/// The prompt input production builds for `view`, with no summary style, template or own
-/// words: what the T12.25a evaluation (`store_inputs` example) summarises from a copy of the
+/// The prompt input production builds for `view`, with no summary style, template, own
+/// words or saved people's names: what the T12.25a evaluation (`store_inputs` example) summarises from a copy of the
 /// user's store, so every condition it compares starts from the production input and none
 /// from the settings of the day. Evaluation only; production goes through `load_input`.
 #[must_use]
@@ -1802,6 +1807,7 @@ pub fn evaluation_input(view: &MeetingView) -> SummaryInput {
             style: SummaryStyle::default(),
             style_preset: earshot_core::prompt::StylePreset::default(),
             vocabulary: Vocabulary::default(),
+            people: earshot_core::prompt::People::default(),
         },
     )
 }
@@ -1837,6 +1843,7 @@ fn input_of(view: &MeetingView, settings: &PromptSettings) -> SummaryInput {
         style: settings.style.clone(),
         style_preset: settings.style_preset,
         vocabulary: settings.vocabulary.clone(),
+        people: settings.people.clone(),
         user_name: view.user_name(),
     }
 }

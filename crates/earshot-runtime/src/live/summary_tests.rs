@@ -618,6 +618,7 @@ fn live_summaries_thread_runs_below_normal_priority() {
         style: Default::default(),
         style_preset: Default::default(),
         vocabulary: Default::default(),
+        people: Default::default(),
         user_name: None,
     };
     thread.send(Job {

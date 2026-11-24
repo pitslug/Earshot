@@ -1847,4 +1847,68 @@ mod tests {
         );
         assert!(!hook.contains('\r'));
     }
+
+    /// T12.91's invented names (`crates/earshot-core/examples/summary_names/seeds.toml`) hold
+    /// no entry of the private names list: every seed word and every first and last name pair
+    /// (a superset of the names the tool builds) is checked. Prints counts only. Ignored: the
+    /// list is private (run with `-- --ignored` where it exists; a missing list fails).
+    #[test]
+    #[ignore = "reads the private names list: cargo test -p xtask summary_names_seeds -- --ignored"]
+    fn public_guard_summary_names_seeds_hold_no_private_name() {
+        #[derive(serde::Deserialize)]
+        struct Seeds {
+            first_start: Vec<String>,
+            first_end: Vec<String>,
+            first_common: Vec<String>,
+            last_start: Vec<String>,
+            last_end: Vec<String>,
+        }
+        let seeds: Seeds = toml::from_str(include_str!(
+            "../../crates/earshot-core/examples/summary_names/seeds.toml"
+        ))
+        .unwrap();
+        let path = list_path_from(
+            std::env::var_os(LIST_ENV),
+            std::env::var_os("USERPROFILE"),
+            std::env::var_os("HOME"),
+        )
+        .expect("a home folder");
+        let text = std::fs::read_to_string(&path).expect("the private names list");
+        let list = parse_list(&text);
+        assert!(!list.is_empty(), "the private names list has no entries");
+        let joined = |a: &[String], b: &[String]| -> Vec<String> {
+            a.iter()
+                .flat_map(|x| b.iter().map(move |y| format!("{x}{y}")))
+                .collect()
+        };
+        let mut first = joined(&seeds.first_start, &seeds.first_end);
+        first.extend(seeds.first_common.iter().cloned());
+        let last = joined(&seeds.last_start, &seeds.last_end);
+        let mut all = String::new();
+        let pieces = seeds
+            .first_start
+            .iter()
+            .chain(&seeds.first_end)
+            .chain(&seeds.last_start)
+            .chain(&seeds.last_end);
+        for w in pieces.chain(&first).chain(&last) {
+            all.push_str(w);
+            all.push('\n');
+        }
+        for f in &first {
+            for l in &last {
+                all.push_str(&format!("{f} {l}\n"));
+            }
+        }
+        let hits = hits_in_bytes(all.as_bytes(), &list);
+        println!(
+            "summary_names seeds: {} first names, {} surnames, {} pairs, {} list entries, {} hits",
+            first.len(),
+            last.len(),
+            first.len() * last.len(),
+            list.len(),
+            hits.len()
+        );
+        assert!(hits.is_empty(), "{} private list entries found", hits.len());
+    }
 }

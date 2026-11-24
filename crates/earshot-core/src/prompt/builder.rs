@@ -8,9 +8,10 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
+use super::people::{MAX_PEOPLE_PER_REQUEST, People, people_line};
 use super::style::{StylePreset, SummaryStyle, style_block};
 use super::template::{
-    MAP, PromptVariant, REDUCE, SummaryRules, TWO_CALL_MAP_ACTIONS, TWO_CALL_MAP_REST,
+    MAP, PEOPLE, PromptVariant, REDUCE, SummaryRules, TWO_CALL_MAP_ACTIONS, TWO_CALL_MAP_REST,
     TWO_CALL_REDUCE_MERGE, Template, USER_NAME,
 };
 use super::tokens::{TOKENS_PER_MESSAGE, TOKENS_PER_REQUEST, estimate_tokens};
@@ -21,6 +22,7 @@ use crate::summary::{
     Citable, SegmentNumbers, SummaryError, SummaryErrorKind, SummaryV1, llm_json_schema,
     to_numbered_json,
 };
+use crate::vocabulary::names::NameFilter;
 
 /// Who a chat message is from (OpenAI chat completions roles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +155,13 @@ pub struct SummaryInput {
     /// JSON when empty, so serialised inputs from before T12.15a read and write unchanged.
     #[serde(default, skip_serializing_if = "Vocabulary::is_empty")]
     pub vocabulary: Vocabulary,
+    /// Every saved person's name a request may be given (T12.91): each request carries only
+    /// the names its own text calls for ([`crate::vocabulary::names`], at most
+    /// [`MAX_PEOPLE_PER_REQUEST`] beside the names a merge's parts carried). Empty (the
+    /// default) adds nothing. Left out of the JSON when empty, so serialised inputs from
+    /// before T12.91 read and write unchanged.
+    #[serde(default, skip_serializing_if = "People::is_empty")]
+    pub people: People,
     /// How the user appears in the transcript, when they gave a name: every request says so
     /// (T9.1h). `None` adds nothing, and is left out of the JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,6 +182,82 @@ impl SummaryInput {
     fn rules_text(&self, writer: SummaryRules) -> &'static str {
         self.prompt_variant.rules_for(writer)
     }
+
+    /// The filter over [`SummaryInput::people`] (with the Dictionary's words for the matcher's
+    /// list); `None` when there are no names.
+    fn name_filter(&self) -> Option<NameFilter> {
+        (!self.people.is_empty())
+            .then(|| NameFilter::new(self.people.names(), self.vocabulary.words()))
+    }
+
+    /// The content a request over `segments` shows, as names are matched against it: the
+    /// meeting's title and attendees, each segment's speaker and text, and `notes`.
+    fn texts<'a>(&'a self, segments: Range<usize>, notes: &'a [UserNote]) -> Vec<&'a str> {
+        let mut texts = self.meeting_texts();
+        for s in &self.segments[segments] {
+            texts.push(&s.speaker);
+            texts.push(&s.text);
+        }
+        texts.extend(notes.iter().map(|n| n.text.as_str()));
+        texts
+    }
+
+    /// The meeting's title and attendees.
+    fn meeting_texts(&self) -> Vec<&str> {
+        let mut texts: Vec<&str> = self.meeting.title.as_deref().into_iter().collect();
+        texts.extend(self.meeting.attendees.iter().map(String::as_str));
+        texts
+    }
+
+    /// The names a request showing `texts` carries beside `carried`
+    /// ([`NameFilter::choose`] with [`MAX_PEOPLE_PER_REQUEST`]); empty without names.
+    fn chosen_names(
+        filter: Option<&NameFilter>,
+        texts: &[&str],
+        carried: &[String],
+    ) -> Vec<String> {
+        filter.map_or_else(Vec::new, |f| {
+            f.choose(texts, carried, MAX_PEOPLE_PER_REQUEST)
+        })
+    }
+
+    /// An upper bound on what the names block of any request adds to its system message
+    /// (estimated tokens, the line break before it included) when it carries every name of
+    /// `carried` and at most [`MAX_PEOPLE_PER_REQUEST`] others: 0 without names. Estimates
+    /// are subadditive, so the block's markers plus the costliest lines bound any block.
+    fn people_bound(&self, carried: &[String]) -> usize {
+        if self.people.is_empty() {
+            return 0;
+        }
+        let line = |n: &str| estimate_tokens(&people_line(n)) + estimate_tokens("\n");
+        let (before, after) = PEOPLE.split_once("{{names}}").unwrap_or((PEOPLE, ""));
+        let mut others: Vec<usize> = self
+            .people
+            .names()
+            .iter()
+            .filter(|n| !carried.contains(n))
+            .map(|n| line(n))
+            .collect();
+        others.sort_unstable_by(|a, b| b.cmp(a));
+        estimate_tokens("\n")
+            + estimate_tokens(before)
+            + estimate_tokens(after)
+            + carried.iter().map(|n| line(n)).sum::<usize>()
+            + others.iter().take(MAX_PEOPLE_PER_REQUEST).sum::<usize>()
+    }
+}
+
+/// Every name of `parts` (the names each part of a merge carried, [`Prompt::people`]), each
+/// once, in first-seen order: what [`reduce_prompt_carrying`] is given for a group.
+#[must_use]
+pub fn carried_names(parts: &[Vec<String>]) -> Vec<String> {
+    let mut all: Vec<String> = Vec::new();
+    for n in parts.iter().flatten() {
+        if !all.contains(n) {
+            all.push(n.clone());
+        }
+    }
+    all
 }
 
 /// The model's context window and the ceiling of one reply.
@@ -321,6 +406,10 @@ pub struct Prompt {
     /// The transcript segments (indices into [`SummaryInput::segments`]; segment number
     /// `i + 1`) the reply may cite, for [`crate::summary::validate_reply`].
     pub cites: Citable,
+    /// The saved people's names this request carries (T12.91; empty for none), in the
+    /// order of [`SummaryInput::people`]. A merge of this request's reply carries them too
+    /// ([`reduce_prompt_carrying`]).
+    pub people: Vec<String>,
 }
 
 impl Prompt {
@@ -334,7 +423,14 @@ impl Prompt {
             messages,
             max_output_tokens,
             cites,
+            people: Vec::new(),
         }
+    }
+
+    /// This request carrying `people` (already in its messages).
+    fn carrying(mut self, people: Vec<String>) -> Self {
+        self.people = people;
+        self
     }
 }
 
@@ -396,6 +492,12 @@ pub fn plan_with_rules(
     let line_costs: Vec<usize> = numbered.iter().map(|l| estimate_tokens(l)).collect();
     let transcript: usize = line_costs.iter().sum();
     let all = 0..input.segments.len();
+    let filter = input.name_filter();
+    let names = SummaryInput::chosen_names(
+        filter.as_ref(),
+        &input.texts(all.clone(), &input.notes),
+        &[],
+    );
     let single = Prompt::new(
         vec![
             ChatMessage::new(
@@ -406,6 +508,7 @@ pub fn plan_with_rules(
                     input.user_name.as_deref(),
                     None,
                     &input.vocabulary,
+                    &names,
                     Some((input.style_preset, &input.style)),
                 ),
             ),
@@ -413,7 +516,8 @@ pub fn plan_with_rules(
         ],
         reply_tokens(ReplyBasis::Transcript(transcript), budget),
         all.into(),
-    );
+    )
+    .carrying(names);
     if budget.fits(single.estimated_tokens, single.max_output_tokens) {
         return Ok(PromptPlan::Single(single));
     }
@@ -430,8 +534,11 @@ pub fn plan_with_rules(
             input.user_name.as_deref(),
             Some(&map_extra),
             &input.vocabulary,
+            &[],
             None,
         ))
+        // Whatever names a chunk's request carries (0 when there are no names).
+        + input.people_bound(&[])
         + estimate_tokens(&user_text(
             input,
             &[],
@@ -510,6 +617,7 @@ fn map_chunks(
     ask: MapAsk,
 ) -> Vec<MapChunk> {
     let parts = chunks.len();
+    let filter = input.name_filter();
     chunks
         .iter()
         .enumerate()
@@ -517,6 +625,11 @@ fn map_chunks(
             let part = i + 1;
             let notes = notes_for_chunk(input, chunks, i);
             let content: usize = line_costs[range.clone()].iter().sum();
+            let names = SummaryInput::chosen_names(
+                filter.as_ref(),
+                &input.texts(range.clone(), &notes),
+                &[],
+            );
             let prompt = Prompt::new(
                 vec![
                     ChatMessage::new(
@@ -527,6 +640,7 @@ fn map_chunks(
                             input.user_name.as_deref(),
                             Some(&ask.text(part, parts)),
                             &input.vocabulary,
+                            &names,
                             None,
                         ),
                     ),
@@ -537,7 +651,8 @@ fn map_chunks(
                 ],
                 reply_tokens(ReplyBasis::Transcript(content), budget),
                 range.clone().into(),
-            );
+            )
+            .carrying(names);
             MapChunk {
                 part,
                 parts,
@@ -713,7 +828,25 @@ pub fn reduce_groups_with_rules(
     partials: &[SummaryV1],
     budget: ContextBudget,
 ) -> Result<Vec<Range<usize>>, PromptError> {
-    reduce_groups_merging(input, rules, partials, budget, Merge::Plain)
+    reduce_groups_carrying(input, rules, partials, &[], budget)
+}
+
+/// [`reduce_groups_with_rules`] for partials whose requests carried saved people's names
+/// (T12.91): `carried` is every name any of `partials` carried ([`carried_names`]), so every
+/// group's [`reduce_prompt_carrying`] fits with the names it keeps. Production merges go
+/// through this and [`reduce_prompt_carrying`]; [`reduce_groups`] carries no names from the
+/// parts.
+///
+/// # Errors
+/// As [`reduce_groups`].
+pub fn reduce_groups_carrying(
+    input: &SummaryInput,
+    rules: SummaryRules,
+    partials: &[SummaryV1],
+    carried: &[String],
+    budget: ContextBudget,
+) -> Result<Vec<Range<usize>>, PromptError> {
+    reduce_groups_merging(input, rules, partials, carried, budget, Merge::Plain)
 }
 
 /// [`reduce_groups`] for the merge requests of a two-call run ([`reduce_prompt_two_call`],
@@ -726,7 +859,7 @@ pub fn reduce_groups_two_call(
     partials: &[SummaryV1],
     budget: ContextBudget,
 ) -> Result<Vec<Range<usize>>, PromptError> {
-    reduce_groups_merging(input, input.rules, partials, budget, Merge::TwoCall)
+    reduce_groups_merging(input, input.rules, partials, &[], budget, Merge::TwoCall)
 }
 
 /// Which merge instruction a reduce request carries.
@@ -774,10 +907,19 @@ fn reduce_groups_merging(
     input: &SummaryInput,
     rules: SummaryRules,
     partials: &[SummaryV1],
+    carried: &[String],
     budget: ContextBudget,
     merge: Merge,
 ) -> Result<Vec<Range<usize>>, PromptError> {
-    let whole = reduce_prompt_merging(input, rules, partials, budget, merge, MergeLevel::Last);
+    let whole = reduce_prompt_merging(
+        input,
+        rules,
+        partials,
+        carried,
+        budget,
+        merge,
+        MergeLevel::Last,
+    );
     if budget.fits(whole.estimated_tokens, whole.max_output_tokens) {
         return Ok(std::iter::once(0..partials.len()).collect());
     }
@@ -792,8 +934,12 @@ fn reduce_groups_merging(
             input.user_name.as_deref(),
             Some(&merge.text()),
             &input.vocabulary,
+            &[],
             merge.style(input, MergeLevel::Last),
         ))
+        // Whatever names a group's merge carries: its parts' names and the names its
+        // partials match (0 when there are no names).
+        + input.people_bound(carried)
         + estimate_tokens(&reduce_user_text(input, &[], &numbers));
     // Six-digit part numbers bound the label of any position.
     let cost = |p: &SummaryV1| estimate_tokens(&partial_block(999_999, 999_999, p, &numbers));
@@ -872,7 +1018,23 @@ pub fn reduce_prompt_with_rules(
     budget: ContextBudget,
     level: MergeLevel,
 ) -> Prompt {
-    reduce_prompt_merging(input, rules, partials, budget, Merge::Plain, level)
+    reduce_prompt_carrying(input, rules, partials, &[], budget, level)
+}
+
+/// [`reduce_prompt_with_rules`] for partials whose requests carried saved people's names
+/// (T12.91): the merge carries every name of `carried` (the names its parts carried,
+/// [`carried_names`]) and the names its partials, the meeting details and the notes match, so
+/// a name chosen in a map step is never lost at the merge. Production merges go through this.
+#[must_use]
+pub fn reduce_prompt_carrying(
+    input: &SummaryInput,
+    rules: SummaryRules,
+    partials: &[SummaryV1],
+    carried: &[String],
+    budget: ContextBudget,
+    level: MergeLevel,
+) -> Prompt {
+    reduce_prompt_merging(input, rules, partials, carried, budget, Merge::Plain, level)
 }
 
 /// [`reduce_prompt`] for a two-call run (T6.20c, evaluation only): the same request with
@@ -890,6 +1052,7 @@ pub fn reduce_prompt_two_call(
         input,
         input.rules,
         partials,
+        &[],
         budget,
         Merge::TwoCall,
         MergeLevel::Last,
@@ -900,11 +1063,20 @@ fn reduce_prompt_merging(
     input: &SummaryInput,
     rules: SummaryRules,
     partials: &[SummaryV1],
+    carried: &[String],
     budget: ContextBudget,
     merge: Merge,
     level: MergeLevel,
 ) -> Prompt {
     let numbers = segment_numbers(input);
+    let names = {
+        let mut texts = input.meeting_texts();
+        texts.extend(input.notes.iter().map(|n| n.text.as_str()));
+        for p in partials {
+            texts.extend(summary_texts(p));
+        }
+        SummaryInput::chosen_names(input.name_filter().as_ref(), &texts, carried)
+    };
     let content: usize = partials
         .iter()
         .enumerate()
@@ -920,6 +1092,7 @@ fn reduce_prompt_merging(
                     input.user_name.as_deref(),
                     Some(&merge.text()),
                     &input.vocabulary,
+                    &names,
                     merge.style(input, level),
                 ),
             ),
@@ -928,6 +1101,25 @@ fn reduce_prompt_merging(
         reply_tokens(ReplyBasis::Partials(content), budget),
         Citable::cited_by(partials, &numbers),
     )
+    .carrying(names)
+}
+
+/// Every text of a summary, as names are matched against a merge's partials.
+fn summary_texts(s: &SummaryV1) -> Vec<&str> {
+    let mut texts = vec![s.title.as_str(), s.tldr.as_str()];
+    for section in &s.enhanced_notes {
+        texts.push(&section.heading);
+        texts.extend(section.bullets.iter().map(|b| b.text.as_str()));
+    }
+    texts.extend(s.decisions.iter().map(|d| d.text.as_str()));
+    for a in &s.action_items {
+        texts.push(&a.owner);
+        texts.push(&a.task);
+        texts.extend(a.due.as_deref());
+    }
+    texts.extend(s.open_questions.iter().map(String::as_str));
+    texts.extend(s.topics.iter().map(String::as_str));
+    texts
 }
 
 /// The user message of a repair round (PLAN.md 3.7): the validator's errors, one per line
@@ -1000,15 +1192,16 @@ fn schema_text() -> &'static str {
 
 /// The system message: the shared rules (`rules`, [`SummaryInput::rules_text`]) with the
 /// schema, the template, `extra` (a map or merge instruction), the user's own words
-/// (T12.15a; every request, nothing when empty) and last the user's style block (T7.4b;
-/// nothing when `style` is `None` or empty). A request without words or a style is
-/// unchanged.
+/// (T12.15a; every request, nothing when empty), the saved people's names the request
+/// carries (T12.91; nothing when none) and last the user's style block (T7.4b; nothing when
+/// `style` is `None` or empty). A request without words, names or a style is unchanged.
 fn system_text(
     template: Template,
     rules: &str,
     user_name: Option<&str>,
     extra: Option<&str>,
     vocabulary: &Vocabulary,
+    people: &[String],
     style: Option<(StylePreset, &SummaryStyle)>,
 ) -> String {
     let mut s = rules.replace("{{schema}}", schema_text());
@@ -1023,6 +1216,10 @@ fn system_text(
         s.push_str(e);
     }
     if let Some(block) = vocabulary.block() {
+        s.push('\n');
+        s.push_str(&block);
+    }
+    if let Some(block) = super::people::people_block(people) {
         s.push('\n');
         s.push_str(&block);
     }

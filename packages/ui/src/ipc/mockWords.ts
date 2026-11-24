@@ -10,11 +10,10 @@ function asciiLower(s: string): string {
   return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 
-/** `word_choices::list_of`: the Dictionary's words, then the words of saved people's names
- * (by name with ASCII case ignored, as `list_persons` orders them; the default "Me" left out),
- * each dropped when it repeats an earlier word in another case. */
-export function wordListOf(dictionary: string[], persons: PersonItem[]): string[] {
-  const people = persons
+/** `word_choices::named_persons`: the saved people whose names count, by name with ASCII case
+ * ignored (as `list_persons` orders them), the default "Me" left out. */
+function namedPersons(persons: PersonItem[]): PersonItem[] {
+  return persons
     .filter((p) => !(p.is_me && p.name === "Me"))
     .sort((a, b) => {
       const x = asciiLower(a.name);
@@ -22,6 +21,31 @@ export function wordListOf(dictionary: string[], persons: PersonItem[]): string[
       if (x !== y) return x < y ? -1 : 1;
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
+}
+
+/** `word_choices::people_of` (T12.91, `prompt::People::new`): the whole names of
+ * `namedPersons`, white space joined, names that are empty, longer than 100 characters or hold
+ * a control or invisible formatting character left out, and a name that repeats an earlier one
+ * or a Dictionary entry in another case left out. */
+export function peopleOf(dictionary: string[], persons: PersonItem[]): string[] {
+  const seen = new Set(dictionary.map((w) => w.toLowerCase()));
+  const out: string[] = [];
+  for (const p of namedPersons(persons)) {
+    if (/[\p{Cc}\p{Cf}]/u.test(p.name)) continue;
+    const name = p.name.split(/\p{White_Space}+/u).filter((w) => w !== "").join(" ");
+    if (name === "" || [...name].length > 100) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+/** `word_choices::list_of`: the Dictionary's words, then the words of saved people's names
+ * (`namedPersons`), each dropped when it repeats an earlier word in another case. */
+export function wordListOf(dictionary: string[], persons: PersonItem[]): string[] {
+  const people = namedPersons(persons);
   const seen = new Set<string>();
   const out: string[] = [];
   for (const w of [...dictionary.flatMap(tokensOf), ...people.flatMap((p) => tokensOf(p.name))]) {
