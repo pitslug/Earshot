@@ -68,4 +68,25 @@ The report holds counts only: no transcript text and no name. `--dry-run` measur
 
 ## Result
 
-Not yet run.
+Everything above was committed unchanged before the run (`ceedec8`). Raw report, unmodified: `summary-names/ami-dev.json` (20 AMI dev meetings, reference transcripts, 400 invented names, run 2026-11-25 on the ARM64 Surface).
+
+**The filter passes every bound and the rule picks a cap of 15.** `MAX_PEOPLE_PER_REQUEST` is set to 15.
+
+| Request | Count | Chosen (median / max) | Namesakes | Spurious | Growth, est. tokens (median / max) |
+|---|---|---|---|---|---|
+| map | 71 | 9 / 15 | 2 / 5 | 0 / 3 | 241 / 278 |
+| single | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
+| last merge | 20 | 21 / 24 | 8 / 8 | 1 / 4 | 323 / 343 |
+
+| Condition | Result |
+|---|---|
+| Whole-name recall 100% | holds: 160 of 160 in map and single requests |
+| Misheard recall in map requests at least 50% | holds: 154 of 160 (96%); 160 of 160 in single requests |
+| Median map growth at most 400 | holds: 241 |
+| No request grows by more than 1,500 | holds: largest 343 |
+| Median spurious per map request at most 3 | holds: 0 |
+| A candidate cap qualifies | holds: 5 loses 141 mentions, 10 loses 7, 15 and above lose none |
+
+Most of each request's growth is the block's fixed text (191); the names themselves cost about 50 tokens in a map request and 130 in a whole-meeting one. The single and merge requests choose the meeting's own four speakers as well as the injected names, which is why they hold about 21. The six misheard surnames a map request missed were all caught by the single request; why each was missed in its window was not traced (a shared sound key, which makes the matcher decline, is the likely cause).
+
+**Limits.** Reference transcripts (Earshot's own recognition was not used, because invented names are never spoken in AMI and the mishearings are injected); one list shape; English meetings only.

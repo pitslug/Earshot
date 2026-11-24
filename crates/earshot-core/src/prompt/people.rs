@@ -21,9 +21,10 @@ use super::template::PEOPLE;
 use super::vocabulary::{VOCABULARY_LINE_PREFIX, Vocabulary};
 
 /// The most names one request carries beside the names its parts carried (a merge never
-/// drops those). PLACEHOLDER: the value is chosen by the rule in docs/summary-names.md,
-/// written before its measurement; until that rule has run this is not a measured value.
-pub const MAX_PEOPLE_PER_REQUEST: usize = 50;
+/// drops those). Chosen by the rule in docs/summary-names.md, written before its measurement:
+/// the smallest candidate cap that lost no matched mention on the AMI dev meetings with 400
+/// invented saved names (`docs/summary-names/ami-dev.json`, 2026-11-25: 10 lost 7, 15 lost 0).
+pub const MAX_PEOPLE_PER_REQUEST: usize = 15;
 
 /// The longest name kept, in characters: the People page's own limit
 /// (`earshot_runtime::edit::MAX_NAME_CHARS`). A longer name (only possible from another
