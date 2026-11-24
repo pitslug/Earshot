@@ -43,4 +43,31 @@ If all hold, the candidate ships with unit tests, `STRETCH_RECORD_VERSION` raise
 
 ## Result
 
-(Appended after the runs.)
+Everything above was committed unchanged before the runs. Raw reports, unmodified: `edge-words-baseline.json` (word ends from the punctuation token) and `edge-words-candidate.json` (spoken ends, run with `--baseline`, verdict inside), both on the ARM64 Surface's CPU, full data, every item's diarisation identical in the two runs.
+
+**The decision fails: nothing ships from stage 1.** The far-field set gets slightly worse.
+
+| Set | Measure | Baseline | Spoken ends |
+|---|---|---|---|
+| `scenes` (12762 words with truth) | wrong / WDER | 81 / 0.635% | 80 / 0.627% |
+| `scenes` | edge errors | 6 | 5 |
+| `ami_mix` (9577 / 9597) | wrong / WDER | 633 / 6.610% | 631 / 6.575% |
+| `ami_mix` | edge errors | 102 | 98 |
+| `ami_mix` | change recall | 59.47% | 59.39% |
+| `ami_mix` | short true turns kept | 136 of 306 | 137 of 306 |
+| `ami_sdm` (8238 / 8237) | wrong / WDER | 566 / 6.871% | 573 / 6.956% |
+| `ami_sdm` | edge errors | 81 | 81 |
+| `ami_sdm` | change recall | 55.31% | 55.59% |
+| `ami_sdm` | short true turns kept | 69 of 206 | 70 of 204 |
+
+| Condition | Result |
+|---|---|
+| 1. `ami_mix` and `ami_sdm` fewer edge errors and lower WDER | **fails** (`ami_sdm`: edge errors equal, WDER higher) |
+| 2. `scenes` not worse | holds |
+| 3. Short true turns kept not fewer | holds |
+| 4. Change recall within 1 point | holds |
+| 5. Diarisation identical in both runs | holds |
+
+`durations` confirm the mechanism on public data: short words with punctuation lasted 400 ms at the median (800 ms at the 90th percentile) on both AMI sets and 560 ms (880 ms) in the scenes, against 160 ms (320 ms) without; with spoken ends they lasted 240 ms (`ami_mix`), 160 ms (`ami_sdm`) and 320 ms (`scenes`) at the median. The stretch is real, but taking it away moves few words: about one wrong AMI word in seven is an edge error (102 of 633 and 81 of 566), and almost all of those stay wrong with spoken ends. On these recordings the turn boundaries the diarisation draws, not the word ends, decide most edge errors. The word counts differ slightly between the runs because uncovered-speech recovery (piece step 5) reads word spans.
+
+Next: stage 2 (a rule in `diar::assign`), written as its own section before any run. The edge errors in the baseline report are the count it has to lower.

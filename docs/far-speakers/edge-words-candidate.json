@@ -1,0 +1,825 @@
+{
+  "ami_meetings": [
+    "ES2003a",
+    "ES2011a",
+    "IS1008a",
+    "TS3004a",
+    "TS3006a"
+  ],
+  "baseline": "docs\\far-speakers\\edge-words-baseline.json",
+  "cluster_threshold": 0.6800000071525574,
+  "embedding_model": "campplus-en-voxceleb@357a834f702b",
+  "full_data": true,
+  "items": [
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-00",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 8,
+        "of_those_right": 0,
+        "true_changes": 8,
+        "wder_percent": 0.0,
+        "words": 593,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 588,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "81f6c000c9a06183"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-01",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 1,
+        "found_changes": 11,
+        "of_those_right": 0,
+        "true_changes": 11,
+        "wder_percent": 0.163,
+        "words": 612,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 612,
+        "wrong": 1
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "6b6cc30a31eda4b6"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-02",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 8,
+        "of_those_right": 0,
+        "true_changes": 8,
+        "wder_percent": 0.0,
+        "words": 619,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 616,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "7a7103e6e4e136c9"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-03",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 5,
+        "of_those_right": 0,
+        "true_changes": 5,
+        "wder_percent": 0.0,
+        "words": 687,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 681,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "874a7b38e41e6e72"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-04",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 2,
+        "found_changes": 8,
+        "of_those_right": 0,
+        "true_changes": 8,
+        "wder_percent": 0.322,
+        "words": 627,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 621,
+        "wrong": 2
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "204d7ec7846f58d3"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-05",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 9,
+        "of_those_right": 0,
+        "true_changes": 9,
+        "wder_percent": 0.0,
+        "words": 744,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 739,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "b903c0ae1461c337"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-06",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 14,
+        "of_those_right": 0,
+        "true_changes": 14,
+        "wder_percent": 0.0,
+        "words": 642,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 642,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "a69f6f3bb7f10cc5"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-07",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 9,
+        "of_those_right": 0,
+        "true_changes": 9,
+        "wder_percent": 0.0,
+        "words": 598,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 595,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "3e3864b1a84e208e"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-08",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 10,
+        "of_those_right": 0,
+        "true_changes": 10,
+        "wder_percent": 0.0,
+        "words": 575,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 575,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "ed16bb49dd117b18"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-09",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 8,
+        "of_those_right": 0,
+        "true_changes": 8,
+        "wder_percent": 0.0,
+        "words": 686,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 680,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "1bfe58e24218538a"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-10",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 9,
+        "of_those_right": 0,
+        "true_changes": 9,
+        "wder_percent": 0.0,
+        "words": 626,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 624,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "91bddd8f689ef92f"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-11",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 9,
+        "of_those_right": 0,
+        "true_changes": 9,
+        "wder_percent": 0.0,
+        "words": 681,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 675,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "4b3ba03c4a6802f1"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-12",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 10,
+        "of_those_right": 0,
+        "true_changes": 10,
+        "wder_percent": 0.0,
+        "words": 625,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 622,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "8b6ec5fb79e218ad"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-13",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 9,
+        "of_those_right": 0,
+        "true_changes": 9,
+        "wder_percent": 0.0,
+        "words": 584,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 584,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "f2bba28da163f1bf"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-14",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 11,
+        "of_those_right": 0,
+        "true_changes": 11,
+        "wder_percent": 0.0,
+        "words": 651,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 646,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "1aedb373be34022c"
+    },
+    {
+      "found_speakers": 3,
+      "map": [
+        0,
+        null,
+        1
+      ],
+      "name": "scene-15",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 2,
+        "found_changes": 9,
+        "of_those_right": 0,
+        "true_changes": 9,
+        "wder_percent": 11.493,
+        "words": 671,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 670,
+        "wrong": 77
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "d232dee081ee23f7"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-16",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 8,
+        "of_those_right": 0,
+        "true_changes": 8,
+        "wder_percent": 0.0,
+        "words": 650,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 647,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "8c39f69b27520676"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-17",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 11,
+        "of_those_right": 0,
+        "true_changes": 11,
+        "wder_percent": 0.0,
+        "words": 640,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 634,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "e02bbd2d6f7d5cd6"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-18",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 10,
+        "of_those_right": 0,
+        "true_changes": 10,
+        "wder_percent": 0.0,
+        "words": 605,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 600,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "79e484e59891a098"
+    },
+    {
+      "found_speakers": 2,
+      "map": [
+        0,
+        1
+      ],
+      "name": "scene-19",
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 0,
+        "found_changes": 9,
+        "of_those_right": 0,
+        "true_changes": 9,
+        "wder_percent": 0.0,
+        "words": 712,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 710,
+        "wrong": 0
+      },
+      "set": "scenes",
+      "true_speakers": 2,
+      "turns_hash": "f0339f0546163e35"
+    },
+    {
+      "found_speakers": 5,
+      "map": [
+        1,
+        null,
+        2,
+        3,
+        0
+      ],
+      "name": "ES2003a.Mix-Headset",
+      "score": {
+        "change_recall_percent": 57.143,
+        "edge_errors": 7,
+        "found_changes": 20,
+        "of_those_right": 2,
+        "true_changes": 35,
+        "wder_percent": 3.507,
+        "words": 1988,
+        "words_in_true_runs_of_at_most_2": 13,
+        "words_with_truth": 1654,
+        "wrong": 58
+      },
+      "set": "ami_mix",
+      "true_speakers": 4,
+      "turns_hash": "4b82536b524d3f30"
+    },
+    {
+      "found_speakers": 3,
+      "map": [
+        2,
+        3,
+        0
+      ],
+      "name": "ES2011a.Mix-Headset",
+      "score": {
+        "change_recall_percent": 40.0,
+        "edge_errors": 23,
+        "found_changes": 36,
+        "of_those_right": 19,
+        "true_changes": 90,
+        "wder_percent": 9.448,
+        "words": 2170,
+        "words_in_true_runs_of_at_most_2": 54,
+        "words_with_truth": 1831,
+        "wrong": 173
+      },
+      "set": "ami_mix",
+      "true_speakers": 4,
+      "turns_hash": "72986de4448ffd6f"
+    },
+    {
+      "found_speakers": 4,
+      "map": [
+        2,
+        0,
+        1,
+        3
+      ],
+      "name": "IS1008a.Mix-Headset",
+      "score": {
+        "change_recall_percent": 79.661,
+        "edge_errors": 15,
+        "found_changes": 47,
+        "of_those_right": 10,
+        "true_changes": 59,
+        "wder_percent": 2.312,
+        "words": 2349,
+        "words_in_true_runs_of_at_most_2": 21,
+        "words_with_truth": 2033,
+        "wrong": 47
+      },
+      "set": "ami_mix",
+      "true_speakers": 4,
+      "turns_hash": "3baf7d1bb7305cc0"
+    },
+    {
+      "found_speakers": 4,
+      "map": [
+        0,
+        3,
+        1,
+        2
+      ],
+      "name": "TS3004a.Mix-Headset",
+      "score": {
+        "change_recall_percent": 61.25,
+        "edge_errors": 23,
+        "found_changes": 98,
+        "of_those_right": 44,
+        "true_changes": 160,
+        "wder_percent": 9.044,
+        "words": 2644,
+        "words_in_true_runs_of_at_most_2": 105,
+        "words_with_truth": 2134,
+        "wrong": 193
+      },
+      "set": "ami_mix",
+      "true_speakers": 4,
+      "turns_hash": "e0c13e1d0587a4cd"
+    },
+    {
+      "found_speakers": 4,
+      "map": [
+        1,
+        3,
+        2,
+        0
+      ],
+      "name": "TS3006a.Mix-Headset",
+      "score": {
+        "change_recall_percent": 61.589,
+        "edge_errors": 30,
+        "found_changes": 93,
+        "of_those_right": 62,
+        "true_changes": 151,
+        "wder_percent": 8.226,
+        "words": 2301,
+        "words_in_true_runs_of_at_most_2": 113,
+        "words_with_truth": 1945,
+        "wrong": 160
+      },
+      "set": "ami_mix",
+      "true_speakers": 4,
+      "turns_hash": "9e445d136e9447b3"
+    },
+    {
+      "found_speakers": 5,
+      "map": [
+        1,
+        2,
+        null,
+        3,
+        0
+      ],
+      "name": "ES2003a.Array1-01",
+      "score": {
+        "change_recall_percent": 50.0,
+        "edge_errors": 5,
+        "found_changes": 12,
+        "of_those_right": 1,
+        "true_changes": 24,
+        "wder_percent": 3.902,
+        "words": 1608,
+        "words_in_true_runs_of_at_most_2": 8,
+        "words_with_truth": 1307,
+        "wrong": 51
+      },
+      "set": "ami_sdm",
+      "true_speakers": 4,
+      "turns_hash": "4556b07a28b476fb"
+    },
+    {
+      "found_speakers": 4,
+      "map": [
+        null,
+        0,
+        3,
+        2
+      ],
+      "name": "ES2011a.Array1-01",
+      "score": {
+        "change_recall_percent": 42.466,
+        "edge_errors": 21,
+        "found_changes": 31,
+        "of_those_right": 10,
+        "true_changes": 73,
+        "wder_percent": 10.02,
+        "words": 1860,
+        "words_in_true_runs_of_at_most_2": 40,
+        "words_with_truth": 1487,
+        "wrong": 149
+      },
+      "set": "ami_sdm",
+      "true_speakers": 4,
+      "turns_hash": "11aa3dc5bd9537a9"
+    },
+    {
+      "found_speakers": 4,
+      "map": [
+        2,
+        1,
+        0,
+        3
+      ],
+      "name": "IS1008a.Array1-01",
+      "score": {
+        "change_recall_percent": 71.429,
+        "edge_errors": 10,
+        "found_changes": 45,
+        "of_those_right": 8,
+        "true_changes": 63,
+        "wder_percent": 2.223,
+        "words": 2328,
+        "words_in_true_runs_of_at_most_2": 21,
+        "words_with_truth": 2024,
+        "wrong": 45
+      },
+      "set": "ami_sdm",
+      "true_speakers": 4,
+      "turns_hash": "4672db3446a3b403"
+    },
+    {
+      "found_speakers": 4,
+      "map": [
+        2,
+        0,
+        1,
+        3
+      ],
+      "name": "TS3004a.Array1-01",
+      "score": {
+        "change_recall_percent": 58.333,
+        "edge_errors": 30,
+        "found_changes": 63,
+        "of_those_right": 40,
+        "true_changes": 108,
+        "wder_percent": 7.812,
+        "words": 2295,
+        "words_in_true_runs_of_at_most_2": 72,
+        "words_with_truth": 1805,
+        "wrong": 141
+      },
+      "set": "ami_sdm",
+      "true_speakers": 4,
+      "turns_hash": "4e812dbe58759053"
+    },
+    {
+      "found_speakers": 6,
+      "map": [
+        3,
+        null,
+        1,
+        null,
+        2,
+        0
+      ],
+      "name": "TS3006a.Array1-01",
+      "score": {
+        "change_recall_percent": 53.333,
+        "edge_errors": 15,
+        "found_changes": 48,
+        "of_those_right": 11,
+        "true_changes": 90,
+        "wder_percent": 11.586,
+        "words": 1973,
+        "words_in_true_runs_of_at_most_2": 63,
+        "words_with_truth": 1614,
+        "wrong": 187
+      },
+      "set": "ami_sdm",
+      "true_speakers": 4,
+      "turns_hash": "84c4aa12bc24cc64"
+    }
+  ],
+  "pairs": 20,
+  "sets": [
+    {
+      "durations": {
+        "with_punctuation": {
+          "median_ms": 320,
+          "p90_ms": 560,
+          "words": 601
+        },
+        "without_punctuation": {
+          "median_ms": 160,
+          "p90_ms": 320,
+          "words": 7304
+        }
+      },
+      "score": {
+        "change_recall_percent": 100.0,
+        "edge_errors": 5,
+        "found_changes": 185,
+        "of_those_right": 0,
+        "true_changes": 185,
+        "wder_percent": 0.627,
+        "words": 12828,
+        "words_in_true_runs_of_at_most_2": 0,
+        "words_with_truth": 12761,
+        "wrong": 80
+      },
+      "set": "scenes"
+    },
+    {
+      "durations": {
+        "with_punctuation": {
+          "median_ms": 240,
+          "p90_ms": 320,
+          "words": 1073
+        },
+        "without_punctuation": {
+          "median_ms": 160,
+          "p90_ms": 320,
+          "words": 7313
+        }
+      },
+      "score": {
+        "change_recall_percent": 59.394,
+        "edge_errors": 98,
+        "found_changes": 294,
+        "of_those_right": 137,
+        "true_changes": 495,
+        "wder_percent": 6.575,
+        "words": 11452,
+        "words_in_true_runs_of_at_most_2": 306,
+        "words_with_truth": 9597,
+        "wrong": 631
+      },
+      "set": "ami_mix"
+    },
+    {
+      "durations": {
+        "with_punctuation": {
+          "median_ms": 160,
+          "p90_ms": 320,
+          "words": 783
+        },
+        "without_punctuation": {
+          "median_ms": 160,
+          "p90_ms": 320,
+          "words": 6524
+        }
+      },
+      "score": {
+        "change_recall_percent": 55.587,
+        "edge_errors": 81,
+        "found_changes": 199,
+        "of_those_right": 70,
+        "true_changes": 358,
+        "wder_percent": 6.956,
+        "words": 10064,
+        "words_in_true_runs_of_at_most_2": 204,
+        "words_with_truth": 8237,
+        "wrong": 573
+      },
+      "set": "ami_sdm"
+    }
+  ],
+  "task": "T12.88",
+  "transcription_model": "parakeet-tdt-0.6b-v2",
+  "verdict": {
+    "1_ami_mix_and_sdm_fewer_edge_errors_and_lower_wder": false,
+    "2_scenes_edge_errors_and_wder_not_higher": true,
+    "3_short_true_turns_kept_not_fewer": true,
+    "4_change_recall_within_1_point": true,
+    "5_diarisation_identical_in_both_runs": true,
+    "full_data_and_both_word_ends": true,
+    "ships": false
+  },
+  "word_ends": "spoken"
+}
