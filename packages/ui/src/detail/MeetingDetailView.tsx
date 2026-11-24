@@ -365,6 +365,12 @@ const useStyles = makeStyles({
     flexDirection: "column",
     rowGap: tokens.spacingVerticalXS,
   },
+  splitHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    columnGap: tokens.spacingHorizontalM,
+  },
   splitWords: {
     display: "flex",
     flexWrap: "wrap",
@@ -1966,8 +1972,6 @@ function SplitPoints({
   useEffect(() => first.current?.focus(), []);
   return (
     <div
-      role="group"
-      aria-label={`Split line ${index + 1}`}
       className={styles.splitPoints}
       onKeyDown={(e) => {
         if (e.key === "Escape" && e.currentTarget.contains(e.target as Node)) {
@@ -1976,8 +1980,13 @@ function SplitPoints({
         }
       }}
     >
-      <Caption1 className={styles.muted}>Choose the word the new line starts with.</Caption1>
-      <span className={styles.splitWords}>
+      <div className={styles.splitHeader}>
+        <Caption1 className={styles.muted}>Choose the word the new line starts with.</Caption1>
+        <Button size="small" appearance="subtle" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+      <span role="group" aria-label={`Split line ${index + 1}`} className={styles.splitWords}>
         {words.map((w, t) =>
           t === 0 ? (
             <span key={t}>{w}</span>
@@ -1995,11 +2004,6 @@ function SplitPoints({
             </Button>
           ),
         )}
-      </span>
-      <span>
-        <Button size="small" onClick={onCancel}>
-          Cancel
-        </Button>
       </span>
     </div>
   );
