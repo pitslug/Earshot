@@ -155,6 +155,13 @@ name = "word_changes"
 required-features = ["engines"]
 test = true
 
+# T12.88: does a sentence's edge word stay with its speaker (docs/far-speakers/edge-words.md);
+# counts only, its unit tests run with the crate's tests.
+[[example]]
+name = "edge_words"
+required-features = ["engines"]
+test = true
+
 # The clustering threshold sweep with AMI dev meetings (T12.9, measurement only); its unit tests
 # pin the scenes, the measures and the rule of docs/far-speakers/ami-dev-calibration.md.
 [[example]]
