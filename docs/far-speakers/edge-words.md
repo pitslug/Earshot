@@ -71,3 +71,27 @@ Everything above was committed unchanged before the runs. Raw reports, unmodifie
 `durations` confirm the mechanism on public data: short words with punctuation lasted 400 ms at the median (800 ms at the 90th percentile) on both AMI sets and 560 ms (880 ms) in the scenes, against 160 ms (320 ms) without; with spoken ends they lasted 240 ms (`ami_mix`), 160 ms (`ami_sdm`) and 320 ms (`scenes`) at the median. The stretch is real, but taking it away moves few words: about one wrong AMI word in seven is an edge error (102 of 633 and 81 of 566), and almost all of those stay wrong with spoken ends. On these recordings the turn boundaries the diarisation draws, not the word ends, decide most edge errors. The word counts differ slightly between the runs because uncovered-speech recovery (piece step 5) reads word spans.
 
 Next: stage 2 (a rule in `diar::assign`), written as its own section before any run. The edge errors in the baseline report are the count it has to lower.
+
+## Stage 2 rule (written before any run, 2026-11-24)
+
+T6.9a found that snapping a speaker change to the nearest sentence end or pause did the work of its rule on AMI dev (unsupported changes 173 to 47), while merging short runs lost real changes; it suggested trying snapping alone under a new rule. This is that rule, judged with recognised words.
+
+**Candidate.** After every word has its speaker by `diar::assign`'s overlap rule, over a track's words in time order (across segments): a boundary between words i-1 and i is **supported** when word i-1 ends a sentence (its text ends in `.`, `?` or `!`, ignoring closing quotes and brackets; in the `clause` variants also `,`) or the pause from word i-1's end to word i's start is at least 300 ms (T6.9's `NO_PAUSE_MS`). Left to right, a speaker change on an unsupported boundary moves to the nearest supported boundary at most S words away either way (the earlier on equal distance), if there is one inside the two runs it separates that leaves both runs non-empty (T6.9a's step 3, unchanged). Nothing else changes: no run is merged, no change is added or removed. A real one-word answer after a sentence end or a pause is on a supported boundary and never moves.
+
+**Variants.** S in {1, 2} times support `sentence` or `clause`: four. Nothing else is tried. The function lives in `diar::assign` from the start (`snap_changes`), and the tool calls it, so what is measured is the code that would ship; production does not call it until the rule passes.
+
+**Data.** Stage 1's data with today's word ends (`edge-words-baseline.json` setup: `scenes`, `ami_mix`, `ami_sdm`), plus `ami_held`: the second and third meetings of each dev series, `Mix-Headset` (ES2003b, ES2003c, ES2011b, ES2011c, IS1008b, IS1008c, TS3004b, TS3004c, TS3006b, TS3006c; set `ami-dev`), with stage 1's recogniser, diarisation and AMI truth rules. Stage 1's numbers were seen before this rule was written; `ami_held` was not measured by T12.88 before it. Every variant is scored on the same run as the baseline, with the baseline's speaker map.
+
+**Pick.** On `ami_mix` and `ami_sdm` pooled: fewest edge errors, then lowest WDER, then S = 1, then `sentence`.
+
+**Decision.** The picked variant ships only if all of these hold:
+
+1. `ami_held`: fewer edge errors and a lower WDER than the baseline.
+2. `ami_mix` and `ami_sdm` pooled: fewer edge errors; and each of them: WDER not higher.
+3. `scenes`: edge errors and WDER not higher.
+4. Every set: short true turns kept down by at most 2% of that set's words in short true turns.
+5. Every set: change recall at most 1 percentage point lower.
+
+If all hold, `label_segment_speakers` applies the picked variant to each track's words in time order before splitting segments, with unit tests (the symptom, a real one-word answer kept, a change out of reach kept, runs never emptied), and `cargo xtask accept m3` and `cargo xtask accept m6` must end unchanged or better; if they do not, the change is withdrawn and reported. If any condition fails, nothing ships and the result is written below.
+
+**Tool.** `edge_words --stage2` (one run: baseline and variants, verdict inside), report `edge-words-stage2.json`, counts only.

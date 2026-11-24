@@ -34,7 +34,9 @@ use earshot_core::asr::{
     transcribe_in_pieces, words_from_tokens,
 };
 use earshot_core::audio::{MonoBuffer, PIPELINE_RATE, quantise_pcm16};
-use earshot_core::diar::{Diarizer, SpeakerEmbedder, SpeakerTurn, assign_words};
+use earshot_core::diar::{
+    Diarizer, Snap, SpeakerEmbedder, SpeakerTurn, assign_words, snap_changes,
+};
 use earshot_core::metrics::normalize::normalize_english;
 use earshot_runtime::backends::{
     Accelerator, EvidenceLoader, ModelDir, final_pass_asr, init_onnx, load_diarisation,
@@ -55,6 +57,34 @@ const SHORT_WORD_LETTERS: usize = 4;
 const SETS: [&str; 3] = ["scenes", "ami_mix", "ami_sdm"];
 /// The full data of the rule: scene pairs.
 const FULL_PAIRS: usize = 20;
+/// Stage 2's held-out meetings: the second and third of each AMI dev series (set `ami-dev`).
+const AMI_HELD: [&str; 10] = [
+    "ES2003b", "ES2003c", "ES2011b", "ES2011c", "IS1008b", "IS1008c", "TS3004b", "TS3004c",
+    "TS3006b", "TS3006c",
+];
+/// Stage 2's sets, in report order.
+const SETS2: [&str; 4] = ["scenes", "ami_mix", "ami_sdm", "ami_held"];
+/// Stage 2's variants, in the pick's tie-break order (S = 1 first, then `sentence`).
+const VARIANTS2: [Snap; 4] = [
+    Snap {
+        reach: 1,
+        clause_ends: false,
+    },
+    Snap {
+        reach: 1,
+        clause_ends: true,
+    },
+    Snap {
+        reach: 2,
+        clause_ends: false,
+    },
+    Snap {
+        reach: 2,
+        clause_ends: true,
+    },
+];
+/// Stage 2's allowance for short true turns kept: this share of a set's words in them.
+const SHORT_TURN_ALLOWANCE: f64 = 0.02;
 
 fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("edge_words: {msg}");
@@ -426,9 +456,14 @@ fn main() {
         .next()
         .unwrap_or_else(|| fail("usage: edge_words <repo-root> --models <dir>"));
     let (mut models, mut out, mut baseline_path) = (None, None, None);
+    let mut stage2 = false;
     let mut pairs = FULL_PAIRS;
     let mut meetings: Vec<String> = AMI_DEV.iter().map(|m| (*m).to_owned()).collect();
     while let Some(flag) = it.next() {
+        if flag == "--stage2" {
+            stage2 = true;
+            continue;
+        }
         let value = it
             .next()
             .unwrap_or_else(|| fail(format!("{flag} needs a value")));
@@ -458,6 +493,9 @@ fn main() {
         }
     }
     let ends = word_ends();
+    if stage2 && baseline_path.is_some() {
+        fail("--stage2 scores its own baseline; it takes no --baseline");
+    }
     let baseline: Option<Value> = baseline_path.as_deref().map(read_report);
     let models = models.unwrap_or_else(|| fail("--models is required"));
     init_onnx(&models, onnx_library(DEFAULT_MODEL, &[Accelerator::Cpu]))
@@ -540,6 +578,48 @@ fn main() {
             });
         }
     }
+    if stage2 {
+        for m in AMI_HELD {
+            eprintln!("edge_words: {m} Mix-Headset (held out)");
+            let audio = read_mono_wav(
+                &fixtures.join(format!("ami/audio/{m}.Mix-Headset.wav")),
+                "ami-dev",
+            );
+            let (turns, k, words) = tools.run(&audio, &format!("{m} Mix-Headset"));
+            let (reference, ref_truth, true_k) = ami_meeting_words(&annotations, m);
+            let truth = match_truth(&words, &reference, &ref_truth);
+            items.push(Item {
+                name: format!("{m}.Mix-Headset"),
+                set: "ami_held",
+                labels: labels_of(&words, &turns),
+                words,
+                truth,
+                k,
+                true_k,
+                turns_hash: turns_hash(&turns),
+            });
+        }
+        let full = pairs == FULL_PAIRS && meetings.len() == AMI_DEV.len();
+        let report = stage2_report(&items, ends, full);
+        let report = json!({
+            "task": "T12.88 stage 2",
+            "word_ends": ends,
+            "transcription_model": DEFAULT_MODEL,
+            "embedding_model": model.to_string(),
+            "cluster_threshold": threshold,
+            "pairs": pairs,
+            "ami_meetings": meetings,
+            "ami_held": AMI_HELD,
+            "full_data": full,
+            "stage2": report,
+        });
+        let text = serde_json::to_string_pretty(&report).unwrap_or_else(|e| fail(e));
+        if let Some(out) = &out {
+            std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
+        }
+        println!("{text}");
+        return;
+    }
 
     let maps = maps(&items, baseline.as_ref());
     let mut pooled: HashMap<&str, Score> = HashMap::new();
@@ -609,6 +689,136 @@ fn main() {
         std::fs::write(out, &text).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
     }
     println!("{text}");
+}
+
+// ---- stage 2 -------------------------------------------------------------------------------
+
+fn variant_json(v: Snap) -> Value {
+    json!({"reach": v.reach, "support": if v.clause_ends { "clause" } else { "sentence" }})
+}
+
+/// Baseline and every variant's score per set, each item scored with its baseline map.
+fn stage2_scores(items: &[Item]) -> HashMap<&'static str, (Score, Vec<Score>)> {
+    let mut out: HashMap<&'static str, (Score, Vec<Score>)> = HashMap::new();
+    for it in items {
+        let map = best_map(&it.labels, &it.truth, it.k, it.true_k);
+        let entry = out
+            .entry(it.set)
+            .or_insert_with(|| (Score::default(), vec![Score::default(); VARIANTS2.len()]));
+        entry.0.add(&score(&it.labels, &it.truth, &map));
+        let base: Vec<Option<usize>> = it.labels.iter().map(|&l| Some(l)).collect();
+        for (row, v) in entry.1.iter_mut().zip(VARIANTS2) {
+            let snapped: Vec<usize> = snap_changes(&it.words, &base, v)
+                .into_iter()
+                .map(|l| l.unwrap_or_else(|| fail("a snapped word lost its speaker")))
+                .collect();
+            row.add(&score(&snapped, &it.truth, &map));
+        }
+    }
+    out
+}
+
+/// The variant the rule picks on `ami_mix` and `ami_sdm` pooled: fewest edge errors, then
+/// lowest WDER, then the earlier in [`VARIANTS2`].
+fn stage2_pick(scores: &HashMap<&str, (Score, Vec<Score>)>) -> usize {
+    let pooled = |i: usize| {
+        let mut s = Score::default();
+        for set in ["ami_mix", "ami_sdm"] {
+            if let Some((_, rows)) = scores.get(set) {
+                s.add(&rows[i]);
+            }
+        }
+        s
+    };
+    let mut best = 0;
+    for i in 1..VARIANTS2.len() {
+        let (a, b) = (pooled(i), pooled(best));
+        if a.edge_errors < b.edge_errors || (a.edge_errors == b.edge_errors && a.wder() < b.wder())
+        {
+            best = i;
+        }
+    }
+    best
+}
+
+/// Stage 2's decision for variant `pick` (`docs/far-speakers/edge-words.md`).
+fn stage2_verdict(
+    scores: &HashMap<&str, (Score, Vec<Score>)>,
+    pick: usize,
+    full: bool,
+    ends_today: bool,
+) -> Value {
+    let pair = |s: &str| scores.get(s).map(|(b, rows)| (*b, rows[pick]));
+    let c1 =
+        pair("ami_held").is_some_and(|(b, c)| c.edge_errors < b.edge_errors && c.wder() < b.wder());
+    let c2 = {
+        let (mix, sdm) = (pair("ami_mix"), pair("ami_sdm"));
+        match (mix, sdm) {
+            (Some((mb, mc)), Some((sb, sc))) => {
+                mc.edge_errors + sc.edge_errors < mb.edge_errors + sb.edge_errors
+                    && mc.wder() <= mb.wder()
+                    && sc.wder() <= sb.wder()
+            }
+            _ => false,
+        }
+    };
+    let c3 =
+        pair("scenes").is_some_and(|(b, c)| c.edge_errors <= b.edge_errors && c.wder() <= b.wder());
+    let c4 = SETS2.iter().all(|s| {
+        pair(s).is_some_and(|(b, c)| {
+            let lost = b.short_true_run_words_right as f64 - c.short_true_run_words_right as f64;
+            lost <= SHORT_TURN_ALLOWANCE * b.short_true_run_words as f64
+        })
+    });
+    let c5 = SETS2
+        .iter()
+        .all(|s| pair(s).is_some_and(|(b, c)| b.recall() - c.recall() <= 0.01));
+    json!({
+        "picked": variant_json(VARIANTS2[pick]),
+        "1_ami_held_fewer_edge_errors_and_lower_wder": c1,
+        "2_ami_mix_and_sdm_fewer_edge_errors_wder_not_higher": c2,
+        "3_scenes_not_worse": c3,
+        "4_short_true_turns_kept_within_2_percent": c4,
+        "5_change_recall_within_1_point": c5,
+        "full_data_and_todays_word_ends": full && ends_today,
+        "ships": c1 && c2 && c3 && c4 && c5 && full && ends_today,
+    })
+}
+
+fn stage2_report(items: &[Item], ends: &str, full: bool) -> Value {
+    let scores = stage2_scores(items);
+    let pick = stage2_pick(&scores);
+    let sets: Vec<Value> = SETS2
+        .iter()
+        .filter_map(|s| {
+            let (base, rows) = scores.get(s)?;
+            Some(json!({
+                "set": s,
+                "items": items.iter().filter(|i| i.set == *s).count(),
+                "baseline": base.json(),
+                "variants": VARIANTS2.iter().zip(rows).map(|(v, r)| {
+                    json!({"variant": variant_json(*v), "score": r.json()})
+                }).collect::<Vec<_>>(),
+            }))
+        })
+        .collect();
+    let item_rows: Vec<Value> = items
+        .iter()
+        .map(|it| {
+            json!({
+                "name": it.name,
+                "set": it.set,
+                "turns_hash": it.turns_hash,
+                "found_speakers": it.k,
+                "true_speakers": it.true_k,
+            })
+        })
+        .collect();
+    json!({
+        "sets": sets,
+        "items": item_rows,
+        "verdict": stage2_verdict(&scores, pick, full, ends == "punctuation"),
+    })
 }
 
 fn read_report(path: &Path) -> Value {
@@ -733,6 +943,108 @@ mod tests {
             short_true_run_words: 50,
             short_true_run_words_right: right_short,
         }
+    }
+
+    fn stage2_with(
+        base: Score,
+        variant: Score,
+        set_override: Option<(&'static str, Score)>,
+    ) -> HashMap<&'static str, (Score, Vec<Score>)> {
+        SETS2
+            .iter()
+            .map(|s| {
+                let v = match set_override {
+                    Some((name, o)) if name == *s => o,
+                    _ => variant,
+                };
+                (*s, (base, vec![v; VARIANTS2.len()]))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn edge_words_stage2_pick_takes_fewest_edge_errors_then_wder_then_order() {
+        let base = score_with(20, 100, 30, 50);
+        let mut scores = stage2_with(base, base, None);
+        // Equal everywhere: the first variant (reach 1, sentence).
+        assert_eq!(stage2_pick(&scores), 0);
+        // Fewer edge errors on one AMI set for variant 2.
+        scores.get_mut("ami_sdm").unwrap().1[2] = score_with(15, 100, 30, 50);
+        assert_eq!(stage2_pick(&scores), 2);
+        // Variant 3 ties on edge errors with a lower WDER.
+        scores.get_mut("ami_sdm").unwrap().1[3] = score_with(15, 99, 30, 50);
+        assert_eq!(stage2_pick(&scores), 3);
+        // The held-out set never decides the pick.
+        scores.get_mut("ami_held").unwrap().1[1] = score_with(0, 0, 30, 50);
+        assert_eq!(stage2_pick(&scores), 3);
+    }
+
+    #[test]
+    fn edge_words_stage2_verdict_needs_every_condition() {
+        let base = score_with(20, 100, 30, 50);
+        let better = score_with(10, 90, 30, 50);
+        let ok = |s: &HashMap<&str, (Score, Vec<Score>)>| {
+            stage2_verdict(s, 0, true, true)["ships"].clone()
+        };
+        assert_eq!(ok(&stage2_with(base, better, None)), json!(true));
+        assert_eq!(
+            stage2_verdict(&stage2_with(base, better, None), 0, false, true)["ships"],
+            json!(false)
+        );
+        assert_eq!(
+            stage2_verdict(&stage2_with(base, better, None), 0, true, false)["ships"],
+            json!(false)
+        );
+        // Held-out not better.
+        assert_eq!(
+            ok(&stage2_with(base, better, Some(("ami_held", base)))),
+            json!(false)
+        );
+        // One AMI pick set with a higher WDER.
+        let worse_wder = score_with(10, 101, 30, 50);
+        assert_eq!(
+            ok(&stage2_with(base, better, Some(("ami_mix", worse_wder)))),
+            json!(false)
+        );
+        // Scenes worse.
+        assert_eq!(
+            ok(&stage2_with(
+                base,
+                better,
+                Some(("scenes", score_with(21, 90, 30, 50)))
+            )),
+            json!(false)
+        );
+        // Short true turns: 1 of 50 lost is inside 2%, 2 is not.
+        assert_eq!(
+            ok(&stage2_with(
+                base,
+                better,
+                Some(("scenes", score_with(10, 90, 29, 50)))
+            )),
+            json!(true)
+        );
+        assert_eq!(
+            ok(&stage2_with(
+                base,
+                better,
+                Some(("scenes", score_with(10, 90, 28, 50)))
+            )),
+            json!(false)
+        );
+        // Recall down by more than a point.
+        assert_eq!(
+            ok(&stage2_with(
+                base,
+                better,
+                Some(("ami_held", score_with(10, 90, 30, 48)))
+            )),
+            json!(false)
+        );
+        // A missing set.
+        let mut missing = stage2_with(base, better, None);
+        missing.remove("ami_held");
+        assert_eq!(ok(&missing), json!(false));
     }
 
     #[test]

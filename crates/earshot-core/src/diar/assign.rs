@@ -79,6 +79,79 @@ fn pick(
         .map(|t| t.speaker)
 }
 
+/// A pause of at least this between two words supports a speaker change there (ms; T6.9's
+/// `NO_PAUSE_MS`, the rule of [`snap_changes`]).
+pub const SNAP_PAUSE_MS: u64 = 300;
+
+/// How far [`snap_changes`] may move a speaker change, and which word ends support one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Snap {
+    /// At most this many words either way.
+    pub reach: usize,
+    /// A word ending in `,` supports a change too (else only `.`, `?` and `!`).
+    pub clause_ends: bool,
+}
+
+/// Does `text` end a sentence (`.`, `?`, `!`; with `clause_ends` also `,`), ignoring closing
+/// quotes and brackets?
+fn ends_unit(text: &str, clause_ends: bool) -> bool {
+    let t = text.trim_end_matches(['"', '\'', ')', ']', '\u{201D}', '\u{2019}']);
+    t.ends_with(['.', '?', '!']) || (clause_ends && t.ends_with(','))
+}
+
+/// Is the boundary between words `i - 1` and `i` supported (a unit end or a pause)?
+fn supported(words: &[Word], i: usize, clause_ends: bool) -> bool {
+    ends_unit(&words[i - 1].text, clause_ends)
+        || words[i]
+            .start
+            .as_millis()
+            .saturating_sub(words[i - 1].end.as_millis())
+            >= SNAP_PAUSE_MS
+}
+
+/// Moves each speaker change that sits on an unsupported boundary (no sentence end before it
+/// and no pause of [`SNAP_PAUSE_MS`]) to the nearest supported boundary at most
+/// [`Snap::reach`] words away, the earlier on equal distance, when one lies inside the two runs
+/// it separates and leaves both non-empty (T12.88 stage 2, `docs/far-speakers/edge-words.md`;
+/// T6.9a's step 3 in `word-changes.md`). Changes are taken left to right. No run is merged and
+/// no change is added or removed. `labels` are `words`' speakers in time order, as
+/// [`assign_words`] gives them; the result has the same length.
+#[must_use]
+pub fn snap_changes(words: &[Word], labels: &[Option<usize>], snap: Snap) -> Vec<Option<usize>> {
+    let mut out = labels.to_vec();
+    if snap.reach == 0 || words.len() != labels.len() {
+        return out;
+    }
+    let ok = |i: usize| supported(words, i, snap.clause_ends);
+    let changes: Vec<usize> = (1..out.len()).filter(|&i| out[i] != out[i - 1]).collect();
+    for c in changes {
+        if out[c] == out[c - 1] || ok(c) {
+            continue;
+        }
+        let (before, after) = (out[c - 1], out[c]);
+        let run_start = (0..c)
+            .rev()
+            .take_while(|&j| out[j] == before)
+            .last()
+            .unwrap_or(c);
+        let run_end = (c..out.len())
+            .take_while(|&j| out[j] == after)
+            .last()
+            .map_or(c, |j| j + 1);
+        let target = (1..=snap.reach).find_map(|d| {
+            let back = c.checked_sub(d).filter(|&b| b > run_start && ok(b));
+            let forward = Some(c + d).filter(|&f| f < run_end && ok(f));
+            back.or(forward)
+        });
+        match target {
+            Some(t) if t < c => out[t..c].iter_mut().for_each(|l| *l = after),
+            Some(t) => out[c..t].iter_mut().for_each(|l| *l = before),
+            None => {}
+        }
+    }
+    out
+}
+
 /// Sets [`Segment::speaker_id`] from `turns`, splitting a segment wherever its words
 /// change speaker.
 ///

@@ -1422,6 +1422,129 @@ fn diar_zero_length_word_uses_the_turn_containing_it() {
     );
 }
 
+/// Words 100 ms long, each `(text, pause before in ms)`, from 0.
+fn snap_line(spec: &[(&str, u64)]) -> Vec<Word> {
+    let mut t = 0;
+    spec.iter()
+        .map(|(text, gap)| {
+            t += gap;
+            let w = Word::new(*text, t, t + 100, 0.9);
+            t += 100;
+            w
+        })
+        .collect()
+}
+
+fn snap_labels(v: &[usize]) -> Vec<Option<usize>> {
+    v.iter().map(|&l| Some(l)).collect()
+}
+
+const SNAP_1: Snap = Snap {
+    reach: 1,
+    clause_ends: false,
+};
+const SNAP_2: Snap = Snap {
+    reach: 2,
+    clause_ends: false,
+};
+
+#[test]
+fn diar_snap_gives_a_sentences_last_word_back_to_its_speaker() {
+    // "... a concern for them." / "I think ..." with the change one word early, on "them.".
+    let words = snap_line(&[
+        ("a", 0),
+        ("concern", 0),
+        ("for", 0),
+        ("them.", 0),
+        ("I", 0),
+        ("think", 0),
+    ]);
+    let labels = snap_labels(&[0, 0, 0, 1, 1, 1]);
+    assert_eq!(
+        snap_changes(&words, &labels, SNAP_1),
+        snap_labels(&[0, 0, 0, 0, 1, 1])
+    );
+    // The other way: the new speaker's first word kept by the old one.
+    let labels = snap_labels(&[0, 0, 0, 0, 0, 1]);
+    assert_eq!(
+        snap_changes(&words, &labels, SNAP_1),
+        snap_labels(&[0, 0, 0, 0, 1, 1])
+    );
+}
+
+#[test]
+fn diar_snap_never_moves_a_change_on_a_sentence_end_or_a_pause() {
+    // A real one-word answer after a question, and the first speaker going on after it.
+    let words = snap_line(&[
+        ("is", 0),
+        ("it", 0),
+        ("done?", 0),
+        ("Yes.", 0),
+        ("Good", 0),
+        ("then", 0),
+    ]);
+    let labels = snap_labels(&[0, 0, 0, 1, 0, 0]);
+    assert_eq!(snap_changes(&words, &labels, SNAP_2), labels);
+    // A change after a pause of SNAP_PAUSE_MS stays even without punctuation.
+    let words = snap_line(&[("so", 0), ("we", 0), ("go", SNAP_PAUSE_MS), ("there", 0)]);
+    let labels = snap_labels(&[0, 0, 1, 1]);
+    assert_eq!(snap_changes(&words, &labels, SNAP_2), labels);
+}
+
+#[test]
+fn diar_snap_leaves_a_change_with_no_supported_boundary_in_reach() {
+    let words = snap_line(&[("a", 0), ("b.", 0), ("c", 0), ("d", 0), ("e", 0), ("f", 0)]);
+    // The sentence end is two words back: out of reach for 1, in reach for 2.
+    let labels = snap_labels(&[0, 0, 0, 0, 1, 1]);
+    assert_eq!(snap_changes(&words, &labels, SNAP_1), labels);
+    assert_eq!(
+        snap_changes(&words, &labels, SNAP_2),
+        snap_labels(&[0, 0, 1, 1, 1, 1])
+    );
+    // Reach 0 changes nothing.
+    let none = Snap {
+        reach: 0,
+        clause_ends: false,
+    };
+    assert_eq!(snap_changes(&words, &labels, none), labels);
+}
+
+#[test]
+fn diar_snap_never_empties_a_run() {
+    // The only supported boundary would take the whole one-word run of speaker 1.
+    let words = snap_line(&[("a.", 0), ("b", 0), ("c", 0), ("d", 0)]);
+    let labels = snap_labels(&[0, 1, 2, 2]);
+    assert_eq!(snap_changes(&words, &labels, SNAP_2), labels);
+    // Empty input and a single run pass through.
+    assert!(snap_changes(&[], &[], SNAP_2).is_empty());
+    let words = snap_line(&[("a", 0), ("b", 0)]);
+    assert_eq!(
+        snap_changes(&words, &snap_labels(&[1, 1]), SNAP_2),
+        snap_labels(&[1, 1])
+    );
+}
+
+#[test]
+fn diar_snap_clause_ends_count_only_in_the_clause_variant() {
+    let words = snap_line(&[
+        ("we", 0),
+        ("need", 0),
+        ("them,", 0),
+        ("Mike", 0),
+        ("can", 0),
+    ]);
+    let labels = snap_labels(&[0, 0, 1, 1, 1]);
+    assert_eq!(snap_changes(&words, &labels, SNAP_1), labels);
+    let clause = Snap {
+        reach: 1,
+        clause_ends: true,
+    };
+    assert_eq!(
+        snap_changes(&words, &labels, clause),
+        snap_labels(&[0, 0, 0, 1, 1])
+    );
+}
+
 #[test]
 fn diar_label_segments_splits_at_speaker_changes() {
     let turns = vec![turn(0, 0, 2000), turn(1, 2000, 4000)];
