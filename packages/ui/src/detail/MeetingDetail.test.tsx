@@ -1583,6 +1583,30 @@ describe("MeetingDetailView, moving and splitting a line (T12.90)", () => {
     expect(screen.getByRole("button", { name: "Edit line 1" })).toHaveFocus();
   });
 
+  it("keeps Cancel out of the word group and cancels by click", async () => {
+    const { user, calls } = await transcript();
+    await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Split line" }));
+    const group = screen.getByRole("group", { name: "Split line 1" });
+    expect(within(group).queryByRole("button", { name: "Cancel" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("group", { name: "Split line 1" })).toBeNull();
+    expect(calls.some((c) => c[0] === "splitLine")).toBe(false);
+    expect(screen.getByRole("button", { name: "Edit line 1" })).toHaveFocus();
+  });
+
+  it("tabs from the last word to Cancel and describes the group by its caption", async () => {
+    const { user } = await transcript();
+    await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Split line" }));
+    const group = screen.getByRole("group", { name: "Split line 1" });
+    expect(group).toHaveAccessibleDescription("Choose the word the new line starts with.");
+    const buttons = within(group).getAllByRole("button");
+    buttons[buttons.length - 1].focus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+  });
+
   it("leaves the split points with Escape without splitting", async () => {
     const { user, calls } = await transcript();
     await user.click(screen.getByRole("button", { name: "More actions for line 1" }));
