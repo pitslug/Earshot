@@ -1499,7 +1499,10 @@ fn cuda_the_providers_runtime_library_is_preloaded_from_beside_the_exe() {
     assert!(provider_runtime_beside(None).is_empty());
     let dll = dir.0.join("msvcp140_atomic_wait.dll");
     std::fs::write(&dll, b"stands in").unwrap();
-    assert_eq!(provider_runtime_beside(Some(&dir.0)), [dll.clone()]);
+    assert_eq!(
+        provider_runtime_beside(Some(&dir.0)),
+        std::slice::from_ref(&dll)
+    );
     // A folder of that name is not the library.
     std::fs::remove_file(&dll).unwrap();
     std::fs::create_dir(&dll).unwrap();
