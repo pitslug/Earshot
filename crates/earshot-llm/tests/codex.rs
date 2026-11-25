@@ -37,7 +37,7 @@ const TEST_CLI_ENV: &str = "EARSHOT_TEST_CODEX_CLI";
 /// Variables `main` sets in this process and the CLI must not see (T7.4gc, and T9.25: every
 /// address, credential and proxy variable). Written out here, not read from the crate, so a
 /// name dropped from the crate's list fails the test.
-const MUST_CLEAR: [&str; 17] = [
+const MUST_CLEAR: [&str; 20] = [
     "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
     "OPENAI_API_KEY",
@@ -55,6 +55,10 @@ const MUST_CLEAR: [&str; 17] = [
     "all_proxy",
     "no_proxy",
     "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+    // T14.33: a JavaScript runtime's own.
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_OPTIONS",
+    "BUN_OPTIONS",
 ];
 
 /// The features T12.46 added, which an older CLI (0.155.1) may not list. Written out here,

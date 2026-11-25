@@ -131,7 +131,18 @@ the last user part with only the JSON object it asks for, nothing before or afte
 /// `CLAUDE_CONFIG_DIR` is kept on purpose: it chooses which of the user's own stored sign-ins
 /// runs (as `CODEX_HOME` does for Codex). A deny list over a vendor table that grows each
 /// release can fall behind; re-read the reference on every Claude Code version change.
-pub const CLEARED_ENV: [&str; 61] = [
+///
+/// The JavaScript runtime the CLI runs on (Node.js for the npm package; Bun for the native
+/// build, as far as Earshot knows) reads variables of its own (T14.33): the ones that turn off
+/// certificate checks or load code into the CLI are cleared (the last block). Kept on purpose:
+/// `NODE_EXTRA_CA_CERTS` (Node.js docs, "Command-line API", section "Environment variables",
+/// `NODE_EXTRA_CA_CERTS=file`: extra root certificates added to the bundled ones). Claude
+/// Code's network-config page tells users behind a company TLS-inspecting proxy to set it, so
+/// clearing it would stop summaries there; it only adds trust and names no address, and the
+/// address and proxy variables above are cleared, as Codex keeps its own CA variables
+/// ([`crate::codex::CLEARED_ENV`]). A hostile environment that sets it still needs to be on
+/// the network path to use it. The owner may decide otherwise (T14.33 report).
+pub const CLEARED_ENV: [&str; 64] = [
     // Not about the network (T7.4ga): the marker of a session started from inside Claude
     // Code, and what `--bare` sets (no OAuth; named by `claude --help`).
     "CLAUDECODE",
@@ -209,6 +220,17 @@ pub const CLEARED_ENV: [&str; 61] = [
     "https_proxy",
     "http_proxy",
     "no_proxy",
+    // The JavaScript runtime's own (T14.33; not Claude Code's names). Node.js docs,
+    // "Command-line API", section "Environment variables": `NODE_TLS_REJECT_UNAUTHORIZED`
+    // (the value `0` turns off certificate checks for TLS connections) and `NODE_OPTIONS`
+    // (command-line options for every Node.js process, `--require` and `--import` among
+    // them: code loaded into the CLI, which reads the prompt). Bun docs, "Environment
+    // variables" page of the runtime section: `BUN_OPTIONS` (arguments added to every Bun
+    // run, the same risk as `NODE_OPTIONS`); it could not be checked offline whether every
+    // Bun version reads it, so it is cleared on the documentation's word.
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_OPTIONS",
+    "BUN_OPTIONS",
 ];
 
 /// Variables set in the CLI's environment (module docs).

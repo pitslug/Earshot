@@ -33,7 +33,7 @@ const T0: u64 = 1_790_000_000_000;
 /// T9.25: every variable Claude Code documents for another address, provider, credential,
 /// header, proxy or telemetry export). Written out here, not read from the crate, so a name dropped from the
 /// crate's list fails the test.
-const MUST_CLEAR: [&str; 61] = [
+const MUST_CLEAR: [&str; 64] = [
     "CLAUDECODE",
     "CLAUDE_CODE_SIMPLE",
     "ANTHROPIC_BASE_URL",
@@ -95,6 +95,10 @@ const MUST_CLEAR: [&str; 61] = [
     "https_proxy",
     "http_proxy",
     "no_proxy",
+    // T14.33: the JavaScript runtime's own.
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_OPTIONS",
+    "BUN_OPTIONS",
 ];
 
 /// A variable `main` sets that the CLI must still see (the rest of the environment stays).
