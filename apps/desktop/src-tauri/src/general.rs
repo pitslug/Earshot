@@ -124,7 +124,10 @@ pub fn parse_export(bytes: &[u8], name: &str) -> Result<Option<String>, NotAnExp
         return Err(NotAnExport);
     }
     let units: Vec<u16> = units.iter().map(|u| u16::from_le_bytes(*u)).collect();
-    let text = String::from_utf16(&units).map_err(|_| NotAnExport)?;
+    // The whole key is in the file, and Windows lets a value hold half of a surrogate pair:
+    // another program's such value must not make this one unreadable. It decodes to U+FFFD
+    // there; the value compared with this exe's command is still compared exactly.
+    let text = String::from_utf16_lossy(&units);
     let rest = text
         .trim_start()
         .strip_prefix(EXPORT_HEADER)
@@ -637,22 +640,29 @@ pub async fn set_call_start_offer(
     let services = state.services()?;
     let shell = std::sync::Arc::clone(shell.inner());
     crate::ipc::blocking(move || {
-        let stored = store_call_start_offer(&services, on)?;
         // The call-start watch reads the setting from the shell's copy (T14.9).
-        shell.call_start_offer_stored(stored);
-        Ok(stored)
+        store_call_start_offer(&services, on, &|stored| {
+            shell.call_start_offer_stored(stored);
+        })
     })
     .await
 }
 
-/// Stores the offer and returns it as stored.
+/// Stores the offer and returns it as stored. `tell` hears the stored value while the store's
+/// lock is still held, so two of these overlapping tell in the order they stored and whoever is
+/// told (the call-start watch's copy) ends on what the store holds. `tell` must not take the
+/// store.
 fn store_call_start_offer(
     services: &earshot_runtime::Services,
     on: bool,
+    tell: &dyn Fn(bool),
 ) -> Result<bool, IpcError> {
     let mut db = services.store();
     earshot_runtime::call_start::set_offer_on(&mut db, on)?;
-    Ok(earshot_runtime::call_start::offer_on(&db)?)
+    let stored = earshot_runtime::call_start::offer_on(&db)?;
+    tell(stored);
+    drop(db);
+    Ok(stored)
 }
 
 /// Turns "start Earshot with Windows" on or off (`autostart` when Windows refuses).
@@ -846,6 +856,83 @@ mod tests {
                 Ok(Some(cmd.clone())),
                 "{folder}"
             );
+        }
+    }
+
+    #[test]
+    fn general_run_value_is_read_beside_a_value_holding_half_a_surrogate_pair() {
+        // T14.9 review: the file holds the whole key, and Windows lets a value hold a lone
+        // surrogate. Another program's such value made the strict decode refuse the file, and
+        // "Start with Windows" could not be read at all.
+        let cmd = run_command(Path::new(r"C:\Earshot\earshot.exe"));
+        let ours = format!("\"Earshot\"={}", reg_string(&cmd));
+        let head = format!("{EXPORT_HEADER}\r\n\r\n[HKEY_CURRENT_USER\\Zq\\Run]\r\n");
+        let broken = ("\"ZqBroken\"=\"C:\\\\zq", "x.exe\"\r\n");
+        for ours_first in [false, true] {
+            let mut units: Vec<u16> = head.encode_utf16().collect();
+            if ours_first {
+                units.extend(format!("{ours}\r\n").encode_utf16());
+            }
+            units.extend(broken.0.encode_utf16());
+            // A lead surrogate with nothing after it.
+            units.push(0xD800);
+            units.extend(broken.1.encode_utf16());
+            if !ours_first {
+                units.extend(format!("{ours}\r\n").encode_utf16());
+            }
+            assert!(String::from_utf16(&units).is_err(), "the file holds one");
+            let mut bytes = vec![0xFF, 0xFE];
+            bytes.extend(units.iter().flat_map(|u| u.to_le_bytes()));
+            assert_eq!(parse_export(&bytes, "Earshot"), Ok(Some(cmd.clone())));
+            // The other program's value reads with a replacement character where the half
+            // pair was: never this exe's command.
+            assert_eq!(
+                parse_export(&bytes, "ZqBroken"),
+                Ok(Some("C:\\zq\u{FFFD}x.exe".to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn general_call_start_offer_is_told_while_the_store_is_still_held() {
+        // T14.9 review: the watch's copy was updated after the store's lock was released, so two
+        // overlapping changes could leave it opposite to what is stored. It is told under the
+        // lock: here another reader of the store cannot get in until the telling is over.
+        use std::sync::mpsc;
+        let guard = std::time::Duration::from_secs(60);
+        let dir = crate::testutil::TempDir::new("offer-told");
+        let services = crate::testutil::services(&dir);
+        let told = Mutex::new(Vec::new());
+        let (started_tx, started) = mpsc::channel();
+        let (read_tx, read) = mpsc::channel();
+        let stored = store_call_start_offer(&services, false, &|on| {
+            told.lock().unwrap().push(on);
+            let (svc, started_tx, read_tx) =
+                (services.clone(), started_tx.clone(), read_tx.clone());
+            std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let on = earshot_runtime::call_start::offer_on(&svc.store()).unwrap();
+                read_tx.send(on).unwrap();
+            });
+            started.recv_timeout(guard).expect("the other reader runs");
+            assert_eq!(
+                read.recv_timeout(std::time::Duration::from_millis(200)),
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "the store was free while the listener was told"
+            );
+        })
+        .unwrap();
+        assert!(!stored);
+        assert_eq!(*told.lock().unwrap(), [false]);
+        // The command is over: the other reader gets the store and reads what was stored.
+        assert_eq!(read.recv_timeout(guard), Ok(false));
+
+        // Through the watch's own copy: it ends on what the store holds, change after change.
+        let copy = crate::shell::OfferSetting::default();
+        for on in [true, false, true] {
+            let stored = store_call_start_offer(&services, on, &|stored| copy.set(stored)).unwrap();
+            assert_eq!(stored, on);
+            assert_eq!(copy.get(|| None), on);
         }
     }
 
