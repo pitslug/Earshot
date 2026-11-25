@@ -375,6 +375,32 @@ impl FlacTrackWriter {
 /// # Errors
 /// I/O or decoding errors, or a file that is not 16-bit mono.
 pub fn read_flac(path: &Path) -> Result<(u32, Vec<f32>), StoreError> {
+    read_flac_span(path, 0, u64::MAX)
+}
+
+/// The fewest bytes a FLAC frame takes: a 6-byte header, a 1-byte subframe header with an
+/// 8-bit constant, and the CRC-16 (RFC 9639 section 9).
+const MIN_FRAME_BYTES: u64 = 10;
+
+/// The most samples a FLAC frame holds (a 16-bit block size, RFC 9639 section 9.1.1).
+const MAX_FRAME_SAMPLES: u64 = 65_536;
+
+/// The most samples a FLAC file of `len` bytes could hold, whatever its header says: a bound on
+/// what a read pre-allocates (T14.25), never a limit on what it reads.
+fn most_samples_in(len: u64) -> u64 {
+    len.saturating_sub(HEADER_LEN as u64) / MIN_FRAME_BYTES * MAX_FRAME_SAMPLES
+}
+
+/// Samples `[from, to)` of a 16-bit mono FLAC file, clamped to its end:
+/// `(sample_rate, samples in [-1, 1])`. Frames are decoded in order into one reused buffer and
+/// decoding stops at the frame holding `to`, so the frames after the span are never read and
+/// only the span's samples are kept (T14.25; FLAC without a seek table cannot jump to `from`).
+/// A span that is empty or starts past the end gives no samples.
+///
+/// # Errors
+/// I/O or decoding errors up to the span's end, or a file that is not 16-bit mono.
+pub fn read_flac_span(path: &Path, from: u64, to: u64) -> Result<(u32, Vec<f32>), StoreError> {
+    let len = std::fs::metadata(path)?.len();
     let mut r = claxon::FlacReader::open(path).map_err(|e| audio_err("open flac", e))?;
     let info = r.streaminfo();
     if info.channels != 1 || info.bits_per_sample != BITS as u32 {
@@ -385,11 +411,42 @@ pub fn read_flac(path: &Path) -> Result<(u32, Vec<f32>), StoreError> {
             info.bits_per_sample
         )));
     }
-    let mut out = Vec::with_capacity(info.samples.unwrap_or(0) as usize);
-    for s in r.samples() {
-        let s = s.map_err(|e| audio_err("decode flac", e))?;
-        let s = i16::try_from(s).map_err(|_| audio_err("sample out of range", s))?;
-        out.push(i16_to_f32(s));
+    // The header's count is only a hint: a damaged or crafted one never sizes the buffer past
+    // the span or what the file could hold.
+    let hint = info
+        .samples
+        .unwrap_or(0)
+        .saturating_sub(from)
+        .min(to.saturating_sub(from))
+        .min(most_samples_in(len));
+    let mut out = Vec::with_capacity(usize::try_from(hint).unwrap_or(0));
+    if from >= to {
+        return Ok((info.sample_rate, out));
+    }
+    let mut frames = r.blocks();
+    let mut buffer = Vec::new();
+    let mut at = 0u64;
+    while at < to {
+        let Some(block) = frames
+            .read_next_or_eof(buffer)
+            .map_err(|e| audio_err("decode flac", e))?
+        else {
+            break;
+        };
+        // Positions are counted here: claxon's `Block::time` multiplies a fixed-size stream's
+        // frame number by this frame's own size, which is wrong for a shorter last frame.
+        let samples = block.channel(0);
+        let end = at + samples.len() as u64;
+        if end > from {
+            let a = usize::try_from(from.saturating_sub(at)).unwrap_or(usize::MAX);
+            let b = usize::try_from(to.min(end) - at).unwrap_or(usize::MAX);
+            for &s in &samples[a..b] {
+                let s = i16::try_from(s).map_err(|_| audio_err("sample out of range", s))?;
+                out.push(i16_to_f32(s));
+            }
+        }
+        at = end;
+        buffer = block.into_buffer();
     }
     Ok((info.sample_rate, out))
 }
