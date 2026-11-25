@@ -291,6 +291,48 @@ fn delete_meeting_with_a_segment_row_that_does_not_read() {
     );
 }
 
+/// T14.26: a meeting whose own row does not read is answered for a deletion (its leases still
+/// count) and deleted, ending as a tombstone that reads and syncs.
+#[test]
+fn delete_meeting_whose_meeting_row_does_not_read() {
+    let dir = TempDir::new("delete-damaged-meeting");
+    let (svc, _clock) = services(&dir);
+    let m = meeting(&svc, "Damaged", 1);
+    {
+        let c = rusqlite::Connection::open(svc.data.db_path()).unwrap();
+        let n = c
+            .execute(
+                "UPDATE meeting SET template = 'bogus' WHERE id = ?1",
+                [m.as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+    assert!(svc.meeting_activity(m).is_err(), "the row does not read");
+    assert_eq!(
+        svc.deletion_activity(m).unwrap(),
+        Some(crate::MeetingActivity::Ready)
+    );
+    // A job's lease is in memory and still counts.
+    let lease = svc
+        .lease_meeting_for(m, crate::MeetingJob::Processing)
+        .unwrap();
+    assert_eq!(
+        svc.deletion_activity(m).unwrap(),
+        Some(crate::MeetingActivity::Processing)
+    );
+    assert!(matches!(
+        svc.delete_meeting(m),
+        Err(RuntimeError::MeetingBusy(_))
+    ));
+    drop(lease);
+    svc.delete_meeting(m).unwrap();
+    let row = svc.store().meeting(m).unwrap().unwrap();
+    assert!(row.meta.deleted && row.title.is_empty(), "{row:?}");
+    assert_eq!(svc.deletion_activity(m).unwrap(), None);
+    assert_eq!(svc.meeting_activity(m).unwrap(), None);
+}
+
 #[test]
 fn delete_meeting_keeps_records_of_a_deleted_meeting_a_job_still_holds() {
     let dir = TempDir::new("delete-held");

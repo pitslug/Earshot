@@ -18,7 +18,9 @@ use earshot_core::model::{
 use earshot_core::prompt::Template;
 use earshot_core::summary::SummaryV1;
 use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, enroll};
-use earshot_store::{AudioProvenance, DataDir, MeetingDeletion, PersonRemoval, Store, StoreError};
+use earshot_store::{
+    AudioProvenance, DataDir, MeetingDeletion, PersonRemoval, Store, StoreError, SyncKinds,
+};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
@@ -235,7 +237,6 @@ fn store_delete_meeting_leaves_no_row_file_or_local_value_of_it() {
             stray_audio_removed: 1,
             export_records_removed: 1,
             local_values_erased: 2,
-            unreadable_rows: 0,
         }
     );
     assert!(
@@ -416,7 +417,7 @@ fn store_delete_meeting_erases_a_row_it_cannot_read_in_every_table() {
         let report = store
             .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
             .unwrap_or_else(|e| panic!("{table}: {e}"));
-        assert_eq!(report.unreadable_rows, 1, "{table}: {report:?}");
+        assert!(report.rows_tombstoned >= 4, "{table}: {report:?}");
         assert!(!file.exists(), "{table}: the recording is gone");
         assert!(store.meeting_reads_deleted(m.id).unwrap(), "{table}");
         // Every row of the meeting, in every table, is a tombstone; audio rows are gone.
@@ -454,12 +455,77 @@ fn store_delete_meeting_erases_a_row_it_cannot_read_in_every_table() {
             .unwrap();
         if table != "audio_file" {
             assert_eq!(queued, 1, "{table}: the erased row is queued to sync");
+            // And it is sendable: it reads, as a tombstone with its content cleared.
+            let page = store.outbox_page(100, &[], SyncKinds::ALL).unwrap();
+            assert_eq!(page.unreadable, 0, "{table}");
+            let sent = page.rows.iter().find(|r| r.id() == id);
+            let sent = sent.unwrap_or_else(|| panic!("{table}: the row is not in the page"));
+            assert!(sent.meta().deleted, "{table}");
         }
         let again = store
             .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
             .unwrap();
         assert_eq!(again, MeetingDeletion::default(), "{table}");
         drop(reader);
+    }
+}
+
+/// T14.26: an audio row that does not read keeps "file before row": when its file cannot be
+/// removed, the deletion stops with the row still there, and finishes once the file can go.
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "a file held open without sharing blocks its removal only on Windows: run on Windows"
+)]
+fn store_delete_meeting_keeps_a_damaged_audio_row_until_its_file_is_gone() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = TempDir::new("delete-damaged-audio");
+        let data = DataDir::new(tmp.path().join("Earshot"));
+        data.create().unwrap();
+        let db = data.db_path();
+        let mut store = Store::open(&db).unwrap();
+        let mut w = World::new();
+        let m = Meeting::new("Plain", 1, 0, Template::General, &mut w.stamp());
+        store.put_meeting(m.clone()).unwrap();
+        track_with_audio(&data, &mut store, &mut w, m.id, TrackId::Mic);
+        let audio = store.audio_files(m.id).unwrap()[0].clone();
+        let file = data.resolve(&audio.path).unwrap();
+        drop(store);
+        {
+            let c = rusqlite::Connection::open(&db).unwrap();
+            c.execute(
+                "UPDATE audio_file SET frames = -1 WHERE id = ?1",
+                [audio.id.as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&db).unwrap();
+        let rows = || -> i64 {
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .query_row("SELECT count(*) FROM audio_file", [], |r| r.get(0))
+                .unwrap()
+        };
+        let held = std::fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        assert!(
+            store
+                .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+                .is_err()
+        );
+        assert!(file.exists());
+        assert_eq!(rows(), 1, "the row stays while its file does");
+        drop(held);
+        store
+            .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+            .unwrap();
+        assert!(!file.exists());
+        assert_eq!(rows(), 0);
     }
 }
 

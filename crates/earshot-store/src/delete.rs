@@ -4,6 +4,12 @@
 //! nothing of it survives in the database pages, free pages or the WAL. The Obsidian note is the
 //! user's and is never touched. People and their voiceprints stay (the owner, T9.1u): only
 //! [`Store::remove_person`] deletes them.
+//!
+//! A meeting is always deletable (T14.26): a row of it that does not read is erased by its
+//! rowid in SQL, given the values of a fresh tombstone where its own do not convert, and sent
+//! like any other; an audio row that does not read goes after the meeting's folder is emptied.
+//! A row whose own `meeting_id` does not read names no meeting, so no deletion finds it: a known
+//! limit.
 
 use earshot_core::identity::{Clock, EntityId, Hlc};
 use earshot_core::identity::{DeviceId, HlcTimestamp, SyncMeta};
@@ -37,10 +43,6 @@ pub struct MeetingDeletion {
     pub export_records_removed: usize,
     /// Device-local values erased.
     pub local_values_erased: usize,
-    /// Rows of the meeting that could not be read (T14.26): each was erased in SQL by its rowid
-    /// (an audio row deleted), as a readable one is. Syncable ones written are in
-    /// `rows_tombstoned` too.
-    pub unreadable_rows: usize,
 }
 
 /// What [`Store::remove_person`] did.
@@ -91,13 +93,6 @@ impl Store {
         }
         let mut report = MeetingDeletion::default();
         let (files, damaged_files) = for_deletion::audio(&self.conn, meeting)?;
-        // An audio row that does not read cannot name its file: the row goes, and the file is
-        // removed with the rest of the meeting's folder below.
-        for rowid in damaged_files {
-            report.unreadable_rows += self
-                .conn
-                .execute("DELETE FROM audio_file WHERE rowid = ?1", [rowid])?;
-        }
         for f in files {
             match std::fs::remove_file(data.resolve(&f.path)?) {
                 Ok(()) => report.audio_files_deleted += 1,
@@ -109,6 +104,12 @@ impl Store {
             self.delete_audio_file(f.id)?;
         }
         report.stray_audio_removed = remove_meeting_audio_dir(data, meeting)?;
+        // An audio row that does not read cannot name its file, but its file is in the
+        // meeting's folder, emptied above: file before row still holds (T14.26).
+        for rowid in damaged_files {
+            self.conn
+                .execute("DELETE FROM audio_file WHERE rowid = ?1", [rowid])?;
+        }
 
         self.transaction(|tx| -> Result<(), StoreError> {
             // A row that does not read is erased in SQL by its rowid first (T14.26), so it can
@@ -125,7 +126,6 @@ impl Store {
                 clock,
             )?;
             report.rows_tombstoned = erased.rows_written + damaged.written;
-            report.unreadable_rows += damaged.written;
             report.export_records_removed = tx.conn.execute(
                 "DELETE FROM export_record WHERE meeting_id = ?1",
                 [meeting.as_uuid().as_bytes().as_slice()],
@@ -226,6 +226,18 @@ impl Store {
 }
 
 impl Store {
+    /// `meeting`'s row: `None` when absent, `Some(Err(()))` when it exists but its values do not
+    /// read (T14.26: what a deletion asks before it runs, so a damaged row stays deletable).
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn meeting_or_damaged(
+        &self,
+        meeting: EntityId,
+    ) -> Result<Option<Result<Meeting, ()>>, StoreError> {
+        Ok(for_deletion::meeting(&self.conn, meeting)?.map(|r| r.map_err(|_| ())))
+    }
+
     /// Whether `meeting`'s row is a tombstone, read from that one column, so a row whose other
     /// values do not read still answers (T14.26: after a deletion whose checkpoint was
     /// `Busy`). `false` for an unknown meeting.
@@ -233,14 +245,9 @@ impl Store {
     /// # Errors
     /// SQLite errors.
     pub fn meeting_reads_deleted(&self, meeting: EntityId) -> Result<bool, StoreError> {
-        let mut st = self
-            .conn
-            .prepare_cached("SELECT deleted FROM meeting WHERE id = ?1")?;
-        let mut rows = st.query([meeting.as_uuid().as_bytes().as_slice()])?;
-        Ok(match rows.next()? {
-            Some(r) => r.get::<_, i64>(0).is_ok_and(|d| d != 0),
-            None => false,
-        })
+        Ok(crate::repo::row_reads_deleted(
+            &self.conn, "meeting", meeting,
+        )?)
     }
 }
 
@@ -358,6 +365,11 @@ fn erase_damaged_rows<C: Clock + ?Sized>(
             } else {
                 c.execute(sql, rusqlite::params![wall, logical, node, rowid])?
             };
+            // Values outside the content that do not convert get a fresh tombstone's, so the
+            // row reads and its tombstone syncs (else the outbox keeps it unsendable for good).
+            if !for_deletion::reads(c, table, rowid)? {
+                for_deletion::canonicalise(c, table, rowid)?;
+            }
         }
     }
     Ok(DamagedRows {

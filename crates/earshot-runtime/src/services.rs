@@ -365,6 +365,34 @@ impl Services {
         }))
     }
 
+    /// [`Services::meeting_activity`] for a deletion (T14.26): a meeting must always be
+    /// deletable, so a meeting row that does not read is still answered. Its jobs (held in
+    /// memory) decide as ever; with none, it reads as [`MeetingActivity::Ready`], which a
+    /// deletion takes as free to go and which only deletions ask. A damaged row whose `deleted`
+    /// column says deleted is `None`.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn deletion_activity(
+        &self,
+        meeting: EntityId,
+    ) -> Result<Option<MeetingActivity>, RuntimeError> {
+        let jobs = self.held_jobs();
+        let db = self.store();
+        let m = match db.meeting_or_damaged(meeting)? {
+            None => return Ok(None),
+            Some(Ok(m)) if m.meta.deleted => return Ok(None),
+            Some(Ok(m)) => Some(m),
+            Some(Err(())) if db.meeting_reads_deleted(meeting)? => return Ok(None),
+            Some(Err(())) => None,
+        };
+        Ok(Some(match (job_activity(jobs.get(&meeting)), m) {
+            (Some(busy), _) => busy,
+            (None, Some(m)) => rows_activity(&db, &m)?,
+            (None, None) => MeetingActivity::Ready,
+        }))
+    }
+
     /// Every live meeting with what is happening to it ([`Services::meeting_activity`]'s rule),
     /// read under one store lock (T14.13): what a meeting list reads, so a list of many meetings
     /// waits for the store once and sees one state of it. `each` is called for each meeting, in
