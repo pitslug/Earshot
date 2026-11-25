@@ -180,7 +180,7 @@ Input: a page of opened envelopes with their `seq` and row key, the device's kin
 3. **Future stamp.** `updated_at.wall_ms` more than 24 h past the device clock: `sync_pending`, reason `clock`.
 4. **Leased.** The row's meeting (its own id for a meeting, `meeting_id` otherwise) is in the leased set: `sync_pending`, reason `busy`.
 5. **Parent missing.** A row with a `meeting_id` (or `track_id`, `speaker_id`) that names no local row and no earlier envelope of this page: `sync_pending`, reason `parent`.
-6. **Compare.** No local row, or the remote `updated_at` is later: write the whole row with the remote metadata unchanged. Otherwise ignore it. Exceptions: a meeting tombstone here is kept (a live meeting row never overwrites it), and two copies of a final transcript segment are compared by `text_edited_at` first, then `updated_at` (section 7, rule 4a). To come (section 7A, not built yet): a person tombstone and a folder tombstone here are kept in the same way.
+6. **Compare.** No local row, or the remote `updated_at` is later: write the whole row with the remote metadata unchanged. Otherwise ignore it. Exceptions: a meeting tombstone here is kept (a live meeting row never overwrites it), and two copies of a final transcript segment are compared by `text_edited_at` first, then `updated_at` (section 7, rule 4a).
 7. **Side effects of what was written** (section 5.4).
 8. Delete `sync_outbox` entries this transaction's own writes created, for the rows it wrote, right after each write; a row re-stamped afterwards (a kept copy, section 7 rule 4a) keeps its new entry and goes out.
 
@@ -194,6 +194,7 @@ Held rows are counted (`Store::held_count`) and read a page at a time (`Store::h
 
 - **Meeting tombstone** (remote `deleted`, local row live, whatever the two stamps: a meeting row edited here after the deletion must not stay live over the children the deletion cleared; a tombstone stamped more than 24 h ahead deletes nothing and is held): before the page is applied, the client (T11.3) runs the ordinary `Services::delete_meeting` for that meeting, so audio files go before rows, device-local keys are erased and a lease refuses it (the row is then held `busy`) exactly as a local deletion. Its own tombstone, stamped here, is newer than the pulled one, which is then ignored; both say deleted. The rows the other device cleared arrive in the same pull and apply as ordinary rows.
 - **Person tombstone**: `forget_identity_biometrics` for that identity. (Section 7A, not built yet, adds: who was merged into them goes too, and speaker rows still linked to them are unlinked.)
+- **Person and folder tombstones kept** (to come, section 7A, not built yet): in step 6 of 5.3 a person or folder tombstone here is kept over a live pulled copy, as a meeting tombstone is.
 - **Voiceprint tombstone**: the local row's `sum` is zeroed as `forget_voiceprints` does.
 - After a page that erased anything: `Store::flush_erasures`.
 
