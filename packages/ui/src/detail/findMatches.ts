@@ -88,18 +88,25 @@ export function textMatches(text: string, query: string): [number, number][] {
   return out;
 }
 
-/** The fewest characters (code points, after trimming) text find looks for (T14.17): one letter
- * matches nearly every line of a long transcript. */
+/** The fewest characters (code points, after trimming) text find looks for when the text is one
+ * ASCII letter (T14.17): one Latin letter matches nearly every line of a long transcript, while
+ * one digit or one CJK character is a real search. */
 export const FIND_MIN_CHARS = 2;
+
+/** The count before anything is chosen. */
+export const FIND_IDLE = "Pick a speaker or type";
+
+/** The hint for a text too short to look for. */
+export const FIND_TOO_SHORT = "Type 2 or more letters";
 
 /** How long typing in the find box must pause before find looks (T14.17), so a long transcript
  * is not searched and redrawn on every keystroke. Clearing the box applies at once. */
 export const FIND_PAUSE_MS = 250;
 
-/** `text` trimmed, or "" when it is shorter than [`FIND_MIN_CHARS`]. */
+/** `text` trimmed, or "" when it is a single ASCII letter (shorter than [`FIND_MIN_CHARS`]). */
 export function findQuery(text: string): string {
   const query = text.trim();
-  return [...query].length < FIND_MIN_CHARS ? "" : query;
+  return [...query].length < FIND_MIN_CHARS && /^[A-Za-z]?$/.test(query) ? "" : query;
 }
 
 /** What find finds in `rows` for speaker `speaker` (a `speakerKey`, or `null` for any) and text
@@ -140,7 +147,7 @@ export function findLine(result: FindResult, at: number): number | null {
  * box too short to look for says so. */
 export function findCountText(result: FindResult, at: number, typed = ""): string {
   if (result.kind === "idle") {
-    return typed.trim() === "" ? "Pick a speaker or type" : "Type 2 or more characters";
+    return typed.trim() === "" ? FIND_IDLE : FIND_TOO_SHORT;
   }
   const n = findCount(result);
   if (n === 0) return "No matches";

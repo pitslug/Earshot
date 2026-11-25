@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  FIND_IDLE,
+  FIND_TOO_SHORT,
   type FindRow,
   findCountText,
   findInTranscript,
@@ -47,13 +49,17 @@ describe("transcript find", () => {
     });
   });
 
-  it("transcript find: text needs two characters; a speaker alone needs none", () => {
-    // One letter (one code point, here outside the basic plane too) is no text filter.
+  it("transcript find: a Latin letter alone is no text filter; a speaker alone needs none", () => {
     expect(findInTranscript(ROWS, null, "g")).toEqual({ kind: "idle" });
-    expect(findInTranscript(ROWS, null, " 𐐀 ")).toEqual({ kind: "idle" });
+    expect(findInTranscript(ROWS, null, " G ")).toEqual({ kind: "idle" });
     expect(findInTranscript(ROWS, "ana", "g")).toEqual({ kind: "turns", lines: [0, 3] });
-    expect(findCountText({ kind: "idle" }, 0, "g")).toBe("Type 2 or more characters");
-    expect(findCountText({ kind: "idle" }, 0, " ")).toBe("Pick a speaker or type");
+    expect(findCountText({ kind: "idle" }, 0, "g")).toBe(FIND_TOO_SHORT);
+    expect(findCountText({ kind: "idle" }, 0, " ")).toBe(FIND_IDLE);
+    // One digit, one CJK character or one letter outside the basic plane is a real search.
+    const other: FindRow[] = [row("ana", "Gate 7 opens."), row("ben", "会议在东京。"), row("ana", "x 𐐀y")];
+    expect(findInTranscript(other, null, "7")).toEqual({ kind: "matches", matches: [{ line: 0, start: 5, end: 6 }] });
+    expect(findInTranscript(other, null, "东")).toEqual({ kind: "matches", matches: [{ line: 1, start: 3, end: 4 }] });
+    expect(findInTranscript(other, null, " 𐐨 ")).toEqual({ kind: "matches", matches: [{ line: 2, start: 2, end: 4 }] });
     // Two characters look.
     expect(findInTranscript(ROWS, null, "IT")).toEqual({
       kind: "matches",

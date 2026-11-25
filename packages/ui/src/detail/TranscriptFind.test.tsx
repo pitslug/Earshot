@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { sampleDetail } from "../ipc/mockDetail";
 import { ITEM, setup } from "../test/meetingDetail";
 import type { ManualTimer } from "../time";
-import { FIND_PAUSE_MS } from "./findMatches";
+import { FIND_PAUSE_MS, FIND_TOO_SHORT } from "./findMatches";
 
 const table = () => screen.getByRole("table", { name: "Transcript" });
 const rows = () => within(table()).getAllByRole("row");
@@ -136,8 +136,8 @@ describe("find in the transcript", () => {
   it("looks once typing pauses, and at once when the box is cleared", async () => {
     const { user, timer } = await openFind();
     await user.type(findBox(), "air freight");
-    // Still typing: nothing found or marked yet.
-    expect(count()).toBe("Pick a speaker or type");
+    // Still typing: nothing found or marked yet, and no hint to type.
+    expect(count()).toBe("");
     expect(marks()).toEqual([]);
     await act(async () => timer.advance(FIND_PAUSE_MS - 1));
     expect(marks()).toEqual([]);
@@ -166,14 +166,20 @@ describe("find in the transcript", () => {
     expect(count()).toBe("Match 2 of 2");
   });
 
-  it("needs two characters of text, and none with a speaker chosen", async () => {
+  it("needs two letters of text, and none with a speaker chosen", async () => {
     const { user, timer } = await openFind();
-    await typeFind(user, timer, "a");
-    expect(count()).toBe("Type 2 or more characters");
+    await user.type(findBox(), "a");
+    expect(count()).toBe("");
+    await act(async () => timer.advance(FIND_PAUSE_MS));
+    expect(count()).toBe(FIND_TOO_SHORT);
     expect(marks()).toEqual([]);
     await typeFind(user, timer, "i");
-    expect(count()).not.toBe("Type 2 or more characters");
+    expect(count()).not.toBe(FIND_TOO_SHORT);
     expect(marks().length).toBeGreaterThan(0);
+    // One character that is not a Latin letter (here a comma) is a real search.
+    await user.clear(findBox());
+    await typeFind(user, timer, ",");
+    expect(count()).toMatch(/^Match 1 of \d+$/);
   });
 
   it("closing the bar during the pause looks for nothing afterwards", async () => {

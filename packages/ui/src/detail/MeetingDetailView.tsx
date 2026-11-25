@@ -728,16 +728,22 @@ export function MeetingDetailView({
   const findButton = useRef<HTMLButtonElement | null>(null);
   const findInput = useRef<HTMLInputElement | null>(null);
 
-  // Each read's number: an answer that comes after a newer read was asked is dropped (T14.17),
-  // so a slow older read never puts back what an edit or sync just changed.
-  const reads = useRef(0);
+  // Each read's number (T14.17): `asked` is the newest read asked, `applied` the newest whose
+  // answer the page shows. An answer older than one already shown is dropped, so a slow older
+  // read never puts back what an edit or sync just changed; any newer success is shown even
+  // while a still newer read is out. A failure is shown only for the newest read asked when
+  // nothing newer is shown. A read resolves once its own answer is shown, dropped or failed, so
+  // an edit that awaits its read finds the page holding at least that read.
+  const asked = useRef(0);
+  const applied = useRef(0);
   // `afterSync`: read again because sync changed the meeting (T12.81). A meeting deleted on
   // another computer then goes quietly: no load error, and the list (read again) moves on.
   const reload = useCallback(async (afterSync = false) => {
-    const read = ++reads.current;
+    const read = ++asked.current;
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
-      if (read !== reads.current) return;
+      if (read <= applied.current) return;
+      applied.current = read;
       // Unchanged rows, word lists and movable lists keep their objects, so after an edit only
       // the lines that changed render again (T14.18).
       setDetail((before) => keepUnchanged(before, d));
@@ -750,9 +756,10 @@ export function MeetingDetailView({
       voicesBefore.current = needing;
       setSpeakersOpen((open) => (open === null ? needing > 0 : needing > before ? true : open));
       setPersons(p);
-      setLoadError(null);
+      // A newer read that failed still says so.
+      if (read === asked.current) setLoadError(null);
     } catch (e) {
-      if (read !== reads.current) return;
+      if (read !== asked.current || applied.current > read) return;
       if (afterSync && e instanceof IpcFailure && e.error.kind === "meeting_not_found") {
         changedRef.current();
         return;
@@ -1191,7 +1198,12 @@ export function MeetingDetailView({
             speaker={findChosen}
             text={findText}
             count={findTotal}
-            countText={findCountText(findResult, findIndex, findLooked)}
+            countText={
+              // While typing pauses nothing has been looked for yet: no hint that says to type.
+              findResult.kind === "idle" && findText !== findLooked && findText.trim() !== ""
+                ? ""
+                : findCountText(findResult, findIndex, findLooked)
+            }
             inputRef={findInput}
             onSpeaker={(k) => {
               setFindSpeaker(k);
