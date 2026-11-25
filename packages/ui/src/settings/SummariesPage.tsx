@@ -998,6 +998,7 @@ function WriterRow({
   last,
   disabled,
   reason,
+  note = null,
   onTick,
   onMove,
   onSetUp,
@@ -1015,6 +1016,8 @@ function WriterRow({
   disabled: boolean;
   /** Why it cannot be ticked yet (null: it can). */
   reason: string | null;
+  /** A state shown beside its name that leaves it tickable (an agent CLI's sign-in). */
+  note?: string | null;
   onTick(on: boolean): void;
   onMove(by: -1 | 1, from: RowControl): void;
   /** Opens and focuses the writer's setup form, for a writer not set up yet (T12.96). */
@@ -1059,9 +1062,9 @@ function WriterRow({
         <span className={styles.title}>
           <Body1Strong>{writer}</Body1Strong>
           {kind !== undefined && <Caption1 className={styles.muted}>{kind}</Caption1>}
-          {reason !== null && (
+          {(reason ?? note) !== null && (
             <Badge appearance="outline" color="informative" size="small">
-              {reason}
+              {reason ?? note}
             </Badge>
           )}
           {reason !== null && !ticked && onSetUp !== undefined && (
@@ -1193,6 +1196,18 @@ function OrderSection({
       : step.kind === "Local" && noLocalModel
         ? ORDER_COPY.page.not_downloaded
         : null;
+  // What the last sign-in check found, said on the row too; the writer stays tickable. Only a
+  // definite answer is said: a check not run (the CLI is asked once its card shows), running or
+  // unreadable says nothing here.
+  const noteOf = (step: StepChoice): string | null => {
+    const check = step.kind === "ClaudeCode" ? state.claudeCode : step.kind === "Codex" ? state.codex : null;
+    if (check?.status !== "done") return null;
+    return check.view.state === "NotSignedIn"
+      ? SETUP_COPY.notSignedIn
+      : check.view.state === "NotInstalled"
+        ? SETUP_COPY.notInstalled
+        : null;
+  };
   const viewOf = (step: StepChoice): StepView =>
     order?.steps.find((v) => sameStep(v.step, step)) ??
     offered.find((o) => sameStep(o.step, step)) ??
@@ -1327,6 +1342,7 @@ function OrderSection({
               last={at === stored.length - 1}
               disabled={off}
               reason={reasonOf(view.step)}
+              note={noteOf(view.step)}
               onTick={(on) => tickOne(view.step, on)}
               onMove={(by, from) => move(at, by, from)}
               onSetUp={

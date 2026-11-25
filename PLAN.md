@@ -2490,6 +2490,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: replace the list (`DictionaryPage.tsx` "Saved people") with one line of fixed copy, for example "Names on the People page are used too, so there is no need to add them here.", with a link or button to the People page; keep the left-out note (`people_left_out_note`) when some names are left out. If the detail's `people` list is then unused by the UI, drop it from the IPC view and regenerate bindings; keep `fixtures/ui/summary_settings_cases.json`'s cleaning rule and `left_out` cases running in both suites. Update the tests that read the list.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot summary`; preview screenshot
 
+- [x] T12.100 Claude Code and Codex rows say when they are not signed in
+  - result (2026-11-25): the row shows the sign-in check's definite answer ("Not signed in", "Not installed") as the badge the endpoint's "Not set up" uses, and stays tickable both ways; no check run, checking, unknown or a failed check says nothing on the row. UI 811 tests, build, preview on the sample Surface.
+  - why (the owner, 2026-11-25, 0.4.2 section 7): the endpoint's row said "Not set up" but a signed-out Claude only said so in its setup panel. Greying them was declined: the answer comes from asking the CLI and can be out of date, and a ticked signed-out writer is skipped at a meeting with a banner.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
+
 - [x] T12.99 The first-run wizard's Sync step knows this computer already syncs
   - result (2026-11-25): merged after review. The step reads `syncView` on opening; synced shows one line and no choices (also after a join done in the wizard, seen again on Back: a step beyond the text, kept); loading or a failed read shows today's step. UI 780 tests, build, preview synced and unsynced.
   - found (the owner, 2026-11-25, re-running the wizard on a synced computer): the Sync step opened on Not now with no sign the computer syncs. By design (T12.79) the step asked the app nothing before Join or Set up, so it could not know; Not now sends and changes nothing, so sync was never at risk.

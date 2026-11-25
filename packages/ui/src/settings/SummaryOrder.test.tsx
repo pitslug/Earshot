@@ -18,6 +18,7 @@ import {
   fillCopy,
   mockDeviceId,
 } from "../ipc";
+import { SETUP_COPY } from "./SummariesPage";
 import { useSummaries } from "./useSummaries";
 import { openSettings, openSetup, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
@@ -253,6 +254,31 @@ describe("Settings, Summaries, the order of summary writers", () => {
     expect(screen.getByRole("group", { name: "Which model writes the summary" })).toBeInTheDocument();
     // Claude Code and Codex stay tickable: their sign-in is asked only once their card shows.
     expect(tick(CODEX_LABEL)).toBeEnabled();
+  });
+
+  it("says on an agent CLI's row that it is not signed in, and leaves it tickable", async () => {
+    const rowOf = (writer: string) => tick(writer).closest("li") as HTMLElement;
+    const s = await open({ summaryOrder: [{ kind: "Local" }, { kind: "ClaudeCode" }] });
+    // The sample Surface's Claude Code is installed but signed out; its card asks once it shows.
+    await waitFor(() => expect(within(rowOf(CLAUDE_LABEL)).getByText(SETUP_COPY.notSignedIn)).toBeInTheDocument());
+    // Codex was never asked (it is not ticked, so its card is not shown): its row says nothing.
+    expect(within(rowOf(CODEX_LABEL)).queryByText(SETUP_COPY.notSignedIn)).toBeNull();
+    // Still tickable both ways, and the row keeps saying it once unticked.
+    await s.user.click(tick(CLAUDE_LABEL));
+    await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]));
+    expect(tick(CLAUDE_LABEL)).toBeEnabled();
+    expect(within(rowOf(CLAUDE_LABEL)).getByText(SETUP_COPY.notSignedIn)).toBeInTheDocument();
+    await s.user.click(tick(CLAUDE_LABEL));
+    await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }]));
+  });
+
+  it("says nothing on a signed-in agent CLI's row", async () => {
+    await open({ machine: "desktop", summaryOrder: [{ kind: "Local" }, { kind: "ClaudeCode" }] });
+    const row = tick(CLAUDE_LABEL).closest("li") as HTMLElement;
+    // Wait for the check to answer (its card's header says so), then look at the row.
+    await waitFor(() => expect(screen.getAllByText(new RegExp(SETUP_COPY.signedIn)).length).toBeGreaterThan(0));
+    expect(within(row).queryByText(SETUP_COPY.notSignedIn)).toBeNull();
+    expect(within(row).queryByText(SETUP_COPY.signedIn)).toBeNull();
   });
 
   it("keeps the keyboard focus on the control used, on its row wherever it moved", async () => {
