@@ -178,6 +178,9 @@ describe("Settings, General, stopping by itself when a call ends (T14.52)", () =
     expect(screen.getByText(CALL_END_STOP_EXPLAINED)).toBeInTheDocument();
     expect(CALL_END_STOP_EXPLAINED).toMatch(/after 3 minutes with no answer/);
     expect(CALL_END_STOP_EXPLAINED).toMatch(/keeps recording until you stop it/);
+    expect(CALL_END_STOP_EXPLAINED).toMatch(
+      /Turning this off applies at once\. Turning it on applies from the next meeting\./,
+    );
     // In the Calls section, after the offer to record.
     const calls = screen.getByRole("switch", { name: "Offer to record when a call starts" });
     expect(calls.compareDocumentPosition(stop()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -193,6 +196,45 @@ describe("Settings, General, stopping by itself when a call ends (T14.52)", () =
     await s.user.click(stop());
     await waitFor(() => expect(stop()).not.toBeChecked());
     expect(calls).toContainEqual(["setCallEndStop", false]);
+  });
+
+  it("keeps focus on either call switch across a save, and ignores a press meanwhile", async () => {
+    // Disabling a switch while it saves takes focus off it in WebView2 (T14.52 review).
+    const timer = createManualTimer(1_000_000);
+    const base = createMockIpc({ meetings: [], timer });
+    const pending: Array<() => void> = [];
+    const writes: string[] = [];
+    renderApp(
+      {
+        ...base,
+        setCallEndStop: (on) => {
+          writes.push(`stop ${on}`);
+          return new Promise((resolve) => pending.push(() => resolve({ on, unknown: [] })));
+        },
+        setCallStartOffer: (on) => {
+          writes.push(`offer ${on}`);
+          return new Promise((resolve) => pending.push(() => resolve(on)));
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "General");
+    for (const [label, first] of [
+      [name, "stop true"],
+      ["Offer to record when a call starts", "offer false"],
+    ]) {
+      const sw = await screen.findByRole("switch", { name: label });
+      await user.click(sw);
+      expect(sw).toHaveFocus();
+      expect(sw).toBeEnabled();
+      // A second press while the first is saving does nothing.
+      await user.click(sw);
+      expect(writes.filter((w) => w.startsWith(first.split(" ")[0]))).toEqual([first]);
+      await act(async () => pending.shift()?.());
+      await waitFor(() => expect(screen.getByRole("switch", { name: label })).toHaveFocus());
+    }
+    expect(stop()).toBeChecked();
   });
 
   it("says when a stored value is not known, and when a change was refused", async () => {

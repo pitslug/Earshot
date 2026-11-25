@@ -698,7 +698,8 @@ const CALL_START_STEP: std::time::Duration = std::time::Duration::from_millis(50
 /// (T14.9): kept from its first read and from every change, so the watch does not take the
 /// store's lock twice a second for a value that changes when the user changes it. The setting
 /// is device-local and has one writer (`call_start::set_offer_on`, from the General page's
-/// command, which tells this cache).
+/// command, which tells this cache). The meeting driver keeps one the same way for "stop
+/// recording by itself when a call ends" (T14.52, `MeetingDriver::call_end_stop_stored`).
 #[derive(Debug, Default)]
 pub struct OfferSetting(Mutex<Option<bool>>);
 
@@ -720,6 +721,12 @@ impl OfferSetting {
             *kept = read;
         }
         kept.unwrap_or(false)
+    }
+
+    /// The value kept, without reading anything (`None`: not read yet).
+    #[must_use]
+    pub fn peek(&self) -> Option<bool> {
+        *self.kept()
     }
 
     /// The setting was stored as `on`.

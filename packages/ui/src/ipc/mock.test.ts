@@ -552,5 +552,17 @@ describe("mock IPC, stopping by itself when a call ends (T14.52)", () => {
       stops: true,
     });
     expect(await ipc.callEndStop()).toEqual({ on: true, unknown: [] });
+
+    // Off reaches the recording meeting at once: its open question is asked in the off wording.
+    expect(await ipc.setCallEndStop(false)).toEqual({ on: false, unknown: [] });
+    expect(meeting.filter((e) => e.type === "CallEndOffer").at(-1)).toEqual({
+      type: "CallEndOffer",
+      open: true,
+      stops: false,
+    });
+    // Turned on again: not for this meeting.
+    const before = meeting.length;
+    await ipc.setCallEndStop(true);
+    expect(meeting.length).toBe(before);
   });
 });

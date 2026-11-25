@@ -31,6 +31,7 @@ import {
 } from "@fluentui/react-components";
 import { type FormEvent, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import callEndCopy from "../../../../fixtures/ui/call_end_copy_cases.json";
 import { useIpc } from "../ipc";
 import { NoticeBar } from "../settings/parts";
 import type { Timer } from "../time";
@@ -410,12 +411,9 @@ function Banners({ banners, onDismiss }: { banners: Banner[]; onDismiss(key: str
   );
 }
 
-/** What the call-end question says when the recording stops by itself if nobody answers (the
- * notification's copy, `shell::CALL_END_WILL_STOP`). */
-export const CALL_END_WILL_STOP = "Earshot will stop recording within 3 minutes unless you keep it going.";
-/** What it says when nothing stops by itself (T14.52: the General page's setting is off;
- * `shell::CALL_END_ASKS_ONLY`). */
-export const CALL_END_ASKS_ONLY = "Do you want to stop recording? Earshot keeps recording until you stop it.";
+/** The call-end question's words, with stopping by itself on and off (T14.52), from the table the
+ * notification (`shell.rs`) is checked against too. */
+export const CALL_END_COPY = callEndCopy;
 
 /** The question when the call seems to have ended. With `stops` the app stops the recording if it
  * stays open for 3 minutes, and anything that closes it starts that over; without it nothing
@@ -436,14 +434,14 @@ function CallEndOffer({
     <div className={styles.banners}>
       <MessageBar intent="info" role="status">
         <MessageBarBody>
-          <MessageBarTitle>The call seems to have ended.</MessageBarTitle>
-          {stops ? CALL_END_WILL_STOP : CALL_END_ASKS_ONLY}
+          <MessageBarTitle>{CALL_END_COPY.banner_title}</MessageBarTitle>
+          {stops ? CALL_END_COPY.will_stop : CALL_END_COPY.asks_only}
         </MessageBarBody>
         <MessageBarActions>
           <Button onClick={onStop} disabled={stopping}>
-            Stop recording
+            {CALL_END_COPY.stop_button}
           </Button>
-          <Button onClick={onKeep}>Keep recording</Button>
+          <Button onClick={onKeep}>{CALL_END_COPY.keep_button}</Button>
         </MessageBarActions>
       </MessageBar>
     </div>
@@ -752,8 +750,8 @@ export function CompactCard({
       <Caption1 className={styles.muted}>
         {meeting.callEndOffer
           ? meeting.callEndStops
-            ? "The call seems to have ended. Stopping within 3 minutes."
-            : "The call seems to have ended."
+            ? CALL_END_COPY.compact_will_stop
+            : CALL_END_COPY.compact_asks_only
           : `${wordCount(meeting.words)} words so far`}
       </Caption1>
       <div className={styles.buttons}>
@@ -768,7 +766,7 @@ export function CompactCard({
         </Button>
         {meeting.callEndOffer && (
           <Button size="small" onClick={onKeepRecording}>
-            Keep recording
+            {CALL_END_COPY.keep_button}
           </Button>
         )}
         <Button size="small" onClick={onExpand}>

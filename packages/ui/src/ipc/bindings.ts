@@ -483,8 +483,8 @@ export const commands = {
 	 */
 	callEndStop: () => typedError<CallEndStopView, IpcError>(__TAURI_INVOKE("call_end_stop")),
 	/**
-	 *  Turns "stop recording by itself when a call ends" on or off; returns it as stored. A meeting
-	 *  reads it when it starts, so a change applies from the next meeting.
+	 *  Turns "stop recording by itself when a call ends" on or off; returns it as stored. Off
+	 *  applies at once, to a meeting recording now too; on, from the next meeting.
 	 */
 	setCallEndStop: (on: boolean) => typedError<CallEndStopView, IpcError>(__TAURI_INVOKE("set_call_end_stop", { on })),
 	/**  Whether Earshot offers to start recording when a call starts (T12.86; on unless turned off). */

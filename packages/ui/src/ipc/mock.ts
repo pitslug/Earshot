@@ -417,8 +417,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   let callStartOn = data.callStartOffer ?? true;
   let callStartOpen = false;
   let callStartScheduled = false;
-  // T14.52: whether a call's recording stops by itself, read when a meeting starts (off).
+  // T14.52: whether a call's recording stops by itself, read when a meeting starts (off); turning
+  // it off reaches the recording meeting at once, its open question included.
   let callEndStopOn = false;
+  let liveCallEnd: { stops: boolean; open: boolean } | null = null;
   const shellListeners = new Set<(event: ShellEvent) => void>();
   const emitShell = (event: ShellEvent) => {
     for (const l of [...shellListeners]) l(event);
@@ -865,10 +867,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (keepLocal) keptLocal.add(row.id);
       const { cancel, speaking, tracks, release } = record(row, mode, held);
       if (data.callEndOfferAfterMs !== undefined && mode === "Call") {
-        const stops = callEndStopOn;
+        const callEnd = { stops: callEndStopOn, open: false };
+        liveCallEnd = callEnd;
         cancel.push(
-          timer.setTimeout(
-            () => emit({ type: "CallEndOffer", open: true, stops }),
+          timer.setTimeout(() => {
+            callEnd.open = true;
+            emit({ type: "CallEndOffer", open: true, stops: callEnd.stops });
+          },
             data.callEndOfferAfterMs,
           ),
         );
@@ -888,12 +893,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       return row.id;
     },
     keepRecording: async () => {
-      // The offer closes on the screen; the mock has nothing else to do.
+      // The offer closes on the screen; the mock only notes it is closed.
+      if (liveCallEnd) liveCallEnd.open = false;
     },
     stopMeeting: async () => {
       if (!live) return fail("not_recording", "no meeting is recording");
       const { row, cancel } = live;
       live = null;
+      liveCallEnd = null;
       const held = afterOlder !== null;
       afterOlder = null;
       processing = true;
@@ -1047,6 +1054,12 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     setCallEndStop: async (on) => {
       call("setCallEndStop", on);
       callEndStopOn = on;
+      // Off reaches the recording meeting at once, and an open question is asked again in the off
+      // wording; on applies from the next meeting.
+      if (!on && liveCallEnd?.stops) {
+        liveCallEnd.stops = false;
+        if (liveCallEnd.open) emit({ type: "CallEndOffer", open: true, stops: false });
+      }
       return { on: callEndStopOn, unknown: [] };
     },
     callStartOffer: async () => callStartOn,

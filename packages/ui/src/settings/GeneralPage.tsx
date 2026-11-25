@@ -18,7 +18,7 @@ import {
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { errorText, useIpc } from "../ipc";
 import { type ThemeChoice, useThemeChoice } from "../theme/EarshotThemeProvider";
@@ -98,7 +98,9 @@ function CallStartSection() {
   const styles = useStyles();
   const ipc = useIpc();
   const [load, setLoad] = useLoad((ipc) => ipc.callStartOffer());
-  const [busy, setBusy] = useState(false);
+  // Not disabled while a save is in flight, which would take focus off the switch in WebView2:
+  // a press meanwhile is ignored.
+  const busy = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   if (load.status !== "loaded") {
@@ -112,14 +114,15 @@ function CallStartSection() {
     );
   }
   const set = async (on: boolean) => {
-    setBusy(true);
+    if (busy.current) return;
+    busy.current = true;
     try {
       setLoad({ status: "loaded", view: await ipc.setCallStartOffer(on) });
       setError(null);
     } catch (e) {
       setError(errorText(e));
     } finally {
-      setBusy(false);
+      busy.current = false;
     }
   };
   return (
@@ -127,7 +130,6 @@ function CallStartSection() {
       <Switch
         label="Offer to record when a call starts"
         checked={load.view}
-        disabled={busy}
         onChange={(_, d) => void set(d.checked)}
       />
       <Caption1 className={styles.muted}>{CALL_START_EXPLAINED}</Caption1>
@@ -145,15 +147,17 @@ function CallStartSection() {
 
 /** What "Stop recording by itself when a call ends" does (T14.52). */
 export const CALL_END_STOP_EXPLAINED =
-  "When a call seems to have ended, Earshot asks whether to stop recording. With this on, Earshot stops the recording after 3 minutes with no answer. With it off, Earshot keeps recording until you stop it. A change applies from the next meeting.";
+  "When a call seems to have ended, Earshot asks whether to stop recording. With this on, Earshot stops the recording after 3 minutes with no answer. With it off, Earshot keeps recording until you stop it. Turning this off applies at once. Turning it on applies from the next meeting.";
 
-/** Stopping by itself when a call ends: read on its own, applied at once (from the next meeting),
- * shown as stored. Off by default. */
+/** Stopping by itself when a call ends: read on its own, saved at once and shown as stored. Off by
+ * default; off reaches a recording meeting at once, on applies from the next meeting. */
 function CallEndStopSection() {
   const styles = useStyles();
   const ipc = useIpc();
   const [load, setLoad] = useLoad((ipc) => ipc.callEndStop());
-  const [busy, setBusy] = useState(false);
+  // Not disabled while a save is in flight, which would take focus off the switch in WebView2:
+  // a press meanwhile is ignored.
+  const busy = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   if (load.status !== "loaded") {
@@ -167,14 +171,15 @@ function CallEndStopSection() {
     );
   }
   const set = async (on: boolean) => {
-    setBusy(true);
+    if (busy.current) return;
+    busy.current = true;
     try {
       setLoad({ status: "loaded", view: await ipc.setCallEndStop(on) });
       setError(null);
     } catch (e) {
       setError(errorText(e));
     } finally {
-      setBusy(false);
+      busy.current = false;
     }
   };
   return (
@@ -183,7 +188,6 @@ function CallEndStopSection() {
       <Switch
         label="Stop recording by itself when a call ends"
         checked={load.view.on}
-        disabled={busy}
         onChange={(_, d) => void set(d.checked)}
       />
       <Caption1 className={styles.muted}>{CALL_END_STOP_EXPLAINED}</Caption1>

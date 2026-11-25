@@ -220,6 +220,19 @@ impl CallEndWatch {
         self.asked = false;
     }
 
+    /// The user turned "stop recording by itself" off during the meeting: from here on nothing
+    /// stops by itself, an open question included (off is the safe direction, so it applies at
+    /// once; turning it on applies only from the next meeting, so there is no way back on).
+    pub fn stop_by_itself_off(&mut self) {
+        self.config.stops = false;
+    }
+
+    /// Whether the question is open.
+    #[must_use]
+    pub fn offered(&self) -> bool {
+        self.offered
+    }
+
     /// What changes at `now`, if anything.
     pub fn check(&mut self, now: Duration) -> Option<CallEndChange> {
         if self.stopped {
@@ -324,6 +337,29 @@ mod tests {
         assert_eq!(w.check(s(10_036)), Some(CallEndChange::Offer));
         w.sessions(CallSessions::NoneActive, s(20_000));
         assert_eq!(w.check(s(20_000)), None);
+    }
+
+    #[test]
+    fn call_end_turning_the_stop_off_during_a_meeting_applies_at_once() {
+        // Before the question.
+        let mut w = ended_at_12();
+        w.stop_by_itself_off();
+        assert!(!w.offered());
+        assert_eq!(w.check(s(42)), Some(CallEndChange::Offer));
+        assert!(w.offered());
+        w.sessions(CallSessions::NoneActive, s(5_000));
+        assert_eq!(w.check(s(5_000)), None);
+        // While it is open, one second before the stop.
+        let mut w = ended_at_12();
+        assert_eq!(w.check(s(42)), Some(CallEndChange::Offer));
+        w.sessions(CallSessions::NoneActive, s(221));
+        assert_eq!(w.check(s(221)), None);
+        w.stop_by_itself_off();
+        w.sessions(CallSessions::NoneActive, s(222));
+        assert_eq!(w.check(s(222)), None);
+        w.sessions(CallSessions::NoneActive, s(86_400));
+        assert_eq!(w.check(s(86_400)), None);
+        assert!(w.offered(), "the question stays open");
     }
 
     #[test]

@@ -358,6 +358,30 @@ fn shell_record_dot_marks_the_lower_right_and_leaves_the_rest() {
 }
 
 #[test]
+fn shell_call_end_toast_copy_is_the_shared_tables() {
+    // T14.52 review: the meeting screen reads the same table, so editing one side fails here.
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/call_end_copy_cases.json"
+    ))
+    .unwrap();
+    let copy = |key: &str| table[key].as_str().unwrap().to_owned();
+    for (stops, body) in [(true, "will_stop"), (false, "asks_only")] {
+        let t = call_end_toast(stops);
+        assert_eq!(t.title, copy("notification_title"));
+        assert_eq!(t.body, copy(body));
+        assert_eq!(
+            t.buttons
+                .iter()
+                .map(|(label, _)| (*label).to_owned())
+                .collect::<Vec<_>>(),
+            [copy("stop_button"), copy("keep_button")]
+        );
+    }
+    assert_eq!(CALL_END_WILL_STOP, copy("will_stop"));
+    assert_eq!(CALL_END_ASKS_ONLY, copy("asks_only"));
+}
+
+#[test]
 fn call_end_toast_is_fixed_copy_that_stays_and_answers_in_one_click() {
     let t = call_end_toast(true);
     assert_eq!(t.title, "The call seems to have ended");

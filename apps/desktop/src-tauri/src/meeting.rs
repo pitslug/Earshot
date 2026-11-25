@@ -212,6 +212,10 @@ struct Inner {
     after_bounds: AfterBounds,
     /// The clock those bounds are read on: time awake (T14.8).
     awake: earshot_proc::AwakeClock,
+    /// "Stop recording by itself when a call ends" as the meetings read it (T14.52): read from
+    /// the store at the first meeting's start, then kept up to date by the General page's
+    /// command under the store's lock, so a recording meeting looks at it without the store.
+    call_end_stop: Arc<crate::shell::OfferSetting>,
     /// Runs in a start that failed, after its result is known and before it takes its thread
     /// back: where a test lets another start in (T14.7).
     #[cfg(test)]
@@ -299,9 +303,17 @@ impl MeetingDriver {
             stop_ceiling: STOP_CEILING,
             after_bounds: AfterBounds::default(),
             awake: earshot_proc::AwakeClock::system(),
+            call_end_stop: Arc::default(),
             #[cfg(test)]
             failed_start_hook: None,
         }))
+    }
+
+    /// "Stop recording by itself when a call ends" was stored as `on` (T14.52). Called by the
+    /// General page's command while it still holds the store's lock, so overlapping changes end
+    /// on what the store holds. Off reaches a recording meeting at once; on, from the next one.
+    pub fn call_end_stop_stored(&self, on: bool) {
+        self.0.call_end_stop.set(on);
     }
 
     /// The queue meetings take turns in; summary offload's work for another computer takes its
@@ -1004,6 +1016,9 @@ struct CallEndOffer {
     started: Instant,
     /// The recording stops by itself when nobody answers ([`CallEndConfig::stops`]).
     stops: bool,
+    /// The setting as the General page last stored it ([`Inner::call_end_stop`]): turned off
+    /// during the meeting, nothing stops by itself from then on (T14.52).
+    setting: Option<Arc<crate::shell::OfferSetting>>,
 }
 
 impl CallEndOffer {
@@ -1013,16 +1028,26 @@ impl CallEndOffer {
             signal,
             started,
             stops: config.stops,
+            setting: None,
         }
     }
 
-    /// The config of a meeting that starts now: the General page's "stop recording by itself",
-    /// read once here (T14.52; a change applies from the next meeting). A setting that cannot be
-    /// read is off: nothing stops by itself.
-    fn config_from(store: &earshot_store::Store) -> CallEndConfig {
-        let stops = earshot_runtime::call_end::stop_setting(store).is_ok_and(|(on, _)| on);
+    /// Follows `setting` while the meeting runs: off applies at once.
+    fn following(mut self, setting: Arc<crate::shell::OfferSetting>) -> Self {
+        self.setting = Some(setting);
+        self
+    }
+
+    /// The config of a meeting that starts now: the General page's "stop recording by itself"
+    /// (T14.52) as `setting` keeps it, else as `read` gives it from the store. Turning it on
+    /// applies from the next meeting; off applies at once ([`Self::tick`]). A read that fails
+    /// (`None`) is off: nothing stops by itself.
+    fn config_from(
+        setting: &crate::shell::OfferSetting,
+        read: impl FnOnce() -> Option<bool>,
+    ) -> CallEndConfig {
         CallEndConfig {
-            stops,
+            stops: setting.get(read),
             ..CallEndConfig::default()
         }
     }
@@ -1045,6 +1070,19 @@ impl CallEndOffer {
         let at = now.saturating_duration_since(self.started);
         if let Some(reading) = (self.signal)() {
             self.watch.sessions(reading, at);
+        }
+        // Turned off during the meeting: no stop from here on, and an open question says so.
+        if self.stops
+            && self
+                .setting
+                .as_ref()
+                .is_some_and(|s| s.peek() == Some(false))
+        {
+            self.stops = false;
+            self.watch.stop_by_itself_off();
+            if self.watch.offered() {
+                return Some(self.offer(true));
+            }
         }
         if keep.swap(false, Ordering::SeqCst) {
             self.watch.keep_recording();
@@ -1183,8 +1221,13 @@ fn run(
         .call_signal
         .filter(|_| request.mode == CaptureMode::Call)
         .map(|signal| {
-            let config = CallEndOffer::config_from(&svc.store());
+            let config = CallEndOffer::config_from(&inner.call_end_stop, || {
+                earshot_runtime::call_end::stop_setting(&svc.store())
+                    .ok()
+                    .map(|(on, _)| on)
+            });
             CallEndOffer::new(signal, config, (inner.now)())
+                .following(Arc::clone(&inner.call_end_stop))
         });
     if let Some(events) = session.take_events() {
         let mut stop_sent = false;

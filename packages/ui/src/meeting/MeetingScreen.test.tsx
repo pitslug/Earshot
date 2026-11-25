@@ -149,6 +149,10 @@ describe("the offer to stop when a call ends", () => {
     const open = reduce(started, { type: "CallEndOffer", open: true, stops: true }, 1);
     expect(open?.callEndOffer).toBe(true);
     expect(open?.callEndStops).toBe(true);
+    // Turned off while it is open: asked again, in the off wording (T14.52 review).
+    const reworded = reduce(open, { type: "CallEndOffer", open: true, stops: false }, 2);
+    expect(reworded?.callEndOffer).toBe(true);
+    expect(reworded?.callEndStops).toBe(false);
     expect(reduce(open, { type: "CallEndOffer", open: false, stops: true }, 2)?.callEndOffer).toBe(false);
     expect(reduce(open, { type: "CallEndStopped" }, 2)?.callEndOffer).toBe(false);
     expect(
