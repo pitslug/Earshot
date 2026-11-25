@@ -2732,7 +2732,7 @@ fn left_for_stalling(events: &[MeetingEvent], meeting: &str) -> bool {
 fn meeting_after_watch_counts_time_awake_not_time_asleep() {
     // T14.8: the meeting ends, the lid closes during its final pass. On waking, the hours asleep
     // are not silence: the work is left only after its bound of time awake with no sign of life.
-    use crate::testutil::HandClock;
+    use earshot_proc::HandClock;
     let dir = TempDir::new("after-asleep");
     let svc = services(&dir);
     let night = Duration::from_secs(8 * 3600);

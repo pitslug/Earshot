@@ -1883,7 +1883,7 @@ mod local {
     fn summary_a_load_asleep_is_no_stall_and_time_awake_is() {
         // T14.8: the lid closes while the summary model loads. The hours asleep are not silence;
         // the limit is time awake.
-        use crate::testutil::HandClock;
+        use earshot_proc::HandClock;
         let dir = TempDir::new("summary");
         let (svc, _) = services(&dir);
         let id = meeting(&svc, "", 191);

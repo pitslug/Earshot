@@ -44,67 +44,6 @@ impl Drop for TempDir {
     }
 }
 
-/// A clock the test moves by hand, keeping time awake and time asleep apart (T12.62's fake,
-/// T14.8): what a stall rule that must not count a system sleep is tested on.
-#[cfg(feature = "engines")]
-#[derive(Clone, Default)]
-pub struct HandClock {
-    awake_ms: Arc<AtomicU64>,
-    asleep_ms: Arc<AtomicU64>,
-    reads: Arc<AtomicU64>,
-}
-
-#[cfg(feature = "engines")]
-impl HandClock {
-    fn ms(counter: &AtomicU64) -> u64 {
-        counter.load(Ordering::SeqCst)
-    }
-
-    /// What the code under test is given: time awake only.
-    pub fn awake(&self) -> earshot_proc::AwakeClock {
-        let me = self.clone();
-        earshot_proc::AwakeClock::from_fn(move || {
-            me.reads.fetch_add(1, Ordering::SeqCst);
-            std::time::Duration::from_millis(Self::ms(&me.awake_ms))
-        })
-    }
-
-    /// What `Instant` reads on Windows: time awake and time asleep (the negative control).
-    pub fn wall(&self) -> earshot_proc::AwakeClock {
-        let me = self.clone();
-        earshot_proc::AwakeClock::from_fn(move || {
-            me.reads.fetch_add(1, Ordering::SeqCst);
-            std::time::Duration::from_millis(Self::ms(&me.awake_ms) + Self::ms(&me.asleep_ms))
-        })
-    }
-
-    /// Time passes with the computer awake.
-    pub fn advance(&self, by: std::time::Duration) {
-        self.awake_ms
-            .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
-    }
-
-    /// Time passes with the computer asleep.
-    pub fn sleep(&self, by: std::time::Duration) {
-        self.asleep_ms
-            .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
-    }
-
-    /// Waits until the code under test has read the clock twice more: it has then judged the
-    /// time as it is now at least once. The bound is only for a failing case.
-    pub fn read_twice_more(&self) {
-        let from = Self::ms(&self.reads);
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while Self::ms(&self.reads) < from + 2 {
-            assert!(
-                std::time::Instant::now() < until,
-                "the clock is no longer read"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
-}
-
 /// How far a buffer may lie from its timeline and still be found: more than 16-bit
 /// quantisation (half an LSB, 1.5e-5), so a FLAC copy or the 16-bit samples a stretch
 /// worker decodes (T6.13e) are found too.

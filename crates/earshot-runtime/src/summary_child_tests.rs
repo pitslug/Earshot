@@ -504,7 +504,7 @@ fn watched_on(clock: earshot_proc::AwakeClock) -> (Sender<Heard>, Receiver<Headi
 fn summary_child_watch_counts_time_awake_not_time_asleep() {
     // T14.8: the lid closes while the child loads or runs. The hours asleep are not silence; the
     // limits are time awake.
-    use crate::testutil::HandClock;
+    use earshot_proc::HandClock;
     let hours = |n: u64| Duration::from_secs(n * 3600);
     let guard = Duration::from_secs(60);
     let clock = HandClock::default();

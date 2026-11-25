@@ -69,61 +69,6 @@ fn proc_run_kills_a_child_past_its_deadline() {
     );
 }
 
-/// A clock the test moves by hand, keeping time awake and time asleep apart (T12.62's fake).
-#[derive(Clone, Default)]
-struct HandClock {
-    awake_ms: Arc<AtomicU64>,
-    asleep_ms: Arc<AtomicU64>,
-    reads: Arc<AtomicU64>,
-}
-
-impl HandClock {
-    fn ms(counter: &AtomicU64) -> u64 {
-        counter.load(Ordering::SeqCst)
-    }
-
-    /// What the code under test is given: time awake only.
-    fn awake(&self) -> AwakeClock {
-        let me = self.clone();
-        AwakeClock::from_fn(move || {
-            me.reads.fetch_add(1, Ordering::SeqCst);
-            Duration::from_millis(Self::ms(&me.awake_ms))
-        })
-    }
-
-    /// What `Instant` reads on Windows: time awake and time asleep (the negative control).
-    fn wall(&self) -> AwakeClock {
-        let me = self.clone();
-        AwakeClock::from_fn(move || {
-            me.reads.fetch_add(1, Ordering::SeqCst);
-            Duration::from_millis(Self::ms(&me.awake_ms) + Self::ms(&me.asleep_ms))
-        })
-    }
-
-    /// Time passes with the computer awake.
-    fn advance(&self, by: Duration) {
-        self.awake_ms
-            .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
-    }
-
-    /// Time passes with the computer asleep.
-    fn sleep(&self, by: Duration) {
-        self.asleep_ms
-            .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
-    }
-
-    /// Waits until the code under test has read the clock twice more: it has then judged the
-    /// time as it is now at least once. The bound is only for a failing case.
-    fn read_twice_more(&self) {
-        let from = Self::ms(&self.reads);
-        let until = Instant::now() + Duration::from_secs(60);
-        while Self::ms(&self.reads) < from + 2 {
-            assert!(Instant::now() < until, "the clock is no longer read");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-}
-
 /// A child that runs for two minutes unless it is killed, under `clock`, with a deadline of an
 /// hour; its result when the run ends.
 #[cfg(windows)]
@@ -195,6 +140,60 @@ fn proc_awake_clock_reads_forward_and_never_trips_on_a_clock_that_went_back() {
     assert_eq!(awake.now(), Duration::from_secs(5));
     assert_eq!(wall.now(), Duration::from_secs(105));
     assert_eq!(awake.since(Duration::from_secs(2)), Duration::from_secs(3));
+    // Each read of either clock counts, and two more are waited for.
+    let reader = awake.clone();
+    let reading = std::thread::spawn(move || {
+        let _ = (reader.now(), reader.now());
+    });
+    hand.read_twice_more();
+    reading.join().unwrap();
+}
+
+/// A fake of the system's two clocks for [`AwakeClock::falling_back`]: time awake in seconds
+/// (0 reads as "cannot be read") and time since the clock was made, each set by the test.
+fn falling_back_on(awake_s: &Arc<AtomicU64>, since_made_s: &Arc<AtomicU64>) -> AwakeClock {
+    let (awake, since_made) = (Arc::clone(awake_s), Arc::clone(since_made_s));
+    AwakeClock::falling_back(
+        move || match awake.load(Ordering::SeqCst) {
+            0 => None,
+            s => Some(Duration::from_secs(s)),
+        },
+        move || Duration::from_secs(since_made.load(Ordering::SeqCst)),
+    )
+}
+
+#[test]
+fn proc_awake_clock_that_stops_answering_goes_on_so_a_limit_still_fires() {
+    // T14.8 review: a clock that read zero once time awake could no longer be read never tripped
+    // a limit, and a hung child or final pass was then never given up.
+    let s = Duration::from_secs;
+    let (awake, since_made) = (Arc::new(AtomicU64::new(500)), Arc::new(AtomicU64::new(0)));
+    let clock = falling_back_on(&awake, &since_made);
+    // Readable: time awake, whatever the other clock says (the computer slept 100 s).
+    awake.store(520, Ordering::SeqCst);
+    since_made.store(120, Ordering::SeqCst);
+    let started = clock.now();
+    assert_eq!(started, s(520));
+    // It stops answering: on from its first reading by the other clock, never back to zero.
+    awake.store(0, Ordering::SeqCst);
+    assert_eq!(clock.now(), s(620));
+    assert!(clock.now() >= started, "it never goes back");
+    since_made.store(720, Ordering::SeqCst);
+    assert_eq!(clock.since(started), s(700), "a limit fires");
+    // It answers again, behind the clock by the sleep: the clock stays where it is and does
+    // not step back.
+    awake.store(1100, Ordering::SeqCst);
+    assert_eq!(clock.now(), s(1220));
+    since_made.store(730, Ordering::SeqCst);
+    assert_eq!(clock.now(), s(1230));
+
+    // Unreadable when the clock is made: the other clock for good, never a mix of the two.
+    let (awake, since_made) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(7)));
+    let clock = falling_back_on(&awake, &since_made);
+    assert_eq!(clock.now(), s(7));
+    awake.store(900, Ordering::SeqCst);
+    since_made.store(9, Ordering::SeqCst);
+    assert_eq!(clock.now(), s(9));
 }
 
 #[test]
