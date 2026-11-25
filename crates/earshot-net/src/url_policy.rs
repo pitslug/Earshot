@@ -86,6 +86,21 @@ pub fn is_local_url(url: &Url) -> bool {
     url.host().is_some_and(|h| is_local_host(&h))
 }
 
+/// Whether `url`'s host is this machine only: `localhost`, IPv4 loopback (127/8) or IPv6
+/// loopback, including the IPv4-mapped form; never a private LAN address (T14.31: an API key
+/// is sent over plain `http` only to this machine, where nothing on the network can read it).
+/// False when it has no host.
+pub fn is_loopback_url(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(a)) => a.is_loopback(),
+        Some(Host::Ipv6(a)) => a
+            .to_ipv4_mapped()
+            .map_or(a.is_loopback(), |v4| v4.is_loopback()),
+        None => false,
+    }
+}
+
 fn is_local_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(a) => a.is_loopback() || a.is_private(),
@@ -174,6 +189,33 @@ mod tests {
             "http://[::ffff:8.8.8.8]",
         ] {
             assert!(!is_local_url(&Url::parse(s).unwrap()), "{s}");
+        }
+    }
+
+    #[test]
+    fn loopback_hosts_are_this_machine_only() {
+        for s in [
+            "http://localhost:1",
+            "http://LOCALHOST",
+            "http://127.0.0.1",
+            "http://127.9.9.9:8080",
+            "http://[::1]",
+            "http://[::ffff:127.0.0.1]",
+        ] {
+            assert!(is_loopback_url(&Url::parse(s).unwrap()), "{s}");
+        }
+        for s in [
+            "http://10.1.2.3",
+            "http://172.16.0.1",
+            "http://192.168.1.20",
+            "http://[fd12:3456::1]",
+            "http://[::ffff:192.168.1.1]",
+            "http://8.8.8.8",
+            "http://example.com",
+            "http://localhost.example.com",
+            "http://mybox.local",
+        ] {
+            assert!(!is_loopback_url(&Url::parse(s).unwrap()), "{s}");
         }
     }
 

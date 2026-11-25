@@ -618,10 +618,8 @@ impl JobWork for HostJobs {
         let models = host::model_dir(&svc.data);
         // Waits for this start's choice of ONNX Runtime's library, if it is still being made.
         let build = host::settled_order();
-        let mut setup = {
-            let db = svc.store();
-            host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?
-        };
+        // Its model is in use until the job ends (T14.12).
+        let (mut setup, _model_use) = retranscribe_setup(svc, &models, &build)?;
         host::require_models(&models, &setup.choice.model, true)?;
         // "Runs on the processor" for want of an NPU version: once until it changes (T12.45),
         // recorded once the warnings went out.
@@ -666,6 +664,8 @@ impl JobWork for HostJobs {
         warn: &mut dyn FnMut(String),
     ) -> Result<JobSummary, IpcError> {
         let models = earshot_runtime::host::model_dir(&svc.data);
+        // The local summary model is in use until the job ends (T14.12).
+        let _model_use = summary_model_use(svc, &models);
         let probes = crate::summary_order::SummaryProbes::installed();
         let chooser = crate::summary_order::chooser_of(&self.computers);
         let ask = |d| match &chooser {
@@ -683,6 +683,53 @@ impl JobWork for HostJobs {
             warn,
         )
     }
+}
+
+/// The transcription setup of a re-transcription on `build`, with its model in use
+/// (`host::use_model`, T14.12) from the read of the settings, under the same store lock, so a
+/// removal finds the model kept by the settings or by this job with no gap. The job holds the
+/// use until it ends.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn retranscribe_setup(
+    svc: &Services,
+    models: &earshot_runtime::backends::ModelDir,
+    build: &[earshot_runtime::backends::Accelerator],
+) -> Result<
+    (
+        earshot_runtime::host::TranscriptionSetup,
+        earshot_runtime::host::ModelUse,
+    ),
+    IpcError,
+> {
+    use earshot_runtime::host;
+    let db = svc.store();
+    let setup = host::transcription_setup(&db, models, build, &earshot_runtime::hardware())?;
+    let model_use = host::use_model(models, &setup.choice.model);
+    Ok((setup, model_use))
+}
+
+/// The local summary model a re-summary on this computer would load, in use
+/// (`host::use_model`, T14.12) from the read of the settings, under the same store lock: the
+/// model a removal keeps for summaries (`host::protected_models`: `local_summary_placement`
+/// and `summary_model_for`), whichever step ends up writing. `None` when the settings name no
+/// model this version ships: there is then nothing a local step could load.
+pub(crate) fn summary_model_use(
+    svc: &Services,
+    models: &earshot_runtime::backends::ModelDir,
+) -> Option<earshot_runtime::host::ModelUse> {
+    use earshot_runtime::host;
+    let hardware = earshot_runtime::hardware();
+    let db = svc.store();
+    let placement = host::local_summary_placement(
+        &db,
+        &earshot_runtime::backends::accelerator_order(),
+        &hardware,
+    )
+    .ok()?;
+    let choice = host::summary_model_for(&placement, &hardware).ok()?;
+    Some(host::use_model(models, choice.model.id))
 }
 
 /// A re-summary of `meeting` by "Use my order" with `models`, `keys` and the two CLIs, each

@@ -5,6 +5,7 @@ import {
   clockTime,
   displayTitle,
   groupByDay,
+  keepUnchanged,
   recordedDate,
   recoveredText,
   rowDot,
@@ -202,6 +203,81 @@ describe("displayTitle", () => {
     expect(displayTitle({ ...meeting("a", 0), title: "" })).toBe("Untitled meeting");
     expect(displayTitle({ ...meeting("a", 0), title: "  " })).toBe("Untitled meeting");
     expect(displayTitle(meeting("a", 0))).toBe("Meeting a");
+  });
+});
+
+describe("keepUnchanged (T14.16)", () => {
+  const a = meeting("a", at(18, 9));
+  const b = meeting("b", at(17, 9));
+  const c = meeting("c", at(16, 9));
+  /** The same rows as the app sends them again: equal, never the same objects. */
+  const again = (list: MeetingListItem[]) => list.map((m) => ({ ...m }));
+
+  it("gives back the list itself when a new read says the same", () => {
+    const was = [a, b, c];
+    expect(keepUnchanged(was, again(was))).toBe(was);
+    expect(keepUnchanged<MeetingListItem>([], [])).toEqual([]);
+  });
+
+  it("keeps the rows that did not change and takes the one that did", () => {
+    const was = [a, b, c];
+    const renamed = { ...b, title: "Renamed" };
+    const now = keepUnchanged(was, [{ ...a }, renamed, { ...c }]);
+    expect(now).not.toBe(was);
+    expect(now[0]).toBe(a);
+    expect(now[1]).toBe(renamed);
+    expect(now[2]).toBe(c);
+  });
+
+  it("takes a row for changed whichever field differs", () => {
+    const changes: Partial<MeetingListItem>[] = [
+      { title: "Other" },
+      { started_at_ms: a.started_at_ms + 1 },
+      { duration_ms: null },
+      { state: "Processing" },
+      { folder_id: "f1" },
+      { new_summary: true },
+    ];
+    for (const change of changes) {
+      const next = { ...a, ...change };
+      expect(keepUnchanged([a], [next])[0]).toBe(next);
+    }
+  });
+
+  it("keeps rows across a new order, a new row and a row that went", () => {
+    const was = [a, b, c];
+    const reordered = keepUnchanged(was, again([c, a, b]));
+    expect(reordered).not.toBe(was);
+    expect(reordered).toEqual([c, a, b]);
+    expect(reordered[0]).toBe(c);
+    expect(reordered[1]).toBe(a);
+    const d = meeting("d", at(18, 10));
+    const added = keepUnchanged(was, [d, ...again(was)]);
+    expect(added).toHaveLength(4);
+    expect(added[0]).toBe(d);
+    expect(added[1]).toBe(a);
+    const fewer = keepUnchanged(was, again([a, c]));
+    expect(fewer).not.toBe(was);
+    expect(fewer).toHaveLength(2);
+    expect(fewer[0]).toBe(a);
+    expect(fewer[1]).toBe(c);
+  });
+
+  it("takes a row with a field more or a field fewer as changed", () => {
+    const wider = { ...a, extra: 1 } as MeetingListItem;
+    expect(keepUnchanged([a], [wider])[0]).toBe(wider);
+    expect(keepUnchanged([wider], [{ ...a }])[0]).not.toBe(wider);
+  });
+
+  it("works for folders too", () => {
+    const was = [
+      { id: "f1", name: "Planning" },
+      { id: "f2", name: "Supplier calls" },
+    ];
+    expect(keepUnchanged(was, was.map((f) => ({ ...f })))).toBe(was);
+    const now = keepUnchanged(was, [{ ...was[0] }, { id: "f2", name: "Suppliers" }]);
+    expect(now[0]).toBe(was[0]);
+    expect(now[1]).not.toBe(was[1]);
   });
 });
 

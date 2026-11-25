@@ -208,6 +208,9 @@ pub(crate) enum DeviceRecord {
     SummaryCodexModel,
     /// `settings/summary-claude-code-effort`: the effort Claude Code is asked for (T12.18).
     SummaryClaudeCodeEffort,
+    /// `settings/anthropic-key-address`: the host and port the saved Anthropic API key was
+    /// saved for (T14.31; never the key).
+    AnthropicKeyAddress,
     /// `settings/audio-retention`: how long recordings are kept (T7.4k).
     AudioRetention,
     /// `settings/obsidian-vault`: the Obsidian vault folder (T7.4h).
@@ -328,6 +331,7 @@ impl DeviceRecord {
         DeviceRecord::SummaryClaudeCodeModel,
         DeviceRecord::SummaryCodexModel,
         DeviceRecord::SummaryClaudeCodeEffort,
+        DeviceRecord::AnthropicKeyAddress,
         DeviceRecord::AudioRetention,
         DeviceRecord::ObsidianVault,
         DeviceRecord::ObsidianFolder,
@@ -398,6 +402,9 @@ impl DeviceRecord {
                 DeviceRecord::SummaryCodexModel => crate::summary_settings::SUMMARY_CODEX_MODEL_KEY,
                 DeviceRecord::SummaryClaudeCodeEffort => {
                     crate::summary_settings::SUMMARY_CLAUDE_CODE_EFFORT_KEY
+                }
+                DeviceRecord::AnthropicKeyAddress => {
+                    crate::summary_settings::ANTHROPIC_KEY_ADDRESS_KEY
                 }
                 DeviceRecord::AudioRetention => crate::retention::AUDIO_RETENTION_KEY,
                 DeviceRecord::ObsidianVault => crate::export_settings::VAULT_KEY,

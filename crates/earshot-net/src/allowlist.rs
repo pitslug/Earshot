@@ -17,6 +17,9 @@ pub enum DenyReason {
     InsecureScheme,
     /// The exact (host, port) pair is not on the allowlist.
     HostNotAllowed,
+    /// An API key would go over plain `http` to a host that is not this machine (T14.31;
+    /// refused by the client that holds the key, before any connection).
+    KeyOverPlainHttp,
 }
 
 impl fmt::Display for DenyReason {
@@ -25,6 +28,9 @@ impl fmt::Display for DenyReason {
             DenyReason::BadUrl => "not an http(s) URL with a host and no credentials",
             DenyReason::InsecureScheme => "plain http is only allowed to loopback or private LAN",
             DenyReason::HostNotAllowed => "host and port are not on the allowlist",
+            DenyReason::KeyOverPlainHttp => {
+                "an API key is sent over plain http only to this computer"
+            }
         })
     }
 }

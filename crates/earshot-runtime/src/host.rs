@@ -92,13 +92,105 @@ pub fn settled_order() -> Vec<Accelerator> {
     crate::backends::accelerator_order()
 }
 
+/// The models in use now, by models folder: what [`use_model`] recorded and has not let go.
+static MODELS_IN_USE: std::sync::Mutex<ModelsInUse> = std::sync::Mutex::new(ModelsInUse {
+    next: 0,
+    held: Vec::new(),
+});
+
+struct ModelsInUse {
+    /// The next use's number.
+    next: u64,
+    /// Each use held: its number, the models folder and the model.
+    held: Vec<(u64, PathBuf, String)>,
+}
+
+fn models_in_use_lock() -> std::sync::MutexGuard<'static, ModelsInUse> {
+    MODELS_IN_USE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// One use of a model, held for as long as something may still load or read the model's files
+/// (T14.12); dropping it ends the use.
+#[derive(Debug)]
+pub struct ModelUse {
+    id: u64,
+    model: String,
+}
+
+impl ModelUse {
+    /// The model in use.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+impl Drop for ModelUse {
+    fn drop(&mut self) {
+        models_in_use_lock()
+            .held
+            .retain(|(id, _, _)| *id != self.id);
+    }
+}
+
+/// Says `model` of `models` is in use until the returned [`ModelUse`] is dropped (T14.12): a
+/// removal is refused meanwhile ([`models_in_use`]), whatever the settings say by then. A
+/// meeting holds one for the model it started with, through its [`MeetingModels`].
+///
+/// Whoever reads the settings to choose a model takes its use while it still holds the store
+/// lock of that read: a removal reads what the settings keep under the same lock, so a model is
+/// kept by the settings or by its use at every moment, with no gap between the two.
+#[must_use]
+pub fn use_model(models: &ModelDir, model: &str) -> ModelUse {
+    let mut all = models_in_use_lock();
+    all.next += 1;
+    let id = all.next;
+    all.held
+        .push((id, models.root().to_path_buf(), model.to_owned()));
+    ModelUse {
+        id,
+        model: model.to_owned(),
+    }
+}
+
+/// The models of `models` in use now ([`use_model`]), each with its NPU version as the catalogue
+/// lists them ([`with_npu_versions`]: a meeting on the NPU has those files open), sorted, each
+/// once. What a removal must leave alone beside [`protected_models`], which follows the settings:
+/// a meeting recording, finishing or held keeps the model it started with after the settings
+/// moved on.
+#[must_use]
+pub fn models_in_use(models: &ModelDir) -> Vec<String> {
+    let mut used: Vec<String> = models_in_use_lock()
+        .held
+        .iter()
+        .filter(|(_, root, _)| root == models.root())
+        .map(|(_, _, model)| model.clone())
+        .collect();
+    if let Ok(catalogue) = crate::catalogue::Catalogue::embedded() {
+        used = with_npu_versions(catalogue, used);
+    }
+    used.sort();
+    used.dedup();
+    used
+}
+
 /// What a held meeting runs on, decided once, when the first of its work takes its turn (T9.1l):
 /// after the CUDA start has chosen, so the meeting runs on what the start chose. Capture never waits
 /// for it. A meeting that never got that far (stopped during its hold) decides in its turn after the
 /// meeting.
+///
+/// It keeps its models in use ([`use_model`], T14.12) for its whole life, which is the meeting's:
+/// its live work and the work after it hold it, so a model is in use while the meeting records,
+/// is held or finishes, also on a thread that was left.
 pub struct MeetingModels {
     services: Services,
     models: ModelDir,
+    /// The models in use by this meeting: the one its pre-flight checked, the one
+    /// [`Self::resolve`] decided on when that is another, and any other the meeting loads
+    /// ([`Self::also_using`]).
+    uses: std::sync::Mutex<Vec<ModelUse>>,
     /// The build's order the pre-flight read, and what it checked on that order.
     checked: (Vec<Accelerator>, ResolvedModels),
     /// The meeting's hold: where the notes go.
@@ -128,24 +220,55 @@ pub struct ResolvedModels {
 
 impl MeetingModels {
     /// The models of a meeting in `services`; `checked` is the build's order the pre-flight read and
-    /// what it checked on it; `notes` hears what the loads find.
+    /// what it checked on it; `started_with` is the use of that model, which the pre-flight took
+    /// when it read the settings ([`use_model`]: before the model's files were checked and
+    /// before anything slow, so no removal comes between the choice and the meeting); `notes`
+    /// hears what the loads find.
     #[must_use]
     pub fn new(
         services: &Services,
         models: ModelDir,
         checked: (Vec<Accelerator>, ResolvedModels),
+        started_with: ModelUse,
         notes: crate::live::HoldNotes,
         library_note: LibraryNote,
     ) -> Self {
+        let mut uses = vec![started_with];
+        // A use of another model keeps that one; the meeting's own is in use from here at least.
+        if uses[0].model() != checked.1.model {
+            uses.push(use_model(&models, &checked.1.model));
+        }
         Self {
             services: services.clone(),
             models,
+            uses: std::sync::Mutex::new(uses),
             checked,
             notes,
             library_note,
             resolved: std::sync::Mutex::new(None),
             after_fallback: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Keeps `model` in use for the rest of this meeting, once.
+    fn keep_in_use(&self, model: &str) {
+        let mut uses = self
+            .uses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !uses.iter().any(|u| u.model() == model) {
+            uses.push(use_model(&self.models, model));
+        }
+    }
+
+    /// Holds `also` for the rest of this meeting: a model the meeting loads beside its
+    /// transcription model (the local summary model of its live summaries, loaded for each
+    /// window while it records).
+    pub fn also_using(&self, also: ModelUse) {
+        self.uses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(also);
     }
 
     /// What the pre-flight checked, as a meeting has always kept the model it started with, unless
@@ -172,6 +295,8 @@ impl MeetingModels {
                 let db = self.services.store();
                 transcription_setup(&db, &self.models, &build, &crate::hardware())?
             };
+            // In use before its files are checked, so no removal comes between the two.
+            self.keep_in_use(&setup.choice.model);
             require_models(&self.models, &setup.choice.model, true)?;
             ResolvedModels {
                 model: setup.choice.model,
@@ -917,6 +1042,13 @@ fn summary_for(
             }
             // Read once; without a key the summary is skipped with the reason (the owner,
             // 2026-11-04: a summary setting never costs a recording).
+            // A key saved for another address is never read or sent: it asks to be saved
+            // again (T14.31, `summary_settings::api_key_bound`).
+            EndpointProvider::Anthropic
+                if !crate::summary_settings::api_key_bound(store, &settings)? =>
+            {
+                request.no_key = Some(ApiKeyError::Missing);
+            }
             EndpointProvider::Anthropic => match keys.anthropic_key() {
                 Ok(Some(key)) => request.remote = Some(settings.endpoint_config(Some(key))),
                 Ok(None) => request.no_key = Some(ApiKeyError::Missing),
@@ -1948,6 +2080,9 @@ pub struct HostOutcome {
     /// Every network request the summary made (the privacy record; empty for a local
     /// summary or none).
     pub network: Vec<AuditEntry>,
+    /// Audit entries dropped to keep the log within `earshot_net::MAX_AUDIT_ENTRIES` (T14.32):
+    /// above 0, `network` is not the whole record, so a check of where the run went fails.
+    pub network_dropped: u64,
     /// Every time the summary handed text to Claude Code or Codex (the privacy record of
     /// PLAN.md 3.9's exception: when, how many characters, which CLI, never the text; empty for
     /// any other summary).
@@ -1980,6 +2115,7 @@ impl HostOutcome {
                 reason: SkipReason::PostFailed,
             },
             network: Vec::new(),
+            network_dropped: 0,
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
@@ -1999,6 +2135,7 @@ impl HostOutcome {
             }),
             summary: SummaryResult::Cancelled,
             network: Vec::new(),
+            network_dropped: 0,
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
@@ -2163,6 +2300,7 @@ where
             post,
             summary: done.summary,
             network: done.network,
+            network_dropped: done.network_dropped,
             handovers: done.handovers,
             handover_record_failures: done.handover_record_failures,
             claude_effort_unread: done.claude_effort_unread,
@@ -2215,6 +2353,7 @@ where
         };
         offload = Some(choice);
     }
+    let mut network_dropped = 0;
     let (summary, network, handovers, handover_record_failures) = if post.is_err() {
         (
             SummaryResult::Skipped {
@@ -2235,6 +2374,7 @@ where
             Some(service) => {
                 progress(HostStep::SummaryStarting);
                 let result = run_summary(services, meeting, service, run.summary_cancel);
+                network_dropped = service.audit_log().dropped();
                 (
                     result,
                     service.audit_log().entries(),
@@ -2260,6 +2400,7 @@ where
         post,
         summary,
         network,
+        network_dropped,
         handovers,
         handover_record_failures,
         claude_effort_unread,

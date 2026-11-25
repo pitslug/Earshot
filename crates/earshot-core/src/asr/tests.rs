@@ -1790,3 +1790,113 @@ fn asr_nonspeech_never_reaches_live_finals_or_final_segments() {
     assert_eq!(texts(&segs[0].words), ["Thanks", "everyone."]);
     assert_eq!(segs[0].text, "Thanks everyone.");
 }
+
+/// A word as a faulty recogniser hands it over: built field by field, so nothing has looked at
+/// its probability yet.
+fn word_as_given(text: &str, start_ms: u64, end_ms: u64, probability: f32) -> Word {
+    Word {
+        text: text.into(),
+        start: MeetingTime::from_millis(start_ms),
+        end: MeetingTime::from_millis(end_ms),
+        probability,
+    }
+}
+
+#[test]
+fn asr_word_probability_that_is_no_number_is_zero() {
+    // T14.23: a recogniser that hands out NaN or an infinity (a model fault) must not reach a
+    // stored transcript with it: SQLite keeps NaN as NULL and JSON has no such number, so one
+    // word would fail the write of a whole final pass. It counts as no confidence.
+    for bad in [f32::NAN, -f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let w = Word::new("seven", 120, 480, bad);
+        assert_eq!(w.probability.to_bits(), 0f32.to_bits(), "{bad}");
+        // Nothing else about the word changes.
+        assert_eq!(
+            (w.text.as_str(), w.start.as_millis(), w.end.as_millis()),
+            ("seven", 120, 480)
+        );
+    }
+    // A number stays the number it was.
+    for good in [0.0, 0.25, 0.9, 1.0, f32::MIN_POSITIVE] {
+        assert_eq!(
+            Word::new("x", 0, 1, good).probability.to_bits(),
+            good.to_bits()
+        );
+    }
+}
+
+#[test]
+fn asr_word_from_a_faulty_recogniser_is_cleaned_on_its_way_into_a_transcript() {
+    // Every way from a recogniser's words to a stored segment shifts them to meeting time
+    // (`into_segments`, the pieces, the chunker), so a word built without `Word::new` is
+    // cleaned there, and a segment's confidence is a number whatever its words hold.
+    let given = word_as_given("seven", 120, 480, f32::NAN);
+    let moved = given.shifted(MeetingTime::from_millis(1_000));
+    assert_eq!(moved.probability.to_bits(), 0f32.to_bits());
+    assert_eq!(
+        (
+            moved.text.as_str(),
+            moved.start.as_millis(),
+            moved.end.as_millis()
+        ),
+        ("seven", 1_120, 1_480)
+    );
+    assert_eq!(
+        word_as_given("x", 0, 1, 0.9)
+            .shifted(MeetingTime::ZERO)
+            .probability,
+        0.9
+    );
+
+    let words = vec![
+        word_as_given("six", 0, 100, 0.8),
+        word_as_given("seven", 120, 480, f32::NAN),
+        word_as_given("eight", 500, 700, f32::INFINITY),
+        word_as_given("nine", 720, 900, 0.4),
+    ];
+    // The mean counts a word with no number as 0: (0.8 + 0 + 0 + 0.4) / 4.
+    assert!((mean_probability(&words) - 0.3).abs() < 1e-6);
+    let direct = Segment::from_words(track(), track(), words.clone(), MeetingTime::ZERO);
+    assert!((direct.confidence - 0.3).abs() < 1e-6);
+
+    let t = Transcription {
+        segments: vec![RawSegment {
+            start: MeetingTime::ZERO,
+            end: MeetingTime::from_millis(900),
+            text: "six seven eight nine".into(),
+            words,
+        }],
+        language: Some("en".into()),
+        backend: BackendInfo {
+            kind: BackendKind::Fake,
+            device: "fake".to_owned(),
+            model: "fake".to_owned(),
+        },
+    };
+    let mut ids = seq_ids();
+    let segs = t.into_segments(track(), MeetingTime::from_millis(2_000), &mut *ids);
+    assert_eq!(segs.len(), 1);
+    let seg = &segs[0];
+    assert_eq!(texts(&seg.words), ["six", "seven", "eight", "nine"]);
+    let probabilities: Vec<f32> = seg.words.iter().map(|w| w.probability).collect();
+    assert_eq!(probabilities, [0.8, 0.0, 0.0, 0.4]);
+    let times: Vec<(u64, u64)> = seg
+        .words
+        .iter()
+        .map(|w| (w.start.as_millis(), w.end.as_millis()))
+        .collect();
+    assert_eq!(
+        times,
+        [
+            (2_000, 2_100),
+            (2_120, 2_480),
+            (2_500, 2_700),
+            (2_720, 2_900)
+        ]
+    );
+    assert!((seg.confidence - 0.3).abs() < 1e-6);
+    // What is stored reads back: the words as JSON, the confidence as a number.
+    let json = serde_json::to_string(&seg.words).unwrap();
+    let back: Vec<Word> = serde_json::from_str(&json).unwrap();
+    assert_eq!(&back, &seg.words);
+}

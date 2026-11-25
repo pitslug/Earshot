@@ -142,6 +142,16 @@ export function useSummaries(): SummariesPageState {
   };
   const setKeySaved = (keySaved: boolean) =>
     setLoad((l) => (l.status === "loaded" ? { ...l, keySaved } : l));
+  // A saved key counts only for the address it was saved for (T14.31): after the endpoint
+  // changes, ask again, so the page asks for the key when the address moved.
+  const refreshKeySaved = async () => {
+    try {
+      setKeySaved(await ipc.hasApiKey());
+      setKeyError(null);
+    } catch (e) {
+      setKeyError(errorText(e));
+    }
+  };
 
   const save = useCallback(
     async (change: Partial<SummarySettingsValue>) => {
@@ -151,6 +161,7 @@ export function useSummaries(): SummariesPageState {
       try {
         setSettings(await ipc.setSummarySettings({ ...now.value, ...change }));
         setNotice(null);
+        await refreshKeySaved();
         // The steps' labels name the endpoint's host.
         try {
           setOrder(await ipc.summaryOrder());
@@ -189,6 +200,7 @@ export function useSummaries(): SummariesPageState {
         } catch {
           // Kept as patched above.
         }
+        await refreshKeySaved();
         return true;
       } catch (e) {
         setNotice({ title: "This setting was not saved", message: errorText(e) });

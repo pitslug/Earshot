@@ -8,10 +8,13 @@
 //! which [`child_main`] handles at the very start of `main`, before Tauri is built: it opens
 //! no window and no store and never calls llama.cpp (`llama.dll` stays delay-loaded and
 //! unloaded). It initialises ONNX Runtime for the check (`host::init_onnx_for_check`), runs
-//! `model_bench::run_check` and writes one JSON line per event to stdout ([`CheckLine`]):
-//! a `warning` for a library that could not load, `testing` and `tested` per trial, then
+//! `model_bench::run_check_watched` and writes one JSON line per event to stdout ([`CheckLine`]):
+//! a `warning` for a library that could not load, `testing` and `tested` per trial with an
+//! `alive` whenever the running trial made progress (a loaded model, decodes that moved on), then
 //! exactly one final `done` (the facts, every trial and the answer) and exit 0, or one final
-//! `error` and a non-zero exit.
+//! `error` and a non-zero exit. Native libraries may print to the same stream, so every line is
+//! written after a newline with [`LINE_PREFIX`], and the parent reads no line without it (T14.11,
+//! as `earshot_runtime::summary_child` does).
 //!
 //! `--cuda-transcription` is this app's own choice at start (`cuda::transcription_from_folder`,
 //! never the setting), made again here before anything reads the order: the check's fingerprint
@@ -25,10 +28,19 @@
 //! output at the exit), reads its lines ([`read_lines`]) and records the answer itself
 //! with `host::record_model_check` (the parent owns the store). A child that ends without a
 //! final line, writes a line it cannot read, crashes or is killed is a retryable failure.
+//!
+//! A child that writes no line of the protocol for [`CHECK_STALL_LIMIT`] of time awake is killed
+//! through its job and ends as a child without a final line does ([`follow`], T14.11): the check
+//! holds a pass that refuses every meeting start, so it never waits for the user to cancel it.
+//! Every line is a sign of life, and a running trial writes `alive` lines from its own progress,
+//! never from a timer, so the limit means "no progress": a trial that is slow but moving is left
+//! to finish (and be judged too slow), one hung in a driver is not.
 
 use std::ffi::OsString;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use earshot_core::asr::{BackendKind, CancelToken};
@@ -42,6 +54,26 @@ use crate::ipc::IpcError;
 pub const MODEL_CHECK_FLAG: &str = "--model-check";
 /// The parent chose CUDA for transcription at its start, so the child does too.
 pub const CUDA_TRANSCRIPTION_FLAG: &str = "--cuda-transcription";
+
+/// What starts every line of the protocol (module docs). Parent and child are one exe, so they
+/// change together.
+pub const LINE_PREFIX: &str = "earshot-model-check ";
+
+/// The longest line read: a `done` line with every trial is a few kilobytes; past this the
+/// child is not well.
+const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// How long the child may make no progress, in time awake, before it is stopped: no line of
+/// the protocol, an `alive` line of a running trial included. A judgement, not a measurement:
+/// what a healthy check does without a line is one step (one model load, one engine call of a
+/// decode, the start before the first trial: the CUDA files' verification and ONNX Runtime's
+/// start), and ten minutes is what a model load is given elsewhere (the summary's
+/// `GPU_LOAD_LIMIT`, the work after a meeting). A trial that takes longer in all but keeps
+/// moving is never cut by it.
+pub const CHECK_STALL_LIMIT: Duration = Duration::from_secs(600);
+
+/// How often the parent looks at the cancel token and the stall limit.
+const WATCH_POLL: Duration = Duration::from_millis(50);
 
 /// A trial's verdict on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +206,9 @@ pub enum CheckLine {
         /// The trial.
         trial: TrialLine,
     },
+    /// The running trial made progress (`model_bench::run_trial_watched`): the parent's sign of
+    /// life and nothing else. It never reaches the page.
+    Alive,
     /// Files a refused load in the child found damaged (`Catalogue::found_damaged`), written
     /// just before the final line, so the app marks them too.
     Damaged {
@@ -191,7 +226,8 @@ pub enum CheckLine {
     },
     /// The check could not run (final line).
     Error {
-        /// What failed.
+        /// What failed, as the page shows it: fixed plain copy only (`plain_text::runtime_text`,
+        /// [`CUDA_CHOICE_NOT_KEPT`], `plain_text::INTERNAL`), never an error's own text.
         message: String,
     },
 }
@@ -207,12 +243,18 @@ pub struct ChildArgs {
     pub cuda_transcription: bool,
 }
 
+/// The hidden mode was started with arguments it cannot use. Only the app starts it, with its
+/// own arguments, so this is a fault inside Earshot: it has no words of its own for the page
+/// (the child's error line says [`crate::plain_text::INTERNAL`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadArguments;
+
 /// The hidden mode's arguments (after the program name), `None` when the first is not
 /// [`MODEL_CHECK_FLAG`] (a normal start).
 ///
 /// # Errors
-/// The text of an error line: a missing or unknown argument.
-pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, String>> {
+/// [`BadArguments`]: a missing or unknown argument.
+pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, BadArguments>> {
     if args.first().is_none_or(|a| a != MODEL_CHECK_FLAG) {
         return None;
     }
@@ -238,7 +280,7 @@ pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, String>> {
                 );
             }
             (Some("--models"), Some(v)) => models = Some(PathBuf::from(v)),
-            _ => return Some(Err(format!("unknown model check argument {a:?}"))),
+            _ => return Some(Err(BadArguments)),
         }
     }
     Some(match (languages, models) {
@@ -247,7 +289,7 @@ pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, String>> {
             models: m,
             cuda_transcription,
         }),
-        _ => Err("the model check needs --languages and --models".into()),
+        _ => Err(BadArguments),
     })
 }
 
@@ -271,11 +313,20 @@ pub fn child_args(
     args
 }
 
-/// Writes one line and flushes; a parent that is gone ends the child at once.
+/// One line of the protocol as the child writes it: the newline first, because a native
+/// library may have left a line open, then [`LINE_PREFIX`] and the JSON.
+fn wire_line(line: &CheckLine) -> Option<String> {
+    let text = serde_json::to_string(line).ok()?;
+    Some(format!("\n{LINE_PREFIX}{text}\n"))
+}
+
+/// Writes one line (in one write) and flushes; a parent that is gone ends the child at once.
 fn emit(out: &mut dyn Write, line: &CheckLine) {
-    let ok = serde_json::to_string(line)
-        .ok()
-        .is_some_and(|text| writeln!(out, "{text}").and_then(|()| out.flush()).is_ok());
+    let ok = wire_line(line).is_some_and(|whole| {
+        out.write_all(whole.as_bytes())
+            .and_then(|()| out.flush())
+            .is_ok()
+    });
     if !ok {
         std::process::exit(3);
     }
@@ -290,8 +341,14 @@ pub fn child_main(args: &[OsString]) -> Option<i32> {
     let mut out = stdout.lock();
     let args = match parsed {
         Ok(a) => a,
-        Err(message) => {
-            emit(&mut out, &CheckLine::Error { message });
+        Err(BadArguments) => {
+            // Fixed copy: an error line's message is shown on the page as it is.
+            emit(
+                &mut out,
+                &CheckLine::Error {
+                    message: crate::plain_text::INTERNAL.into(),
+                },
+            );
             return Some(2);
         }
     };
@@ -338,22 +395,28 @@ fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<CheckLine, Stri
     if let Some(message) = choice_not_kept(args.cuda_transcription, fell_back) {
         return Err(message.into());
     }
-    let outcome = earshot_runtime::model_bench::run_check(&models, &languages, &mut |p| {
-        emit(
-            out,
-            &match p {
-                CheckProgress::Testing { model, backend } => CheckLine::Testing {
-                    model: (*model).to_owned(),
-                    backend: *backend,
-                },
-                CheckProgress::Tested { report, verdict } => CheckLine::Tested {
-                    trial: TrialLine::of(report, *verdict),
-                },
-            },
-        );
-    })
-    .map_err(|e| crate::plain_text::runtime_text(&e))?;
+    let outcome =
+        earshot_runtime::model_bench::run_check_watched(&models, &languages, &mut |step| {
+            emit(out, &step_line(&step));
+        })
+        .map_err(|e| crate::plain_text::runtime_text(&e))?;
     Ok(done_line(&outcome))
+}
+
+/// The line the child writes for a step of the check: a trial's start or end, or `alive` for
+/// the running trial's progress.
+fn step_line(step: &earshot_runtime::model_bench::CheckStep<'_>) -> CheckLine {
+    use earshot_runtime::model_bench::CheckStep;
+    match step {
+        CheckStep::Progress(CheckProgress::Testing { model, backend }) => CheckLine::Testing {
+            model: (*model).to_owned(),
+            backend: *backend,
+        },
+        CheckStep::Progress(CheckProgress::Tested { report, verdict }) => CheckLine::Tested {
+            trial: TrialLine::of(report, *verdict),
+        },
+        CheckStep::Alive => CheckLine::Alive,
+    }
 }
 
 /// What a child says when it cannot keep the parent's CUDA choice ([`choice_not_kept`]).
@@ -411,6 +474,20 @@ pub fn cancelled() -> IpcError {
 
 /// What the page says when the check's child writes a line this version cannot read.
 pub const UNREADABLE_LINE: &str = "The model check wrote a line Earshot cannot read.";
+
+/// What the page says when the check's child ended without its final line, also when it was
+/// stopped for writing nothing for [`CHECK_STALL_LIMIT`].
+pub const STOPPED_BEFORE_FINISHED: &str =
+    "The model check stopped before it finished (it may have crashed or been stopped).";
+
+/// What the page says when the check's child wrote a line after its final one.
+pub const MORE_AFTER_LAST_LINE: &str = "The model check wrote more after its last line.";
+
+/// The failure of a child that ended without its final line (retryable).
+#[must_use]
+pub fn stopped_before_finished() -> IpcError {
+    child_failed(STOPPED_BEFORE_FINISHED)
+}
 
 /// A child failure as the job reports it (retryable: running the check again may work).
 fn child_failed(message: impl Into<String>) -> IpcError {
@@ -493,62 +570,147 @@ pub trait LineEvents {
     fn damaged(&mut self, artefacts: Vec<String>);
 }
 
-/// Reads the child's stdout until its final line: `warning`, `testing` and `tested` go to
+/// Reads the child's stdout to its end: lines without [`LINE_PREFIX`] (a native library's
+/// output, or nothing) are not read and not kept; `warning`, `testing` and `tested` go to
 /// `events`, a `done` line is the outcome, an `error` line a failure (not retryable: the
-/// check itself could not run). A stream that ends without a final line, a line that does
-/// not parse (an unknown kind included) or a line after the final one is a retryable
-/// failure; nothing here panics.
+/// check itself could not run). A stream that ends without a final line, a line of the protocol
+/// that does not parse (an unknown kind included) or one after the final line is a retryable
+/// failure; nothing here panics. `heard` is called for every line of the protocol as it arrives:
+/// the child's sign of life for [`follow`]. A line without the prefix is no sign of life.
 ///
 /// # Errors
 /// As described.
 pub fn read_lines(
-    reader: impl BufRead,
+    mut reader: impl BufRead,
     events: &mut dyn LineEvents,
+    heard: &mut dyn FnMut(),
 ) -> Result<CheckOutcome, IpcError> {
-    let mut lines = reader.lines();
-    while let Some(line) = lines.next() {
-        // The operating system's words never reach the page (T12.53).
-        let line = line.map_err(|_| child_failed(crate::plain_text::INTERNAL))?;
-        if line.trim().is_empty() {
+    let mut end: Option<Result<CheckOutcome, IpcError>> = None;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .by_ref()
+            .take(MAX_LINE_BYTES)
+            .read_until(b'\n', &mut line);
+        match read {
+            Ok(0) => break,
+            Ok(_) => {}
+            // Only the child's exit is left after its final line.
+            Err(_) if end.is_some() => break,
+            // The operating system's words never reach the page (T12.53).
+            Err(_) => return Err(child_failed(crate::plain_text::INTERNAL)),
+        }
+        if line.last() != Some(&b'\n') && line.len() as u64 >= MAX_LINE_BYTES {
+            return Err(child_failed(UNREADABLE_LINE));
+        }
+        let Some(text) = line.strip_prefix(LINE_PREFIX.as_bytes()) else {
             continue;
+        };
+        heard();
+        if end.is_some() {
+            return Err(child_failed(MORE_AFTER_LAST_LINE));
         }
         // serde's words name the line's contents and never reach the page (T12.56).
         let parsed: CheckLine =
-            serde_json::from_str(&line).map_err(|_| child_failed(UNREADABLE_LINE))?;
-        let end = match parsed {
-            CheckLine::Warning { message } => {
-                events.warning(message);
-                continue;
-            }
-            CheckLine::Testing { model, backend } => {
-                events.trial(&model, backend, None);
-                continue;
-            }
+            serde_json::from_slice(text).map_err(|_| child_failed(UNREADABLE_LINE))?;
+        match parsed {
+            CheckLine::Warning { message } => events.warning(message),
+            CheckLine::Testing { model, backend } => events.trial(&model, backend, None),
             CheckLine::Tested { trial } => {
                 events.trial(&trial.model, trial.backend, Some(trial.verdict.verdict()));
-                continue;
             }
-            CheckLine::Damaged { artefacts } => {
-                events.damaged(artefacts);
-                continue;
-            }
+            // A sign of life (`heard`, above) and nothing for the page.
+            CheckLine::Alive => {}
+            CheckLine::Damaged { artefacts } => events.damaged(artefacts),
             CheckLine::Done {
                 facts,
                 trials,
                 answer,
-            } => outcome_of(&facts, &trials, answer.as_ref()),
-            CheckLine::Error { message } => Err(IpcError::new("model_check", message)),
-        };
-        if lines.any(|l| l.is_ok_and(|l| !l.trim().is_empty())) {
-            return Err(child_failed(
-                "the model check wrote more after its last line",
-            ));
+            } => end = Some(outcome_of(&facts, &trials, answer.as_ref())),
+            CheckLine::Error { message } => {
+                end = Some(Err(IpcError::new("model_check", message)));
+            }
         }
-        return end;
     }
-    Err(child_failed(
-        "The model check stopped before it finished (it may have crashed or been stopped).",
-    ))
+    end.unwrap_or_else(|| Err(stopped_before_finished()))
+}
+
+/// Where the parent reads time awake for the stall rule: a monotonic count from any origin that
+/// leaves out time the computer slept ([`awake_clock`]), or a fake in tests.
+pub type AwakeClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+/// The production awake clock: `earshot_proc::awake_time` (Windows' unbiased interrupt time) when
+/// it can be read, else time since this clock was made by `Instant`, which counts a sleep.
+/// Chosen once, so one clock never mixes the two (T12.62).
+#[must_use]
+pub fn awake_clock() -> AwakeClock {
+    if earshot_proc::awake_time().is_some() {
+        Arc::new(|| earshot_proc::awake_time().unwrap_or_default())
+    } else {
+        let origin = std::time::Instant::now();
+        Arc::new(move || origin.elapsed())
+    }
+}
+
+/// Whether a child last heard at `heard` (time awake) has stalled by `now`: `limit` of time
+/// awake has passed with no line of the protocol. A clock that went backwards never stalls it.
+#[must_use]
+pub fn stalled(heard: Duration, now: Duration, limit: Duration) -> bool {
+    now.saturating_sub(heard) >= limit
+}
+
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Reads the child's lines ([`read_lines`]) while watching it: `kill` is called once, and the
+/// reading then ends with the child's output, when `cancel` is set or when the child has written
+/// no line of the protocol for `limit` of time awake (`awake`; counted from this call, then from
+/// each line, the final one included, so a child that never exits is stopped too). A stalled
+/// child ends as one that wrote no final line: [`stopped_before_finished`], retryable. The
+/// caller says what a cancel ends in.
+///
+/// # Errors
+/// As [`read_lines`]; a stall as described.
+pub fn follow(
+    reader: impl BufRead,
+    events: &mut dyn LineEvents,
+    cancel: &CancelToken,
+    awake: &(dyn Fn() -> Duration + Sync),
+    limit: Duration,
+    kill: &(dyn Fn() + Sync),
+) -> Result<CheckOutcome, IpcError> {
+    let reading = AtomicBool::new(true);
+    let gave_up = AtomicBool::new(false);
+    let heard_ms = AtomicU64::new(ms(awake()));
+    let result = std::thread::scope(|scope| {
+        // Ends with the read, or kills the child, which ends the read.
+        scope.spawn(|| {
+            while reading.load(Ordering::SeqCst) {
+                if cancel.is_cancelled() {
+                    kill();
+                    return;
+                }
+                let heard = Duration::from_millis(heard_ms.load(Ordering::SeqCst));
+                if stalled(heard, awake(), limit) {
+                    gave_up.store(true, Ordering::SeqCst);
+                    kill();
+                    return;
+                }
+                std::thread::sleep(WATCH_POLL);
+            }
+        });
+        let r = read_lines(reader, events, &mut || {
+            heard_ms.store(ms(awake()), Ordering::SeqCst);
+        });
+        reading.store(false, Ordering::SeqCst);
+        r
+    });
+    if gave_up.load(Ordering::SeqCst) {
+        return Err(stopped_before_finished());
+    }
+    result
 }
 
 /// How the child's exit reaches the page: a success is nothing, anything else fixed copy, never
@@ -566,11 +728,12 @@ fn exit_verdict(status: std::io::Result<std::process::ExitStatus>) -> Result<(),
 
 /// Runs the check in a child process (module docs) for `languages` and `models`: the
 /// app's own exe in the hidden mode, no console window, in a kill-on-close job; `cancel`
-/// kills it. Returns the outcome for the parent to record.
+/// kills it, and so does [`CHECK_STALL_LIMIT`] with no line ([`follow`]). Returns the outcome
+/// for the parent to record.
 ///
 /// # Errors
 /// The child cannot start; any failure of [`read_lines`]; a child that exits with a
-/// failure status after its last line; a cancel (retryable).
+/// failure status after its last line; a cancel or a stall (retryable).
 pub fn run_child(
     languages: &[String],
     models: &std::path::Path,
@@ -579,8 +742,6 @@ pub fn run_child(
 ) -> Result<CheckOutcome, IpcError> {
     #[cfg(windows)]
     {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         /// `CREATE_NO_WINDOW`: the child gets no console window.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -606,24 +767,18 @@ pub fn run_child(
         let Some(stdout) = child.stdout.take() else {
             drop(job);
             let _ = child.wait();
-            return Err(child_failed("the model check has no output"));
+            return Err(child_failed(crate::plain_text::INTERNAL));
         };
-        let reading = AtomicBool::new(true);
-        let result = std::thread::scope(|scope| {
-            // Kills the child when the user cancels; ends with the read.
-            scope.spawn(|| {
-                while reading.load(Ordering::SeqCst) {
-                    if cancel.is_cancelled() {
-                        job.terminate();
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            });
-            let r = read_lines(std::io::BufReader::new(stdout), events);
-            reading.store(false, Ordering::SeqCst);
-            r
-        });
+        let awake = awake_clock();
+        // A cancel or a stall kills everything in the job; the pipe then ends, and so the read.
+        let result = follow(
+            std::io::BufReader::new(stdout),
+            events,
+            cancel,
+            &*awake,
+            CHECK_STALL_LIMIT,
+            &|| job.terminate(),
+        );
         let status = child.wait();
         drop(job);
         if cancel.is_cancelled() {
@@ -637,7 +792,7 @@ pub fn run_child(
         let _ = (languages, models, cancel, events);
         Err(IpcError::new(
             "unsupported",
-            "the model check runs on Windows only",
+            "The model check runs on Windows only.",
         ))
     }
 }

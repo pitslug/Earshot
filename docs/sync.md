@@ -1,6 +1,13 @@
 # Sync design (T11.1, for GATE-08)
 
-Status: approved at GATE-08 (the owner, 2026-11-14), as written. Nothing here is built yet. PLAN D25 records the decision.
+Status: approved at GATE-08 (the owner, 2026-11-14) and built since: sync between computers, the relay and the Sync page in 0.3.7, summary offload, Dictionary sync and the summary worker in 0.3.8. PLAN D25 records the decision. This is the design as it was approved, with later changes noted in place; [sync-spec.md](sync-spec.md) has the exact formats and calls.
+
+To run it:
+
+- **The relay:** the comments at the top of `crates/earshot-sync-server/docker-compose.yml` are the steps (the file is attached to each release as `docker-compose.yml`). It needs a setup secret and a reverse proxy in front for HTTPS, because Earshot accepts only an `https://` address for a relay on another machine.
+- **Your computers:** Settings, Sync. The first one takes the relay's address and setup secret; each further one joins with a pairing code.
+- **The summary worker (optional):** "Running the worker" in section 10 below, and the comments in `crates/earshot-worker/docker-compose.yml`. Read its cost first: its host can read every synced meeting.
+- **Updating:** [compatibility.md](compatibility.md). Pin the version in both compose files, and update the worker last.
 
 Decisions already taken by the owner (2026-11-14):
 

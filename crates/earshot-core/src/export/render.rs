@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::text::{
-    clock, local_civil, neutralise, replace_em_dash, sanitize_file_name, sanitize_tag, stamp,
-    yaml_str, yaml_tag,
+    clock, local_civil, neutralise, neutralise_generated, replace_em_dash, sanitize_file_name,
+    sanitize_tag, stamp, yaml_str, yaml_tag,
 };
 use super::{BEGIN_MARKER, END_MARKER, ExportError};
 use crate::asr::Segment;
@@ -221,9 +221,10 @@ pub fn render(
 
 /// The managed region.
 fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
-    // Generated text: one line, em dashes per the option, no markers.
+    // Generated text: one line, em dashes per the option, no markers, images, embeds or
+    // HTML.
     let gen_text = |s: &str| {
-        let s = neutralise(&s.replace(['\r', '\n'], " "));
+        let s = neutralise_generated(&s.replace(['\r', '\n'], " "));
         if opts.replace_em_dash {
             replace_em_dash(&s)
         } else {

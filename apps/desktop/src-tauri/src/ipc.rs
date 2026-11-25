@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
-use earshot_core::model::{Meeting, MeetingRepo};
+use earshot_core::model::Meeting;
+use earshot_runtime::folders::LiveFolders;
 use earshot_runtime::search::{MatchedIn, Searches};
 use earshot_runtime::{MeetingActivity, RuntimeError, Services, SystemClock};
 use earshot_store::{DataDir, StoreError};
@@ -406,35 +407,35 @@ impl MeetingListItem {
     }
 }
 
-/// The live meetings, newest first, each with its activity and resolved folder.
+/// The live meetings, newest first, each with its activity and resolved folder: one read of
+/// the store under one lock (`Services::live_meetings`, T14.13), so a long list waits for the
+/// store once and every row is from the same state of it.
 ///
 /// # Errors
 /// Store errors.
 pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcError> {
-    let meetings = {
-        let db = services.store();
-        db.meetings().map_err(RuntimeError::from)?
-    };
-    // Never the raw `Meeting::folder_id`: a deleted or unknown folder reads as none.
-    let filed = earshot_runtime::folders::meeting_folders(services)?;
-    let mut items: Vec<(u64, MeetingListItem)> = Vec::new();
-    for m in meetings.iter().filter(|m| !m.meta.deleted) {
-        // `None`: deleted since the read above.
-        if let Some(activity) = services.meeting_activity(m.id)? {
-            // One short store lock per meeting, as `meeting_activity` takes its own.
-            let new_summary =
-                earshot_runtime::summary_seen::has_new_summary(&services.store(), m.id)?;
-            items.push((
+    // The live folders, read once with the first meeting, in the same lock.
+    let mut folders: Option<LiveFolders> = None;
+    let read = services.live_meetings(|store, m| {
+        let folders = match &mut folders {
+            Some(read) => read,
+            None => folders.insert(LiveFolders::read(store)?),
+        };
+        // Never the raw `Meeting::folder_id`: a deleted or unknown folder reads as none
+        // (`LiveFolders::resolve`, the one resolution `folders::meeting_folders` uses too).
+        let folder = folders.resolve(m.folder_id).map(|f| f.id);
+        let new_summary = earshot_runtime::summary_seen::has_new_summary(store, m.id)?;
+        Ok((folder, new_summary))
+    })?;
+    let mut items: Vec<(u64, MeetingListItem)> = read
+        .iter()
+        .map(|(m, activity, (folder, new_summary))| {
+            (
                 m.started_unix_ms,
-                MeetingListItem::of(
-                    m,
-                    MeetingState::of(activity),
-                    filed.get(&m.id).copied(),
-                    new_summary,
-                ),
-            ));
-        }
-    }
+                MeetingListItem::of(m, MeetingState::of(*activity), *folder, *new_summary),
+            )
+        })
+        .collect();
     items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
     Ok(items.into_iter().map(|(_, i)| i).collect())
 }
@@ -589,9 +590,7 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
 #[specta::specta]
 async fn list_meetings(state: State<'_, AppState>) -> Result<Vec<MeetingListItem>, IpcError> {
     let services = state.services()?;
-    tauri::async_runtime::spawn_blocking(move || meeting_list(&services))
-        .await
-        .map_err(|_| IpcError::new("internal", "the meeting list task stopped"))?
+    blocking(move || meeting_list(&services)).await
 }
 
 /// The live meetings whose title, transcript or summary contains `query`, newest first (T9.7).
@@ -620,6 +619,39 @@ async fn search_meetings(
     answer
 }
 
+/// The title a start from the window gives its meeting (T14.13): `title` made into one the
+/// rename rule takes (`edit::clean_title`), never refused, because a start is never lost over a
+/// title. A control character (a pasted line break or tab) becomes a space, the ends are
+/// trimmed, and a title longer than the rule's limit is cut to it at a character boundary. None
+/// or nothing left is untitled.
+pub(crate) fn start_title(title: Option<&str>) -> String {
+    let spaced: String = title
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let cut: String = spaced
+        .trim()
+        .chars()
+        .take(earshot_runtime::edit::MAX_TITLE_CHARS)
+        .collect();
+    // The rule's own word on the result, which it takes as it is; untitled if it ever did not.
+    earshot_runtime::edit::clean_title(&cut).unwrap_or_default()
+}
+
+/// What a start from the window asks for, with its title as [`start_title`] makes it.
+pub(crate) fn start_request(
+    mode: CaptureMode,
+    title: Option<&str>,
+    keep_local: bool,
+) -> StartRequest {
+    StartRequest {
+        mode,
+        title: start_title(title),
+        keep_local,
+    }
+}
+
 /// Starts a meeting in `mode` with an optional title and returns its id once it records.
 /// `keep_local` keeps its summary on this computer (T12.13; asked only here).
 /// Every check (models, summary setup, ONNX Runtime) runs first; a failure records nothing.
@@ -636,14 +668,8 @@ async fn start_meeting(
 ) -> Result<String, IpcError> {
     let services = state.services()?;
     let driver = driver.inner().clone();
-    let request = StartRequest {
-        mode,
-        title: title.map(|t| t.trim().to_owned()).unwrap_or_default(),
-        keep_local,
-    };
-    tauri::async_runtime::spawn_blocking(move || driver.start(&services, request))
-        .await
-        .map_err(|_| IpcError::new("internal", "the meeting start task stopped"))?
+    let request = start_request(mode, title.as_deref(), keep_local);
+    blocking(move || driver.start(&services, request)).await
 }
 
 /// Stops the recording meeting; the recording is finalised and the work after the meeting
@@ -1107,26 +1133,28 @@ async fn speaker_sample(
 /// Starts a re-transcription of `meeting` (`JobEvent`s follow).
 #[tauri::command]
 #[specta::specta]
-fn retranscribe(
+async fn retranscribe(
     state: State<'_, AppState>,
     jobs: State<'_, JobRunner>,
     meeting: String,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start(&services, parse_id(&meeting)?, JobKind::Retranscribe)
+    let (jobs, meeting) = (jobs.inner().clone(), parse_id(&meeting)?);
+    blocking(move || jobs.start(&services, meeting, JobKind::Retranscribe)).await
 }
 
 /// Starts a re-summary of `meeting`: the new summary replaces the current one, which is
 /// kept for one undo (`JobEvent`s follow).
 #[tauri::command]
 #[specta::specta]
-fn resummarise(
+async fn resummarise(
     state: State<'_, AppState>,
     jobs: State<'_, JobRunner>,
     meeting: String,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start(&services, parse_id(&meeting)?, JobKind::Resummarise)
+    let (jobs, meeting) = (jobs.inner().clone(), parse_id(&meeting)?);
+    blocking(move || jobs.start(&services, meeting, JobKind::Resummarise)).await
 }
 
 /// Cancels the re-transcription or re-summary of `meeting` (T12.41); its last `JobEvent` follows
@@ -1134,9 +1162,13 @@ fn resummarise(
 /// error.
 #[tauri::command]
 #[specta::specta]
-fn cancel_job(jobs: State<'_, JobRunner>, meeting: String) -> Result<(), IpcError> {
-    jobs.cancel(parse_id(&meeting)?);
-    Ok(())
+async fn cancel_job(jobs: State<'_, JobRunner>, meeting: String) -> Result<(), IpcError> {
+    let (jobs, meeting) = (jobs.inner().clone(), parse_id(&meeting)?);
+    blocking(move || {
+        jobs.cancel(meeting);
+        Ok(())
+    })
+    .await
 }
 
 /// Swaps the current summary with the previous one.
@@ -1246,20 +1278,22 @@ async fn set_model_settings(
 /// downloads, `unknown_model` for a name the catalogue does not have.
 #[tauri::command]
 #[specta::specta]
-fn start_download(
+async fn start_download(
     state: State<'_, AppState>,
     jobs: State<'_, ModelJobs>,
     model: String,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start_download(&services, &model)
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.start_download(&services, &model)).await
 }
 
 /// Cancels the download of `model`; what arrived is kept, so a new start resumes.
 #[tauri::command]
 #[specta::specta]
-fn cancel_download(jobs: State<'_, ModelJobs>, model: String) -> Result<(), IpcError> {
-    jobs.cancel_download(&model)
+async fn cancel_download(jobs: State<'_, ModelJobs>, model: String) -> Result<(), IpcError> {
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.cancel_download(&model)).await
 }
 
 /// Removes `model`'s files; returns the bytes freed. Fails with `model_in_use` for a chosen
@@ -1291,16 +1325,18 @@ async fn remove_model(
 /// runs, or a meeting or a meeting job runs.
 #[tauri::command]
 #[specta::specta]
-fn run_check(state: State<'_, AppState>, jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
+async fn run_check(state: State<'_, AppState>, jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start_check(&services)
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.start_check(&services)).await
 }
 
 /// Cancels the running model check (its process is stopped; a `Failed` follows).
 #[tauri::command]
 #[specta::specta]
-fn cancel_check(jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
-    jobs.cancel_check()
+async fn cancel_check(jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.cancel_check()).await
 }
 
 /// The Summaries page settings (and stored values this version does not know).
@@ -1329,8 +1365,9 @@ async fn set_summary_settings(
 #[specta::specta]
 async fn set_api_key(state: State<'_, AppState>, key: String) -> Result<(), IpcError> {
     let keys = Arc::clone(&state.keys);
+    let services = state.services()?;
     blocking(move || {
-        let stored = crate::summaries::set_api_key(keys.as_ref(), &key);
+        let stored = crate::summaries::set_api_key(&services, keys.as_ref(), &key);
         crate::credentials::wipe_string(key);
         stored
     })
@@ -1342,7 +1379,8 @@ async fn set_api_key(state: State<'_, AppState>, key: String) -> Result<(), IpcE
 #[specta::specta]
 async fn has_api_key(state: State<'_, AppState>) -> Result<bool, IpcError> {
     let keys = Arc::clone(&state.keys);
-    blocking(move || crate::summaries::has_api_key(keys.as_ref())).await
+    let services = state.services()?;
+    blocking(move || crate::summaries::has_api_key(&services, keys.as_ref())).await
 }
 
 /// Removes the stored Anthropic API key.
@@ -1350,7 +1388,8 @@ async fn has_api_key(state: State<'_, AppState>) -> Result<bool, IpcError> {
 #[specta::specta]
 async fn remove_api_key(state: State<'_, AppState>) -> Result<(), IpcError> {
     let keys = Arc::clone(&state.keys);
-    blocking(move || crate::summaries::remove_api_key(keys.as_ref())).await
+    let services = state.services()?;
+    blocking(move || crate::summaries::remove_api_key(&services, keys.as_ref())).await
 }
 
 /// Whether Codex is installed and signed in (T7.4gc), with how to fix it. Runs the CLI's
@@ -1461,8 +1500,13 @@ impl CompactWindow {
     }
 }
 
-fn window_error(e: tauri::Error) -> IpcError {
-    IpcError::new("window", e.to_string())
+/// What the page says when a window call fails (the compact card, the title bar's theme).
+pub const WINDOW_FAILED: &str = "Earshot could not change its window. Try again.";
+
+/// A failed window call as the page hears it: fixed copy, never Tauri's or the operating
+/// system's words (T14.13).
+fn window_error(_: tauri::Error) -> IpcError {
+    IpcError::new("window", WINDOW_FAILED)
 }
 
 impl WindowOps for tauri::WebviewWindow {

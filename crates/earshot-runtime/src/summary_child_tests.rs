@@ -484,6 +484,57 @@ fn summary_child_a_slow_child_that_reports_progress_is_not_a_stall() {
     assert_eq!(f.cpu_loads.load(Ordering::SeqCst), 0);
 }
 
+/// [`watch_lines`] on a thread, on `clock` with the production limits: what feeds it the child's
+/// lines, and how it ended once it has.
+fn watched_on(clock: earshot_proc::AwakeClock) -> (Sender<Heard>, Receiver<Heading>) {
+    let watch = Watch {
+        load_limit: crate::summary::GPU_LOAD_LIMIT,
+        run_limit: crate::summary::GPU_STALL_LIMIT,
+        background: false,
+    };
+    let (to, heard) = std::sync::mpsc::channel();
+    let (done, heading) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(watch_lines(&heard, watch, &CancelToken::new(), &clock));
+    });
+    (to, heading)
+}
+
+#[test]
+fn summary_child_watch_counts_time_awake_not_time_asleep() {
+    // T14.8: the lid closes while the child loads or runs. The hours asleep are not silence; the
+    // limits are time awake.
+    use earshot_proc::HandClock;
+    let hours = |n: u64| Duration::from_secs(n * 3600);
+    let guard = Duration::from_secs(60);
+    let clock = HandClock::default();
+    let (to, heading) = watched_on(clock.awake());
+    clock.read_twice_more();
+    clock.sleep(hours(8));
+    clock.read_twice_more();
+    assert!(heading.try_recv().is_err(), "a load asleep is no stall");
+    clock.advance(crate::summary::GPU_LOAD_LIMIT - Duration::from_secs(1));
+    clock.read_twice_more();
+    assert!(heading.try_recv().is_err(), "short of the load limit");
+    // Progress: from here the run's limit, counted from now.
+    to.send(Heard::Line(ChildLine::Beat)).unwrap();
+    clock.read_twice_more();
+    clock.sleep(hours(8));
+    clock.advance(crate::summary::GPU_STALL_LIMIT - Duration::from_secs(1));
+    clock.read_twice_more();
+    assert!(heading.try_recv().is_err(), "a run asleep is no stall");
+    clock.advance(Duration::from_secs(1));
+    assert_eq!(heading.recv_timeout(guard), Ok(Heading::Stall));
+
+    // The negative control: on a clock that counts the sleep, as `Instant` does on Windows, the
+    // same night is a stall.
+    let clock = HandClock::default();
+    let (_to, heading) = watched_on(clock.wall());
+    clock.read_twice_more();
+    clock.sleep(hours(8));
+    assert_eq!(heading.recv_timeout(guard), Ok(Heading::Stall));
+}
+
 #[test]
 fn summary_child_only_a_child_that_will_not_die_turns_the_card_off() {
     let flag = AtomicBool::new(false);

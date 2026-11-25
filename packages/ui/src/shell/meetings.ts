@@ -186,6 +186,31 @@ export function recoveredText(savedMs: number): string {
   return `Earshot closed during this recording. ${saved}`;
 }
 
+/** Whether two rows say the same: the same fields with the same values. The rows the app sends
+ * hold only plain values; a field holding an object would read as changed every time, which
+ * costs a render and never hides a change. */
+function sameFields<T extends object>(a: T, b: T): boolean {
+  const keys = Object.keys(a) as (keyof T)[];
+  return keys.length === Object.keys(b).length && keys.every((k) => k in b && Object.is(a[k], b[k]));
+}
+
+/** `next` as the window keeps it after reading a list again (T14.16): every row that says the
+ * same as the row with its id in `prev` is that row itself, and when every row is, in the same
+ * order, the result is `prev` itself. The app sends new objects at every read, and the list is
+ * read after every sync pass and every meeting's start, end and summary: without this each read
+ * would render every row of the list again, and the open meeting with them. */
+export function keepUnchanged<T extends { id: string }>(prev: T[], next: T[]): T[] {
+  const before = new Map(prev.map((p) => [p.id, p]));
+  let same = prev.length === next.length;
+  const kept = next.map((n, i) => {
+    const was = before.get(n.id);
+    const row = was !== undefined && sameFields(was, n) ? was : n;
+    if (row !== prev[i]) same = false;
+    return row;
+  });
+  return same ? prev : kept;
+}
+
 /** The title shown for a meeting (titles stay empty until the user or a summary gives one). */
 export function displayTitle(m: Pick<MeetingListItem, "title">): string {
   return m.title.trim() === "" ? "Untitled meeting" : m.title;

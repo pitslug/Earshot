@@ -2,7 +2,10 @@
 
 export * from "./ipc";
 export { AppShell } from "./shell/AppShell";
+export { suppressBrowserKeys } from "./shell/browserKeys";
 export { suppressBrowserMenu } from "./shell/browserMenu";
+export { AppRoot } from "./shell/AppRoot";
+export type { AppRootProps } from "./shell/AppRoot";
 export type { AppShellProps } from "./shell/AppShell";
 export { SETTINGS_SECTIONS, SettingsView } from "./settings/SettingsView";
 export type { SettingsSection, SettingsViewProps } from "./settings/SettingsView";

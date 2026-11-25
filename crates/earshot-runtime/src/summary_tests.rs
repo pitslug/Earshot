@@ -50,6 +50,7 @@ fn summary_goes_only_to_the_configured_endpoint_and_is_stored() {
 
     // Privacy: every network attempt went to the configured endpoint and nowhere else.
     let audit = service.audit_log().entries();
+    assert_eq!(service.audit_log().dropped(), 0, "the whole record");
     assert!(!audit.is_empty());
     for e in &audit {
         assert_eq!(
@@ -173,6 +174,7 @@ fn summary_own_model_endpoint_writes_a_kept_local_meeting() {
     assert_eq!(server.requests().len(), 1);
     // It is an ordinary remote client otherwise: every hop is in its audit log.
     let endpoint = server.endpoint();
+    assert_eq!(own.audit_log().dropped(), 0, "the whole record");
     for e in own.audit_log().entries() {
         assert_eq!(
             (e.host.as_str(), e.port),
@@ -1015,6 +1017,7 @@ fn summary_through_anthropic_goes_only_to_the_configured_host_and_is_stored() {
 
     // Privacy: every attempt went to the configured host, the key only in its header.
     let audit = service.audit_log().entries();
+    assert_eq!(service.audit_log().dropped(), 0, "the whole record");
     assert_eq!(audit.len(), 1);
     for e in &audit {
         assert_eq!(
@@ -1840,6 +1843,78 @@ mod local {
             )
             .unwrap();
         assert_eq!(local_report(&out).backend, LlamaBackend::Cpu);
+    }
+
+    /// One CPU try whose load never returns (until `stuck` is released), on a thread, on `clock`
+    /// with the production limits: how it ended, once it has.
+    fn stuck_load_on(
+        svc: &Services,
+        id: earshot_core::identity::EntityId,
+        clock: earshot_proc::AwakeClock,
+        stuck: &Stuck,
+    ) -> std::sync::mpsc::Receiver<Result<Attempt, RuntimeError>> {
+        let (view, settings) = load_input(svc, id).unwrap();
+        let input = input_of(&view, &settings);
+        let config = config();
+        let ranges = time_chunks(&input, config.chunk_seconds).unwrap();
+        let job = LocalJob {
+            loader: Arc::new(CpuLoader(
+                OnCpu::StuckLoad(stuck.clone()),
+                Arc::new(Shared::default()),
+            )),
+            stalled: Box::leak(Box::new(AtomicBool::new(false))),
+            done: vec![None; ranges.len()],
+            config,
+            input,
+            ranges,
+        };
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(attempt_local_on(job, &CancelToken::new(), &clock));
+        });
+        result
+    }
+
+    fn load_stalled(result: Result<Attempt, RuntimeError>) -> bool {
+        matches!(
+            result,
+            Err(RuntimeError::LocalSummary(LocalSummaryError::LoadStalled))
+        )
+    }
+
+    #[test]
+    fn summary_a_load_asleep_is_no_stall_and_time_awake_is() {
+        // T14.8: the lid closes while the summary model loads. The hours asleep are not silence;
+        // the limit is time awake.
+        use earshot_proc::HandClock;
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let id = meeting(&svc, "", 191);
+        let guard = Duration::from_secs(60);
+        let night = Duration::from_secs(8 * 3600);
+        let clock = HandClock::default();
+        let stuck = Stuck::default();
+        let result = stuck_load_on(&svc, id, clock.awake(), &stuck);
+        clock.read_twice_more();
+        clock.sleep(night);
+        clock.read_twice_more();
+        assert!(result.try_recv().is_err(), "a load asleep is no stall");
+        clock.advance(CPU_LOAD_LIMIT - Duration::from_secs(1));
+        clock.read_twice_more();
+        assert!(result.try_recv().is_err(), "short of the load limit");
+        clock.advance(Duration::from_secs(1));
+        assert!(load_stalled(result.recv_timeout(guard).unwrap()));
+        stuck.release();
+
+        // The negative control: on a clock that counts the sleep, as `Instant` does on Windows,
+        // the same night is a stall.
+        let clock = HandClock::default();
+        let stuck = Stuck::default();
+        let result = stuck_load_on(&svc, id, clock.wall(), &stuck);
+        clock.read_twice_more();
+        clock.sleep(night);
+        assert!(load_stalled(result.recv_timeout(guard).unwrap()));
+        stuck.release();
     }
 
     #[test]

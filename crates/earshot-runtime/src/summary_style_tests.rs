@@ -186,6 +186,7 @@ fn summary_style_reaches_the_summary_request_and_a_resummarise_uses_the_current_
     assert!(!bodies[1].contains("Bluebird"));
     assert!(bodies[1].contains("Kestrel"));
     // Only the configured endpoint was contacted.
+    assert_eq!(service.audit_log().dropped(), 0, "the whole record");
     for e in service.audit_log().entries() {
         assert_eq!(
             (e.host.as_str(), e.port),

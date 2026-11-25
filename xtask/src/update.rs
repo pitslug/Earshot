@@ -101,7 +101,7 @@ pub fn sign_installer(
     );
     let release = release_of(installer, version, arch)?;
     let file = sign(&release, seed).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let back = verify(&file, &app_key, arch).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let back = verify(&file, &[app_key], arch).map_err(|e| anyhow::anyhow!("{e}"))?;
     ensure!(back == release, "the signed file does not read back");
     Ok(file)
 }
@@ -300,7 +300,7 @@ mod tests {
 
         let key = public_key(&SEED);
         let file = sign_installer(&installer, "1.0.0", "x64", &SEED, Some(key)).unwrap();
-        let release = verify(&file, &key, "x64").unwrap();
+        let release = verify(&file, &[key], "x64").unwrap();
         assert_eq!(release.size, 15);
         assert_eq!(release.installer, "Earshot_1.0.0_x64-setup.exe");
         assert_eq!(

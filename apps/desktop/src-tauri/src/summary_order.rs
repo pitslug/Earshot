@@ -913,8 +913,14 @@ pub fn resummarise_view(
     if here.local_installed(services) {
         steps.push(WriterStep::Local);
     }
+    // An Anthropic key counts only for the address it was saved for (T14.31), as on the
+    // Summaries page and in the run itself.
+    let key_usable = || -> Result<bool, IpcError> {
+        Ok(here.key_saved()
+            && earshot_runtime::summary_settings::api_key_bound(&services.store(), &settings)?)
+    };
     if settings.has_endpoint()
-        && (settings.provider != EndpointProvider::Anthropic || here.key_saved())
+        && (settings.provider != EndpointProvider::Anthropic || key_usable()?)
     {
         steps.push(WriterStep::Endpoint);
     }
@@ -958,7 +964,7 @@ pub async fn resummarise_writers(
 /// A computer is asked through `ask_summary_helper`.
 #[tauri::command]
 #[specta::specta]
-pub fn resummarise_with(
+pub async fn resummarise_with(
     state: tauri::State<'_, crate::ipc::AppState>,
     jobs: tauri::State<'_, crate::jobs::JobRunner>,
     meeting: String,
@@ -969,12 +975,16 @@ pub fn resummarise_with(
         OrderStep::Writer(w) => OrderStep::Writer(w),
         OrderStep::Computer(_) => return Err(IpcError::internal()),
     };
-    jobs.start_summary(
-        &services,
-        crate::detail::parse_id(&meeting)?,
-        crate::jobs::SummaryStart::Named(step),
-        None,
-    )
+    let (jobs, meeting) = (jobs.inner().clone(), crate::detail::parse_id(&meeting)?);
+    crate::ipc::blocking(move || {
+        jobs.start_summary(
+            &services,
+            meeting,
+            crate::jobs::SummaryStart::Named(step),
+            None,
+        )
+    })
+    .await
 }
 
 #[cfg(test)]

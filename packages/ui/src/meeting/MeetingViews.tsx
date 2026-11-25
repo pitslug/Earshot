@@ -31,7 +31,7 @@ import {
 } from "@fluentui/react-components";
 import { type FormEvent, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { errorText, useIpc } from "../ipc";
+import { useIpc } from "../ipc";
 import { NoticeBar } from "../settings/parts";
 import type { Timer } from "../time";
 import { type LiveLevels, QUIET_LEVELS, useLevel, useNow } from "./hooks";
@@ -281,8 +281,9 @@ export const KEEP_LOCAL_HINT =
 export const MAX_TITLE = 120;
 
 export interface NewMeetingViewProps {
-  /** Starts the meeting; rejects with the reason it could not start. `keepLocal` keeps its
-   * summary on this computer (T12.13). */
+  /** Starts the meeting; rejects when it could not start, and the caller says why (T14.15: the
+   * user may have left this screen by then). `keepLocal` keeps its summary on this computer
+   * (T12.13). */
   onStart(mode: CaptureMode, title: string | null, keepLocal: boolean): Promise<void>;
   onCancel(): void;
 }
@@ -313,19 +314,16 @@ export function NewMeetingView({ onStart, onCancel }: NewMeetingViewProps) {
   const [title, setTitle] = useState("");
   const [keepLocal, setKeepLocal] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const tooLong = title.trim().length > MAX_TITLE;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (tooLong || starting) return;
     setStarting(true);
-    setError(null);
     const trimmed = title.trim();
-    onStart(mode, trimmed === "" ? null : trimmed, keepLocal).catch((e: unknown) => {
-      setStarting(false);
-      setError(errorText(e));
-    });
+    // Why it could not start is the window's to say (T14.15): the checks can take a while and
+    // the user may have left this screen by then. Here the form only becomes usable again.
+    onStart(mode, trimmed === "" ? null : trimmed, keepLocal).catch(() => setStarting(false));
   };
 
   return (
@@ -333,14 +331,6 @@ export function NewMeetingView({ onStart, onCancel }: NewMeetingViewProps) {
       <Title2 as="h1" className={styles.heading}>
         New meeting
       </Title2>
-      {error !== null && (
-        <MessageBar intent="error">
-          <MessageBarBody>
-            <MessageBarTitle>The meeting could not start</MessageBarTitle>
-            {error}
-          </MessageBarBody>
-        </MessageBar>
-      )}
       <form className={styles.form} onSubmit={submit} aria-label="New meeting">
         <Field label="What are you recording?">
           <RadioGroup

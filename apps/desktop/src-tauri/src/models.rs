@@ -674,14 +674,20 @@ pub fn remove_error(e: &CatalogueError) -> IpcError {
     IpcError::new(kind, catalogue_copy(e))
 }
 
+/// Why a model's removal is refused while a meeting uses it (T14.12).
+pub const MODEL_IN_USE_BY_A_MEETING: &str =
+    "A meeting is still using this model. Remove it when the meeting has finished.";
+
 /// Removes `model`'s files unless it is protected (`host::protected_models` for `hw` and
-/// `order`, what a run would see) or downloading. The downloading test and the removal are
-/// one critical section with `ModelJobs::start_download` ([`ModelJobs::without_download`]),
-/// so a download cannot start between them.
+/// `order`, what a run would see), downloading, or in use by a meeting that records, is held or
+/// finishes (`host::models_in_use`: the model the meeting started with, which the settings may
+/// no longer name; T14.12). The downloading test and the removal are one critical section with
+/// `ModelJobs::start_download` ([`ModelJobs::without_download`]), so a download cannot start
+/// between them.
 ///
 /// # Errors
-/// `model_in_use` for a chosen or kept model, `busy` while it downloads, `unknown_model`,
-/// store and file errors.
+/// `model_in_use` for a chosen or kept model, `busy` while it downloads or a meeting uses it,
+/// `unknown_model`, store and file errors.
 pub fn remove(
     services: &Services,
     models: &ModelDir,
@@ -692,6 +698,13 @@ pub fn remove(
 ) -> Result<RemovedView, IpcError> {
     let protected = host::protected_models(&services.store(), models, order, hw)?;
     jobs.without_download(model, || {
+        // A model the settings keep says so (that does not pass with time); one only a meeting
+        // holds can go once the meeting has finished.
+        if !protected.iter().any(|p| p == model)
+            && host::models_in_use(models).iter().any(|m| m == model)
+        {
+            return Err(IpcError::busy(MODEL_IN_USE_BY_A_MEETING));
+        }
         let removed =
             host::remove_model(models, model, &protected).map_err(|e| remove_error(&e))?;
         Ok(RemovedView {

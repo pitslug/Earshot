@@ -127,6 +127,43 @@ pub enum MeetingActivity {
     Ready,
 }
 
+/// The jobs that held each meeting at one moment.
+type HeldJobs = BTreeMap<EntityId, BTreeSet<MeetingJob>>;
+
+/// What the jobs holding a meeting make of it: recording before processing before waiting;
+/// `None` when no job that counts holds it (the rows then say, [`rows_activity`]).
+fn job_activity(jobs: Option<&BTreeSet<MeetingJob>>) -> Option<MeetingActivity> {
+    let jobs = jobs?;
+    if jobs.contains(&MeetingJob::Recording) {
+        Some(MeetingActivity::Recording)
+    } else if jobs.contains(&MeetingJob::Processing) {
+        Some(MeetingActivity::Processing)
+    } else if jobs.contains(&MeetingJob::Waiting) {
+        Some(MeetingActivity::Waiting)
+    } else {
+        None
+    }
+}
+
+/// What the rows of `store` say of the live meeting `m` when no job holds it.
+fn rows_activity(
+    store: &Store,
+    m: &earshot_core::model::Meeting,
+) -> Result<MeetingActivity, RuntimeError> {
+    use earshot_core::model::{MeetingRepo, TranscriptPass};
+    Ok(if m.duration_ms.is_none() {
+        MeetingActivity::Interrupted
+    } else if store.has_live_segment(m.id, TranscriptPass::Final)?
+        // A pass backend this build cannot read still says the final pass ran (T12.56).
+        || crate::pass_backend::pass_backend_record(store, m.id, TranscriptPass::Final, None)?
+            .exists()
+    {
+        MeetingActivity::Ready
+    } else {
+        MeetingActivity::Unprocessed
+    })
+}
+
 /// Which meetings runtime jobs are working on, and which are being deleted.
 #[derive(Debug, Default)]
 struct Activity {
@@ -316,35 +353,79 @@ impl Services {
         &self,
         meeting: EntityId,
     ) -> Result<Option<MeetingActivity>, RuntimeError> {
-        use earshot_core::model::{MeetingRepo, TranscriptPass};
-        let jobs: BTreeSet<MeetingJob> = self
-            .activity()
-            .leased
-            .get(&meeting)
-            .map(|jobs| jobs.keys().copied().collect())
-            .unwrap_or_default();
+        use earshot_core::model::MeetingRepo;
+        let jobs = self.held_jobs();
         let db = self.store();
         let Some(m) = db.meeting(meeting)?.filter(|m| !m.meta.deleted) else {
             return Ok(None);
         };
-        let activity = if jobs.contains(&MeetingJob::Recording) {
-            MeetingActivity::Recording
-        } else if jobs.contains(&MeetingJob::Processing) {
-            MeetingActivity::Processing
-        } else if jobs.contains(&MeetingJob::Waiting) {
-            MeetingActivity::Waiting
-        } else if m.duration_ms.is_none() {
-            MeetingActivity::Interrupted
-        } else if db.has_live_segment(meeting, TranscriptPass::Final)?
-            // A pass backend this build cannot read still says the final pass ran (T12.56).
-            || crate::pass_backend::pass_backend_record(&db, meeting, TranscriptPass::Final, None)?
-                .exists()
+        Ok(Some(match job_activity(jobs.get(&meeting)) {
+            Some(busy) => busy,
+            None => rows_activity(&db, &m)?,
+        }))
+    }
+
+    /// Every live meeting with what is happening to it ([`Services::meeting_activity`]'s rule),
+    /// read under one store lock (T14.13): what a meeting list reads, so a list of many meetings
+    /// waits for the store once and sees one state of it. `each` is called for each meeting, in
+    /// the store's order, with the store while it is locked: it reads what else the list shows of
+    /// that meeting and must not take the store lock itself.
+    ///
+    /// The jobs are read before the store is waited for (the activity lock and the store lock
+    /// are never held together) and once more after it, so a meeting whose job began while this
+    /// waited for the store reads as that job, never as interrupted or unprocessed. A job that
+    /// ended meanwhile is still reported: the event that follows its end brings the next read.
+    ///
+    /// # Errors
+    /// Store errors; `each`'s error.
+    pub fn live_meetings<T>(
+        &self,
+        each: impl FnMut(&Store, &earshot_core::model::Meeting) -> Result<T, RuntimeError>,
+    ) -> Result<Vec<(earshot_core::model::Meeting, MeetingActivity, T)>, RuntimeError> {
+        let before = self.held_jobs();
+        self.live_meetings_since(&before, each)
+    }
+
+    /// [`Services::live_meetings`] with the jobs as they were read before the store is waited
+    /// for.
+    fn live_meetings_since<T>(
+        &self,
+        before: &HeldJobs,
+        mut each: impl FnMut(&Store, &earshot_core::model::Meeting) -> Result<T, RuntimeError>,
+    ) -> Result<Vec<(earshot_core::model::Meeting, MeetingActivity, T)>, RuntimeError> {
+        use earshot_core::model::MeetingRepo;
+        let mut read = Vec::new();
         {
-            MeetingActivity::Ready
-        } else {
-            MeetingActivity::Unprocessed
-        };
-        Ok(Some(activity))
+            let db = self.store();
+            for m in db.meetings()?.into_iter().filter(|m| !m.meta.deleted) {
+                let busy = job_activity(before.get(&m.id));
+                let activity = match busy {
+                    Some(busy) => busy,
+                    None => rows_activity(&db, &m)?,
+                };
+                let more = each(&db, &m)?;
+                read.push((m, activity, more, busy.is_some()));
+            }
+        }
+        let after = self.held_jobs();
+        Ok(read
+            .into_iter()
+            .map(|(m, activity, more, was_busy)| {
+                let now = (!was_busy)
+                    .then(|| job_activity(after.get(&m.id)))
+                    .flatten();
+                (m, now.unwrap_or(activity), more)
+            })
+            .collect())
+    }
+
+    /// The jobs holding each meeting now.
+    fn held_jobs(&self) -> HeldJobs {
+        self.activity()
+            .leased
+            .iter()
+            .map(|(meeting, jobs)| (*meeting, jobs.keys().copied().collect()))
+            .collect()
     }
 
     /// Claims `meeting` for a deletion: refused while any lease on it is held or another
@@ -412,5 +493,151 @@ mod tests {
         .join();
         let device = svc.store().device();
         assert_eq!(svc.store().device(), device);
+    }
+
+    fn services_in_memory() -> Services {
+        Services::new(
+            Store::open_in_memory().unwrap(),
+            DataDir::new(std::env::temp_dir().join("earshot-runtime-unused")),
+            Arc::new(earshot_core::identity::ManualClock::new(1_800_000_000_000)),
+        )
+        .unwrap()
+    }
+
+    /// A meeting row; with a `duration` its recording finished. Distinct seeds per call.
+    fn meeting_row(svc: &Services, seed: u64, duration: Option<u64>) -> EntityId {
+        use earshot_core::model::{Meeting, MeetingRepo, Stamp};
+        let clock = Arc::clone(&svc.clock);
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = Stamp {
+            clock: &*clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let mut m = Meeting::new(
+            "",
+            1_800_000_000_000 + seed,
+            600,
+            earshot_core::prompt::Template::General,
+            &mut stamp,
+        );
+        m.duration_ms = duration;
+        let id = m.id;
+        store.put_meeting(m).unwrap();
+        id
+    }
+
+    fn listed(svc: &Services) -> BTreeMap<EntityId, MeetingActivity> {
+        svc.live_meetings(|_, _| Ok(()))
+            .unwrap()
+            .into_iter()
+            .map(|(m, activity, ())| (m.id, activity))
+            .collect()
+    }
+
+    /// T14.13: the list read gives every live meeting the activity `meeting_activity` gives it.
+    #[test]
+    fn runtime_live_meetings_give_each_meeting_its_activity() {
+        let svc = services_in_memory();
+        let interrupted = meeting_row(&svc, 1, None);
+        let unprocessed = meeting_row(&svc, 2, Some(60_000));
+        let recording = meeting_row(&svc, 3, None);
+        let processing = meeting_row(&svc, 4, Some(60_000));
+        let waiting = meeting_row(&svc, 5, Some(60_000));
+        let exporting = meeting_row(&svc, 6, Some(60_000));
+        let _leases = [
+            svc.lease_meeting_for(recording, MeetingJob::Recording)
+                .unwrap(),
+            svc.lease_meeting_for(processing, MeetingJob::Processing)
+                .unwrap(),
+            svc.lease_meeting_for(waiting, MeetingJob::Waiting).unwrap(),
+            svc.lease_meeting_for(exporting, MeetingJob::Other).unwrap(),
+        ];
+        let all = listed(&svc);
+        assert_eq!(all.len(), 6);
+        for (id, expected) in [
+            (interrupted, MeetingActivity::Interrupted),
+            (unprocessed, MeetingActivity::Unprocessed),
+            (recording, MeetingActivity::Recording),
+            (processing, MeetingActivity::Processing),
+            (waiting, MeetingActivity::Waiting),
+            (exporting, MeetingActivity::Unprocessed),
+        ] {
+            assert_eq!(all[&id], expected);
+            assert_eq!(svc.meeting_activity(id).unwrap(), Some(expected));
+        }
+    }
+
+    /// T14.13: `each` runs with the store locked, once per live meeting, and the store is free
+    /// again when the read returns.
+    #[test]
+    fn runtime_live_meetings_are_read_under_one_store_lock() {
+        let svc = services_in_memory();
+        let ids = [
+            meeting_row(&svc, 1, None),
+            meeting_row(&svc, 2, Some(1)),
+            meeting_row(&svc, 3, Some(1)),
+        ];
+        let mut seen = Vec::new();
+        let read = svc
+            .live_meetings(|_, m| {
+                // Held while each meeting is read, so `each` reads through the store it is
+                // given (a lock of its own would wait for ever).
+                assert!(matches!(
+                    svc.db.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                seen.push(m.id);
+                Ok(m.duration_ms)
+            })
+            .unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(ids.iter().all(|id| seen.contains(id)));
+        assert_eq!(read.len(), 3);
+        assert!(read.iter().all(|(m, _, more)| *more == m.duration_ms));
+        assert!(svc.db.try_lock().is_ok(), "the store is free again");
+        // A failing read of one meeting fails the list, with the store free again.
+        let e = svc.live_meetings(|_, _| -> Result<(), RuntimeError> {
+            Err(RuntimeError::Internal("a read that fails"))
+        });
+        assert!(matches!(e, Err(RuntimeError::Internal(_))));
+        assert!(svc.db.try_lock().is_ok());
+    }
+
+    /// T14.13: a meeting whose job began while the list waited for the store reads as that job,
+    /// never as interrupted; a job that ended meanwhile is still reported (the next read follows
+    /// its end's event).
+    #[test]
+    fn runtime_live_meetings_see_a_job_that_began_while_the_store_was_waited_for() {
+        let svc = services_in_memory();
+        let started = meeting_row(&svc, 1, None);
+        let finished = meeting_row(&svc, 2, Some(60_000));
+        let untouched = meeting_row(&svc, 3, None);
+        let ending = svc
+            .lease_meeting_for(finished, MeetingJob::Processing)
+            .unwrap();
+        // The jobs as the list read them before it waited for the store.
+        let before = svc.held_jobs();
+        // Meanwhile one meeting starts recording and the other's work ends.
+        let _recording = svc
+            .lease_meeting_for(started, MeetingJob::Recording)
+            .unwrap();
+        drop(ending);
+        let all: BTreeMap<EntityId, MeetingActivity> = svc
+            .live_meetings_since(&before, |_, _| Ok(()))
+            .unwrap()
+            .into_iter()
+            .map(|(m, activity, ())| (m.id, activity))
+            .collect();
+        assert_eq!(all[&started], MeetingActivity::Recording);
+        assert_eq!(all[&finished], MeetingActivity::Processing);
+        // The control: a meeting no job ever held reads from its rows.
+        assert_eq!(all[&untouched], MeetingActivity::Interrupted);
+        // A read from now on sees both as they are.
+        let now = listed(&svc);
+        assert_eq!(now[&started], MeetingActivity::Recording);
+        assert_eq!(now[&finished], MeetingActivity::Unprocessed);
     }
 }
