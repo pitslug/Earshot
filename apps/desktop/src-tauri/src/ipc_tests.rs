@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use earshot_core::asr::{BackendInfo, BackendKind};
 use earshot_core::identity::{Clock, EntityId};
-use earshot_core::model::{Meeting, Stamp, TranscriptPass};
+use earshot_core::model::{Meeting, MeetingRepo, Stamp, TranscriptPass};
 use earshot_core::prompt::Template;
 use earshot_runtime::{MeetingJob, RuntimeError, Services};
 use earshot_store::{DataDir, StoreError};
@@ -510,6 +510,141 @@ fn list_meetings_marks_a_summary_this_device_has_not_opened() {
     // A re-summary is a new row: new again.
     summary(&svc, fresh, 63);
     assert_eq!(new(&svc), want(true));
+}
+
+/// T14.13: the list is one read of the store: each meeting's folder is resolved as
+/// `folders::meeting_folders` resolves it, and its other columns are as before.
+#[test]
+fn list_meetings_resolves_folders_as_the_runtime_does_in_the_same_read() {
+    let dir = TempDir::new("ipc-list-folders");
+    let svc = services(&dir);
+    let filed = meeting(&svc, "Filed", T0, Some(60_000), 1);
+    let loose = meeting(&svc, "Loose", T0 + 1, Some(60_000), 2);
+    let dangling = meeting(&svc, "Dangling", T0 + 2, Some(60_000), 3);
+    let folder = earshot_runtime::folders::create(&svc, "Planning").unwrap();
+    earshot_runtime::folders::move_meeting(&svc, filed, Some(folder)).unwrap();
+    // A folder id naming nothing (sync may deliver a meeting before its folder).
+    {
+        let mut db = svc.store();
+        let mut m = db.meeting(dangling).unwrap().unwrap();
+        m.folder_id = Some(loose);
+        db.put_meeting(m).unwrap();
+    }
+    let by_runtime = earshot_runtime::folders::meeting_folders(&svc).unwrap();
+    let list = meeting_list(&svc).unwrap();
+    assert_eq!(list.len(), 3);
+    for item in &list {
+        let id: EntityId = item.id.parse().unwrap();
+        assert_eq!(
+            item.folder_id,
+            by_runtime.get(&id).map(ToString::to_string),
+            "{}",
+            item.title
+        );
+    }
+    let folder_of = |title: &str| {
+        list.iter()
+            .find(|m| m.title == title)
+            .unwrap()
+            .folder_id
+            .clone()
+    };
+    assert_eq!(folder_of("Filed"), Some(folder.to_string()));
+    assert_eq!(folder_of("Loose"), None);
+    assert_eq!(
+        folder_of("Dangling"),
+        None,
+        "an unknown folder reads as none"
+    );
+}
+
+/// T14.13: a title given at the start is held to the rule a rename is held to: trimmed, and
+/// refused with the rename's own error when a rename would refuse it. Nothing is recorded.
+#[test]
+fn start_meeting_title_follows_the_rename_rule() {
+    use earshot_runtime::edit::{EditError, MAX_TITLE_CHARS, TextProblem};
+
+    let request = |title: Option<&str>| start_request(CaptureMode::Call, title, true);
+    assert_eq!(
+        request(Some("  Weekly planning \n")).unwrap(),
+        StartRequest {
+            mode: CaptureMode::Call,
+            title: "Weekly planning".into(),
+            keep_local: true,
+        }
+    );
+    // No title, and one of white space only: untitled, as a rename to nothing is.
+    assert_eq!(request(None).unwrap().title, "");
+    assert_eq!(request(Some("   ")).unwrap().title, "");
+    // The longest title a rename takes is taken; one character more is not.
+    let longest = "a".repeat(MAX_TITLE_CHARS);
+    assert_eq!(request(Some(&longest)).unwrap().title, longest);
+    let dir = TempDir::new("ipc-start-title");
+    let svc = services(&dir);
+    let existing = meeting(&svc, "Before", T0, Some(1), 1);
+    for (bad, problem) in [
+        (format!("{longest}a"), TextProblem::TooLong),
+        (
+            "line one\nline two".to_owned(),
+            TextProblem::ControlCharacter,
+        ),
+        ("a\ttab".to_owned(), TextProblem::ControlCharacter),
+    ] {
+        let refused = request(Some(&bad)).unwrap_err();
+        assert_eq!(
+            refused,
+            IpcError::from(RuntimeError::Edit(EditError::InvalidTitle(problem)))
+        );
+        assert_eq!(refused.kind, "invalid_title");
+        // The rename itself says the same of the same text.
+        let renamed = earshot_runtime::edit::rename_meeting(&svc, existing, &bad).unwrap_err();
+        assert_eq!(refused, IpcError::from(renamed));
+    }
+}
+
+/// T14.13: a window call that fails says fixed copy, never Tauri's or the operating system's
+/// words.
+#[test]
+fn window_errors_reach_the_page_as_fixed_copy() {
+    let e = window_error(tauri::Error::Io(std::io::Error::other(
+        "words that must not reach the page (os error 5)",
+    )));
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str(), e.retryable),
+        ("window", WINDOW_FAILED, false)
+    );
+    assert!(WINDOW_FAILED.ends_with('.') && !WINDOW_FAILED.contains("  "));
+    assert!(!crate::plain_text::names_developer_tool(WINDOW_FAILED));
+}
+
+/// T12.56, T14.13: `ipc::blocking` is the one place a command hands work to a blocking thread,
+/// so work that panics or is cancelled says fixed copy everywhere.
+#[test]
+fn ipc_blocking_is_the_only_spawn_blocking_of_the_app() {
+    fn scan(dir: &Path, found: &mut Vec<(PathBuf, usize)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let uses = text.matches(concat!("spawn_", "blocking(")).count();
+                if uses > 0 {
+                    found.push((path, uses));
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    scan(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].0.ends_with("ipc.rs") && found[0].1 == 1,
+        "{found:?}"
+    );
 }
 
 #[test]
