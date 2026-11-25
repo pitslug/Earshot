@@ -1842,6 +1842,78 @@ mod local {
         assert_eq!(local_report(&out).backend, LlamaBackend::Cpu);
     }
 
+    /// One CPU try whose load never returns (until `stuck` is released), on a thread, on `clock`
+    /// with the production limits: how it ended, once it has.
+    fn stuck_load_on(
+        svc: &Services,
+        id: earshot_core::identity::EntityId,
+        clock: earshot_proc::AwakeClock,
+        stuck: &Stuck,
+    ) -> std::sync::mpsc::Receiver<Result<Attempt, RuntimeError>> {
+        let (view, settings) = load_input(svc, id).unwrap();
+        let input = input_of(&view, &settings);
+        let config = config();
+        let ranges = time_chunks(&input, config.chunk_seconds).unwrap();
+        let job = LocalJob {
+            loader: Arc::new(CpuLoader(
+                OnCpu::StuckLoad(stuck.clone()),
+                Arc::new(Shared::default()),
+            )),
+            stalled: Box::leak(Box::new(AtomicBool::new(false))),
+            done: vec![None; ranges.len()],
+            config,
+            input,
+            ranges,
+        };
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(attempt_local_on(job, &CancelToken::new(), &clock));
+        });
+        result
+    }
+
+    fn load_stalled(result: Result<Attempt, RuntimeError>) -> bool {
+        matches!(
+            result,
+            Err(RuntimeError::LocalSummary(LocalSummaryError::LoadStalled))
+        )
+    }
+
+    #[test]
+    fn summary_a_load_asleep_is_no_stall_and_time_awake_is() {
+        // T14.8: the lid closes while the summary model loads. The hours asleep are not silence;
+        // the limit is time awake.
+        use crate::testutil::HandClock;
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let id = meeting(&svc, "", 191);
+        let guard = Duration::from_secs(60);
+        let night = Duration::from_secs(8 * 3600);
+        let clock = HandClock::default();
+        let stuck = Stuck::default();
+        let result = stuck_load_on(&svc, id, clock.awake(), &stuck);
+        clock.read_twice_more();
+        clock.sleep(night);
+        clock.read_twice_more();
+        assert!(result.try_recv().is_err(), "a load asleep is no stall");
+        clock.advance(CPU_LOAD_LIMIT - Duration::from_secs(1));
+        clock.read_twice_more();
+        assert!(result.try_recv().is_err(), "short of the load limit");
+        clock.advance(Duration::from_secs(1));
+        assert!(load_stalled(result.recv_timeout(guard).unwrap()));
+        stuck.release();
+
+        // The negative control: on a clock that counts the sleep, as `Instant` does on Windows,
+        // the same night is a stall.
+        let clock = HandClock::default();
+        let stuck = Stuck::default();
+        let result = stuck_load_on(&svc, id, clock.wall(), &stuck);
+        clock.read_twice_more();
+        clock.sleep(night);
+        assert!(load_stalled(result.recv_timeout(guard).unwrap()));
+        stuck.release();
+    }
+
     #[test]
     fn summary_a_slow_gpu_that_keeps_going_is_not_a_stall() {
         // Negative control: well past the limit in time, but reporting progress throughout.

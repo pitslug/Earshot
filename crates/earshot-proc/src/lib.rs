@@ -15,7 +15,8 @@
 //!   ([`ChildError::Aborted`]);
 //! - writes the input on its own thread and closes it, and reads both outputs to the end on
 //!   their own threads, keeping at most [`ChildSpec::max_output`] bytes of each;
-//! - polls the child, the deadline and `cancelled` every [`POLL`];
+//! - polls the child, the deadline (in time awake, [`AwakeClock`]) and `cancelled` every
+//!   [`POLL`];
 //! - after the child exits waits at most [`DRAIN_TIMEOUT`] for both outputs to end, then
 //!   kills the job (a grandchild holding a pipe open) and reports what was read. An output
 //!   that did not end, or went past the cap, is marked incomplete: callers never parse an
@@ -63,6 +64,55 @@ pub fn awake_time() -> Option<Duration> {
     None
 }
 
+/// A clock of time awake, for a stall or deadline rule that must not count a system sleep
+/// (T12.62, T14.8): a monotonic count from any origin that leaves out time the computer slept.
+/// On Windows `Instant` is `QueryPerformanceCounter`, which keeps counting through sleep and
+/// hibernation, so a watch on `Instant` finds a night with the lid closed to be a stall.
+///
+/// It moves in timer ticks (about 15.6 ms, [`awake_time`]): for long limits, never short waits.
+#[derive(Clone)]
+pub struct AwakeClock(std::sync::Arc<dyn Fn() -> Duration + Send + Sync>);
+
+impl AwakeClock {
+    /// This computer's: [`awake_time`] when it can be read, else time since this clock was made
+    /// by `Instant` (off Windows, where a rule on it counts a sleep as `Instant` does). Chosen
+    /// once, so one clock never mixes the two.
+    #[must_use]
+    pub fn system() -> Self {
+        if awake_time().is_some() {
+            Self(std::sync::Arc::new(|| awake_time().unwrap_or_default()))
+        } else {
+            let origin = Instant::now();
+            Self(std::sync::Arc::new(move || origin.elapsed()))
+        }
+    }
+
+    /// A clock that reads `now` (a fake in tests).
+    #[must_use]
+    pub fn from_fn(now: impl Fn() -> Duration + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(now))
+    }
+
+    /// Time awake so far.
+    #[must_use]
+    pub fn now(&self) -> Duration {
+        (self.0)()
+    }
+
+    /// Time awake since `earlier` (an earlier [`AwakeClock::now`]); zero if the clock went
+    /// backwards, so a clock that misbehaves never trips a limit.
+    #[must_use]
+    pub fn since(&self, earlier: Duration) -> Duration {
+        self.now().saturating_sub(earlier)
+    }
+}
+
+impl fmt::Debug for AwakeClock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AwakeClock")
+    }
+}
+
 /// How often the run checks the child, the deadline and the cancel flag.
 pub const POLL: Duration = Duration::from_millis(10);
 
@@ -88,7 +138,8 @@ pub struct ChildSpec {
     pub env_set: Vec<(OsString, OsString)>,
     /// Written to its standard input, which is then closed.
     pub stdin: Vec<u8>,
-    /// The whole run (start to exit) must end within this.
+    /// The whole run (start to exit) must end within this much time awake ([`AwakeClock`]): time
+    /// the computer slept is not counted.
     pub deadline: Duration,
     /// At most this many bytes of each output are kept; more makes it incomplete.
     pub max_output: usize,
@@ -285,10 +336,22 @@ pub fn run_with(
     cancelled: &dyn Fn() -> bool,
     on_started: &mut dyn FnMut(u32) -> bool,
 ) -> Result<ChildOutput, ChildError> {
+    run_on(spec, cancelled, on_started, &AwakeClock::system())
+}
+
+/// [`run_with`] reading the deadline from `awake`: [`ChildSpec::deadline`] is time awake
+/// (T14.8), so a child that was running when the computer went to sleep is not killed for the
+/// hours it slept. The short waits after the exit keep `Instant`.
+fn run_on(
+    spec: &ChildSpec,
+    cancelled: &dyn Fn() -> bool,
+    on_started: &mut dyn FnMut(u32) -> bool,
+    awake: &AwakeClock,
+) -> Result<ChildOutput, ChildError> {
     if cancelled() {
         return Err(ChildError::Cancelled);
     }
-    let started = Instant::now();
+    let started = awake.now();
     // The job exists before the child, so a job failure never leaves a child behind.
     let job = Job::new().map_err(ChildError::Job)?;
     let mut cmd = Command::new(&spec.program);
@@ -338,7 +401,7 @@ pub fn run_with(
             kill(&job, &mut child);
             return Err(ChildError::Cancelled);
         }
-        if started.elapsed() >= spec.deadline {
+        if awake.since(started) >= spec.deadline {
             kill(&job, &mut child);
             return Err(ChildError::TimedOut(spec.deadline));
         }

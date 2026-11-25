@@ -210,6 +210,8 @@ struct Inner {
     stop_ceiling: Duration,
     /// When the work after a meeting is given up ([`AfterBounds`]).
     after_bounds: AfterBounds,
+    /// The clock those bounds are read on: time awake (T14.8).
+    awake: earshot_proc::AwakeClock,
     /// Runs in a start that failed, after its result is known and before it takes its thread
     /// back: where a test lets another start in (T14.7).
     #[cfg(test)]
@@ -296,6 +298,7 @@ impl MeetingDriver {
             owned: Mutex::default(),
             stop_ceiling: STOP_CEILING,
             after_bounds: AfterBounds::default(),
+            awake: earshot_proc::AwakeClock::system(),
             #[cfg(test)]
             failed_start_hook: None,
         }))
@@ -544,6 +547,20 @@ impl MeetingDriver {
         self
     }
 
+    /// The same driver reading the bounds of the work after a meeting on `awake` (tests; call it
+    /// before the driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_awake_clock(mut self, awake: earshot_proc::AwakeClock) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .awake = awake;
+        self
+    }
+
     /// The same driver running `hook` in every start that failed, once its result is known and
     /// before it takes its thread back (tests; call it before the driver is shared).
     ///
@@ -674,7 +691,8 @@ fn left_unprocessed(outcome: &LiveOutcome) -> Option<&'static str> {
 
 /// When the work after a meeting is given up (T9.22b): no sign of life (a [`HostStep`], or a poll
 /// of the meeting's cancel token, which every shipped decode makes between engine calls) for the
-/// bound of the phase it is in. Then the meeting's turn passes to the next, the meeting is left
+/// bound of the phase it is in, counted in time awake (T14.8, `earshot_proc::AwakeClock`): work
+/// that was going when the computer went to sleep has not stalled for the hours it slept. Then the meeting's turn passes to the next, the meeting is left
 /// unprocessed with a banner, and the thread is left to end on its own, never joined, as a stalled
 /// GPU summary is (T8.4ab). Nothing here cuts work that is merely slow. The summary is not watched
 /// here: a local model's load and run have their own watch (`summary::attempt_local`, the GPU
@@ -836,7 +854,7 @@ fn run_after_watched(
     outcome: &LiveOutcome,
     meeting_cancel: &MeetingCancel,
     ticket: &Arc<QueueTicket>,
-    bounds: AfterBounds,
+    (bounds, awake): (AfterBounds, &earshot_proc::AwakeClock),
     send: &dyn Fn(MeetingEvent),
 ) -> Option<HostOutcome> {
     let cancel = &meeting_cancel.token;
@@ -863,7 +881,7 @@ fn run_after_watched(
         Err(e) => return Some(HostOutcome::not_started(RuntimeError::Spawn(e))),
     };
     let mut watch = AfterWatch::new(bounds);
-    let started = Instant::now();
+    let started = awake.now();
     let (mut phase, mut steps) = (AfterPhase::Loading, 0u64);
     loop {
         match rx.recv_timeout(AFTER_WATCH_POLL) {
@@ -890,7 +908,8 @@ fn run_after_watched(
             }
         }
         let at_cancel = meeting_cancel.polls_at_cancel.get().copied();
-        if watch.stalled(phase, steps, cancel.polls(), started.elapsed(), at_cancel) {
+        let now = awake.since(started);
+        if watch.stalled(phase, steps, cancel.polls(), now, at_cancel) {
             cancel.cancel();
             drop(worker);
             return None;
@@ -1245,7 +1264,7 @@ fn run(
             &outcome,
             &meeting_cancel,
             &ticket,
-            inner.after_bounds,
+            (inner.after_bounds, &inner.awake),
             &send,
         );
         let Some(host) = watched else {

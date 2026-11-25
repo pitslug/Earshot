@@ -2565,6 +2565,78 @@ fn meeting_with_a_live_model_load_that_never_returns_never_blocks_the_next() {
     drop(release);
 }
 
+/// A meeting whose final pass hangs in a step, on a driver with the production bounds read on
+/// `clock`: the driver, its events, the meeting, and what lets the hung step go.
+fn hung_step_on(
+    svc: &Services,
+    clock: earshot_proc::AwakeClock,
+) -> (
+    MeetingDriver,
+    Receiver<MeetingEvent>,
+    String,
+    mpsc::Sender<()>,
+) {
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::AfterHangs {
+        in_step: true,
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(prepare);
+    let d = d.with_awake_clock(clock);
+    let meeting = d.start(svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    (d, rx, meeting, release)
+}
+
+fn left_for_stalling(events: &[MeetingEvent], meeting: &str) -> bool {
+    result_of(events, meeting)
+        == SummaryEvent::Failed {
+            message: POST_STALLED_MESSAGE.into(),
+            retryable: false,
+        }
+}
+
+#[test]
+fn meeting_after_watch_counts_time_awake_not_time_asleep() {
+    // T14.8: the meeting ends, the lid closes during its final pass. On waking, the hours asleep
+    // are not silence: the work is left only after its bound of time awake with no sign of life.
+    use crate::testutil::HandClock;
+    let dir = TempDir::new("after-asleep");
+    let svc = services(&dir);
+    let night = Duration::from_secs(8 * 3600);
+    let step = AfterBounds::default().step;
+    let clock = HandClock::default();
+    let (d, rx, meeting, release) = hung_step_on(&svc, clock.awake());
+    clock.read_twice_more();
+    clock.sleep(night);
+    clock.read_twice_more();
+    assert!(d.is_finishing(&meeting), "left for the time asleep");
+    clock.advance(step - Duration::from_secs(1));
+    clock.read_twice_more();
+    assert!(d.is_finishing(&meeting), "left short of its bound");
+    clock.advance(Duration::from_secs(1));
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(left_for_stalling(&events, &meeting), "{events:?}");
+    d.join();
+    release.send(()).unwrap();
+
+    // The negative control: on a clock that counts the sleep, as `Instant` does on Windows, the
+    // same night leaves the meeting unprocessed.
+    let dir = TempDir::new("after-asleep-control");
+    let svc = services(&dir);
+    let clock = HandClock::default();
+    let (d, rx, meeting, release) = hung_step_on(&svc, clock.wall());
+    clock.read_twice_more();
+    clock.sleep(night);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(left_for_stalling(&events, &meeting), "{events:?}");
+    d.join();
+    release.send(()).unwrap();
+}
+
 #[test]
 fn meeting_after_watch_rule_is_no_sign_of_life_for_the_phase_bound() {
     // T9.22b, clock-free: the bound of the phase the work is in, counted from its last step or

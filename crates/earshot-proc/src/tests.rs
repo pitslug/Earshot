@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::*;
 
@@ -67,6 +67,134 @@ fn proc_run_kills_a_child_past_its_deadline() {
         "{:?}",
         started.elapsed()
     );
+}
+
+/// A clock the test moves by hand, keeping time awake and time asleep apart (T12.62's fake).
+#[derive(Clone, Default)]
+struct HandClock {
+    awake_ms: Arc<AtomicU64>,
+    asleep_ms: Arc<AtomicU64>,
+    reads: Arc<AtomicU64>,
+}
+
+impl HandClock {
+    fn ms(counter: &AtomicU64) -> u64 {
+        counter.load(Ordering::SeqCst)
+    }
+
+    /// What the code under test is given: time awake only.
+    fn awake(&self) -> AwakeClock {
+        let me = self.clone();
+        AwakeClock::from_fn(move || {
+            me.reads.fetch_add(1, Ordering::SeqCst);
+            Duration::from_millis(Self::ms(&me.awake_ms))
+        })
+    }
+
+    /// What `Instant` reads on Windows: time awake and time asleep (the negative control).
+    fn wall(&self) -> AwakeClock {
+        let me = self.clone();
+        AwakeClock::from_fn(move || {
+            me.reads.fetch_add(1, Ordering::SeqCst);
+            Duration::from_millis(Self::ms(&me.awake_ms) + Self::ms(&me.asleep_ms))
+        })
+    }
+
+    /// Time passes with the computer awake.
+    fn advance(&self, by: Duration) {
+        self.awake_ms
+            .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
+    }
+
+    /// Time passes with the computer asleep.
+    fn sleep(&self, by: Duration) {
+        self.asleep_ms
+            .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
+    }
+
+    /// Waits until the code under test has read the clock twice more: it has then judged the
+    /// time as it is now at least once. The bound is only for a failing case.
+    fn read_twice_more(&self) {
+        let from = Self::ms(&self.reads);
+        let until = Instant::now() + Duration::from_secs(60);
+        while Self::ms(&self.reads) < from + 2 {
+            assert!(Instant::now() < until, "the clock is no longer read");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// A child that runs for two minutes unless it is killed, under `clock`, with a deadline of an
+/// hour; its result when the run ends.
+#[cfg(windows)]
+fn long_run_on(clock: AwakeClock) -> mpsc::Receiver<Result<ChildOutput, ChildError>> {
+    let (done, result) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = spec("ping", &["-n", "120", "127.0.0.1"]);
+        s.deadline = Duration::from_secs(3600);
+        let _ = done.send(run_on(&s, &|| false, &mut |_| true, &clock));
+    });
+    result
+}
+
+#[test]
+#[cfg_attr(not(windows), ignore = "uses ping.exe")]
+fn proc_run_deadline_counts_time_awake_not_time_asleep() {
+    // T14.8: a child running when the computer goes to sleep is not killed for the hours it
+    // slept; the deadline is time awake.
+    #[cfg(windows)]
+    {
+        let timed_out = |r: Result<ChildOutput, ChildError>| {
+            assert!(
+                matches!(r, Err(ChildError::TimedOut(d)) if d == Duration::from_secs(3600)),
+                "{r:?}"
+            );
+        };
+        let guard = Duration::from_secs(60);
+        let clock = HandClock::default();
+        let result = long_run_on(clock.awake());
+        clock.read_twice_more();
+        clock.sleep(Duration::from_secs(8 * 3600));
+        clock.read_twice_more();
+        assert!(result.try_recv().is_err(), "killed for the time asleep");
+        clock.advance(Duration::from_secs(3599));
+        clock.read_twice_more();
+        assert!(result.try_recv().is_err(), "killed short of its deadline");
+        clock.advance(Duration::from_secs(1));
+        timed_out(result.recv_timeout(guard).expect("the deadline never came"));
+
+        // The negative control: on a clock that counts the sleep, as `Instant` does on Windows,
+        // the same night kills the child.
+        let clock = HandClock::default();
+        let result = long_run_on(clock.wall());
+        clock.read_twice_more();
+        clock.sleep(Duration::from_secs(8 * 3600));
+        timed_out(
+            result
+                .recv_timeout(guard)
+                .expect("the sleep was not counted"),
+        );
+    }
+}
+
+#[test]
+fn proc_awake_clock_reads_forward_and_never_trips_on_a_clock_that_went_back() {
+    let clock = AwakeClock::system();
+    let first = clock.now();
+    assert!(clock.now() >= first);
+    assert!(clock.since(first) < Duration::from_secs(60));
+    // A reading from the future (a clock that went backwards since) is no time at all.
+    assert_eq!(
+        clock.since(first + Duration::from_secs(3600)),
+        Duration::ZERO
+    );
+    let hand = HandClock::default();
+    let (awake, wall) = (hand.awake(), hand.wall());
+    hand.advance(Duration::from_secs(5));
+    hand.sleep(Duration::from_secs(100));
+    assert_eq!(awake.now(), Duration::from_secs(5));
+    assert_eq!(wall.now(), Duration::from_secs(105));
+    assert_eq!(awake.since(Duration::from_secs(2)), Duration::from_secs(3));
 }
 
 #[test]
