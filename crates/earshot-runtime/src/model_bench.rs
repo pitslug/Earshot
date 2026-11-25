@@ -290,12 +290,25 @@ fn read_gpu_drivers() -> Option<Vec<String>> {
     #[cfg(windows)]
     {
         let args = ["query", DISPLAY_CLASS_KEY, "/s", "/v", "DriverVersion"];
-        probe_output("reg", &args, DRIVER_PROBE_TIMEOUT).map(|out| parse_driver_versions(&out))
+        let reg = system_reg_exe(std::env::var_os("SystemRoot"))?;
+        probe_output(&reg, &args, DRIVER_PROBE_TIMEOUT).map(|out| parse_driver_versions(&out))
     }
     #[cfg(not(windows))]
     {
         Some(Vec::new())
     }
+}
+
+/// The system's `reg.exe` under `windows` (the `SystemRoot` variable), as the desktop's
+/// `general::system_reg_exe` builds it: never a `reg` found on `PATH` or in the current folder.
+/// `None` when the Windows folder is unknown, which reads as a failed probe.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn system_reg_exe(windows: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    Some(
+        std::path::PathBuf::from(windows.filter(|w| !w.is_empty())?)
+            .join("System32")
+            .join("reg.exe"),
+    )
 }
 
 /// The Windows device class of display adapters.
@@ -341,7 +354,7 @@ pub fn parse_driver_versions(out: &str) -> Vec<String> {
 /// The standard output of `program args` if it exits successfully within `timeout`
 /// (killed otherwise).
 #[cfg(windows)]
-fn probe_output(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+fn probe_output(program: &std::path::Path, args: &[&str], timeout: Duration) -> Option<String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     let mut child = Command::new(program)
@@ -695,7 +708,8 @@ fn without_drivers(fingerprint: &str) -> String {
 
 /// What a check's answer depends on: this build (version and accelerators), the hardware
 /// (cores, memory, GPU driver versions), the meeting languages, the installed models and the
-/// installed NPU versions (ARM64: whether a model can run on the NPU, TODO 77). Any change
+/// installed NPU versions (ARM64: whether a model can run on the NPU, so a check stored before
+/// one arrived is not kept). Any change
 /// means the check runs again.
 #[must_use]
 pub fn check_fingerprint(models: &ModelDir, facts: &HardwareFacts, languages: &[&str]) -> String {

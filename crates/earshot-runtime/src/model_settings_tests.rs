@@ -899,6 +899,71 @@ fn settings_cuda_fit_is_judged_on_the_nvidia_card_beside_a_larger_card() {
     assert_eq!(s.card_memory, Some(16 * GIB));
 }
 
+/// Counts the reads of the hardware cache test's cache; the machine it reads gains a card after
+/// the first read. Only that test uses it.
+static FAKE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn fake_read() -> Hardware {
+    let n = FAKE_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if n == 0 {
+        machine(16 * GIB, None)
+    } else {
+        machine(16 * GIB, Some(8 * GIB))
+    }
+}
+
+#[test]
+fn settings_hardware_is_read_once_per_interval_and_a_new_card_is_seen_after_it() {
+    use crate::{HARDWARE_READ_INTERVAL, HardwareCache};
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    let cache = HardwareCache::new(fake_read);
+    let t0 = std::time::Instant::now();
+    let first = cache.get(t0);
+    assert!(first.gpus.is_empty());
+    // Within the interval every caller gets the same read, and nothing is read again.
+    for later in [
+        Duration::ZERO,
+        Duration::from_millis(1),
+        HARDWARE_READ_INTERVAL / 2,
+    ] {
+        assert_eq!(cache.get(t0 + later), first);
+    }
+    assert_eq!(
+        cache.get(t0 + HARDWARE_READ_INTERVAL - Duration::from_millis(1)),
+        first
+    );
+    // A clock read before the last read (another thread) reuses it rather than reading.
+    assert_eq!(
+        cache.get(t0.checked_sub(Duration::from_secs(1)).unwrap_or(t0)),
+        first
+    );
+    assert_eq!(FAKE_READS.load(Ordering::SeqCst), 1);
+    // Once the interval has passed the machine is read again, and the new card is seen.
+    let after = cache.get(t0 + HARDWARE_READ_INTERVAL);
+    assert_eq!(after.gpus.len(), 1);
+    assert_eq!(FAKE_READS.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        cache.get(t0 + HARDWARE_READ_INTERVAL + Duration::from_secs(1)),
+        after
+    );
+    assert_eq!(FAKE_READS.load(Ordering::SeqCst), 2);
+    // A judgement, kept short: an external card plugged in before a meeting is seen by it.
+    assert!(HARDWARE_READ_INTERVAL <= Duration::from_secs(5));
+}
+
+#[test]
+fn settings_a_second_summary_load_waits_out_the_longest_honest_first_load() {
+    // A load that waits for llama.cpp's load lock gives up only after the load before it would
+    // itself have been called stalled by the runtime's watch, with a margin (T14.41).
+    let longest = crate::summary::GPU_LOAD_LIMIT.max(crate::summary::CPU_LOAD_LIMIT);
+    assert!(
+        earshot_llm_local::log::LOAD_LOCK_WAIT >= longest + std::time::Duration::from_secs(30),
+        "{:?} against {longest:?}",
+        earshot_llm_local::log::LOAD_LOCK_WAIT
+    );
+}
+
 #[test]
 fn settings_summary_on_cuda_keeps_its_rule_and_a_processor_choice_always_wins() {
     let cuda = &[Accelerator::Cuda, Accelerator::Cpu];

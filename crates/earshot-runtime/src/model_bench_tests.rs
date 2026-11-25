@@ -101,6 +101,21 @@ fn model_check_driver_versions_are_parsed_from_reg_query() {
 }
 
 #[test]
+fn model_check_driver_probe_runs_the_systems_reg_exe_by_its_full_path() {
+    assert_eq!(
+        system_reg_exe(Some("C:\\Windows".into())),
+        Some(
+            std::path::PathBuf::from("C:\\Windows")
+                .join("System32")
+                .join("reg.exe")
+        )
+    );
+    // An unknown Windows folder is a failed probe, never a `reg` from PATH.
+    assert_eq!(system_reg_exe(None), None);
+    assert_eq!(system_reg_exe(Some("".into())), None);
+}
+
+#[test]
 #[cfg_attr(not(windows), ignore = "the driver probe reads the Windows registry")]
 fn model_check_driver_probe_reads_this_machine() {
     // Every Windows machine has a display adapter (a virtual one at least).
@@ -206,7 +221,7 @@ fn model_check_fingerprint_changes_with_what_the_answer_depends_on() {
 
 #[test]
 fn model_check_fingerprint_changes_when_an_npu_version_arrives() {
-    // TODO 77: a check stored before an NPU version was downloaded must not stay current.
+    // A check stored before an NPU version was downloaded must not stay current.
     let dir = crate::testutil::TempDir::new("model-check-fp-npu");
     let models = ModelDir::new(dir.0.as_path());
     let facts = HardwareFacts {

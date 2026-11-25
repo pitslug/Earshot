@@ -843,8 +843,9 @@ pub fn init_onnx(models: &ModelDir, accel: Accelerator) -> Result<PathBuf, Runti
 
 /// After a load of `file` from `models` was refused: the full check of the model that holds it
 /// ([`Catalogue::check_after_refused_load`]), so a damaged file of the right size reads as not
-/// installed and its download is offered again (TODO 30). Reads every byte of that model, only
-/// on this failure path; a file no model holds checks nothing.
+/// installed and its download is offered again (T12.36: a same-size damaged file used to read as
+/// installed, so no download was offered and every meeting was refused). Reads every byte of that
+/// model, only on this failure path; a file no model holds checks nothing.
 pub(crate) fn check_refused_file(models: &ModelDir, file: &Path) {
     if let Ok(catalogue) = crate::catalogue::Catalogue::embedded()
         && let Some(model) = catalogue.model_of_file(file)

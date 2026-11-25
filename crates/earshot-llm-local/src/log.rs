@@ -60,8 +60,14 @@ pub fn since(mark: u64) -> Option<Vec<String>> {
 static LOADS: Mutex<()> = Mutex::new(());
 
 /// How long a load waits for the load before it: longer means that one is stuck inside
-/// llama.cpp and never gives the lock back (a stalled GPU, T8.4ab).
-const LOAD_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// llama.cpp and never gives the lock back (a stalled GPU, T8.4ab). An honest load may take as
+/// long as the runtime lets one run before calling it stalled: 600 s, its GPU and CPU load
+/// limits (`earshot_runtime::summary::GPU_LOAD_LIMIT` and `CPU_LOAD_LIMIT`, a judgement for 5 GB
+/// read from a slow disk). A load that starts waiting gives up only after the one before it would
+/// itself have been called stalled, however far into its load that one was, plus a minute's
+/// margin for its thread to be left behind (T14.41). This crate cannot see those constants; the
+/// runtime pins the relation (`model_settings` tests).
+pub const LOAD_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(600 + 60);
 
 /// Takes `lock`, waiting at most `wait`; a poisoned lock is still taken.
 fn lock_within<T>(
@@ -423,6 +429,41 @@ mod tests {
             b.join().unwrap().unwrap(),
             ["log_window_test b1", "log_window_test b2"]
         );
+    }
+
+    #[test]
+    fn log_a_second_load_waits_out_a_slow_load_and_gives_up_only_on_a_stuck_one() {
+        // A load that waits gives up only after the one before it would have been called
+        // stalled by the runtime (600 s), plus a margin.
+        assert_eq!(LOAD_LOCK_WAIT, std::time::Duration::from_secs(660));
+        // The waiting itself, on a lock of its own: a slow holder is waited for...
+        let lock = std::sync::Arc::new(Mutex::new(()));
+        let (taken, is_taken) = std::sync::mpsc::channel::<()>();
+        let (go, release) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let lock = std::sync::Arc::clone(&lock);
+            std::thread::spawn(move || {
+                let _held = lock.lock().unwrap();
+                taken.send(()).unwrap();
+                release.recv().unwrap();
+            })
+        };
+        is_taken.recv().unwrap();
+        let waiter = {
+            let lock = std::sync::Arc::clone(&lock);
+            std::thread::spawn(move || {
+                lock_within(&*lock, std::time::Duration::from_secs(60)).is_some()
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        go.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(waiter.join().unwrap(), "a slow load is waited for");
+        // ...and one that never lets go is given up on after the wait.
+        let _stuck = lock.lock().unwrap();
+        let started = std::time::Instant::now();
+        assert!(lock_within(&*lock, std::time::Duration::from_millis(100)).is_none());
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
     }
 
     #[test]

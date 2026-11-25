@@ -976,7 +976,7 @@ fn catalogue_helpers_are_not_installed_until_extracted_and_a_damaged_member_is_d
 
 #[test]
 fn catalogue_helpers_found_damaged_by_a_refused_load_read_as_missing_until_downloaded_again() {
-    // TODO 30: a same-size damaged helper read as installed, so the app offered no download and
+    // A same-size damaged helper used to read as installed, so the app offered no download and
     // every meeting was refused. A load that was refused checks the files; a damaged one then
     // reads as not installed (the app offers the download), and the download repairs it.
     let h = small_helpers();
@@ -1010,7 +1010,8 @@ fn catalogue_helpers_found_damaged_by_a_refused_load_read_as_missing_until_downl
     assert_eq!(state.files[2], ("ort".to_owned(), FileState::Damaged));
     assert_eq!(state.files[0].1, FileState::Present, "only the damaged one");
     assert_eq!(state.held, state.total - h.files[2].1.len() as u64);
-    // The same folder named another way reads the same (TODO 30 review).
+    // The same folder named another way reads the same (a review finding on this fix: the
+    // damaged mark is keyed by the folder, not by how its path is spelt).
     let dotted = ModelDir::new(dir.0.join("models").join("seg-dir").join(".."));
     assert_eq!(
         c.install_state(&dotted, HELPERS_MODEL).unwrap().files[2].1,
