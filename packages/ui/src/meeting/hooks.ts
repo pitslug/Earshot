@@ -106,7 +106,14 @@ export interface LiveMeetingHandle {
  * snapshot before sending it, so nothing sent before the subscription is missed; an event both in
  * the snapshot and held sets again what it already set (every snapshot field is set by
  * assignment, a banner by its key, and lines are not in the snapshot). A snapshot that cannot be
- * read seeds nothing: the held events still apply. */
+ * read, or does not answer within `SNAPSHOT_WAIT_MS`, seeds nothing: the held events still apply,
+ * and an answer after that is ignored. The snapshot seeds once per mount: a re-run of the effect
+ * (a new `ipc` or `timer`) keeps what is shown and only subscribes again. */
+/** How long the window waits for the app's snapshot before it goes on without one (a judgement:
+ * the read is in memory and answers at once; a window that heard nothing in this long would show
+ * nothing of any meeting). */
+export const SNAPSHOT_WAIT_MS = 10_000;
+
 export function useLiveMeeting(
   ipc: Ipc,
   timer: Timer,
@@ -124,11 +131,14 @@ export function useLiveMeeting(
   const metering = useRef<string | null>(null);
   // The meeting the screen follows, whose dismissed banners are remembered across a reload.
   const followed = useRef<string | null>(null);
+  // Whether the snapshot has seeded this mount: a re-run of the effect never seeds again.
+  const seeded = useRef(false);
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let live = true;
-    // Events heard before the snapshot is read, in order; `null` once it was.
-    let held: MeetingEvent[] | null = [];
+    let cancelWait: (() => void) | null = null;
+    // Events heard before the snapshot is read, in order; `null` once it was (or on a re-run).
+    let held: MeetingEvent[] | null = seeded.current ? null : [];
     const apply = (event: MeetingEvent) => {
       if (event.type === "Levels") {
         // Not meeting state: only the meters hear it (T9.24).
@@ -153,7 +163,11 @@ export function useLiveMeeting(
       onEventRef.current?.(event);
     };
     const seed = (snapshot: MeetingSnapshot | null) => {
-      if (!live) return;
+      // Once: an answer after the wait gave up, or after another answer, changes nothing.
+      if (!live || held === null) return;
+      seeded.current = true;
+      cancelWait?.();
+      cancelWait = null;
       const f = snapshot?.followed ?? null;
       if (snapshot !== null && f !== null) {
         const now = timer.now();
@@ -189,13 +203,16 @@ export function useLiveMeeting(
           return;
         }
         unlisten = stop;
+        if (held === null) return;
         // Read only once subscribed: whatever is sent from here on is heard.
+        cancelWait = timer.setTimeout(() => seed(null), SNAPSHOT_WAIT_MS);
         Promise.resolve()
           .then(() => ipc.meetingSnapshot())
           .then(seed, () => seed(null));
       });
     return () => {
       live = false;
+      cancelWait?.();
       unlisten?.();
     };
   }, [ipc, timer, levels]);
