@@ -301,6 +301,27 @@ describe("MeetingDetailView", () => {
       expect(screen.getByText(/Summary by Qwen 3\.5 9B · /)).toBeInTheDocument();
     });
 
+    it("draws each summary edit as an icon that keeps its space while hidden, so hovering moves nothing (T12.105)", async () => {
+      const { user } = await setup();
+      await screen.findByText(/TL;DR/);
+      for (const name of ["Edit TL;DR", "Edit decision 1", "Edit who does action 1", "Edit action 1", "Edit when action 1 is due"]) {
+        const button = screen.getByRole("button", { name });
+        // No words to appear on hover: an icon only.
+        expect(button.textContent).toBe("");
+        expect(button.querySelector("svg")).not.toBeNull();
+        // Its width is fixed whether shown or not.
+        expect(getComputedStyle(button).width).toBe("24px");
+        expect(getComputedStyle(button).minWidth).toBe("24px");
+      }
+      // The due date has a calendar, the others a pencil.
+      const pencil = screen.getByRole("button", { name: "Edit TL;DR" }).querySelector("path")?.getAttribute("d");
+      const calendar = screen.getByRole("button", { name: "Edit when action 1 is due" }).querySelector("path")?.getAttribute("d");
+      expect(calendar).not.toBe(pencil);
+      // Hovering names what it edits.
+      await user.hover(screen.getByRole("button", { name: "Edit decision 1" }));
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("Edit decision 1");
+    });
+
     it("shows the due-date editor's label, since the action's text is not shown while it is open", async () => {
       const { user } = await setup();
       await screen.findByText(/TL;DR/);

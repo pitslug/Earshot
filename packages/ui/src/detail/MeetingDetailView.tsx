@@ -393,33 +393,28 @@ const useStyles = makeStyles({
     columnGap: tokens.spacingHorizontalXS,
     rowGap: tokens.spacingVerticalXS,
   },
-  // A summary text with its Edit buttons at the end (T12.16). Hidden, a button takes no width,
-  // so the text and citations read as before; hover or focus shows it.
+  // A summary text with its edit icons (T12.16, T12.105): the item keeps a gutter on its right
+  // (its padding, set per item for its number of icons) and the icons sit in it at the top, so
+  // hovering never moves a line and an icon never wraps alone; hover or focus shows them.
   editable: {
-    ":hover .earshot-inline-edit": {
-      opacity: 1,
-      maxWidth: "none",
-      minWidth: "auto",
-      paddingLeft: tokens.spacingHorizontalS,
-      paddingRight: tokens.spacingHorizontalS,
-    },
-    ":focus-within .earshot-inline-edit": {
-      opacity: 1,
-      maxWidth: "none",
-      minWidth: "auto",
-      paddingLeft: tokens.spacingHorizontalS,
-      paddingRight: tokens.spacingHorizontalS,
-    },
+    display: "block",
+    position: "relative",
+    ":hover .earshot-inline-edit": { opacity: 1 },
+    ":focus-within .earshot-inline-edit": { opacity: 1 },
+  },
+  editIcons: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    display: "flex",
   },
   inlineEdit: {
     opacity: 0,
-    maxWidth: 0,
-    minWidth: 0,
+    width: "24px",
+    minWidth: "24px",
+    height: "24px",
     paddingLeft: 0,
     paddingRight: 0,
-    overflow: "hidden",
-    whiteSpace: "nowrap",
-    marginLeft: tokens.spacingHorizontalXS,
   },
   editedMark: {
     marginLeft: tokens.spacingHorizontalXS,
@@ -1465,16 +1460,36 @@ function Citations({ citations, onCite }: { citations: Citation[]; onCite(c: Cit
 interface EditField {
   /** Names the field: "Edit {label}" and the editor's label. */
   label: string;
-  /** The button's own text. */
-  button: string;
+  /** The icon of its button: a pencil, or a calendar for a due date. */
+  icon: EditIcon;
   /** A label shown above the editor, for a field whose editor hides what it belongs to. */
   shown?: string;
   text: string;
   onSave(text: string): Promise<boolean>;
 }
 
-/** Summary content with Edit buttons at its end, shown on hover and focus; a field being
- * edited replaces the content with its editor. With no fields it is the content alone. */
+/** The width of one summary edit icon, which its item keeps free on its right. */
+const EDIT_ICON_PX = 24;
+
+/** Which icon a summary field's edit button shows. */
+type EditIcon = "pencil" | "calendar";
+
+/** The small icons of the summary's edit buttons (T12.105). */
+function EditFieldIcon({ icon }: { icon: EditIcon }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+      {icon === "pencil" ? (
+        <path d="M10.5 2.5l3 3L6 13H3v-3l7.5-7.5zM9 4l3 3" />
+      ) : (
+        <path d="M3 4.5h10v8.5H3zM3 7h10M5.5 3v3M10.5 3v3" />
+      )}
+    </svg>
+  );
+}
+
+/** Summary content with edit icons at its end, shown on hover and focus in space they always
+ * keep; a field being edited replaces the content with its editor. With no fields it is the
+ * content alone. */
 function Editable({ fields, children }: { fields: EditField[]; children: ReactNode }) {
   const styles = useStyles();
   const [editing, setEditing] = useState<EditField | null>(null);
@@ -1493,20 +1508,26 @@ function Editable({ fields, children }: { fields: EditField[]; children: ReactNo
     );
   }
   return (
-    <span className={styles.editable}>
+    <span
+      className={styles.editable}
+      style={fields.length > 0 ? { paddingRight: `${fields.length * EDIT_ICON_PX + 4}px` } : undefined}
+    >
       {children}
-      {fields.map((f) => (
-        <Button
-          key={f.label}
-          size="small"
-          appearance="subtle"
-          className={mergeClasses(styles.inlineEdit, "earshot-inline-edit")}
-          aria-label={`Edit ${f.label}`}
-          onClick={() => setEditing(f)}
-        >
-          {f.button}
-        </Button>
-      ))}
+      {fields.length > 0 && (
+        <span className={styles.editIcons}>
+          {fields.map((f) => (
+            <Tooltip key={f.label} content={`Edit ${f.label}`} relationship="label">
+              <Button
+                size="small"
+                appearance="subtle"
+                icon={<EditFieldIcon icon={f.icon} />}
+                className={mergeClasses(styles.inlineEdit, "earshot-inline-edit")}
+                onClick={() => setEditing(f)}
+              />
+            </Tooltip>
+          ))}
+        </span>
+      )}
     </span>
   );
 }
@@ -1527,9 +1548,9 @@ function SummaryBody({
     field: SummaryFieldRef,
     label: string,
     text: string,
-    button = "Edit",
+    icon: EditIcon = "pencil",
     shown?: string,
-  ): EditField[] => (onEdit === undefined ? [] : [{ label, button, shown, text, onSave: (t) => onEdit(field, t) }]);
+  ): EditField[] => (onEdit === undefined ? [] : [{ label, icon, shown, text, onSave: (t) => onEdit(field, t) }]);
   return (
     <>
       <div className={styles.section}>
@@ -1582,7 +1603,7 @@ function SummaryBody({
                             { kind: "ActionDue", index: i },
                             `when action ${i + 1} is due`,
                             a.due,
-                            "Edit date",
+                            "calendar",
                             // The editor replaces the action's text, so the date alone needs a label.
                             `When action ${i + 1} is due`,
                           )),
