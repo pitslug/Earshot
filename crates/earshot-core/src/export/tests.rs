@@ -646,6 +646,101 @@ fn export_merge_keeps_crlf_line_endings() {
     assert_eq!(merged, doc);
 }
 
+// ---- T14.27: ticked action items survive a re-export ----
+
+const ADA_TASK: &str = "**Ada Lovelace**: Send revised travel numbers (due: Friday)";
+const ME_TASK: &str = "**Me**: Update the forecast";
+
+#[test]
+fn export_merge_keeps_ticked_action_items_whose_text_is_unchanged() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    // The user ticks one item and marks the other with a plugin's "in progress" marker.
+    let ticked = doc
+        .replace(&format!("- [ ] {ADA_TASK}"), &format!("- [x] {ADA_TASK}"))
+        .replace(&format!("- [ ] {ME_TASK}"), &format!("- [/] {ME_TASK}"));
+    assert_ne!(ticked, doc);
+    // Re-exporting the same render keeps both marks: still a fixed point.
+    assert_eq!(merge(&ticked, &r).unwrap(), ticked);
+
+    // A new summary with one item reworded: the unchanged item keeps its mark, the
+    // reworded one comes back unticked, the rest of the region is replaced.
+    let mut f2 = fixture();
+    f2.summary.tldr = "New summary.".into();
+    f2.summary.action_items[1].task = "Update the forecast by Monday".into();
+    let r2 = render(&input(&f2), &opts()).unwrap();
+    let merged = merge(&ticked, &r2).unwrap();
+    assert!(merged.contains(&format!("- [x] {ADA_TASK}\n")), "{merged}");
+    assert!(
+        merged.contains("- [ ] **Me**: Update the forecast by Monday\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("- [/]"), "{merged}");
+    assert!(merged.contains("New summary."));
+    // Apart from the carried mark the merge is the plain merge of the new render.
+    let plain = merge(&doc, &r2).unwrap();
+    assert_eq!(
+        merged,
+        plain.replace(&format!("- [ ] {ADA_TASK}"), &format!("- [x] {ADA_TASK}"))
+    );
+}
+
+#[test]
+fn export_merge_keeps_the_users_own_marker_character_and_crlf() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    for mark in ['X', '-', '>', '!', '\u{2713}'] {
+        let doc = r.to_file().replace(
+            &format!("- [ ] {ME_TASK}"),
+            &format!("- [{mark}] {ME_TASK}"),
+        );
+        assert_eq!(merge(&doc, &r).unwrap(), doc, "{mark:?}");
+        let crlf = doc.replace('\n', "\r\n");
+        assert_eq!(merge(&crlf, &r).unwrap(), crlf, "{mark:?} CRLF");
+    }
+}
+
+#[test]
+fn export_merge_carries_marks_of_repeated_task_lines_in_order() {
+    let mut f = fixture();
+    // Two identical items, then a third with other text.
+    let item = f.summary.action_items[1].clone();
+    f.summary.action_items = vec![item.clone(), item, f.summary.action_items[0].clone()];
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    let first = doc.find(&format!("- [ ] {ME_TASK}")).unwrap();
+    let second = doc[first + 1..].find(&format!("- [ ] {ME_TASK}")).unwrap() + first + 1;
+    // Tick only the second copy.
+    let mut ticked = doc.clone();
+    ticked.replace_range(second..second + 5, "- [x]");
+    assert_eq!(merge(&ticked, &r).unwrap(), ticked);
+    // A new render that keeps one copy only takes the first copy's mark (unticked).
+    let mut f2 = fixture();
+    f2.summary.action_items = f.summary.action_items[1..].to_vec();
+    let r2 = render(&input(&f2), &opts()).unwrap();
+    let merged = merge(&ticked, &r2).unwrap();
+    assert_eq!(
+        merged.matches(&format!("- [ ] {ME_TASK}")).count(),
+        1,
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 0, "{merged}");
+}
+
+#[test]
+fn export_merge_never_carries_a_mark_from_outside_the_region() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    // The user copied the item above the region and ticked that copy.
+    let doc = r
+        .to_file()
+        .replace(BEGIN_MARKER, &format!("- [x] {ME_TASK}\n\n{BEGIN_MARKER}"));
+    let merged = merge(&doc, &r).unwrap();
+    assert_eq!(merged, doc);
+    assert_eq!(merged.matches(&format!("- [ ] {ME_TASK}")).count(), 1);
+}
+
 #[test]
 fn export_content_cannot_forge_region_markers() {
     let mut f = fixture();

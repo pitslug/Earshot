@@ -9,8 +9,11 @@
 //!   user's raw notes, and the transcript in a collapsed `> [!note]- Transcript` callout.
 //! - [`merge`]: replaces only the managed region and the Earshot-owned frontmatter keys
 //!   ([`OWNED_KEYS`], updated in place), keeps every other key and all text outside the
-//!   region byte for byte, and merges `tags` as a union. Merging a render into its own
-//!   output is the identity, so re-export is byte-identical.
+//!   region byte for byte, and merges `tags` as a union. A task line in the new region
+//!   whose text after the checkbox is unchanged keeps the mark the user set on it (`x`,
+//!   `X` or a plugin's own character), so ticked action items survive a re-export.
+//!   Merging a render into its own output is the identity, so re-export is
+//!   byte-identical.
 //! - [`earshot_id_of`]: the `earshot_id` in a note's frontmatter (finding a renamed or
 //!   moved note).
 //!

@@ -172,10 +172,61 @@ fn dominant_eol(doc: &str) -> &'static str {
     if crlf * 2 > lf { "\r\n" } else { "\n" }
 }
 
+/// A task line `- [<mark>] <text>` (line ending removed): its mark and its text.
+fn task_line(line: &str) -> Option<(char, &str)> {
+    let line = line.trim_end_matches(['\n', '\r']);
+    let rest = line.strip_prefix("- [")?;
+    let mut chars = rest.chars();
+    let mark = chars.next()?;
+    let text = chars.as_str().strip_prefix("] ")?;
+    (!matches!(mark, '\n' | '\r')).then_some((mark, text))
+}
+
+/// The new managed region with the task marks the user set in the old one (T14.27).
+///
+/// Earshot renders action items as unticked `- [ ]` tasks inside the region, which a
+/// re-export replaces whole. Each unticked task line of the new region whose text after
+/// the checkbox equals a task line of the old region takes that line's mark character as
+/// the user left it (`x`, `X` or any other single character a task plugin uses). Old
+/// lines are used once each, in order, so repeated identical lines carry their marks in
+/// order; a reworded item matches nothing and stays unticked. Only text between the old
+/// markers is read. Every other byte of the new region is unchanged, so with no marks
+/// set the result is the new region itself.
+fn carry_task_marks(old_region: &str, new_region: &str) -> String {
+    let mut old: Vec<Option<(char, &str)>> = old_region
+        .split_inclusive('\n')
+        .filter_map(task_line)
+        .map(Some)
+        .collect();
+    if old.iter().flatten().all(|(m, _)| *m == ' ') {
+        return new_region.to_owned();
+    }
+    let mut out = String::with_capacity(new_region.len());
+    for line in new_region.split_inclusive('\n') {
+        let carried = task_line(line)
+            .filter(|(m, _)| *m == ' ')
+            .and_then(|(_, text)| {
+                let slot = old.iter_mut().find(|o| o.is_some_and(|(_, t)| t == text))?;
+                slot.take().map(|(m, _)| m)
+            });
+        match carried {
+            Some(mark) => {
+                out.push_str("- [");
+                out.push(mark);
+                // `- [ ` is four bytes: the rest (`] text` and the line ending) is kept.
+                out.push_str(&line[4..]);
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
 /// Re-exports `rendered` into the existing note `existing` (PLAN.md 3.8): owned keys are
 /// replaced in place (or appended), other keys kept verbatim, `tags` merged as a union
-/// (existing order first); the managed region is replaced, or appended after the user's
-/// text when both markers are gone; everything else is kept byte for byte, including its
+/// (existing order first); the managed region is replaced (keeping the marks the user set
+/// on task lines whose text is unchanged, see `carry_task_marks`), or appended after the
+/// user's text when both markers are gone; everything else is kept byte for byte, including its
 /// line endings and a UTF-8 BOM.
 ///
 /// # Errors
@@ -277,7 +328,7 @@ pub fn merge(existing: &str, rendered: &RenderedExport) -> Result<String, Export
                 .or_else(|| after.strip_prefix('\n'))
                 .unwrap_or(after);
             out.push_str(&body[..b]);
-            out.push_str(&region);
+            out.push_str(&carry_task_marks(&body[b..e], &region));
             out.push_str(after);
         }
         (0, _) | (_, 0) => return Err(ExportError::Markers("only one region marker present")),
