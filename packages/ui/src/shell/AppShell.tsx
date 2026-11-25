@@ -354,6 +354,11 @@ const QUIT_COPY = {
 /** Events after which the meeting list is read again. */
 const RELOAD_ON: MeetingEvent["type"][] = ["Started", "Ended", "Summary"];
 
+/** `counts` with one more for `id`. */
+function countedFor(counts: Record<string, number>, id: string): Record<string, number> {
+  return { ...counts, [id]: (counts[id] ?? 0) + 1 };
+}
+
 /** The app window: meeting list and the selected meeting or the meeting screen. */
 export function AppShell({
   timer = realTimer,
@@ -389,10 +394,15 @@ export function AppShell({
   const [retryError, setRetryError] = useState<string | null>(null);
   // The ended meeting whose result the user dismissed (or answered with a job) on its page.
   const [resultDismissed, setResultDismissed] = useState<string | null>(null);
-  // Change when the ended meeting's final transcript or summary is stored, so its page reads it
-  // again (and shows a stored summary).
-  const [detailRefresh, setDetailRefresh] = useState(0);
-  const [summaryStored, setSummaryStored] = useState(0);
+  // Per meeting, how often its final transcript or its summary result arrived, and how often a
+  // summary of it was stored: its page, when open, reads it again (and shows a stored summary).
+  // Counted for every meeting, not only the one the screen follows: one finishing behind a newer
+  // meeting has a page too (T14.15).
+  const [detailRefresh, setDetailRefresh] = useState<Record<string, number>>({});
+  const [summaryStored, setSummaryStored] = useState<Record<string, number>>({});
+  // The meeting the app said it started, until its `Started` event has arrived: the meeting
+  // screen shows that it is starting, not the meeting followed before it (T14.15).
+  const [startingId, setStartingId] = useState<string | null>(null);
   // The meetings a Cancel was pressed for, each until its result.
   const [cancellingIds, setCancellingIds] = useState<string[]>([]);
   // Older meetings still finishing behind the newer one the screen follows, oldest first, each
@@ -594,6 +604,7 @@ export function AppShell({
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
       setStartError(null);
+      setStartingId(null);
       setCallStartAsked(false);
     }
     // Followed here, not on a render: an end and the next start can arrive before React draws.
@@ -609,17 +620,14 @@ export function AppShell({
     }
     // An older meeting's end says nothing about the stop button of this one.
     if (event.type === "Ended" && event.meeting === liveMeetingId.current) setStopping(false);
-    // The page of the meeting that has ended reads it again when its finishing stored something.
-    if (
-      event.type === "PostProgress" &&
-      event.step.kind === "Stored" &&
-      event.meeting === liveMeetingId.current
-    ) {
-      setDetailRefresh((n) => n + 1);
+    // A meeting's page reads it again when its finishing stored something, whichever meeting the
+    // screen follows: an older one finishing behind a newer one has its page too (T14.15).
+    if (event.type === "PostProgress" && event.step.kind === "Stored") {
+      setDetailRefresh((all) => countedFor(all, event.meeting));
     }
-    if (event.type === "Summary" && event.meeting === liveMeetingId.current) {
-      setDetailRefresh((n) => n + 1);
-      if (event.result.kind === "Stored") setSummaryStored((n) => n + 1);
+    if (event.type === "Summary") {
+      setDetailRefresh((all) => countedFor(all, event.meeting));
+      if (event.result.kind === "Stored") setSummaryStored((all) => countedFor(all, event.meeting));
     }
     if (event.type === "PostProgress") {
       const work = workOfStep(event.step);
@@ -646,6 +654,9 @@ export function AppShell({
     return m.state === "Processing" || m.state === "Waiting" ? afterWork[m.id] : undefined;
   };
   const recording = meeting !== null && meeting.phase === "recording";
+  // The app has answered a start whose first event is still on its way: the meeting the screen
+  // followed until now is not the one being shown.
+  const starting = startingId !== null && meeting?.meetingId !== startingId;
   // The list groups by day: it renders when the day changes, never on a clock tick (T9.24).
   const today = useLocalDay(timer, now);
 
@@ -694,7 +705,8 @@ export function AppShell({
 
   // Once the recording ends, whoever was watching it sees the meeting's own page: its draft
   // transcript at once, how its finishing goes at the top, then its summary (T12.28).
-  const endedId = meeting !== null && meeting.phase !== "recording" ? meeting.meetingId : null;
+  // Not while the next meeting starts: the ended one is then the meeting before it.
+  const endedId = meeting !== null && !starting && meeting.phase !== "recording" ? meeting.meetingId : null;
   useEffect(() => {
     if (view !== "meeting" || endedId === null) return;
     setSelectedId(endedId);
@@ -753,11 +765,25 @@ export function AppShell({
 
   // Only a recording meeting keeps the next one out; one that is finishing goes on behind it.
   const newMeeting = () => setView(meeting?.phase === "recording" ? "meeting" : "start");
+  // The meeting followed until now is left as it is until the new one's `Started` replaces it: a
+  // start that fails must not take the previous meeting's progress and its Cancel away (T14.15).
   const start = async (mode: CaptureMode, title: string | null, keepLocal: boolean) => {
-    live.reset();
     setRetryError(null);
     setStopError(null);
-    const id = await ipc.startMeeting(mode, title, keepLocal);
+    setStartError(null);
+    let id: string;
+    try {
+      id = await ipc.startMeeting(mode, title, keepLocal);
+    } catch (e: unknown) {
+      // Said by the window, not by the new-meeting screen: its checks can take a while, and
+      // the user may be anywhere by now.
+      setStartError(errorText(e));
+      throw e;
+    }
+    // `Started` shows the meeting and may arrive before or after this answer; until it has, the
+    // meeting screen says it is starting. `lastMeeting` is written when the event arrives, not
+    // on a render, so it is current here.
+    if (lastMeeting.current?.id !== id) setStartingId(id);
     setSelectedId(id);
     setView("meeting");
   };
@@ -989,9 +1015,9 @@ export function AppShell({
             h.askRecovered();
             break;
           case "StartFailed":
+            // Said wherever the user is (T14.15): no screen is left for it, so nothing typed in
+            // Settings, the wizard or the new-meeting screen is lost.
             setStartError(e.message);
-            // The wizard stays, whatever step it is on: it says why above itself.
-            setView((v) => (v === "first-run" ? v : "detail"));
             break;
           case "CallStartOffer":
             setCallStartAsked(e.open);
@@ -1087,22 +1113,27 @@ export function AppShell({
 
   if (!firstRunKnown) return quitDialog || null;
 
+  // Why a meeting could not start, on every screen (T14.15): a start from the tray or the
+  // shortcut fails wherever the user is, and one from the window can fail after they left the
+  // new-meeting screen.
+  const startErrorBar = startError !== null && (
+    <MessageBar intent="error">
+      <MessageBarBody>
+        <MessageBarTitle>The meeting could not start</MessageBarTitle>
+        {startError}
+      </MessageBarBody>
+      <MessageBarActions>
+        <Button size="small" appearance="transparent" onClick={() => setStartError(null)}>
+          Dismiss
+        </Button>
+      </MessageBarActions>
+    </MessageBar>
+  );
+
   if (view === "first-run") {
     return (
       <div className={styles.wizardFrame}>
-        {startError !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The meeting could not start</MessageBarTitle>
-              {startError}
-            </MessageBarBody>
-            <MessageBarActions>
-              <Button size="small" appearance="transparent" onClick={() => setStartError(null)}>
-                Dismiss
-              </Button>
-            </MessageBarActions>
-          </MessageBar>
-        )}
+        {startErrorBar}
         {callStartBar}
         <div className={styles.wizardBody}>
           <FirstRunWizard
@@ -1142,17 +1173,15 @@ export function AppShell({
         }}
       />
     );
-    return noModelNote ? (
+    // One frame whether or not a bar shows: a bar that comes or goes must not remount Settings
+    // and lose what is typed there.
+    return (
       <div className={styles.wizardFrame}>
         {noModelBar}
+        {startErrorBar}
         <div className={styles.wizardBody}>{settings}</div>
         {quitDialog}
       </div>
-    ) : (
-      <>
-        {settings}
-        {quitDialog}
-      </>
     );
   }
 
@@ -1316,20 +1345,18 @@ export function AppShell({
           </MessageBar>
         )}
         {callStartBar}
-        {startError !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The meeting could not start</MessageBarTitle>
-              {startError}
-            </MessageBarBody>
-          </MessageBar>
-        )}
+        {startErrorBar}
         {stopError !== null && (
           <MessageBar intent="error">
             <MessageBarBody>
               <MessageBarTitle>The meeting could not be stopped</MessageBarTitle>
               {stopError}
             </MessageBarBody>
+            <MessageBarActions>
+              <Button size="small" appearance="transparent" onClick={() => setStopError(null)}>
+                Dismiss
+              </Button>
+            </MessageBarActions>
           </MessageBar>
         )}
         {folderNotice !== null && (
@@ -1380,8 +1407,8 @@ export function AppShell({
           </MessageBar>
         ))}
         {view === "start" && <NewMeetingView onStart={start} onCancel={() => setView("detail")} />}
-        {showMeeting && meeting === null && <Spinner label="Starting the meeting" />}
-        {showMeeting && meeting !== null && meeting.phase === "recording" && (
+        {showMeeting && (meeting === null || starting) && <Spinner label="Starting the meeting" />}
+        {showMeeting && meeting !== null && !starting && meeting.phase === "recording" && (
           <RecordingView
             meeting={meeting}
             timer={timer}
@@ -1398,9 +1425,10 @@ export function AppShell({
             load={load}
             selected={selected}
             ended={ended}
-            refresh={detailRefresh}
+            behind={selected !== null && behindIds.includes(selected.id)}
+            refresh={selected !== null ? (detailRefresh[selected.id] ?? 0) : 0}
             synced={(selected !== null ? (synced[selected.id] ?? 0) : 0) + peopleSynced}
-            summaryStored={summaryStored}
+            summaryStored={selected !== null ? (summaryStored[selected.id] ?? 0) : 0}
             onNewMeeting={newMeeting}
             nameVoices={nameVoices}
             onChanged={refresh}
@@ -1821,6 +1849,7 @@ function Detail({
   load,
   selected,
   ended,
+  behind,
   refresh,
   synced,
   summaryStored,
@@ -1837,9 +1866,13 @@ function Detail({
   load: Load;
   selected: MeetingListItem | null;
   ended: EndedMeeting | null;
+  /** The selected meeting is still finishing behind a newer one the screen follows (T14.15). */
+  behind: boolean;
+  /** Changes when the selected meeting's final transcript or summary result arrived. */
   refresh: number;
   /** Changes when sync changed the selected meeting or any person (T12.81). */
   synced: number;
+  /** Changes when a summary of the selected meeting was stored. */
   summaryStored: number;
   onNewMeeting: () => void;
   nameVoices: number;
@@ -1884,16 +1917,19 @@ function Detail({
   // Only the page of the meeting that has ended says how it finishes; the draft transcript is
   // what there is to read meanwhile.
   const own = ended !== null && ended.id === selected.id ? ended : null;
+  // Finishing by its own state: the meeting the screen follows, or one finishing behind it
+  // (whose progress and Cancel are the bar above every page).
+  const finishing = own?.finishing ?? behind;
   return (
     <MeetingDetailView
       key={selected.id}
       item={selected}
       status={own?.status}
-      finishing={own?.finishing ?? false}
-      initialTab={own?.finishing ? "transcript" : "summary"}
-      refresh={own !== null ? refresh : 0}
+      finishing={finishing}
+      initialTab={finishing ? "transcript" : "summary"}
+      refresh={refresh}
       synced={synced}
-      showSummary={own !== null ? summaryStored : 0}
+      showSummary={summaryStored}
       nameVoices={nameVoices}
       onChanged={onChanged}
       timer={timer}

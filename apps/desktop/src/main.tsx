@@ -49,6 +49,17 @@ async function previewIpc(): Promise<Ipc> {
     callStartOfferAfterMs: query.get("callStarted") === "1" ? 3_000 : undefined,
     newerData: query.get("newerData") === "1",
     dataFolderFails: query.get("dataFolder") === "1",
+    // `?start=failed`: New meeting, Start shows a meeting that could not start (T14.15).
+    ...(query.get("start") === "failed"
+      ? {
+          startError: {
+            kind: "model",
+            message:
+              "Earshot needs a transcription model that is not on this computer yet. Open Settings, Transcription to download one.",
+            retryable: false,
+          },
+        }
+      : {}),
     provisionalWords: previews === "battery" || previews === "waiting" ? previews : undefined,
     ...(query.get("summary") === "failed"
       ? {
