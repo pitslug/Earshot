@@ -24,6 +24,7 @@ import {
 import { Fragment, type ReactNode, useState } from "react";
 
 import type { TranscriptRow } from "../ipc";
+import { type LineFind, useFindMarks } from "./TranscriptFind";
 import { dictionaryWord, inDictionary, tokenPieces } from "./dictionaryWord";
 
 const useStyles = makeStyles({
@@ -104,7 +105,8 @@ export const WORD_ATTRIBUTE = "data-dictionary-word";
  * punctuation around it stays plain text. A mark whose word is not in its token (a stale
  * detail) is not drawn. Every other word (`dictionaryWord`) is a plain span carrying
  * [`WORD_ATTRIBUTE`], tinted while it is in `tinted` (the words the bar under a just-edited
- * line offers, T12.15f). */
+ * line offers, T12.15f). Text matches of find (T12.98) are drawn inside every piece, a mark's
+ * word included, so a match that crosses a word's element is marked in each part. */
 export function LineText({
   row,
   wordList,
@@ -112,6 +114,7 @@ export function LineText({
   locked = false,
   dictionary,
   tinted = [],
+  find,
 }: {
   row: TranscriptRow;
   wordList: string[];
@@ -120,29 +123,37 @@ export function LineText({
   locked?: boolean;
   dictionary: DictionaryState;
   tinted?: string[];
+  /** What find highlights on the line (T12.98). */
+  find?: LineFind;
 }): ReactNode {
   const styles = useStyles();
+  const findMarks = useFindMarks();
+  let offset = 0;
   return tokenPieces(row.text).map(({ piece, token: t }, i) => {
-    if (t < 0) return piece;
+    const start = offset;
+    offset += piece.length;
+    /** `part` of this piece, starting at code unit `at` of it, with find's marks. */
+    const marked = (part: string, at: number) => findMarks(part, start + at, find);
+    if (t < 0) return find === undefined ? piece : <Fragment key={i}>{marked(piece, 0)}</Fragment>;
     const suggestion = row.suggestions.find((s) => s.token === t);
     const changed = row.changed_words.find((c) => c.token === t);
     const word = changed?.written ?? suggestion?.decoded;
     const at = word === undefined ? -1 : piece.indexOf(word);
     if (word === undefined || at < 0) {
       const plain = dictionaryWord(piece);
-      if (plain === null) return piece;
+      if (plain === null) return find === undefined ? piece : <Fragment key={i}>{marked(piece, 0)}</Fragment>;
       // The word the menu adds is wrapped, quotes and other punctuation left outside.
       const from = piece.indexOf(plain);
       return (
         <Fragment key={i}>
-          {piece.slice(0, from)}
+          {marked(piece.slice(0, from), 0)}
           <span
             {...{ [WORD_ATTRIBUTE]: plain }}
             className={tinted.includes(plain) ? styles.tinted : undefined}
           >
-            {plain}
+            {marked(plain, from)}
           </span>
-          {piece.slice(from + plain.length)}
+          {marked(piece.slice(from + plain.length), from + plain.length)}
         </Fragment>
       );
     }
@@ -151,11 +162,12 @@ export function LineText({
       // Keyed by position, so a suggestion that becomes a changed word keeps its button and
       // the focus on it.
       <Fragment key={i}>
-        {piece.slice(0, at)}
+        {marked(piece.slice(0, at), 0)}
         {changed !== undefined ? (
           <WordMark
             kind="changed"
             word={word}
+            label={find === undefined ? undefined : marked(word, at)}
             decoded={changed.decoded}
             wordList={wordList}
             locked={locked}
@@ -168,6 +180,7 @@ export function LineText({
           <WordMark
             kind="suggestion"
             word={word}
+            label={find === undefined ? undefined : marked(word, at)}
             suggested={suggestion?.listed ?? ""}
             locked={locked}
             listed={listed}
@@ -176,7 +189,7 @@ export function LineText({
             onKeep={() => actions.onKeep(t)}
           />
         )}
-        {piece.slice(at + word.length)}
+        {marked(piece.slice(at + word.length), at + word.length)}
       </Fragment>
     );
   });
@@ -185,6 +198,8 @@ export function LineText({
 /** What both kinds of mark share: the word and its Dictionary action (T12.15f). */
 interface MarkBase {
   word: string;
+  /** The word as drawn (find's marks inside it); the word itself without. */
+  label?: ReactNode;
   /** The word is a Dictionary entry: the popover offers Remove rather than Add. */
   listed: boolean;
   /** The meeting is busy: the choices that change the line are off. */
@@ -245,7 +260,7 @@ function WordMark(props: MarkProps) {
           aria-label={name}
           className={mergeClasses(styles.mark, props.kind === "suggestion" ? styles.suggestion : styles.changed)}
         >
-          {props.word}
+          {props.label ?? props.word}
         </button>
       </PopoverTrigger>
       <PopoverSurface aria-label={name}>

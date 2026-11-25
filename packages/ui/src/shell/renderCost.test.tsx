@@ -184,4 +184,59 @@ describe("render cost", () => {
     expect(within(table).getAllByRole("row")).toHaveLength(rows);
     expect(rowTimeSpy).not.toHaveBeenCalled();
   });
+
+  it("render cost: find in the transcript renders only the lines whose highlight changes", async () => {
+    const s = setup();
+    await screen.findByRole("heading", { level: 1, name: "Hedge trimming plan" });
+    await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    await screen.findByRole("table", { name: "Transcript" });
+    const lines = sampleDetail(MEETINGS[0]).transcript;
+    rowTimeSpy.mockClear();
+    // Opening the bar highlights nothing, so no line renders.
+    await s.user.click(screen.getByRole("button", { name: "Find in transcript" }));
+    const box = screen.getByRole("textbox", { name: "Text to find" });
+    expect(rowTimeSpy).not.toHaveBeenCalled();
+    // One line holds the word: only it renders.
+    const holding = lines.filter((r) => /carry/i.test(r.text));
+    expect(holding).toHaveLength(1);
+    await s.user.click(box);
+    await s.user.paste("carry");
+    expect(rowTimeSpy.mock.calls.map(([ms]) => ms)).toEqual([holding[0].start_ms]);
+    // Its match goes: it renders again, and still no other line.
+    rowTimeSpy.mockClear();
+    await s.user.type(box, "x");
+    expect(rowTimeSpy.mock.calls.map(([ms]) => ms)).toEqual([holding[0].start_ms]);
+    // Typing on with no match anywhere renders nothing.
+    rowTimeSpy.mockClear();
+    await s.user.type(box, "yz");
+    expect(rowTimeSpy).not.toHaveBeenCalled();
+
+    // A speaker's turns: stepping renders the turn it leaves and the one it reaches, not the
+    // speaker's other lines, which stay tinted.
+    await s.user.clear(box);
+    const name = lines[0].speaker;
+    const theirs = lines.filter((r) => r.speaker === name);
+    expect(theirs.length).toBeGreaterThan(2);
+    await s.user.click(screen.getByRole("combobox", { name: /^Speaker/ }));
+    await s.user.click(screen.getByRole("option", { name }));
+    expect(screen.getByRole("search", { name: "Find in transcript" }).textContent).toContain(
+      `Turn 1 of ${theirs.length}`,
+    );
+    rowTimeSpy.mockClear();
+    await s.user.click(screen.getByRole("button", { name: "Next match" }));
+    expect(rowTimeSpy.mock.calls.map(([ms]) => ms).sort((a, b) => a - b)).toEqual(
+      [theirs[0].start_ms, theirs[1].start_ms].sort((a, b) => a - b),
+    );
+
+    // The speaker and text: a keystroke that changes one line's match renders that line only,
+    // not the speaker's other lines, whose tint stays as it was.
+    const word = "seal";
+    const matching = theirs.filter((r) => r.text.toLowerCase().includes(`${word}s`));
+    expect(matching).toHaveLength(1);
+    expect(theirs.length - matching.length).toBeGreaterThan(1);
+    await s.user.type(box, word);
+    rowTimeSpy.mockClear();
+    await s.user.type(box, "s");
+    expect(rowTimeSpy.mock.calls.map(([ms]) => ms)).toEqual([matching[0].start_ms]);
+  });
 });
