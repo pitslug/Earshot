@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-import type { Ipc, LiveTrack, MeetingEvent } from "../ipc";
+import type { Ipc, LiveTrack, MeetingEvent, MeetingSnapshot } from "../ipc";
 import type { Timer } from "../time";
-import { type LiveMeeting, dismiss, reduce } from "./liveMeeting";
+import { type LiveMeeting, dismiss, fromSnapshot, reduce } from "./liveMeeting";
 
 /** The injected clock's time, refreshed every `everyMs`. Only a leaf that shows the time
  * should hold it: every tick renders the component that calls this (T9.24). */
@@ -96,45 +96,87 @@ export interface LiveMeetingHandle {
   reset(): void;
 }
 
-/** Follows the app's meeting events. `onEvent` hears each event after it is applied. */
+/** Follows the app's meeting events. `onEvent` hears each event after it is applied.
+ *
+ * A window can load while a meeting records or finishes (a reload, T14.51), so the hook starts
+ * from the app's snapshot: it subscribes first, then reads `meetingSnapshot`, holding the events
+ * it hears meanwhile; it seeds the meeting from the snapshot (`fromSnapshot`), tells
+ * `onSnapshot`, then applies every held event in order. The app folds each event into its
+ * snapshot before sending it, so nothing sent before the subscription is missed; an event both in
+ * the snapshot and held sets again what it already set (every snapshot field is set by
+ * assignment, a banner by its key, and lines are not in the snapshot). A snapshot that cannot be
+ * read seeds nothing: the held events still apply. */
 export function useLiveMeeting(
   ipc: Ipc,
   timer: Timer,
   onEvent?: (event: MeetingEvent) => void,
+  onSnapshot?: (snapshot: MeetingSnapshot) => void,
 ): LiveMeetingHandle {
   const [meeting, setMeeting] = useState<LiveMeeting | null>(null);
   const [levels] = useState(createLevels);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const onSnapshotRef = useRef(onSnapshot);
+  onSnapshotRef.current = onSnapshot;
   // The meeting the meters belong to: an older meeting's end leaves them alone. A ref, so a
   // re-run of the effect below mid-meeting keeps it.
   const metering = useRef<string | null>(null);
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let live = true;
+    // Events heard before the snapshot is read, in order; `null` once it was.
+    let held: MeetingEvent[] | null = [];
+    const apply = (event: MeetingEvent) => {
+      if (event.type === "Levels") {
+        // Not meeting state: only the meters hear it (T9.24).
+        if (metering.current !== null) levels.set({ You: event.you_dbfs, Them: event.them_dbfs });
+        onEventRef.current?.(event);
+        return;
+      }
+      if (event.type === "Started") {
+        metering.current = event.meeting;
+        levels.set(NO_LEVELS);
+      }
+      if (event.type === "Ended" && event.meeting === metering.current) {
+        metering.current = null;
+        levels.set(NO_LEVELS);
+      }
+      setMeeting((state) => reduce(state, event, timer.now()));
+      onEventRef.current?.(event);
+    };
+    const seed = (snapshot: MeetingSnapshot | null) => {
+      if (!live) return;
+      const f = snapshot?.followed ?? null;
+      if (snapshot !== null && f !== null) {
+        const now = timer.now();
+        metering.current = f.ended === null ? f.meeting : null;
+        // A start heard meanwhile is newer than the snapshot: it replaces this when applied.
+        setMeeting(fromSnapshot(f, now));
+      }
+      if (snapshot !== null) onSnapshotRef.current?.(snapshot);
+      const events = held ?? [];
+      held = null;
+      for (const event of events) apply(event);
+    };
     ipc
       .onMeetingEvent((event) => {
         if (!live) return;
-        if (event.type === "Levels") {
-          // Not meeting state: only the meters hear it (T9.24).
-          if (metering.current !== null) levels.set({ You: event.you_dbfs, Them: event.them_dbfs });
-          onEventRef.current?.(event);
+        if (held !== null) {
+          held.push(event);
           return;
         }
-        if (event.type === "Started") {
-          metering.current = event.meeting;
-          levels.set(NO_LEVELS);
-        }
-        if (event.type === "Ended" && event.meeting === metering.current) {
-          metering.current = null;
-          levels.set(NO_LEVELS);
-        }
-        setMeeting((state) => reduce(state, event, timer.now()));
-        onEventRef.current?.(event);
+        apply(event);
       })
       .then((stop) => {
-        if (live) unlisten = stop;
-        else stop();
+        if (!live) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+        // Read only once subscribed: whatever is sent from here on is heard.
+        Promise.resolve()
+          .then(() => ipc.meetingSnapshot())
+          .then(seed, () => seed(null));
       });
     return () => {
       live = false;

@@ -681,6 +681,30 @@ export function AppShell({
       setBehindIds((ids) => ids.filter((id) => id !== event.meeting));
       setCancellingIds((ids) => ids.filter((id) => id !== event.meeting));
     }
+  }, (snapshot) => {
+    // A window that loaded mid-meeting (T14.51): the meeting it follows and those finishing behind
+    // it, as their events would have left this window. Events heard since apply after this.
+    const followed = snapshot.followed;
+    for (const b of snapshot.behind) {
+      addBehind(b.meeting);
+      if (b.progress !== null) {
+        const work = workOfStep(b.progress.step);
+        setAfterWork((all) => ({ ...all, [b.meeting]: work }));
+      }
+    }
+    if (followed !== null) {
+      startedIds.current.add(followed.meeting);
+      lastMeeting.current = { id: followed.meeting, finishing: followed.ended !== null };
+      setSelectedId(followed.meeting);
+      if (followed.progress !== null) {
+        const work = workOfStep(followed.progress.step);
+        setAfterWork((all) => ({ ...all, [followed.meeting]: work }));
+      }
+      // A recording keeps the window, as its `Started` does; one finishing shows its own page,
+      // the view the window opens on. A start still under way is shown by its `Started`, which
+      // has not gone out yet (`snapshot.starting`): nothing is shown for it before.
+      if (followed.ended === null) setView("meeting");
+    }
   });
   const meeting = live.meeting;
   liveMeetingId.current = meeting?.meetingId ?? null;
@@ -1174,6 +1198,7 @@ export function AppShell({
         onExpand={() => goCompact(false)}
         onKeepRecording={keepRecording}
         stopping={stopping}
+        stopError={stopError}
       />
     );
   }
