@@ -198,6 +198,66 @@ describe("a window loaded while a meeting is in progress", () => {
   });
 });
 
+describe("banners dismissed before a reload", () => {
+  const banners: FollowedSnapshot["banners"] = [
+    { key: "far-end", kind: "Audio", message: "Invented far-end words.", after_end: false },
+    { key: "speakers", kind: "SpeakersOff", message: "Invented speaker words.", after_end: false },
+  ];
+
+  /** The window as it loads: a fresh tree on the same session storage. */
+  function loadWindow(snapshot: MeetingSnapshot) {
+    const timer = createManualTimer(NOW);
+    let live: ((event: MeetingEvent) => void) | null = null;
+    const ipc: Ipc = {
+      ...createMockIpc({ timer, now: NOW, meetings: [NEWER] }),
+      onMeetingEvent: async (handler) => {
+        live = handler;
+        return () => {};
+      },
+      meetingSnapshot: async () => snapshot,
+    };
+    const view = renderApp(ipc, { timer, now: () => NOW });
+    return { view, meeting: (event: MeetingEvent) => act(() => live?.(event)) };
+  }
+
+  it("stay dismissed after a reload until the app sends them again", async () => {
+    const snapshot: MeetingSnapshot = { starting: false, followed: followed(NEWER.id, { banners }), behind: [] };
+    const first = loadWindow(snapshot);
+    const user = userEvent.setup();
+    const bar = (await screen.findByText("Invented far-end words.")).closest<HTMLElement>(".fui-MessageBar");
+    if (bar === null) throw new Error("the banner is not a message bar");
+    await user.click(within(bar).getByRole("button", { name: /Dismiss/ }));
+    expect(screen.queryByText("Invented far-end words.")).toBeNull();
+    first.view.unmount();
+
+    // The reload: the app still has both banners in force.
+    const second = loadWindow(snapshot);
+    expect(await screen.findByText("Invented speaker words.")).toBeInTheDocument();
+    expect(screen.queryByText("Invented far-end words.")).toBeNull();
+    // Sent again after the reload: it shows, and stays shown across another reload.
+    second.meeting({ type: "Warning", key: "far-end", kind: "Audio", message: "Invented far-end words." });
+    expect(screen.getByText("Invented far-end words.")).toBeInTheDocument();
+    second.view.unmount();
+    loadWindow(snapshot);
+    expect(await screen.findByText("Invented far-end words.")).toBeInTheDocument();
+  });
+
+  it("are forgotten when the meeting ends or another one is followed", async () => {
+    const snapshot: MeetingSnapshot = { starting: false, followed: followed(NEWER.id, { banners }), behind: [] };
+    const first = loadWindow(snapshot);
+    const user = userEvent.setup();
+    const bar = (await screen.findByText("Invented far-end words.")).closest<HTMLElement>(".fui-MessageBar");
+    if (bar === null) throw new Error("the banner is not a message bar");
+    await user.click(within(bar).getByRole("button", { name: /Dismiss/ }));
+    first.meeting({ type: "Summary", meeting: NEWER.id, result: { kind: "Cancelled" } });
+    first.view.unmount();
+    // The same id followed again (an invented replay) shows everything: nothing is remembered.
+    loadWindow(snapshot);
+    expect(await screen.findByText("Invented far-end words.")).toBeInTheDocument();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+});
+
 describe("the compact recording card", () => {
   it("says why a Stop did not work", async () => {
     const stopMeeting = vi.fn(async () => {

@@ -50,4 +50,6 @@ afterEach(() => {
   restoreWindowWatched();
   // The theme chosen in one test is not the next test's.
   window.localStorage.clear();
+  // Nor the banners one test dismissed (T14.51).
+  window.sessionStorage.clear();
 });

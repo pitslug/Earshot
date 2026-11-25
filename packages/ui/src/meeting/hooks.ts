@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 
 import type { Ipc, LiveTrack, MeetingEvent, MeetingSnapshot } from "../ipc";
 import type { Timer } from "../time";
+import { clearDismissed, dismissedOn, forgetDismissed, rememberDismissed } from "./dismissedBanners";
 import { type LiveMeeting, dismiss, fromSnapshot, reduce } from "./liveMeeting";
 
 /** The injected clock's time, refreshed every `everyMs`. Only a leaf that shows the time
@@ -121,6 +122,8 @@ export function useLiveMeeting(
   // The meeting the meters belong to: an older meeting's end leaves them alone. A ref, so a
   // re-run of the effect below mid-meeting keeps it.
   const metering = useRef<string | null>(null);
+  // The meeting the screen follows, whose dismissed banners are remembered across a reload.
+  const followed = useRef<string | null>(null);
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let live = true;
@@ -136,7 +139,12 @@ export function useLiveMeeting(
       if (event.type === "Started") {
         metering.current = event.meeting;
         levels.set(NO_LEVELS);
+        followed.current = event.meeting;
+        clearDismissed(event.meeting);
       }
+      // Sent again: it shows, also after a later reload.
+      if (event.type === "Warning" && followed.current !== null) forgetDismissed(followed.current, event.key);
+      if (event.type === "Summary" && event.meeting === followed.current) clearDismissed();
       if (event.type === "Ended" && event.meeting === metering.current) {
         metering.current = null;
         levels.set(NO_LEVELS);
@@ -150,8 +158,16 @@ export function useLiveMeeting(
       if (snapshot !== null && f !== null) {
         const now = timer.now();
         metering.current = f.ended === null ? f.meeting : null;
+        followed.current = f.meeting;
+        // Banners the user dismissed before the reload stay dismissed.
+        const dismissed = dismissedOn(f.meeting);
+        clearDismissed(f.meeting);
+        const shown = { ...f, banners: f.banners.filter((b) => !dismissed.has(b.key)) };
         // A start heard meanwhile is newer than the snapshot: it replaces this when applied.
-        setMeeting(fromSnapshot(f, now));
+        setMeeting(fromSnapshot(shown, now));
+      } else if (snapshot !== null) {
+        // Nothing in progress: what was dismissed is about a meeting that has ended.
+        clearDismissed();
       }
       if (snapshot !== null) onSnapshotRef.current?.(snapshot);
       const events = held ?? [];
@@ -183,10 +199,10 @@ export function useLiveMeeting(
       unlisten?.();
     };
   }, [ipc, timer, levels]);
-  const dismissBanner = useCallback(
-    (key: string) => setMeeting((state) => (state ? dismiss(state, key) : state)),
-    [],
-  );
+  const dismissBanner = useCallback((key: string) => {
+    if (followed.current !== null) rememberDismissed(followed.current, key);
+    setMeeting((state) => (state ? dismiss(state, key) : state));
+  }, []);
   const closeCallEndOffer = useCallback(
     () => setMeeting((state) => (state ? { ...state, callEndOffer: false } : state)),
     [],
