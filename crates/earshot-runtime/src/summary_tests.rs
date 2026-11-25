@@ -1937,7 +1937,8 @@ mod local {
         let result = attempt_on(&svc, id, clock.awake(), loader);
         wait_until(&queue.1);
         clock.read_twice_more();
-        clock.advance(CPU_LOAD_LIMIT * 3);
+        // Twice the load limit, short of the queue's own bound.
+        clock.advance(CPU_LOAD_LIMIT * 2);
         clock.read_twice_more();
         assert!(result.try_recv().is_err(), "a queued load is not stalled");
         // Its turn comes; it loads at once and the summary is written.
@@ -1947,6 +1948,33 @@ mod local {
             matches!(ended, Ok(Attempt::Finished(_))),
             "the queued try did not finish"
         );
+    }
+
+    #[test]
+    fn summary_a_load_queued_past_its_own_bound_is_a_stalled_load() {
+        // T14.41: the queue has a bound of its own (the lock wait over the load limit), so a turn
+        // that never comes (a stuck lock, a gate that never opens) still ends the try.
+        use earshot_proc::HandClock;
+        let dir = TempDir::new("summary");
+        let (svc, _) = services(&dir);
+        let id = meeting(&svc, "", 197);
+        let guard = Duration::from_secs(60);
+        let clock = HandClock::default();
+        let queue = Stuck::default();
+        let loader = Arc::new(QueuedLoader {
+            queue: queue.clone(),
+            inner: CpuLoader(OnCpu::QuietRun(Duration::ZERO), Arc::new(Shared::default())),
+        });
+        let result = attempt_on(&svc, id, clock.awake(), loader);
+        wait_until(&queue.1);
+        clock.read_twice_more();
+        let bound = CPU_LOAD_LIMIT + earshot_llm_local::log::LOAD_LOCK_WAIT;
+        clock.advance(bound - Duration::from_secs(1));
+        clock.read_twice_more();
+        assert!(result.try_recv().is_err(), "short of the queue's bound");
+        clock.advance(Duration::from_secs(1));
+        assert!(load_stalled(result.recv_timeout(guard).unwrap()));
+        queue.release();
     }
 
     fn load_stalled(result: Result<Attempt, RuntimeError>) -> bool {

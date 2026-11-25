@@ -227,6 +227,12 @@ pub const GPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
 pub const CPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
 
 #[cfg(feature = "engines")]
+/// How long, over a try's own load limit, a load may wait for its turn before the try counts as
+/// stalled (T14.41): llama.cpp's own lock wait, so a load queued behind an honest slow one is never
+/// cut, and a queue stuck anywhere (llama.cpp's lock, the CUDA start's gate) still ends.
+const QUEUED_LOAD_LIMIT: Duration = earshot_llm_local::log::LOAD_LOCK_WAIT;
+
+#[cfg(feature = "engines")]
 /// How long a cancelled run may stay silent before it is left behind, so a stop does not wait
 /// for the whole stall limit.
 const STALL_CANCEL_GRACE: Duration = Duration::from_secs(30);
@@ -1566,10 +1572,12 @@ fn attempt_local_on(
     let mut heartbeat: Option<Heartbeat> = None;
     let mut last_count = 0;
     let mut since = awake.now();
+    let queued_from = since;
     // Until the load's turn comes (llama.cpp runs one load at a time, and the one before may take
     // its whole limit) the try is queued, not stalled: the load watch starts at the turn
     // (T14.41). A queued try that was cancelled still ends after the cancel grace, and the queue
-    // itself is bounded by llama.cpp's `LOAD_LOCK_WAIT`.
+    // has its own bound in time awake: llama.cpp's lock wait plus the load limit
+    // ([`QUEUED_LOAD_LIMIT`]), which also covers waits before llama.cpp (the CUDA start's gate).
     let mut queued = true;
     loop {
         if cancel.is_cancelled() {
@@ -1606,12 +1614,20 @@ fn attempt_local_on(
             last_count = count;
             since = awake.now();
         }
-        // Queued (and not cancelled): no silence counts, and the watch is ready to start at once.
+        // Queued (and not cancelled): no silence counts, and the watch is ready to start at once,
+        // unless the queue itself has run past its own bound (QUEUED_LOAD_LIMIT over this try's
+        // load limit), which counts as a stalled load.
+        let now = awake.now();
         let silent = if queued && !cancel.is_cancelled() {
-            since = awake.now();
-            Duration::ZERO
+            since = now;
+            let waited = now.saturating_sub(queued_from);
+            if waited >= load_limit.saturating_add(QUEUED_LOAD_LIMIT) {
+                waited
+            } else {
+                Duration::ZERO
+            }
         } else {
-            awake.since(since)
+            now.saturating_sub(since)
         };
         if let Some(limit) = limit
             && has_stalled(silent, limit, cancel.is_cancelled())
