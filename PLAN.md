@@ -2490,6 +2490,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: replace the list (`DictionaryPage.tsx` "Saved people") with one line of fixed copy, for example "Names on the People page are used too, so there is no need to add them here.", with a link or button to the People page; keep the left-out note (`people_left_out_note`) when some names are left out. If the detail's `people` list is then unused by the UI, drop it from the IPC view and regenerate bindings; keep `fixtures/ui/summary_settings_cases.json`'s cleaning rule and `left_out` cases running in both suites. Update the tests that read the list.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot summary`; preview screenshot
 
+- [~] T12.99 The first-run wizard's Sync step knows this computer already syncs
+  - found (the owner, 2026-11-25, re-running the wizard on a synced computer): the Sync step opened on Not now with no sign the computer syncs. By design (T12.79) the step asked the app nothing before Join or Set up, so it could not know; Not now sends and changes nothing, so sync was never at risk.
+  - do: on opening, the step reads `syncView` (local only: no request to the server; `sync_devices` is the one that asks) and, when `set_up` holds, shows that this computer already syncs, with no Join, Set up or Not now, and Next moves on. While it loads or if the read fails, today's step shows (a failed read never claims sync is on). Not now still calls no other sync command. Copy in the existing fixtures style, Australian English, no em dashes.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; the wizard in the preview (`?firstRun=1`) on a synced and an unsynced mock
+
 - [~] T12.98 Find in the transcript, by speaker and by text
   - why (the owner, 2026-11-25): find where a particular person started talking, and search a meeting's own transcript (the list's search only says which meetings match).
   - decided (the owner, 2026-11-25, after two mockups): a bar hidden behind a search icon at the right of the Summary/Transcript tab row; Ctrl+F also opens it (switching to the Transcript tab) and replaces WebView2's own find, mentioned only in the icon's tooltip; close or Esc clears and hides it.
