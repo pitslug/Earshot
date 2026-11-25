@@ -307,6 +307,10 @@ pub enum MeetingEvent {
     CallEndOffer {
         /// Whether it is being asked.
         open: bool,
+        /// Whether the recording stops by itself if nobody answers (the General page's "stop
+        /// recording by itself", read when the meeting started; T14.52). Off, the question only
+        /// asks, and nothing may say that a stop is coming.
+        stops: bool,
     },
     /// Nobody answered that question in time, and the recording is being stopped.
     CallEndStopped,

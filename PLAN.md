@@ -2793,12 +2793,12 @@ Second wave (after the lanes above are merged):
   - deps: T14.10, T14.14, T14.15
   - do: a command returns the recording meeting's snapshot (id, mode, tracks, start, banners in force) and the meetings finishing behind it; the window reads it on mount and rebuilds its live state; `MeetingDetailView` is memoised so live events do not reconcile an open transcript.
   - accept: `cargo test -p earshot-desktop --bin earshot meeting`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
-- [ ] T14.52 Stopping by itself when the call ends is a setting, off by default
+- [x] T14.52 Stopping by itself when the call ends is a setting, off by default
   - deps: T14.9
   - decided (the owner, 2026-11-26): the signal is unmeasured for hang-up, hold and Zoom, and a wrong stop costs meeting content.
   - do: `settings/call-end-stop` (General page, off by default, written only through one function); off means the question stays open until answered or the recording ends, and nothing stops by itself; copy says what on does.
   - accept: `cargo test -p earshot-runtime call_end`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] T14.53 README.md and PRIVACY.md name only pages that exist
+- [x] T14.53 README.md and PRIVACY.md name only pages that exist
   - deps: T14.1, T14.2
   - do: the page-name guard reads both files.
   - accept: `cargo test -p earshot-desktop --bin earshot page_names`

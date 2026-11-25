@@ -6,7 +6,8 @@
 //!
 //! The scan reads every source of this app and of `earshot-runtime` (whose text reaches the app
 //! through `plain_text` or as a warning), with comments left out and Rust's string line
-//! continuations joined, so a page name split across two source lines is still one phrase.
+//! continuations joined, so a page name split across two source lines is still one phrase. It
+//! also reads README.md and PRIVACY.md at the repo root whole (T14.53).
 
 use std::path::{Path, PathBuf};
 
@@ -139,6 +140,23 @@ fn page_names_no_shown_text_of_the_app_or_the_runtime_names_a_gone_page() {
         })
         .collect();
     assert!(found.is_empty(), "{found:#?}");
+}
+
+/// README.md and PRIVACY.md name Settings pages for people reading them (T14.53): read whole,
+/// every line counts, as in the UI's guard.
+#[test]
+fn page_names_readme_and_privacy_name_no_gone_page() {
+    let readme = include_str!("../../../../README.md");
+    let privacy = include_str!("../../../../PRIVACY.md");
+    assert!(readme.contains("General page"));
+    assert!(privacy.contains("General page"));
+    for (name, text) in [("README.md", readme), ("PRIVACY.md", privacy)] {
+        assert!(
+            stale_page_names(text).is_empty(),
+            "{name}: {:?}",
+            stale_page_names(text)
+        );
+    }
 }
 
 /// The voice sample copy sends the user to "the People page" to start a voice over (T12.77b7):

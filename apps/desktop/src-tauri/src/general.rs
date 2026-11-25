@@ -617,6 +617,77 @@ fn store_previews(
     previews_view(services)
 }
 
+/// "Stop recording by itself when a call ends" (T14.52), as stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct CallEndStopView {
+    /// On: a call's recording stops by itself 3 minutes after the question "the call seems to
+    /// have ended" with no answer. Off (the default): it keeps recording until stopped.
+    pub on: bool,
+    /// A stored value this version does not know (read as off), one line.
+    pub unknown: Vec<String>,
+}
+
+/// The view of the stored setting.
+fn call_end_stop_view(store: &earshot_store::Store) -> Result<CallEndStopView, IpcError> {
+    let (on, unknown) = earshot_runtime::call_end::stop_setting(store)?;
+    Ok(CallEndStopView {
+        on,
+        unknown: unknown
+            .map(|v| {
+                format!(
+                    "The stored setting for stopping when a call ends ({v:?}) is not known to \
+                     this version; off is used."
+                )
+            })
+            .into_iter()
+            .collect(),
+    })
+}
+
+/// Whether a call's recording stops by itself when the call seems to have ended (off unless
+/// turned on).
+#[tauri::command]
+#[specta::specta]
+pub async fn call_end_stop(
+    state: tauri::State<'_, crate::ipc::AppState>,
+) -> Result<CallEndStopView, IpcError> {
+    let services = state.services()?;
+    crate::ipc::blocking(move || call_end_stop_view(&services.store())).await
+}
+
+/// Turns "stop recording by itself when a call ends" on or off; returns it as stored. Off
+/// applies at once, to a meeting recording now too; on, from the next meeting.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_call_end_stop(
+    state: tauri::State<'_, crate::ipc::AppState>,
+    driver: tauri::State<'_, crate::meeting::MeetingDriver>,
+    on: bool,
+) -> Result<CallEndStopView, IpcError> {
+    let services = state.services()?;
+    let driver = driver.inner().clone();
+    crate::ipc::blocking(move || {
+        store_call_end_stop(&services, on, &|stored| driver.call_end_stop_stored(stored))
+    })
+    .await
+}
+
+/// Stores the setting and returns it as stored. `tell` (the meetings' copy) hears the stored
+/// value while the store's lock is still held, as [`store_call_start_offer`] does; it must not
+/// take the store.
+fn store_call_end_stop(
+    services: &earshot_runtime::Services,
+    on: bool,
+    tell: &dyn Fn(bool),
+) -> Result<CallEndStopView, IpcError> {
+    let mut db = services.store();
+    earshot_runtime::call_end::set_stop_on(&mut db, on)?;
+    let view = call_end_stop_view(&db)?;
+    tell(view.on);
+    drop(db);
+    Ok(view)
+}
+
 /// Whether Earshot offers to start recording when a call starts (T12.86; on unless turned off).
 #[tauri::command]
 #[specta::specta]
@@ -934,6 +1005,50 @@ mod tests {
             assert_eq!(stored, on);
             assert_eq!(copy.get(|| None), on);
         }
+    }
+
+    #[test]
+    fn general_call_end_stop_is_off_until_turned_on_and_reports_an_unknown_value() {
+        let dir = crate::testutil::TempDir::new("call-end-stop");
+        let services = crate::testutil::services(&dir);
+        let off = CallEndStopView {
+            on: false,
+            unknown: Vec::new(),
+        };
+        assert_eq!(call_end_stop_view(&services.store()).unwrap(), off);
+        // The meetings' copy hears each stored value.
+        let told = Mutex::new(Vec::new());
+        let tell = |on: bool| told.lock().unwrap().push(on);
+        let on = store_call_end_stop(&services, true, &tell).unwrap();
+        assert_eq!(
+            on,
+            CallEndStopView {
+                on: true,
+                unknown: Vec::new()
+            }
+        );
+        assert_eq!(call_end_stop_view(&services.store()).unwrap(), on);
+        assert_eq!(store_call_end_stop(&services, false, &tell).unwrap(), off);
+        assert_eq!(*told.lock().unwrap(), [true, false]);
+        let tell = |_: bool| {};
+        // A value this version does not know reads as off, and says so.
+        services
+            .store()
+            .set_local_value(earshot_runtime::call_end::STOP_KEY, b"later")
+            .unwrap();
+        let view = call_end_stop_view(&services.store()).unwrap();
+        assert!(!view.on);
+        let said = "The stored setting for stopping when a call ends (\"later\") is not known to \
+                    this version; off is used.";
+        assert_eq!(view.unknown, [said]);
+        // Turning it on or off replaces it.
+        assert_eq!(
+            store_call_end_stop(&services, true, &tell).unwrap(),
+            CallEndStopView {
+                on: true,
+                unknown: Vec::new()
+            }
+        );
     }
 
     #[test]
