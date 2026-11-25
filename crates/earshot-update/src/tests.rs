@@ -129,18 +129,37 @@ fn update_a_signed_file_breaking_a_rule_is_refused() {
             "{name}"
         );
     }
-    // A field this version does not know does not excuse a known one breaking a rule.
-    let mut other_product = release();
-    other_product.product = "other".into();
-    let unknown = serde_json::to_string(&other_product).unwrap().replacen(
-        '{',
-        r#"{"url":"https://elsewhere.example/","#,
-        1,
+    // A field this version does not know does not excuse a known one breaking a rule: each
+    // known field is still checked, for exactly the reason it would be without the extra field.
+    let beside_unknown = |change: &dyn Fn(&mut Release)| {
+        let mut r = release();
+        change(&mut r);
+        let manifest = serde_json::to_string(&r).unwrap().replacen(
+            '{',
+            r#"{"url":"https://elsewhere.example/","#,
+            1,
+        );
+        verify(&signed_text(&manifest, &SEED), &key, "x64")
+    };
+    let wrong = VerifyError::BadManifest;
+    assert_eq!(
+        beside_unknown(&|r| r.product = "other".into()),
+        Err(wrong("another product"))
     );
-    assert!(matches!(
-        verify(&signed_text(&unknown, &SEED), &key, "x64"),
-        Err(VerifyError::BadManifest(_))
-    ));
+    assert_eq!(
+        beside_unknown(&|r| r.arch = "arm64".into()),
+        Err(wrong("another architecture"))
+    );
+    assert_eq!(
+        beside_unknown(&|r| r.installer = r"..\..\evil.exe".into()),
+        Err(wrong(
+            "the installer's name does not follow from its version"
+        ))
+    );
+    assert_eq!(
+        beside_unknown(&|r| r.sha256 = "A".repeat(64)),
+        Err(wrong("the installer's checksum is not SHA-256 hex"))
+    );
 }
 
 /// The release's JSON with `extra` written in front of its first field.
@@ -227,7 +246,9 @@ fn update_a_field_beside_the_manifest_and_signature_is_ignored_and_unsigned() {
 }
 
 /// The reader of copies up to 0.4.2, as it was (`git show v0.4.2:crates/earshot-update/src/lib.rs`):
-/// both objects `deny_unknown_fields`, one key, `verify_strict` over the domain and the manifest.
+/// both objects `deny_unknown_fields`, one key, `verify_strict` over the domain and the manifest,
+/// then its `check()`, copied with its constants written out. Only `Version` is reused, because
+/// its parser has not changed since v0.4.2.
 mod reader_0_4_2 {
     use ed25519_dalek::{Signature, VerifyingKey};
     use serde::Deserialize;
@@ -250,22 +271,41 @@ mod reader_0_4_2 {
         signature: String,
     }
 
-    /// `None` where 0.4.2 refuses the file.
-    pub fn verify(bytes: &[u8], key: &[u8; 32]) -> Option<Release> {
+    /// 0.4.2's `check()`: `None` for a release it refuses.
+    fn check(release: &Release, arch: &str) -> Option<()> {
+        let name = format!("Earshot_{}_{}-setup.exe", release.version, release.arch);
+        let lower_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+        let ok = release.product == "earshot"
+            && release.arch == arch
+            && release.version.parse::<super::Version>().is_ok()
+            && release.installer == name
+            && release.size != 0
+            && release.size <= 2 * 1024 * 1024 * 1024
+            && release.sha256.len() == 64
+            && release.sha256.bytes().all(lower_hex);
+        ok.then_some(())
+    }
+
+    /// `None` where 0.4.2 refuses the file for `arch`.
+    pub fn verify(bytes: &[u8], key: &[u8; 32], arch: &str) -> Option<Release> {
         let file: SignedFile = serde_json::from_slice(bytes).ok()?;
         let signature = super::from_hex::<64>(&file.signature)?;
         let key = VerifyingKey::from_bytes(key).ok()?;
         let message = [b"earshot-update-v1\n".as_slice(), file.manifest.as_bytes()].concat();
         key.verify_strict(&message, &Signature::from_bytes(&signature))
             .ok()?;
-        serde_json::from_str(&file.manifest).ok()
+        let release: Release = serde_json::from_str(&file.manifest).ok()?;
+        check(&release, arch)?;
+        Some(release)
     }
 }
 
 #[test]
 fn update_a_copy_from_0_4_2_reads_what_sign_writes() {
     let file = sign(&release(), &SEED).unwrap();
-    let old = reader_0_4_2::verify(&file, &public_key(&SEED)).expect("0.4.2 reads it");
+    let old = reader_0_4_2::verify(&file, &public_key(&SEED), "x64").expect("0.4.2 reads it");
+    // Its check runs: the same signed file is refused on the other architecture.
+    assert!(reader_0_4_2::verify(&file, &public_key(&SEED), "arm64").is_none());
     let r = release();
     assert_eq!(
         old,
@@ -300,7 +340,7 @@ fn update_a_copy_from_0_4_2_refuses_a_grown_file_which_is_why_sign_never_writes_
     // The control for the test above: the 0.4.2 reader is strict, so a grown file would strand it.
     let key = public_key(&SEED);
     let grown = signed_text(&with_extra_field(&release(), r#""notes":"x""#), &SEED);
-    assert!(reader_0_4_2::verify(&grown, &key).is_none());
+    assert!(reader_0_4_2::verify(&grown, &key, "x64").is_none());
     assert_eq!(verify(&grown, &[key], "x64"), Ok(release()));
 }
 
