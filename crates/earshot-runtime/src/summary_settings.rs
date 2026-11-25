@@ -28,7 +28,14 @@
 //!   endpoint is kept when another choice is made, so switching back needs no retyping.
 //! - **The Anthropic API key** is never a setting: the app keeps it in the operating
 //!   system's credential store and hands it over at use time through [`ApiKeyStore`]
-//!   (PLAN T7.4g). Nothing here stores or prints it.
+//!   (PLAN T7.4g). Nothing here stores or prints it. It goes only where it was saved for
+//!   (T14.31): an Anthropic address over plain http is refused unless it is this computer
+//!   ([`earshot_net::is_loopback_url`]; the LAN is not enough for a key), and beside the
+//!   credential (never in it) `settings/anthropic-key-address` holds the host and port of the
+//!   address the key was saved for ([`bind_api_key`]). A key whose address differs from the
+//!   one in the settings reads as no key ([`api_key_bound`]): the summary is skipped with the
+//!   no-key banner and the page asks for the key again. A key saved before T14.31 has no
+//!   address and counts as saved for [`ANTHROPIC_DEFAULT_URL`] only.
 //! - **Summarise during the meeting**: `settings/live-summaries`
 //!   ([`crate::live_summaries::LIVE_SUMMARIES_KEY`]), honoured only with a summary on this
 //!   computer (`host::live_summaries_for`).
@@ -45,7 +52,7 @@ use earshot_store::Store;
 use crate::RuntimeError;
 use crate::live_summaries::{LIVE_SUMMARIES_KEY, StoredSwitch, live_summaries_setting};
 pub use crate::local::UnknownSetting;
-use crate::local::{DeviceRecord, read_setting};
+use crate::local::{DeviceRecord, Setting, read_setting};
 use crate::summary::{SummaryConfig, summary_allowlist};
 pub use earshot_llm::claude_code::Effort;
 pub use earshot_llm::{ANTHROPIC_DEFAULT_URL, ApiKey};
@@ -68,6 +75,10 @@ pub const SUMMARY_CLAUDE_CODE_MODEL_KEY: &str = "settings/summary-claude-code-mo
 pub const SUMMARY_CODEX_MODEL_KEY: &str = "settings/summary-codex-model";
 /// `local_state` key of the effort Claude Code is asked for (T12.18).
 pub const SUMMARY_CLAUDE_CODE_EFFORT_KEY: &str = "settings/summary-claude-code-effort";
+/// `local_state` key of the address the Anthropic API key was saved for (T14.31): `host:port`
+/// as [`key_address`] gives it, never the key. Written only by [`bind_api_key`] and
+/// [`unbind_api_key`].
+pub const ANTHROPIC_KEY_ADDRESS_KEY: &str = "settings/anthropic-key-address";
 
 /// Longest model name accepted, in characters (as the message says; T12.36 follow-up).
 pub const MAX_MODEL_NAME: usize = 200;
@@ -259,7 +270,8 @@ impl From<RuntimeError> for SummarySettingsError {
 /// Why the API key could not be used or kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiKeyError {
-    /// No key is saved (Anthropic needs one).
+    /// No key is saved (Anthropic needs one), or the saved key was saved for another address
+    /// ([`api_key_bound`], T14.31): either way the user saves it again.
     Missing,
     /// This platform has no credential store Earshot uses.
     Unsupported,
@@ -358,7 +370,89 @@ fn check_url(provider: EndpointProvider, url: &str) -> Result<(), String> {
                 u.to_string()
             }
             other => other.to_string(),
-        })
+        })?;
+    // T14.31: the Anthropic key goes over plain http only to this computer (the rule the
+    // client applies again before sending, `earshot_llm::anthropic`).
+    if provider == EndpointProvider::Anthropic
+        && parsed.scheme() == "http"
+        && !earshot_net::is_loopback_url(&parsed)
+    {
+        return Err(KEY_OVER_PLAIN_HTTP.into());
+    }
+    Ok(())
+}
+
+/// Why an Anthropic address over plain http to another computer is refused (T14.31).
+pub const KEY_OVER_PLAIN_HTTP: &str =
+    "an API key is sent over plain http only to this computer; use https";
+
+/// The host and port of `url` as a key is bound to them (`api.anthropic.com:443`,
+/// `[::1]:8080`), `None` when it is not a usable address.
+#[must_use]
+pub fn key_address(url: &str) -> Option<String> {
+    let url = earshot_net::validate_url(url).ok()?;
+    Some(format!(
+        "{}:{}",
+        url.host_str()?.to_ascii_lowercase(),
+        url.port_or_known_default()?
+    ))
+}
+
+/// The address an Anthropic key is used with under `settings`: the endpoint when the provider
+/// is Anthropic and one is set, else [`ANTHROPIC_DEFAULT_URL`] (the address the page offers).
+fn anthropic_address(settings: &SummarySettings) -> &str {
+    if settings.provider == EndpointProvider::Anthropic && !settings.url.is_empty() {
+        &settings.url
+    } else {
+        ANTHROPIC_DEFAULT_URL
+    }
+}
+
+/// Records that the API key just saved belongs to the Anthropic address of `settings` (module
+/// docs; call it after the key itself is stored, so a failed write here never binds an older
+/// key to a new address).
+///
+/// # Errors
+/// Store errors.
+pub fn bind_api_key(store: &mut Store, settings: &SummarySettings) -> Result<(), RuntimeError> {
+    let address = key_address(anthropic_address(settings)).ok_or(RuntimeError::Internal(
+        "the Anthropic address cannot be read",
+    ))?;
+    crate::local::set(
+        store,
+        &DeviceRecord::AnthropicKeyAddress.key(),
+        address.as_bytes(),
+    )?;
+    Ok(())
+}
+
+/// Forgets the address of a removed API key.
+///
+/// # Errors
+/// Store errors.
+pub fn unbind_api_key(store: &mut Store) -> Result<(), RuntimeError> {
+    crate::local::set(store, &DeviceRecord::AnthropicKeyAddress.key(), b"")?;
+    Ok(())
+}
+
+/// Whether a saved API key may be used with the Anthropic address of `settings`: it was saved
+/// for that host and port. A key with no recorded address (saved before T14.31) counts as saved
+/// for [`ANTHROPIC_DEFAULT_URL`] only; any other address asks for it again.
+///
+/// # Errors
+/// Store errors.
+pub fn api_key_bound(store: &Store, settings: &SummarySettings) -> Result<bool, RuntimeError> {
+    let Some(here) = key_address(anthropic_address(settings)) else {
+        return Ok(false);
+    };
+    let stored = match read_setting(store, ANTHROPIC_KEY_ADDRESS_KEY, Ok::<_, String>)? {
+        Setting::Known(s) if !s.is_empty() => Some(s),
+        Setting::Known(_) | Setting::Absent | Setting::Unknown(_) => None,
+    };
+    Ok(match stored {
+        Some(bound) => bound == here,
+        None => key_address(ANTHROPIC_DEFAULT_URL).is_some_and(|d| d == here),
+    })
 }
 
 /// The settings `settings` would be stored as: URL and model trimmed, everything checked

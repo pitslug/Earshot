@@ -917,6 +917,13 @@ fn summary_for(
             }
             // Read once; without a key the summary is skipped with the reason (the owner,
             // 2026-11-04: a summary setting never costs a recording).
+            // A key saved for another address is never read or sent: it asks to be saved
+            // again (T14.31, `summary_settings::api_key_bound`).
+            EndpointProvider::Anthropic
+                if !crate::summary_settings::api_key_bound(store, &settings)? =>
+            {
+                request.no_key = Some(ApiKeyError::Missing);
+            }
             EndpointProvider::Anthropic => match keys.anthropic_key() {
                 Ok(Some(key)) => request.remote = Some(settings.endpoint_config(Some(key))),
                 Ok(None) => request.no_key = Some(ApiKeyError::Missing),

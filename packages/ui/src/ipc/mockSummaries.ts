@@ -37,8 +37,11 @@ export const NOT_A_WORD = table.messages.not_a_word;
 export interface SummariesMockData {
   /** The stored settings (default: on this computer, no endpoint, live off). */
   settings?: Partial<SummarySettingsValue>;
-  /** Whether an API key is stored at the start. */
+  /** Whether an API key is stored at the start (saved for the starting settings' address). */
   apiKeySaved?: boolean;
+  /** The key stored at the start was saved before T14.31, with no recorded address: it counts
+   * for the Anthropic API address only. */
+  apiKeyFromBefore?: boolean;
   /** Every key call fails with this Credential Manager error. */
   keyStoreError?: string;
   /** What `claudeCodeStatus` answers (default: the sample machine's, `CLAUDE_CODE_STATUS`). */
@@ -266,6 +269,30 @@ function checkUrl(url: string, provider: SummarySettingsValue["provider"]): void
   if (scheme === "http" && !isLocalHost(parsed.hostname)) {
     bad("plain http is only allowed to this computer or the local network; use https");
   }
+  // T14.31: the Anthropic key goes over plain http only to this computer
+  // (`earshot_net::is_loopback_url`).
+  if (provider === "Anthropic" && scheme === "http" && !isLoopbackHost(parsed.hostname)) {
+    bad("an API key is sent over plain http only to this computer; use https");
+  }
+}
+
+/** The host and port a key is bound to for `url` (`summary_settings::key_address`), null when it
+ * is not a URL. */
+function keyAddressOf(url: string): string | null {
+  const u = parse(url);
+  if (u === null) return null;
+  const port = u.port !== "" ? u.port : u.protocol === "https:" ? "443" : u.protocol === "http:" ? "80" : "";
+  return port === "" ? null : `${u.hostname.toLowerCase()}:${port}`;
+}
+
+/** Whether `host` (a URL's `hostname`) is this computer only: `localhost`, 127/8, `[::1]` or
+ * the IPv4-mapped loopback (the mock's copy of `earshot_net::is_loopback_url`). */
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (h === "localhost" || h === "[::1]") return true;
+  if (/^127\.\d+\.\d+\.\d+$/.test(h)) return true;
+  // WHATWG URL writes the IPv4-mapped form in hex: [::ffff:7f00:1].
+  return /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(h);
 }
 
 function validate(s: SummarySettingsValue): SummarySettingsValue {
@@ -343,6 +370,12 @@ export function createSummariesMock(
     ...data.settings,
   };
   let keySaved = data.apiKeySaved ?? false;
+  const anthropicAddress = (): string | null =>
+    keyAddressOf(settings.provider === "Anthropic" && settings.url !== "" ? settings.url : MOCK_ANTHROPIC_URL);
+  // The host and port the key was saved for (T14.31, `summary_settings::bind_api_key`): a key
+  // the mock starts with was saved for the starting settings; null as for a key saved before
+  // T14.31, which counts as saved for the Anthropic API address only.
+  let keyAddress: string | null = keySaved && data.apiKeyFromBefore !== true ? anthropicAddress() : null;
   let style = data.style ?? "";
   let template = data.template ?? "standard";
   const styleView = (): SummaryStyleView => ({
@@ -385,14 +418,18 @@ export function createSummariesMock(
       }
       store();
       keySaved = true;
+      keyAddress = anthropicAddress();
     },
+    // A key saved for another address reads as none (T14.31, `summary_settings::api_key_bound`).
     hasApiKey: async () => {
       store();
-      return keySaved;
+      const here = anthropicAddress();
+      return keySaved && here !== null && here === (keyAddress ?? keyAddressOf(MOCK_ANTHROPIC_URL));
     },
     removeApiKey: async () => {
       store();
       keySaved = false;
+      keyAddress = null;
     },
     claudeCodeStatus: async () => ({ ...(data.claudeCode ?? CLAUDE_CODE_STATUS[machine]) }),
     codexStatus: async () => ({ ...(data.codex ?? CODEX_STATUS[machine]) }),

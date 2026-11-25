@@ -230,21 +230,23 @@ fn summaries_refused_settings_are_invalid_setting_and_store_nothing() {
 
 #[test]
 fn summaries_api_key_flow_never_returns_the_key() {
+    let dir = TempDir::new("summaries-key-flow");
+    let svc = services(&dir);
     let vault = MemoryVault::default();
     let mut responses = Vec::new();
-    responses.push(json(&has_api_key(&vault).unwrap()));
-    assert!(!has_api_key(&vault).unwrap());
-    set_api_key(&vault, &format!("  {SECRET}\n")).unwrap();
-    responses.push(json(&set_api_key(&vault, SECRET)));
-    assert!(has_api_key(&vault).unwrap());
-    responses.push(json(&has_api_key(&vault)));
+    responses.push(json(&has_api_key(&svc, &vault).unwrap()));
+    assert!(!has_api_key(&svc, &vault).unwrap());
+    set_api_key(&svc, &vault, &format!("  {SECRET}\n")).unwrap();
+    responses.push(json(&set_api_key(&svc, &vault, SECRET)));
+    assert!(has_api_key(&svc, &vault).unwrap());
+    responses.push(json(&has_api_key(&svc, &vault)));
     assert_eq!(
         vault.anthropic_key().unwrap(),
         ApiKey::new(SECRET),
         "stored trimmed"
     );
     // Something that is not a key is refused without quoting it.
-    let e = set_api_key(&vault, &format!("{SECRET} and more")).unwrap_err();
+    let e = set_api_key(&svc, &vault, &format!("{SECRET} and more")).unwrap_err();
     assert_eq!(e.kind, "invalid_setting");
     assert_eq!(
         e.message,
@@ -252,23 +254,128 @@ fn summaries_api_key_flow_never_returns_the_key() {
     );
     responses.push(json(&e));
     assert_eq!(vault.anthropic_key().unwrap(), ApiKey::new(SECRET), "kept");
-    remove_api_key(&vault).unwrap();
-    responses.push(json(&remove_api_key(&vault)));
-    assert!(!has_api_key(&vault).unwrap());
+    remove_api_key(&svc, &vault).unwrap();
+    responses.push(json(&remove_api_key(&svc, &vault)));
+    assert!(!has_api_key(&svc, &vault).unwrap());
     // A failing store is told as it is, never with the key.
     let broken = MemoryVault::broken("access denied");
-    let e = set_api_key(&broken, SECRET).unwrap_err();
+    let e = set_api_key(&svc, &broken, SECRET).unwrap_err();
     assert_eq!(e.kind, "api_key");
     assert_eq!(
         e.message,
         "Windows Credential Manager failed: access denied."
     );
     responses.push(json(&e));
-    responses.push(json(&has_api_key(&broken)));
-    responses.push(json(&remove_api_key(&broken)));
+    responses.push(json(&has_api_key(&svc, &broken)));
+    responses.push(json(&remove_api_key(&svc, &broken)));
     for r in &responses {
         assert!(!r.contains(SECRET) && !r.contains("summaries-test"), "{r}");
     }
+}
+
+/// T14.31: a saved key counts only for the address it was saved for (the shared case table,
+/// which the UI mock runs too); a key saved before T14.31 counts for the Anthropic API only.
+#[test]
+fn summaries_key_binding_follows_the_shared_case_table() {
+    let table = crate::testutil::summary_cases();
+    let cases = table["key_binding"]["cases"].as_array().unwrap();
+    assert!(cases.len() >= 7, "the table lost cases");
+    let anthropic = |url: &str| {
+        value(
+            WriterChoice::OnThisComputer,
+            ProviderChoice::Anthropic,
+            url,
+            "",
+        )
+    };
+    let mut wrong = Vec::new();
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let dir = TempDir::new("summaries-key-binding");
+        let svc = services(&dir);
+        let vault = MemoryVault::default();
+        match case["saved_for"].as_str() {
+            Some(url) => {
+                set_settings(&svc, &anthropic(url)).unwrap();
+                set_api_key(&svc, &vault, SECRET).unwrap();
+            }
+            // As before T14.31: the key alone, no recorded address.
+            None => KeyVault::save(&vault, SECRET).unwrap(),
+        }
+        set_settings(&svc, &anthropic(case["now"].as_str().unwrap())).unwrap();
+        let got = has_api_key(&svc, &vault).unwrap();
+        if got != case["bound"].as_bool().unwrap() {
+            wrong.push(format!("{name}: {got}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A key store that fails the test when read: a key saved for another address is never read.
+struct NeverRead;
+
+impl ApiKeyStore for NeverRead {
+    fn anthropic_key(&self) -> Result<Option<ApiKey>, ApiKeyError> {
+        panic!("the API key was read for an address it was not saved for")
+    }
+}
+
+/// T14.31: after the address changes, a meeting skips the summary with the no-key reason and
+/// never reads the key; saving the key again binds it to the new address; removing it forgets
+/// the address.
+#[test]
+fn summaries_key_saved_for_another_address_is_never_read() {
+    let dir = TempDir::new("summaries-key-other-address");
+    let svc = services(&dir);
+    let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
+    let vault = MemoryVault::default();
+    let endpoint = |url: &str| {
+        value(
+            WriterChoice::OwnEndpoint,
+            ProviderChoice::Anthropic,
+            url,
+            "claude-sonnet-4-5",
+        )
+    };
+    let setup = |keys: &dyn ApiKeyStore| {
+        summary_setup(
+            &svc,
+            &models,
+            keys,
+            &no_claude(),
+            &no_codex(),
+            earshot_runtime::host::SummaryPrivacy::Writer,
+        )
+        .unwrap()
+    };
+    set_settings(&svc, &endpoint("https://api.anthropic.com")).unwrap();
+    set_api_key(&svc, &vault, SECRET).unwrap();
+    assert!(setup(&vault).summary.is_some());
+    // Another host: no key, never read, the summary skipped with the existing reason.
+    set_settings(&svc, &endpoint("https://proxy.example.invalid")).unwrap();
+    assert!(!has_api_key(&svc, &vault).unwrap());
+    let s = setup(&NeverRead);
+    assert!(s.summary.is_none());
+    assert_eq!(s.no_summary, SkipReason::NoApiKey(ApiKeyError::Missing));
+    // No response names the address the key was saved for.
+    let view = json(&settings_view(&svc).unwrap());
+    assert!(!view.contains("api.anthropic.com:443"), "{view}");
+    // Saved again: bound to the new address, and only to it.
+    set_api_key(&svc, &vault, SECRET).unwrap();
+    assert!(has_api_key(&svc, &vault).unwrap());
+    assert_eq!(
+        setup(&vault).summary.expect("remote").service.model(),
+        "claude-sonnet-4-5"
+    );
+    set_settings(&svc, &endpoint("https://api.anthropic.com")).unwrap();
+    assert!(!has_api_key(&svc, &vault).unwrap());
+    // Removed: the address goes too, so a key saved later the old way counts for the
+    // Anthropic API only.
+    remove_api_key(&svc, &vault).unwrap();
+    KeyVault::save(&vault, SECRET).unwrap();
+    assert!(has_api_key(&svc, &vault).unwrap());
+    set_settings(&svc, &endpoint("https://proxy.example.invalid")).unwrap();
+    assert!(!has_api_key(&svc, &vault).unwrap());
 }
 
 #[test]
@@ -276,7 +383,7 @@ fn summaries_settings_responses_never_carry_the_key() {
     let dir = TempDir::new("summaries-no-key");
     let svc = services(&dir);
     let vault = MemoryVault::default();
-    set_api_key(&vault, SECRET).unwrap();
+    set_api_key(&svc, &vault, SECRET).unwrap();
     let v = set_settings(
         &svc,
         &value(
@@ -415,7 +522,7 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
     assert!(s.summary.is_none());
     assert_eq!(s.no_summary, SkipReason::NoApiKey(ApiKeyError::Missing));
     // With one: a remote service.
-    set_api_key(&vault, SECRET).unwrap();
+    set_api_key(&svc, &vault, SECRET).unwrap();
     let s = summary_setup(
         &svc,
         &models,

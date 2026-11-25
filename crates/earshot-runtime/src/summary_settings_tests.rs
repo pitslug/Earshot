@@ -469,6 +469,133 @@ fn summary_settings_host_openai_endpoint_allowlists_exactly_the_endpoint() {
     );
 }
 
+/// T14.31: the key goes over plain http only to this computer, refused at save with fixed copy
+/// (a LAN address is enough for an OpenAI-compatible server, never for a key).
+#[test]
+fn summary_settings_anthropic_over_plain_http_is_this_computer_only() {
+    let dir = TempDir::new("summary-settings-anthropic-http");
+    let mut db = store(&dir);
+    for url in [
+        "http://192.168.1.20:8080",
+        "http://10.0.0.2",
+        "http://[fd12:3456::1]:8080",
+    ] {
+        let e = set_summary_settings(
+            &mut db,
+            &endpoint(EndpointProvider::Anthropic, url, "claude-sonnet-4-5"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            format!("this address cannot be used: {KEY_OVER_PLAIN_HTTP}"),
+            "{url}"
+        );
+        assert!(!e.to_string().contains("192.168"), "{e}");
+    }
+    for url in [
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+        "http://[::1]:8080",
+    ] {
+        set_summary_settings(
+            &mut db,
+            &endpoint(EndpointProvider::Anthropic, url, "claude-sonnet-4-5"),
+        )
+        .unwrap();
+    }
+    // An OpenAI-compatible server on the LAN is still allowed (it is sent no key).
+    set_summary_settings(
+        &mut db,
+        &endpoint(
+            EndpointProvider::OpenAiCompatible,
+            "http://192.168.1.20:8080/v1",
+            "qwen",
+        ),
+    )
+    .unwrap();
+    // A LAN address stored by an older build reads as refused, by its reason only.
+    db.set_local_value(SUMMARY_PROVIDER_KEY, b"anthropic")
+        .unwrap();
+    db.set_local_value(SUMMARY_ENDPOINT_KEY, b"http://192.168.1.20:8080")
+        .unwrap();
+    let (s, unknown) = summary_settings(&db).unwrap();
+    assert_eq!(s.url, "");
+    assert_eq!(s.writer, SummaryWriter::OnThisComputer);
+    let said: Vec<String> = unknown.iter().map(ToString::to_string).collect();
+    assert!(
+        said.iter().any(|u| u.contains(KEY_OVER_PLAIN_HTTP)),
+        "{said:?}"
+    );
+    assert!(said.iter().all(|u| !u.contains("192.168")), "{said:?}");
+}
+
+/// T14.31: a key is read only for the host and port it was saved for; a key saved before
+/// T14.31 (no recorded address) counts for the Anthropic API only.
+#[test]
+fn summary_settings_host_reads_the_key_only_for_the_address_it_was_saved_for() {
+    let dir = TempDir::new("summary-settings-key-address");
+    let mut db = store(&dir);
+    let read = |db: &Store| {
+        let keys = FakeKeys::new(Ok(Some(SECRET)));
+        let s = host::summary_from_settings(
+            db,
+            CPU,
+            &machine(),
+            &keys,
+            crate::keep_local::SummaryPrivacy::Writer,
+        )
+        .unwrap();
+        (s, keys.reads.get())
+    };
+    let anthropic = |url: &str| endpoint(EndpointProvider::Anthropic, url, "claude-sonnet-4-5");
+    // Before T14.31: no recorded address. The Anthropic API reads the key; another host never.
+    set_summary_settings(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
+    let (s, reads) = read(&db);
+    assert_eq!(reads, 1);
+    assert!(s.request.remote.is_some());
+    set_summary_settings(&mut db, &anthropic("https://proxy.example.invalid")).unwrap();
+    let (s, reads) = read(&db);
+    assert_eq!(reads, 0, "a key saved for another address is never read");
+    assert!(s.request.remote.is_none());
+    assert_eq!(s.request.no_key, Some(ApiKeyError::Missing));
+    // Saved for this address: read here, and not after the address changes again.
+    bind_api_key(&mut db, &anthropic("https://proxy.example.invalid")).unwrap();
+    assert_eq!(
+        stored(&db, ANTHROPIC_KEY_ADDRESS_KEY).as_deref(),
+        Some("proxy.example.invalid:443")
+    );
+    let (s, reads) = read(&db);
+    assert_eq!(reads, 1);
+    assert!(s.request.remote.is_some());
+    set_summary_settings(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
+    assert_eq!(read(&db).1, 0);
+    set_summary_settings(&mut db, &anthropic("https://proxy.example.invalid:8443")).unwrap();
+    assert_eq!(read(&db).1, 0, "another port");
+    // Forgotten with the key: back to the Anthropic API only.
+    unbind_api_key(&mut db).unwrap();
+    set_summary_settings(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
+    assert_eq!(read(&db).1, 1);
+    // Bound while the endpoint is not Anthropic's: the address the page offers.
+    bind_api_key(
+        &mut db,
+        &endpoint(
+            EndpointProvider::OpenAiCompatible,
+            "http://127.0.0.1:8080/v1",
+            "qwen",
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        stored(&db, ANTHROPIC_KEY_ADDRESS_KEY).as_deref(),
+        Some("api.anthropic.com:443")
+    );
+    assert_eq!(
+        key_address("http://[::1]:8080").as_deref(),
+        Some("[::1]:8080")
+    );
+    assert_eq!(key_address("not a url"), None);
+}
+
 #[test]
 fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     let dir = TempDir::new("summary-settings-host-anthropic");

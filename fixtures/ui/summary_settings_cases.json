@@ -147,6 +147,24 @@
    "error": "This address cannot be used: plain http is only allowed to this computer or the local network; use https."
   },
   {
+   "name": "Anthropic over plain http on the local network (T14.31)",
+   "change": {
+    "provider": "Anthropic",
+    "url": "http://192.168.1.20:8080"
+   },
+   "error": "This address cannot be used: an API key is sent over plain http only to this computer; use https."
+  },
+  {
+   "name": "Anthropic over plain http on this computer (T14.31)",
+   "change": {
+    "writer": "OwnEndpoint",
+    "provider": "Anthropic",
+    "url": "http://127.0.0.1:8080",
+    "model": "claude-sonnet"
+   },
+   "error": null
+  },
+  {
    "name": "an address too long",
    "change": {
     "url": "https://example.invalid/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -276,6 +294,18 @@
    "error": "The model name must be at most 200 characters, without line breaks."
   }
  ],
+ "key_binding": {
+  "about": "T14.31: whether a saved Anthropic API key counts as saved with the Anthropic address `now` (provider Anthropic), when it was saved with the address `saved_for`. `saved_for` null is a key saved before T14.31 (no recorded address): it counts for the Anthropic API address only. Both suites save the key through their own key command with `saved_for` stored, then store `now` and ask whether a key is saved.",
+  "cases": [
+   {"name": "the address it was saved for", "saved_for": "https://api.anthropic.com", "now": "https://api.anthropic.com", "bound": true},
+   {"name": "another host", "saved_for": "https://api.anthropic.com", "now": "https://proxy.example.invalid", "bound": false},
+   {"name": "the default port written out", "saved_for": "https://proxy.example.invalid", "now": "https://proxy.example.invalid:443", "bound": true},
+   {"name": "another port", "saved_for": "https://proxy.example.invalid", "now": "https://proxy.example.invalid:8443", "bound": false},
+   {"name": "this computer by another name", "saved_for": "http://127.0.0.1:8080", "now": "http://localhost:8080", "bound": false},
+   {"name": "a key from before T14.31 with the Anthropic API", "saved_for": null, "now": "https://api.anthropic.com", "bound": true},
+   {"name": "a key from before T14.31 with another address", "saved_for": null, "now": "https://proxy.example.invalid", "bound": false}
+  ]
+ },
  "vocabulary": [
   {
    "name": "trimmed, joined, empty and repeated words dropped",

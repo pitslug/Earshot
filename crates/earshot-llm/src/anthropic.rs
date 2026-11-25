@@ -4,7 +4,9 @@
 //! The request is text only: the system prompt goes in `system`, the other messages in
 //! `messages` (consecutive messages of one role are joined, because the API expects
 //! user and assistant turns to alternate). Headers: `x-api-key` (a secret header,
-//! redacted by `earshot-net` and never formatted), `anthropic-version`
+//! redacted by `earshot-net` and never formatted; never sent over plain `http` except to this
+//! machine, T14.31: such a request is refused before any connection with
+//! [`earshot_net::DenyReason::KeyOverPlainHttp`]), `anthropic-version`
 //! ([`ANTHROPIC_VERSION`]) and `content-type`. No sampling parameters are sent: current
 //! Claude models reject non-default `temperature`/`top_p`/`top_k`.
 //!
@@ -34,7 +36,7 @@
 
 use earshot_core::asr::CancelToken;
 use earshot_core::prompt::{ChatMessage, Role};
-use earshot_net::{Method, NetClient, NetRequest};
+use earshot_net::{DenyReason, Method, NetClient, NetError, NetRequest, is_loopback_url, redact};
 use serde_json::{Map, Value, json};
 
 use crate::client::{
@@ -145,9 +147,18 @@ impl MessagesClient {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
+        let url = self.config.messages_url();
+        // T14.31: the key never travels over plain http except to this machine, refused
+        // before any connection whatever the allowlist (which lets http reach the LAN).
+        if self.config.api_key.is_some() && url.scheme() == "http" && !is_loopback_url(&url) {
+            return Err(LlmError::Net(NetError::NotAllowed {
+                url: redact(&url),
+                reason: DenyReason::KeyOverPlainHttp,
+            }));
+        }
         let body = serde_json::to_vec(&self.request_body(messages, mode, max_tokens))
             .map_err(|e| LlmError::BadResponse(e.to_string()))?;
-        let mut req = NetRequest::new(Method::POST, self.config.messages_url())
+        let mut req = NetRequest::new(Method::POST, url)
             .header("content-type", "application/json")
             .header("accept", "application/json")
             .header("anthropic-version", ANTHROPIC_VERSION)

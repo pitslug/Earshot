@@ -13,7 +13,8 @@ use earshot_runtime::codex::{CodexProbe, CodexSignIn, CodexStatus};
 use earshot_runtime::host::LIVE_SUMMARIES_NEED_LOCAL;
 use earshot_runtime::summary_settings::{
     ANTHROPIC_DEFAULT_URL, ApiKeyError, Effort, EndpointProvider, SummarySettings,
-    SummarySettingsError, SummaryWriter, set_summary_settings, summary_settings,
+    SummarySettingsError, SummaryWriter, api_key_bound, bind_api_key, set_summary_settings,
+    summary_settings, unbind_api_key,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -270,29 +271,46 @@ pub fn key_error(e: &ApiKeyError) -> IpcError {
     )
 }
 
-/// Stores the Anthropic API key in `vault` (replacing an earlier one).
+/// Stores the Anthropic API key in `vault` (replacing an earlier one), then records the
+/// Anthropic address of the stored settings as the one it was saved for (T14.31,
+/// `summary_settings::bind_api_key`; in that order, so a failed record never binds an older key
+/// to a new address).
 ///
 /// # Errors
 /// `invalid_setting` for something that is not a key (nothing stored); `api_key` when the
-/// store fails.
-pub fn set_api_key(vault: &dyn KeyVault, key: &str) -> Result<(), IpcError> {
-    vault.save(key).map_err(|e| key_error(&e))
+/// store fails; store errors.
+pub fn set_api_key(services: &Services, vault: &dyn KeyVault, key: &str) -> Result<(), IpcError> {
+    vault.save(key).map_err(|e| key_error(&e))?;
+    let (settings, _) = summary_settings(&services.store())?;
+    let mut db = services.store();
+    bind_api_key(&mut db, &settings)?;
+    Ok(())
 }
 
-/// Whether `vault` holds an API key.
+/// Whether `vault` holds an API key saved for the Anthropic address of the stored settings
+/// (T14.31: a key saved for another address reads as none, so the page asks for it again).
 ///
 /// # Errors
-/// `api_key` when the store fails.
-pub fn has_api_key(vault: &dyn KeyVault) -> Result<bool, IpcError> {
-    vault.has().map_err(|e| key_error(&e))
+/// `api_key` when the store fails; store errors.
+pub fn has_api_key(services: &Services, vault: &dyn KeyVault) -> Result<bool, IpcError> {
+    if !vault.has().map_err(|e| key_error(&e))? {
+        return Ok(false);
+    }
+    let db = services.store();
+    let (settings, _) = summary_settings(&db)?;
+    Ok(api_key_bound(&db, &settings)?)
 }
 
-/// Removes the API key from `vault` (no key is not an error).
+/// Removes the API key from `vault` (no key is not an error), then the address it was saved
+/// for.
 ///
 /// # Errors
-/// `api_key` when the store fails.
-pub fn remove_api_key(vault: &dyn KeyVault) -> Result<(), IpcError> {
-    vault.remove().map_err(|e| key_error(&e))
+/// `api_key` when the store fails; store errors.
+pub fn remove_api_key(services: &Services, vault: &dyn KeyVault) -> Result<(), IpcError> {
+    vault.remove().map_err(|e| key_error(&e))?;
+    let mut db = services.store();
+    unbind_api_key(&mut db)?;
+    Ok(())
 }
 
 /// Claude Code's state as the Summaries page shows it.
