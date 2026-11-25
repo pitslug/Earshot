@@ -205,7 +205,7 @@ function CaretIcon({ open }: { open: boolean }) {
  * (the order list's "Set up"), which also focuses its first control. In the first-run wizard
  * (`fixed`) it is always open and has no caret. Its contents are not rendered while it is closed;
  * the component holding the drafts stays mounted, so a close loses nothing typed. */
-function SetupSection({
+export function SetupSection({
   name,
   state,
   group,
@@ -237,11 +237,14 @@ function SetupSection({
     setOpen(true);
     focusPending.current = true;
   }, [openRequest]);
-  // The control to focus once a requested open shows.
+  // The control to focus once a requested open shows. The request is spent on the first render
+  // that shows the body, whether or not it holds a control: a control that appears later (a
+  // reload) never takes the focus from where the user has gone since.
   useEffect(() => {
     if (!focusPending.current || !open || body.current === null) return;
     focusPending.current = false;
-    body.current.querySelector<HTMLElement>("select, input, textarea, button")?.focus();
+    const first = body.current.querySelector<HTMLElement>("select, input, textarea, button");
+    if (first !== null) first.focus();
   });
   const head = (
     <span className={styles.title}>
@@ -257,6 +260,7 @@ function SetupSection({
         <button
           type="button"
           className={styles.setupToggle}
+          aria-label={setupHeaderName(name, state)}
           aria-expanded={open}
           aria-controls={open ? bodyId : undefined}
           onClick={() => setOpen((o) => !o)}
@@ -392,9 +396,7 @@ function EndpointForm({
   const noKey = stored.provider === "Anthropic" && keySaved === false;
   const stateLine = !setUp
     ? ORDER_COPY.page.not_set_up
-    : [PROVIDER_LABEL[stored.provider], stored.model, noKey ? "no API key" : null]
-        .filter((p) => p !== null)
-        .join(", ");
+    : setupState([PROVIDER_LABEL[stored.provider], stored.model, noKey ? SETUP_COPY.noApiKey : null]);
 
   return (
     <SetupSection
@@ -573,24 +575,55 @@ export function otherKeepsText(label: string): string {
   return `Until you save a name, the model stays ${label}.`;
 }
 
+/** The words of a writer's setup section header (T12.96): the parts of its state line, joined
+ * by `separator`, and the separator between the writer's name and the state in the header's
+ * accessible name. An endpoint not set up says `ORDER_COPY.page.not_set_up`, as its row does. */
+export const SETUP_COPY = {
+  separator: ", ",
+  checking: "Checking",
+  couldNotCheck: "Could not check",
+  signedIn: "Signed in",
+  notSignedIn: "Not signed in",
+  notInstalled: "Not installed",
+  signInUnknown: "Sign-in not known",
+  noApiKey: "no API key",
+  /** Claude Code's chosen effort ({effort}: its list label in lower case). */
+  effort: "{effort} effort",
+} as const;
+
+/** A header's state line from its parts (null parts left out). */
+export function setupState(parts: (string | null)[]): string {
+  return parts.filter((p) => p !== null).join(SETUP_COPY.separator);
+}
+
+/** A header's accessible name: the writer, then its state. */
+export function setupHeaderName(name: string, state: string): string {
+  return `${name}${SETUP_COPY.separator}${state}`;
+}
+
+/** Claude Code's effort in its header's state line. */
+export function effortStateText(effort: EffortChoice): string {
+  return SETUP_COPY.effort.replace("{effort}", EFFORT_LABEL[effort].toLowerCase());
+}
+
 /** An agent CLI's state in its section's header (T12.96). */
 export function cliStateText(check: CliCheck<{ state: string; message: string }>): string {
   switch (check.status) {
     case "idle":
     case "checking":
-      return "Checking";
+      return SETUP_COPY.checking;
     case "failed":
-      return "Could not check";
+      return SETUP_COPY.couldNotCheck;
     case "done":
       switch (check.view.state) {
         case "SignedIn":
-          return "Signed in";
+          return SETUP_COPY.signedIn;
         case "NotSignedIn":
-          return "Not signed in";
+          return SETUP_COPY.notSignedIn;
         case "NotInstalled":
-          return "Not installed";
+          return SETUP_COPY.notInstalled;
         default:
-          return "Sign-in not known";
+          return SETUP_COPY.signInUnknown;
       }
   }
 }
@@ -694,13 +727,11 @@ function AgentCliCard({
   // has its own entry in the list.
   const changed = otherOpen && typed.trim() !== "" && typed.trim() !== stored;
   useSaveOnNext(saveOnNext, async () => !changed || state.save(saveModel(typed)));
-  const stateLine = [
+  const stateLine = setupState([
     cliStateText(check),
     stored === "" ? null : storedModelLabel(models, stored),
     effortState,
-  ]
-    .filter((p) => p !== null)
-    .join(", ");
+  ]);
   // Ticked but cannot run: not installed, signed out, or its state could not be read.
   const attention =
     inUse && (check.status === "failed" || (check.status === "done" && check.view.state !== "SignedIn"));
@@ -814,7 +845,7 @@ function ClaudeCodeCard({ state, settings, inUse, saveOnNext }: WriterCardProps)
       hint="A model name Claude Code accepts, for example a full model name."
       saveModel={(m) => ({ claude_model: m })}
       effortState={
-        settings.value.claude_effort === null ? null : `${EFFORT_LABEL[settings.value.claude_effort].toLowerCase()} effort`
+        settings.value.claude_effort === null ? null : effortStateText(settings.value.claude_effort)
       }
       effort={
         <EffortField

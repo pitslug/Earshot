@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -20,13 +20,24 @@ import {
   CODEX_PRIVACY,
   LIVE_DESCRIPTION,
   MODEL_PLACEHOLDER,
+  PROVIDER_LABEL,
+  SETUP_COPY,
   SET_UP,
+  SetupSection,
+  effortStateText,
   otherKeepsText,
   remoteWarning,
+  setupHeaderName,
+  setupState,
 } from "./SummariesPage";
 import { partName, titleOf } from "./copy";
 
 const SECRET = "sk-ant-api03-ui-test-secret-0042";
+
+/** The endpoint's name in its setup section header (T12.96). */
+const SERVER_NAME = "Your own server";
+/** A setup section header's spoken name: the writer, then its state. */
+const header = (name: string, parts: string[]) => setupHeaderName(name, setupState(parts));
 
 interface Setup {
   ipc: Ipc;
@@ -248,7 +259,7 @@ describe("Settings, Summaries", () => {
     // Set up and able to run: its section starts closed, its header saying what is stored.
     const form = await screen.findByRole("group", { name: "Your own server" });
     expect(setupToggle(form)).toHaveAttribute("aria-expanded", "false");
-    expect(setupToggle(form)).toHaveTextContent("Anthropic (Claude), claude");
+    expect(setupToggle(form)).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.Anthropic, "claude"]));
     await openSetup(s.user, "Your own server");
     expect(await screen.findByText("Key saved")).toBeInTheDocument();
     expect(screen.getByText(remoteWarning("api.anthropic.com"))).toBeInTheDocument();
@@ -558,10 +569,10 @@ describe("Settings, Summaries, the writers' setup sections (T12.96)", () => {
     await screen.findByRole("group", { name: CLAUDE_GROUP });
     // Signed in and set up: nothing needs the user, so all three stay closed.
     await waitFor(() =>
-      expect(setupToggle(section(CLAUDE_GROUP))).toHaveTextContent("Claude CodeSigned in, Opus, medium effort"),
+      expect(setupToggle(section(CLAUDE_GROUP))).toHaveAccessibleName(header("Claude Code", [SETUP_COPY.signedIn, "Opus", effortStateText("Medium")])),
     );
-    await waitFor(() => expect(setupToggle(section(CODEX_GROUP))).toHaveTextContent("CodexSigned in"));
-    expect(setupToggle(section(SERVER))).toHaveTextContent("Your own serverOpenAI-compatible server, qwen3");
+    await waitFor(() => expect(setupToggle(section(CODEX_GROUP))).toHaveAccessibleName(header("Codex", [SETUP_COPY.signedIn])));
+    expect(setupToggle(section(SERVER))).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.OpenAiCompatible, "qwen3"]));
     for (const name of [SERVER, CLAUDE_GROUP, CODEX_GROUP]) {
       const toggle = setupToggle(section(name));
       expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -616,7 +627,7 @@ describe("Settings, Summaries, the writers' setup sections (T12.96)", () => {
   it("open the endpoint's form and focus it from Set up on its row", async () => {
     const s = await open();
     const form = section(SERVER);
-    expect(setupToggle(form)).toHaveTextContent(ORDER_COPY.page.not_set_up);
+    expect(setupToggle(form)).toHaveAccessibleName(header(SERVER_NAME, [ORDER_COPY.page.not_set_up]));
     expect(setupToggle(form)).toHaveAttribute("aria-expanded", "false");
     const setUp = screen.getByRole("button", { name: SET_UP_SERVER });
     await s.user.click(setUp);
@@ -631,7 +642,7 @@ describe("Settings, Summaries, the writers' setup sections (T12.96)", () => {
     await s.user.type(within(form).getByLabelText("Model"), "qwen");
     await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: SET_UP_SERVER })).toBeNull());
-    expect(setupToggle(form)).toHaveTextContent("OpenAI-compatible server, qwen");
+    expect(setupToggle(form)).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.OpenAiCompatible, "qwen"]));
     // Under "No summary" there are no forms, so the button is off.
     cleanup();
     await open({ summaryOrder: [] });
@@ -645,7 +656,7 @@ describe("Settings, Summaries, the writers' setup sections (T12.96)", () => {
       summaries: { settings: { writer: "OwnEndpoint", provider: "Anthropic", url: MOCK_ANTHROPIC_URL, model: "claude" } },
     });
     await waitFor(() => expect(setupToggle(section(SERVER))).toHaveAttribute("aria-expanded", "true"));
-    expect(setupToggle(section(SERVER))).toHaveTextContent("Anthropic (Claude), claude, no API key");
+    expect(setupToggle(section(SERVER))).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.Anthropic, "claude", SETUP_COPY.noApiKey]));
     expect(within(section(SERVER)).getByLabelText("API key")).toBeInTheDocument();
     cleanup();
     // Claude Code not installed, Codex signed out.
@@ -657,9 +668,9 @@ describe("Settings, Summaries, the writers' setup sections (T12.96)", () => {
       },
     });
     await waitFor(() => expect(setupToggle(section(CLAUDE_GROUP))).toHaveAttribute("aria-expanded", "true"));
-    expect(setupToggle(section(CLAUDE_GROUP))).toHaveTextContent("Not installed");
+    expect(setupToggle(section(CLAUDE_GROUP))).toHaveAccessibleName(header("Claude Code", [SETUP_COPY.notInstalled]));
     await waitFor(() => expect(setupToggle(section(CODEX_GROUP))).toHaveAttribute("aria-expanded", "true"));
-    expect(setupToggle(section(CODEX_GROUP))).toHaveTextContent("Not signed in");
+    expect(setupToggle(section(CODEX_GROUP))).toHaveAccessibleName(header("Codex", [SETUP_COPY.notSignedIn]));
     cleanup();
     // Ticked while signed out: it opens once the check answers; closed by the user, it stays so.
     const s = await open({ machine: "surface" });
@@ -675,7 +686,58 @@ describe("Settings, Summaries, the writers' setup sections (T12.96)", () => {
     };
     await makeFirst(t, CODEX);
     await waitFor(() => expect(setupToggle(section(CODEX_GROUP))).toHaveAttribute("aria-expanded", "true"));
-    expect(setupToggle(section(CODEX_GROUP))).toHaveTextContent("Could not check");
+    expect(setupToggle(section(CODEX_GROUP))).toHaveAccessibleName(header("Codex", [SETUP_COPY.couldNotCheck]));
     expect(within(section(CODEX_GROUP)).getByText("Earshot could not check Codex")).toBeInTheDocument();
+  });
+});
+
+describe("A writer's setup section (T12.96)", () => {
+  it("speaks its name and state apart, joined by the separator", () => {
+    expect(setupHeaderName("Codex", SETUP_COPY.signedIn)).toBe("Codex, Signed in");
+    expect(setupState(["Anthropic (Claude)", null, "claude"])).toBe("Anthropic (Claude), claude");
+    expect(effortStateText("ExtraHigh")).toBe("extra high effort");
+    for (const text of Object.values(SETUP_COPY)) expect(text).not.toMatch(/—|please|!/i);
+  });
+
+  it("spends a Set up request on the open that shows nothing to focus", async () => {
+    const user = userEvent.setup();
+    const section = (openRequest: number, withField: boolean) => (
+      <SetupSection name="Test writer" state="Not set up" group="Test writer" attention={false} openRequest={openRequest} fixed={false}>
+        {withField ? <input aria-label="Field" /> : <span>Nothing to focus yet</span>}
+        <span />
+      </SetupSection>
+    );
+    const view = render(
+      <>
+        {section(0, false)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    view.rerender(
+      <>
+        {section(1, false)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    const toggle = screen.getByRole("button", { name: "Test writer, Not set up" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+    // A field that appears later does not take the focus: the request was spent.
+    view.rerender(
+      <>
+        {section(1, true)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    expect(screen.getByRole("textbox", { name: "Field" })).not.toHaveFocus();
+    expect(screen.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
+    // A new request with a field does focus it (the positive case of the same check).
+    view.rerender(
+      <>
+        {section(2, true)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Field" })).toHaveFocus());
   });
 });
