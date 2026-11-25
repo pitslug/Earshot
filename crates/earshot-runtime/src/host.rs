@@ -1042,6 +1042,13 @@ fn summary_for(
             }
             // Read once; without a key the summary is skipped with the reason (the owner,
             // 2026-11-04: a summary setting never costs a recording).
+            // A key saved for another address is never read or sent: it asks to be saved
+            // again (T14.31, `summary_settings::api_key_bound`).
+            EndpointProvider::Anthropic
+                if !crate::summary_settings::api_key_bound(store, &settings)? =>
+            {
+                request.no_key = Some(ApiKeyError::Missing);
+            }
             EndpointProvider::Anthropic => match keys.anthropic_key() {
                 Ok(Some(key)) => request.remote = Some(settings.endpoint_config(Some(key))),
                 Ok(None) => request.no_key = Some(ApiKeyError::Missing),
@@ -2073,6 +2080,9 @@ pub struct HostOutcome {
     /// Every network request the summary made (the privacy record; empty for a local
     /// summary or none).
     pub network: Vec<AuditEntry>,
+    /// Audit entries dropped to keep the log within `earshot_net::MAX_AUDIT_ENTRIES` (T14.32):
+    /// above 0, `network` is not the whole record, so a check of where the run went fails.
+    pub network_dropped: u64,
     /// Every time the summary handed text to Claude Code or Codex (the privacy record of
     /// PLAN.md 3.9's exception: when, how many characters, which CLI, never the text; empty for
     /// any other summary).
@@ -2105,6 +2115,7 @@ impl HostOutcome {
                 reason: SkipReason::PostFailed,
             },
             network: Vec::new(),
+            network_dropped: 0,
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
@@ -2124,6 +2135,7 @@ impl HostOutcome {
             }),
             summary: SummaryResult::Cancelled,
             network: Vec::new(),
+            network_dropped: 0,
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
@@ -2288,6 +2300,7 @@ where
             post,
             summary: done.summary,
             network: done.network,
+            network_dropped: done.network_dropped,
             handovers: done.handovers,
             handover_record_failures: done.handover_record_failures,
             claude_effort_unread: done.claude_effort_unread,
@@ -2340,6 +2353,7 @@ where
         };
         offload = Some(choice);
     }
+    let mut network_dropped = 0;
     let (summary, network, handovers, handover_record_failures) = if post.is_err() {
         (
             SummaryResult::Skipped {
@@ -2360,6 +2374,7 @@ where
             Some(service) => {
                 progress(HostStep::SummaryStarting);
                 let result = run_summary(services, meeting, service, run.summary_cancel);
+                network_dropped = service.audit_log().dropped();
                 (
                     result,
                     service.audit_log().entries(),
@@ -2385,6 +2400,7 @@ where
         post,
         summary,
         network,
+        network_dropped,
         handovers,
         handover_record_failures,
         claude_effort_unread,

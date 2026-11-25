@@ -2707,16 +2707,16 @@ Lane export (`earshot-core` export, runtime `export_settings.rs`):
 
 Lane llm (`earshot-llm`, `earshot-net`, runtime `summary_settings.rs`):
 
-- [ ] T14.30 Codex runs only with a feature list this version knows
-  - do: an enabled feature that is on neither the disable list nor a reviewed harmless list (each from a real `features list` capture of the pinned CLI) refuses the run with its own fixed word; the list is read once per client.
+- [x] T14.30 Codex runs with the feature set it was measured with
+  - result (2026-11-26): changed from the first text (refuse an unknown enabled feature) after a real `codex features list` capture on 0.169.0 showed 215 features with 68 on: a refusal would have stopped every Codex summary now and at each Codex update. Rule built: `MEASURED_ON` (the 43 names on in that capture and not on the disable list; the reason is empirical: real runs on 0.169.0 finished with no tool item) plus `DISABLED_FEATURES`; any other feature that reads on (except stage `removed`) is passed to `--disable` and the run goes ahead; arguments on 0.169.0 are byte for byte what they were; a list line the parser half-recognises refuses the run; a refused `--disable` before any event reads as an unsupported version. The count of features turned off is returned but not yet shown in the app.
   - accept: `cargo test -p earshot-llm codex`
-- [ ] T14.31 The Anthropic key goes only where it was saved for
+- [x] T14.31 The Anthropic key goes only where it was saved for
   - do: the key is never sent over plain http except to loopback, and a saved address whose host differs from the one the key was saved for asks for the key again (the stored key is not sent); shared case table and mock updated.
   - accept: `cargo test -p earshot-llm`; `cargo test -p earshot-runtime summary_settings`; `cargo test -p earshot-desktop --bin earshot summaries`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] T14.32 The network audit log is bounded
+- [x] T14.32 The network audit log is bounded
   - do: `AuditLog` keeps at most a fixed number of entries per client (a count of dropped entries kept), sized above any one meeting's summary; the sync client's log is the bounded one.
   - accept: `cargo test -p earshot-net`; `cargo test -p earshot-runtime sync`
-- [ ] T14.33 Agent CLIs never inherit Node's TLS or options variables
+- [x] T14.33 Agent CLIs never inherit Node's TLS or options variables
   - do: `NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` judged and `BUN_OPTIONS` join `CLEARED_ENV` for both CLIs, each cited, with the written-out `MUST_CLEAR` lists updated.
   - accept: `cargo test -p earshot-llm`
 

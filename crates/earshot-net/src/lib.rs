@@ -24,7 +24,7 @@ mod secret;
 mod url_policy;
 
 pub use allowlist::{Allowlist, DenyReason};
-pub use audit::{AuditEntry, AuditLog, AuditOutcome};
+pub use audit::{AuditEntry, AuditLog, AuditOutcome, MAX_AUDIT_ENTRIES};
 pub use client::{
     CANCELLED_BEFORE_RESPONSE, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_BODY, DEFAULT_TIMEOUT,
     MAX_REDIRECTS, NetClient, NetConfig, NetError, NetRequest, NetResponse, NetStream,
@@ -34,4 +34,6 @@ pub use reqwest::Method;
 pub use reqwest::header;
 pub use secret::{wipe_string, wipes_on_this_thread};
 pub use url::Url;
-pub use url_policy::{UrlError, check_url_shape, is_local_host, is_local_url, validate_url};
+pub use url_policy::{
+    UrlError, check_url_shape, is_local_host, is_local_url, is_loopback_url, validate_url,
+};

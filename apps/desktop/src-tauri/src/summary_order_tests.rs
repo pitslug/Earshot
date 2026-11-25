@@ -635,6 +635,35 @@ fn summary_order_resummarise_menu_offers_what_can_run_here() {
     assert!(steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
     let no_key = Here { key: false, ..all };
     assert!(!steps(&resummarise_view(&svc, m, &no_key).unwrap()).contains(&StepChoice::Endpoint));
+    // T14.31: a key saved for another address is not offered, as the Summaries page says and
+    // the run refuses; saved for this address, it is.
+    let proxy = SummarySettingsValue {
+        provider: crate::summaries::ProviderChoice::Anthropic,
+        url: "https://proxy.example.invalid".into(),
+        ..endpoint_value()
+    };
+    crate::summaries::set_settings(&svc, &proxy).unwrap();
+    assert!(!steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
+    {
+        let mut db = svc.store();
+        earshot_runtime::summary_settings::bind_api_key(&mut db, &proxy.settings()).unwrap();
+    }
+    assert!(steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
+    crate::summaries::set_settings(
+        &svc,
+        &SummarySettingsValue {
+            provider: crate::summaries::ProviderChoice::Anthropic,
+            url: "https://api.anthropic.com".into(),
+            ..endpoint_value()
+        },
+    )
+    .unwrap();
+    assert!(!steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
+    {
+        let mut db = svc.store();
+        earshot_runtime::summary_settings::unbind_api_key(&mut db).unwrap();
+    }
+    assert!(steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
     let nothing = Here {
         local: false,
         key: false,

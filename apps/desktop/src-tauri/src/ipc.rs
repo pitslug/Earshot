@@ -1365,8 +1365,9 @@ async fn set_summary_settings(
 #[specta::specta]
 async fn set_api_key(state: State<'_, AppState>, key: String) -> Result<(), IpcError> {
     let keys = Arc::clone(&state.keys);
+    let services = state.services()?;
     blocking(move || {
-        let stored = crate::summaries::set_api_key(keys.as_ref(), &key);
+        let stored = crate::summaries::set_api_key(&services, keys.as_ref(), &key);
         crate::credentials::wipe_string(key);
         stored
     })
@@ -1378,7 +1379,8 @@ async fn set_api_key(state: State<'_, AppState>, key: String) -> Result<(), IpcE
 #[specta::specta]
 async fn has_api_key(state: State<'_, AppState>) -> Result<bool, IpcError> {
     let keys = Arc::clone(&state.keys);
-    blocking(move || crate::summaries::has_api_key(keys.as_ref())).await
+    let services = state.services()?;
+    blocking(move || crate::summaries::has_api_key(&services, keys.as_ref())).await
 }
 
 /// Removes the stored Anthropic API key.
@@ -1386,7 +1388,8 @@ async fn has_api_key(state: State<'_, AppState>) -> Result<bool, IpcError> {
 #[specta::specta]
 async fn remove_api_key(state: State<'_, AppState>) -> Result<(), IpcError> {
     let keys = Arc::clone(&state.keys);
-    blocking(move || crate::summaries::remove_api_key(keys.as_ref())).await
+    let services = state.services()?;
+    blocking(move || crate::summaries::remove_api_key(&services, keys.as_ref())).await
 }
 
 /// Whether Codex is installed and signed in (T7.4gc), with how to fix it. Runs the CLI's

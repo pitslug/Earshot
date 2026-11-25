@@ -37,7 +37,7 @@ const TEST_CLI_ENV: &str = "EARSHOT_TEST_CODEX_CLI";
 /// Variables `main` sets in this process and the CLI must not see (T7.4gc, and T9.25: every
 /// address, credential and proxy variable). Written out here, not read from the crate, so a
 /// name dropped from the crate's list fails the test.
-const MUST_CLEAR: [&str; 17] = [
+const MUST_CLEAR: [&str; 25] = [
     "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
     "OPENAI_API_KEY",
@@ -55,7 +55,20 @@ const MUST_CLEAR: [&str; 17] = [
     "all_proxy",
     "no_proxy",
     "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+    // T14.33: a JavaScript runtime's own.
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_OPTIONS",
+    "BUN_OPTIONS",
+    "NODE_PATH",
+    "NODE_USE_ENV_PROXY",
+    "NODE_REDIRECT_WARNINGS",
+    "NODE_V8_COVERAGE",
+    "NODE_DEBUG",
 ];
+
+/// T14.33 review: names the provider must clear by their `BUN_CONFIG_` prefix (case ignored),
+/// set in this process and recorded by the fake.
+const BY_PREFIX: [&str; 2] = ["BUN_CONFIG_EARSHOT_TEST", "Bun_Config_Mixed_Test"];
 
 /// The features T12.46 added, which an older CLI (0.155.1) may not list. Written out here,
 /// not read from the crate.
@@ -108,6 +121,7 @@ mod fake {
             path,
             std::iter::once(&super::KEPT)
                 .chain(super::MUST_CLEAR.iter())
+                .chain(super::BY_PREFIX.iter())
                 .map(|k| format!("{k}={}", env(k)))
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -128,14 +142,19 @@ mod fake {
                 std::process::exit(0);
             }
             // The shape of codex-cli 0.169.0 (this host, 2026-11-14). An older CLI lists
-            // none of the eight names T12.46 added.
+            // none of the eight names T12.46 added. `fast_mode` is on: a feature of the
+            // measured set, left alone (T14.30); `feature-unknown-on` adds one a newer Codex
+            // switched on, which the run turns off.
             let old = dir.join("features-old").is_file();
             for name in earshot_llm::codex::DISABLED_FEATURES
                 .into_iter()
                 .filter(|n| !old || !super::NEWER_FEATURES.contains(n))
-                .chain(["fast_mode"])
             {
                 println!("{name:<40} stable             true");
+            }
+            println!("{:<40} stable             true", "fast_mode");
+            if dir.join("feature-unknown-on").is_file() {
+                println!("{:<40} under development  true", "an_invented_feature");
             }
             std::process::exit(0);
         }
@@ -501,6 +520,85 @@ fn codex_an_unreadable_feature_list_refuses_the_run() {
     s.assert_temp_root_empty();
 }
 
+/// T14.30: a feature the CLI shows on that the measured run did not have on is turned off
+/// after the known ones, and the run goes ahead; the client counts it.
+fn codex_an_unmeasured_enabled_feature_is_turned_off() {
+    let s = Scenario::new("feature-unknown-on");
+    s.flag("feature-unknown-on");
+    s.script(None, &format!("reply {}", summary_json(&[1, 2])));
+    let client = s.client(|_| {});
+    assert_eq!(client.unmeasured_turned_off(), 0, "nothing read yet");
+    summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap();
+    assert_eq!(s.calls(), 1);
+    let args = s.args(1);
+    let mut want: Vec<&str> = earshot_llm::codex::DISABLED_FEATURES.to_vec();
+    want.push("an_invented_feature");
+    assert_eq!(disabled(&args), want);
+    assert!(!args.iter().any(|a| a == "fast_mode"), "measured: left on");
+    assert_eq!(client.unmeasured_turned_off(), 1);
+    // Without it, nothing is counted.
+    let plain = Scenario::new("feature-measured");
+    plain.script(None, &format!("reply {}", summary_json(&[1, 2])));
+    let client = plain.client(|_| {});
+    summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap();
+    assert_eq!(client.unmeasured_turned_off(), 0);
+}
+
+/// T14.30 review: a newer Codex that refuses the `--disable` of a feature it listed fails
+/// before any event; that is a Codex this version was not checked with.
+fn codex_a_refused_disable_of_an_unmeasured_feature_is_an_unsupported_version() {
+    let s = Scenario::new("feature-disable-refused");
+    s.flag("feature-unknown-on");
+    s.script(None, "stderr error: something new about the flags\nexit 2");
+    let client = s.client(|_| {});
+    let e = summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap_err();
+    assert_eq!(codex_error(&e), &CodexError::UnsupportedVersion, "{e}");
+    assert_eq!(s.read("status-calls"), "", "no sign-in question");
+    // The same failure with only measured features on is still the generic one.
+    let s = Scenario::new("feature-measured-fails");
+    s.script(None, "stderr error: something new about the flags\nexit 2");
+    let e = summarise(&s.client(|_| {}), &meeting(2), &CancelToken::new())
+        .result
+        .unwrap_err();
+    assert!(matches!(codex_error(&e), CodexError::Failed { .. }), "{e}");
+}
+
+/// T14.30: the feature list is read once per client (clones share it); a list that could not
+/// be read is not kept, so the next run asks again.
+fn codex_the_feature_list_is_read_once_per_client() {
+    let s = Scenario::new("features-once");
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|_| {});
+    for _ in 0..2 {
+        summarise(&client.clone(), &meeting(2), &CancelToken::new())
+            .result
+            .unwrap();
+    }
+    assert_eq!(s.calls(), 2);
+    assert_eq!(s.read("features-calls"), "1");
+
+    let s = Scenario::new("features-retry");
+    s.flag("features-unreadable");
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|_| {});
+    let e = summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap_err();
+    assert_eq!(codex_error(&e), &CodexError::UnsupportedVersion, "{e}");
+    std::fs::remove_file(s.dir.join("features-unreadable")).unwrap();
+    summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap();
+    assert_eq!(s.read("features-calls"), "2");
+    assert_eq!(s.calls(), 1);
+}
+
 /// No argument of any run holds meeting text (the prompt goes only on standard input).
 fn assert_args_hold_no_meeting_text(s: &Scenario, input: &SummaryInput) {
     for n in 1..=s.calls() {
@@ -570,7 +668,7 @@ fn codex_valid_reply_is_a_summary_after_one_run() {
     // account; the rest is kept (the sign-in is found through it).
     let env = s.read("call-1.env");
     let lines: Vec<&str> = env.lines().collect();
-    for k in MUST_CLEAR {
+    for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
         assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
     }
     assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
@@ -1006,7 +1104,7 @@ fn codex_version_and_sign_in_status_come_from_the_cli() {
     let env = s.read("status.env");
     let lines: Vec<&str> = env.lines().collect();
     assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
-    for k in MUST_CLEAR {
+    for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
         assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
     }
     std::fs::remove_file(s.dir.join("signed-out")).unwrap();
@@ -1185,6 +1283,21 @@ const CASES: &[Case] = &[
         false,
     ),
     (
+        "codex_an_unmeasured_enabled_feature_is_turned_off",
+        codex_an_unmeasured_enabled_feature_is_turned_off,
+        false,
+    ),
+    (
+        "codex_a_refused_disable_of_an_unmeasured_feature_is_an_unsupported_version",
+        codex_a_refused_disable_of_an_unmeasured_feature_is_an_unsupported_version,
+        false,
+    ),
+    (
+        "codex_the_feature_list_is_read_once_per_client",
+        codex_the_feature_list_is_read_once_per_client,
+        false,
+    ),
+    (
         "codex_reply_is_the_last_agent_message_of_the_stream",
         codex_reply_is_the_last_agent_message_of_the_stream,
         false,
@@ -1276,7 +1389,7 @@ fn main() {
     // SAFETY: single-threaded here (no case has started); nothing reads the environment
     // concurrently.
     unsafe {
-        for k in MUST_CLEAR {
+        for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
             std::env::set_var(k, "http://127.0.0.1:9/earshot-test");
         }
         std::env::set_var(KEPT, "1");

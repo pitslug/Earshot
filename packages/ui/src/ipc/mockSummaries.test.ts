@@ -46,6 +46,27 @@ describe("the Summaries mock against the app's case table", () => {
     expect(wrong).toEqual([]);
   });
 
+  it("counts a saved API key only for the address it was saved for, as the app does (T14.31)", async () => {
+    const cases = table.key_binding.cases;
+    expect(cases.length).toBeGreaterThanOrEqual(7);
+    const anthropic = (url: string) => ({ ...base, provider: "Anthropic", url }) as SummarySettingsValue;
+    const wrong: string[] = [];
+    for (const c of cases) {
+      const mock =
+        c.saved_for === null
+          ? createSummariesMock({ apiKeySaved: true, apiKeyFromBefore: true })
+          : createSummariesMock();
+      if (c.saved_for !== null) {
+        await mock.setSummarySettings(anthropic(c.saved_for));
+        await mock.setApiKey("sk-invented-key");
+      }
+      await mock.setSummarySettings(anthropic(c.now));
+      const got = await mock.hasApiKey();
+      if (got !== c.bound) wrong.push(`${c.name}: ${String(got)}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
   it("keeps the Dictionary words as the app does", async () => {
     expect(table.vocabulary.length).toBeGreaterThanOrEqual(13);
     const wrong: string[] = [];

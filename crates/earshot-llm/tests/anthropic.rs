@@ -252,6 +252,40 @@ async fn anthropic_key_is_never_in_errors_and_an_auth_error_does_not_fall_back()
     assert!(format!("{err}").contains("<redacted>"), "{err}");
 }
 
+/// T14.31: the key never goes over plain http to another computer, even one the allowlist
+/// lets plain http reach (the LAN): refused before any connection, with no audit entry, and
+/// the address and key out of the error. Every other test here sends its key over plain http
+/// to loopback, which stays allowed.
+#[tokio::test]
+async fn anthropic_key_is_never_sent_over_plain_http_off_this_computer() {
+    let input = meeting(2);
+    for lan in [
+        "http://192.168.1.20:8080",
+        "http://10.0.0.2",
+        "http://[fd12:3456::1]:8080",
+    ] {
+        let s = setup_with(vec![valid_text(&input)], |c| {
+            c.endpoint = earshot_net::Url::parse(lan).unwrap();
+        });
+        let out = run(&s, &input).await;
+        let err = out.result.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LlmError::Net(NetError::NotAllowed {
+                    reason: earshot_net::DenyReason::KeyOverPlainHttp,
+                    ..
+                })
+            ),
+            "{lan}: {err:?}"
+        );
+        assert_eq!(out.report.requests, 1, "{lan}: no retry or fallback");
+        assert!(s.audit.entries().is_empty(), "{lan}: nothing was sent");
+        assert!(s.server.requests().is_empty(), "{lan}");
+        assert_no_key(&[format!("{err}"), format!("{err:?}")]);
+    }
+}
+
 #[tokio::test]
 async fn anthropic_without_a_key_sends_no_key_header() {
     let input = meeting(2);

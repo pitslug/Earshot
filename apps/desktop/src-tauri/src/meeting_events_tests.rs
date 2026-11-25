@@ -889,6 +889,7 @@ fn outcome(post: Result<HostPost, RuntimeError>, summary: SummaryResult) -> Host
         post,
         summary,
         network: vec![],
+        network_dropped: 0,
         handovers: vec![],
         handover_record_failures: vec![],
         claude_effort_unread: false,

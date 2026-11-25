@@ -139,6 +139,7 @@ fn pair(relay: &TestRelay) -> (Device, Device) {
 fn assert_only_the_relay(client: &SyncClient, relay: &TestRelay) {
     let entries = client.audit_log().entries();
     assert!(!entries.is_empty());
+    assert_eq!(client.audit_log().dropped(), 0, "the whole record");
     let addr = relay.relay.addr();
     for e in entries {
         assert_eq!(
