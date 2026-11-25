@@ -52,9 +52,12 @@ impl Services {
     pub fn delete_meeting(&self, meeting: EntityId) -> Result<MeetingDeletion, RuntimeError> {
         let _claim = self.begin_deletion(meeting)?;
         let clock = Arc::clone(&self.clock);
-        // The activity lock, then the store lock, never nested (T14.26).
-        let leased = self.leased_meetings();
         let mut db = self.store();
+        // Leases are read under the store lock on purpose: a job cannot lease a meeting and
+        // write its records between this snapshot and the sweep below. The activity lock is a
+        // leaf lock (nothing takes another lock while holding it), so taking it here, inside the
+        // store lock, cannot deadlock.
+        let leased = self.leased_meetings();
         // Records of other meetings whose rows are deleted or missing and that no job holds.
         let mut gone = BTreeSet::new();
         for key in db.local_keys()? {
@@ -62,7 +65,12 @@ impl Services {
                 && m != meeting
                 && !leased.contains(&m)
                 && !gone.contains(&m)
-                && db.meeting(m)?.is_none_or(|row| row.meta.deleted)
+                // A row that does not read is judged by its `deleted` column alone (T14.26), so
+                // another meeting's damage never stops this deletion.
+                && match db.meeting(m) {
+                    Ok(row) => row.is_none_or(|row| row.meta.deleted),
+                    Err(_) => db.meeting_reads_deleted(m)?,
+                }
             {
                 gone.insert(m);
             }
@@ -77,7 +85,7 @@ impl Services {
         // transaction keeps them: a meeting still there must not lose them (a closed request
         // would be handed again). A step that read them earlier cannot write them back
         // (`offload::store_step_times`).
-        if deleted.is_ok() || db.meeting(meeting)?.is_some_and(|m| m.meta.deleted) {
+        if deleted.is_ok() || db.meeting_reads_deleted(meeting)? {
             db.transaction(|tx| crate::offload::forget_meeting_times(tx, meeting))?;
         }
         Ok(deleted?)

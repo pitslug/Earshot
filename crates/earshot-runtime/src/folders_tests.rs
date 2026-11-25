@@ -560,6 +560,40 @@ fn folders_delete_with_meetings_counts_busy_after_the_commit_as_deleted() {
     svc.store().flush_erasures().unwrap();
 }
 
+/// T14.26, the negative control: a `Busy` while the meeting does not read deleted (nothing
+/// committed) leaves the meeting, and with it the folder.
+#[test]
+fn folders_delete_with_meetings_counts_busy_without_a_commit_as_left() {
+    let dir = TempDir::new("folders-delete-busy-uncommitted");
+    let (svc, _clock) = services(&dir);
+    let kept = meeting(&svc, "Kept one", 1);
+    let f = create(&svc, "Kept").unwrap();
+    move_meeting(&svc, kept, Some(f)).unwrap();
+    let done = delete_with_meetings_using(
+        &svc,
+        f,
+        &mut |_| {
+            Err(RuntimeError::Store(earshot_store::StoreError::Busy(
+                "invented".into(),
+            )))
+        },
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        done,
+        FolderDeletion {
+            folder_deleted: false,
+            meetings_deleted: 0,
+            meetings_left: 1,
+            meetings_unfiled: 0,
+            checkpoint_pending: false,
+        }
+    );
+    assert!(!svc.store().meeting(kept).unwrap().unwrap().meta.deleted);
+    assert_eq!(names(&svc), ["Kept"]);
+}
+
 #[test]
 fn folders_a_meeting_moved_in_during_the_delete_loop_ends_unfiled() {
     let dir = TempDir::new("folders-delete-race");

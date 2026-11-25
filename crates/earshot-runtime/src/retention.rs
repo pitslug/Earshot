@@ -346,10 +346,6 @@ struct LastRun {
     wall_ms: u64,
     /// The time since this process's anchor then, which no clock step moves.
     since_start: std::time::Duration,
-    /// The setting it applied.
-    choice: AudioRetention,
-    /// The meetings that were due then.
-    due: BTreeSet<EntityId>,
 }
 
 /// The unattended runs' memory, per data folder (one in the app; one per test).
@@ -383,8 +379,9 @@ fn stepped_from(
 /// start-up and then periodically. After the wall clock stepped forward since the previous run
 /// of this process (T14.26), a meeting that only the step made due is not deleted by this run:
 /// it waits ([`RetentionRun::waiting`]) for the next run to agree that it is due, so a clock set
-/// wrong for a moment deletes nothing. Meetings the previous run also found due, or that are
-/// due by the time that truly passed, go as before. The first run of a process trusts the clock.
+/// wrong for a moment deletes nothing. Meetings due by the time that truly passed go as before
+/// (which takes in every meeting the previous run found due: the due rule only grows with
+/// time). The first run of a process trusts the clock.
 ///
 /// # Errors
 /// Store errors reading the setting or the plan. A meeting whose deletion fails is counted
@@ -425,25 +422,14 @@ fn run_with(
     if let Some(at) = unattended {
         let root = services.data.root().to_path_buf();
         let mut last_runs = LAST_RUNS.lock().unwrap_or_else(PoisonError::into_inner);
-        let last = last_runs.get(&root);
-        let due_now: BTreeSet<EntityId> =
-            earshot_store::due_audio(&services.store(), choice.policy(), now)?
-                .meetings
-                .into_keys()
-                .collect();
-        if let Some(trusted) = stepped_from(last, now, at) {
-            let agreed = last
-                .filter(|l| l.choice == choice)
-                .map(|l| l.due.clone())
-                .unwrap_or_default();
+        if let Some(trusted) = stepped_from(last_runs.get(&root), now, at) {
             let truly_due: BTreeSet<EntityId> =
                 earshot_store::due_audio(&services.store(), choice.policy(), trusted)?
                     .meetings
                     .into_keys()
                     .collect();
             let before = plan.ready.len();
-            plan.ready
-                .retain(|m, _| agreed.contains(m) || truly_due.contains(m));
+            plan.ready.retain(|m, _| truly_due.contains(m));
             waiting = before - plan.ready.len();
         }
         last_runs.insert(
@@ -451,8 +437,6 @@ fn run_with(
             LastRun {
                 wall_ms: now,
                 since_start: at,
-                choice,
-                due: due_now,
             },
         );
     }

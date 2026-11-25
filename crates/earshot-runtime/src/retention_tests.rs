@@ -488,8 +488,6 @@ fn retention_a_clock_step_is_the_wall_clock_running_ahead_of_the_time_that_passe
     let last = LastRun {
         wall_ms: 1_000_000,
         since_start: Duration::from_secs(100),
-        choice: AudioRetention::OneHour,
-        due: BTreeSet::new(),
     };
     let at = |s: u64| Duration::from_secs(100 + s);
     // The first run of a process has nothing to compare with.
@@ -515,7 +513,8 @@ fn retention_a_clock_step_is_the_wall_clock_running_ahead_of_the_time_that_passe
 }
 
 /// T14.26: after a forward clock step the unattended run keeps what only the step made due and
-/// deletes it when the next run agrees; what the previous run already found due goes at once.
+/// deletes it when the next run agrees; what was due by the time that truly passed (here, already
+/// at the previous run) goes at once.
 #[test]
 fn retention_run_after_a_clock_step_waits_for_a_second_run_to_agree() {
     let dir = TempDir::new("retention");

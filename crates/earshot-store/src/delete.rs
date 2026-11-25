@@ -6,10 +6,15 @@
 //! [`Store::remove_person`] deletes them.
 
 use earshot_core::identity::{Clock, EntityId, Hlc};
+use earshot_core::identity::{DeviceId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
     AudioFileRepo, Meeting, MeetingRepo, Note, RepoError, SegmentRow, Speaker, Summary, Track,
     delete_meeting,
 };
+use earshot_core::prompt::Template;
+use earshot_core::summary::SummaryV1;
+
+use crate::repo::for_deletion;
 use earshot_core::voiceprint::{VoiceprintRepo, identity_of};
 use rusqlite::Connection;
 
@@ -32,6 +37,10 @@ pub struct MeetingDeletion {
     pub export_records_removed: usize,
     /// Device-local values erased.
     pub local_values_erased: usize,
+    /// Rows of the meeting that could not be read (T14.26): each was erased in SQL by its rowid
+    /// (an audio row deleted), as a readable one is. Syncable ones written are in
+    /// `rows_tombstoned` too.
+    pub unreadable_rows: usize,
 }
 
 /// What [`Store::remove_person`] did.
@@ -72,14 +81,24 @@ impl Store {
         clock: &C,
         erase_local: &mut dyn FnMut(&str) -> bool,
     ) -> Result<MeetingDeletion, StoreError> {
-        if self.meeting(meeting)?.is_none() {
+        // Read row by row (T14.26): a meeting must always be deletable, so a row that does not
+        // read never stops it.
+        if for_deletion::meeting(&self.conn, meeting)?.is_none() {
             return Err(StoreError::Repo(RepoError::MissingParent {
                 entity: "meeting",
                 id: meeting,
             }));
         }
         let mut report = MeetingDeletion::default();
-        for f in self.audio_files(meeting)? {
+        let (files, damaged_files) = for_deletion::audio(&self.conn, meeting)?;
+        // An audio row that does not read cannot name its file: the row goes, and the file is
+        // removed with the rest of the meeting's folder below.
+        for rowid in damaged_files {
+            report.unreadable_rows += self
+                .conn
+                .execute("DELETE FROM audio_file WHERE rowid = ?1", [rowid])?;
+        }
+        for f in files {
             match std::fs::remove_file(data.resolve(&f.path)?) {
                 Ok(()) => report.audio_files_deleted += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -92,11 +111,21 @@ impl Store {
         report.stray_audio_removed = remove_meeting_audio_dir(data, meeting)?;
 
         self.transaction(|tx| -> Result<(), StoreError> {
-            // A segment row that does not read is erased in SQL by its rowid first (T14.26), so
-            // it can neither keep its text nor stop the deletion; the core rule erases the rest.
-            let damaged = erase_damaged_segments(tx, meeting, hlc, clock)?;
-            let erased = delete_meeting(&mut ReadableSegments(tx), meeting, hlc, clock)?;
-            report.rows_tombstoned = erased.rows_written + damaged;
+            // A row that does not read is erased in SQL by its rowid first (T14.26), so it can
+            // neither keep its content nor stop the deletion; the core rule erases the rest.
+            let damaged = erase_damaged_rows(tx, meeting, hlc, clock)?;
+            let erased = delete_meeting(
+                &mut ReadableRows {
+                    tx,
+                    meeting,
+                    meeting_damaged: damaged.meeting_row,
+                },
+                meeting,
+                hlc,
+                clock,
+            )?;
+            report.rows_tombstoned = erased.rows_written + damaged.written;
+            report.unreadable_rows += damaged.written;
             report.export_records_removed = tx.conn.execute(
                 "DELETE FROM export_record WHERE meeting_id = ?1",
                 [meeting.as_uuid().as_bytes().as_slice()],
@@ -196,6 +225,25 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Whether `meeting`'s row is a tombstone, read from that one column, so a row whose other
+    /// values do not read still answers (T14.26: after a deletion whose checkpoint was
+    /// `Busy`). `false` for an unknown meeting.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn meeting_reads_deleted(&self, meeting: EntityId) -> Result<bool, StoreError> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT deleted FROM meeting WHERE id = ?1")?;
+        let mut rows = st.query([meeting.as_uuid().as_bytes().as_slice()])?;
+        Ok(match rows.next()? {
+            Some(r) => r.get::<_, i64>(0).is_ok_and(|d| d != 0),
+            None => false,
+        })
+    }
+}
+
 impl StoreTx<'_> {
     /// [`Store::local_keys`] inside the transaction.
     ///
@@ -215,81 +263,183 @@ fn local_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {
     Ok(keys)
 }
 
-/// Erases each segment row of `meeting` whose stored values do not convert (T14.26), by its
-/// SQLite rowid, as [`delete_meeting`] erases a row it can read: text and words cleared,
-/// confidence 0, no speaker, a tombstone with this device's stamp. A row already erased so is
-/// not written again. Returns how many were written.
-fn erase_damaged_segments<C: Clock + ?Sized>(
+/// What [`erase_damaged_rows`] did.
+struct DamagedRows {
+    /// Rows written (erased now; one erased earlier is not written again).
+    written: usize,
+    /// The meeting row itself does not read: the deletion sees it as an erased tombstone.
+    meeting_row: bool,
+}
+
+/// One synced table of a meeting: the SQL that erases a damaged row by its rowid as
+/// [`delete_meeting`] erases a readable one (the content it clears, a tombstone, `?1`..`?3` this
+/// device's stamp, `?4` the rowid), skipping a row already erased so. The outbox triggers fire on
+/// the update, as on any write.
+const ERASE_BY_ROWID: [(&str, &str); 6] = [
+    (
+        "segment",
+        "UPDATE segment SET text = '', words = '[]', confidence = 0.0, speaker_id = NULL, \
+         deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+         WHERE rowid = ?4 AND NOT (deleted = 1 AND text = '' AND words = '[]' \
+         AND confidence = 0.0 AND speaker_id IS NULL)",
+    ),
+    (
+        "speaker",
+        "UPDATE speaker SET display_name = '', person_id = NULL, ignored = 0, \
+         deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+         WHERE rowid = ?4 AND NOT (deleted = 1 AND display_name = '' AND person_id IS NULL \
+         AND ignored = 0)",
+    ),
+    (
+        "note",
+        "UPDATE note SET text = '', \
+         deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+         WHERE rowid = ?4 AND NOT (deleted = 1 AND text = '')",
+    ),
+    (
+        "summary",
+        "UPDATE summary SET body = ?5, model = NULL, \
+         deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+         WHERE rowid = ?4 AND NOT (deleted = 1 AND body = ?5 AND model IS NULL)",
+    ),
+    (
+        "track",
+        "UPDATE track SET device_name = NULL, \
+         deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+         WHERE rowid = ?4 AND NOT (deleted = 1 AND device_name IS NULL)",
+    ),
+    (
+        "meeting",
+        "UPDATE meeting SET title = '', tags = '[]', folder_id = NULL, \
+         deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+         WHERE rowid = ?4 AND NOT (deleted = 1 AND title = '' AND tags = '[]' \
+         AND folder_id IS NULL)",
+    ),
+];
+
+/// Erases every row of `meeting` whose stored values do not convert (T14.26), in each synced
+/// table the deletion reads and the meeting row last, by SQLite rowid, as [`delete_meeting`]
+/// erases a readable row (the `ERASE_BY_ROWID` statements). Each written row gets its own stamp
+/// from the device HLC.
+fn erase_damaged_rows<C: Clock + ?Sized>(
     tx: &StoreTx<'_>,
     meeting: EntityId,
     hlc: &mut Hlc,
     clock: &C,
-) -> Result<usize, StoreError> {
-    let (_, damaged) = crate::repo::segments_or_damaged(&tx.conn, meeting)?;
+) -> Result<DamagedRows, StoreError> {
+    let c = &tx.conn;
+    let meeting_row = for_deletion::meeting(c, meeting)?;
+    let damaged: [Vec<i64>; 6] = [
+        for_deletion::segments(c, meeting)?.1,
+        for_deletion::speakers(c, meeting)?.1,
+        for_deletion::notes(c, meeting)?.1,
+        for_deletion::summaries(c, meeting)?.1,
+        for_deletion::tracks(c, meeting)?.1,
+        meeting_row
+            .iter()
+            .filter_map(|r| r.as_ref().err().copied())
+            .collect(),
+    ];
+    let cleared_body = serde_json::to_string(&SummaryV1::default())
+        .map_err(|e| StoreError::Corrupt(e.to_string()))?;
     let mut written = 0;
-    for rowid in damaged {
-        let at = hlc.now(clock);
-        let wall = i64::try_from(at.wall_ms)
-            .map_err(|_| StoreError::Corrupt("a clock reading past the SQLite range".into()))?;
-        written += tx.conn.execute(
-            "UPDATE segment SET text = '', words = '[]', confidence = 0.0, speaker_id = NULL, \
-             deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
-             WHERE rowid = ?4 AND NOT (deleted = 1 AND text = '' AND words = '[]' \
-             AND confidence = 0.0 AND speaker_id IS NULL)",
-            rusqlite::params![
-                wall,
-                i64::from(at.logical),
-                at.node.as_uuid().as_bytes().as_slice(),
-                rowid
-            ],
-        )?;
+    for ((table, sql), rowids) in ERASE_BY_ROWID.iter().zip(damaged) {
+        for rowid in rowids {
+            let at = hlc.now(clock);
+            let wall = i64::try_from(at.wall_ms)
+                .map_err(|_| StoreError::Corrupt("a clock reading past the SQLite range".into()))?;
+            let node = at.node.as_uuid().as_bytes().to_vec();
+            let logical = i64::from(at.logical);
+            written += if *table == "summary" {
+                c.execute(
+                    sql,
+                    rusqlite::params![wall, logical, node, rowid, cleared_body],
+                )?
+            } else {
+                c.execute(sql, rusqlite::params![wall, logical, node, rowid])?
+            };
+        }
     }
-    Ok(written)
+    Ok(DamagedRows {
+        written,
+        meeting_row: matches!(meeting_row, Some(Err(_))),
+    })
 }
 
-/// The deletion's view of the transaction: every read as [`StoreTx`]'s, except that segment rows
-/// that do not read are left out (they were erased in SQL first, [`erase_damaged_segments`]).
-struct ReadableSegments<'a, 'b>(&'a mut StoreTx<'b>);
+/// The deletion's view of the transaction: every read as [`StoreTx`]'s, except that rows that
+/// do not read are left out (they were erased in SQL first, [`erase_damaged_rows`]); a damaged
+/// meeting row reads as an erased tombstone, so the core rule writes nothing over it.
+struct ReadableRows<'a, 'b> {
+    tx: &'a mut StoreTx<'b>,
+    meeting: EntityId,
+    meeting_damaged: bool,
+}
 
-impl MeetingRepo for ReadableSegments<'_, '_> {
+impl MeetingRepo for ReadableRows<'_, '_> {
     fn meeting(&self, id: EntityId) -> Result<Option<Meeting>, RepoError> {
-        self.0.meeting(id)
+        if self.meeting_damaged && id == self.meeting {
+            // Already erased in SQL; these values are never written (the core rule finds
+            // nothing to change in an erased tombstone).
+            let stamp = HlcTimestamp {
+                wall_ms: 0,
+                logical: 0,
+                node: DeviceId::from_bytes([0; 16]),
+            };
+            return Ok(Some(Meeting {
+                id,
+                meta: SyncMeta {
+                    created_at: stamp,
+                    updated_at: stamp,
+                    deleted: true,
+                    origin_device_id: stamp.node,
+                },
+                title: String::new(),
+                started_unix_ms: 0,
+                utc_offset_minutes: 0,
+                duration_ms: None,
+                tags: Vec::new(),
+                template: Template::General,
+                folder_id: None,
+                summary_kept_local: false,
+            }));
+        }
+        self.tx.meeting(id)
     }
     fn meetings(&self) -> Result<Vec<Meeting>, RepoError> {
-        self.0.meetings()
+        self.tx.meetings()
     }
     fn put_meeting(&mut self, meeting: Meeting) -> Result<(), RepoError> {
-        self.0.put_meeting(meeting)
+        self.tx.put_meeting(meeting)
     }
     fn tracks(&self, meeting: EntityId) -> Result<Vec<Track>, RepoError> {
-        self.0.tracks(meeting)
+        Ok(for_deletion::tracks(&self.tx.conn, meeting)?.0)
     }
     fn put_track(&mut self, track: Track) -> Result<(), RepoError> {
-        self.0.put_track(track)
+        self.tx.put_track(track)
     }
     fn segments(&self, meeting: EntityId) -> Result<Vec<SegmentRow>, RepoError> {
-        Ok(crate::repo::segments_or_damaged(&self.0.conn, meeting)?.0)
+        Ok(for_deletion::segments(&self.tx.conn, meeting)?.0)
     }
     fn put_segment(&mut self, segment: SegmentRow) -> Result<(), RepoError> {
-        self.0.put_segment(segment)
+        self.tx.put_segment(segment)
     }
     fn speakers(&self, meeting: EntityId) -> Result<Vec<Speaker>, RepoError> {
-        self.0.speakers(meeting)
+        Ok(for_deletion::speakers(&self.tx.conn, meeting)?.0)
     }
     fn put_speaker(&mut self, speaker: Speaker) -> Result<(), RepoError> {
-        self.0.put_speaker(speaker)
+        self.tx.put_speaker(speaker)
     }
     fn notes(&self, meeting: EntityId) -> Result<Vec<Note>, RepoError> {
-        self.0.notes(meeting)
+        Ok(for_deletion::notes(&self.tx.conn, meeting)?.0)
     }
     fn put_note(&mut self, note: Note) -> Result<(), RepoError> {
-        self.0.put_note(note)
+        self.tx.put_note(note)
     }
     fn summaries(&self, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
-        self.0.summaries(meeting)
+        Ok(for_deletion::summaries(&self.tx.conn, meeting)?.0)
     }
     fn put_summary(&mut self, summary: Summary) -> Result<(), RepoError> {
-        self.0.put_summary(summary)
+        self.tx.put_summary(summary)
     }
 }
 
