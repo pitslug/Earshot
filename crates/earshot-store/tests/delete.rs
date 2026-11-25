@@ -321,6 +321,95 @@ fn store_delete_meeting_tolerates_audio_already_gone() {
     assert!(!data.root().join("audio").join(m.id.to_string()).exists());
 }
 
+/// T14.26: a segment row the store cannot read never makes its meeting undeletable; its text
+/// and words are erased as a readable row's are, and nothing of it survives on disk.
+#[test]
+fn store_delete_meeting_erases_a_segment_row_it_cannot_read() {
+    let tmp = TempDir::new("delete-damaged-row");
+    let data = DataDir::new(tmp.path().join("Earshot"));
+    data.create().unwrap();
+    let db = data.db_path();
+    let mut store = Store::open(&db).unwrap();
+    let mut w = World::new();
+    let m = Meeting::new("Plain", 1, 0, Template::General, &mut w.stamp());
+    store.put_meeting(m.clone()).unwrap();
+    let t = Track::new(m.id, TrackId::Mic, None, ClockDomain::Qpc, &mut w.stamp());
+    store.put_track(t.clone()).unwrap();
+    let said = [
+        "Readable-needle-5c1d",
+        "Words-damaged-needle-a903",
+        "Start-damaged-needle-77e2",
+    ];
+    let mut ids = Vec::new();
+    for (i, text) in said.iter().enumerate() {
+        let at = 1_000 * i as u64;
+        let seg = Segment::from_words(
+            EntityId::generate(&w.clock, &mut w.rng),
+            t.id,
+            vec![Word::new(*text, at, at + 400, 0.9)],
+            MeetingTime::ZERO,
+        );
+        ids.push(seg.id);
+        let row = SegmentRow::new(m.id, TranscriptPass::Final, seg, &mut w.hlc, &w.clock);
+        store.put_segment(row).unwrap();
+    }
+    store.checkpoint().unwrap();
+    drop(store);
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        for (sql, id) in [
+            (
+                "UPDATE segment SET words = '[damaged' WHERE id = ?1",
+                ids[1],
+            ),
+            ("UPDATE segment SET start_ms = -7 WHERE id = ?1", ids[2]),
+        ] {
+            let n = c.execute(sql, [id.as_uuid().as_bytes().to_vec()]).unwrap();
+            assert_eq!(n, 1);
+        }
+    }
+    let mut store = Store::open(&db).unwrap();
+    assert!(store.segments(m.id).is_err(), "the rows do not read");
+    for needle in said {
+        assert!(on_disk(&db, needle.as_bytes()), "sanity: {needle} on disk");
+    }
+
+    let reader = rusqlite::Connection::open(&db).unwrap();
+    let report = store
+        .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+        .unwrap();
+    assert_eq!(report.rows_tombstoned, 1 + 1 + 3, "{report:?}");
+    assert!(store.meeting(m.id).unwrap().unwrap().meta.deleted);
+    // Every row of the meeting is a tombstone with its text and words gone, read in SQL.
+    let rows: Vec<(String, String, i64)> = {
+        let mut st = reader
+            .prepare("SELECT text, words, deleted FROM segment WHERE meeting_id = ?1")
+            .unwrap();
+        st.query_map([m.id.as_uuid().as_bytes().to_vec()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    assert_eq!(rows.len(), 3);
+    for row in &rows {
+        assert_eq!(row, &(String::new(), "[]".to_owned(), 1), "{rows:?}");
+    }
+    for needle in said {
+        assert!(
+            !on_disk(&db, needle.as_bytes()),
+            "{needle} survived in the database, its free pages or the WAL"
+        );
+    }
+    // A second deletion finds nothing left to do.
+    let again = store
+        .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+        .unwrap();
+    assert_eq!(again, MeetingDeletion::default());
+    drop(reader);
+}
+
 #[test]
 fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not() {
     // T9.1u: a person named a speaker in M1 and in M2, with a voiceprint and a centroid in M2's

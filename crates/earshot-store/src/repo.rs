@@ -423,6 +423,34 @@ pub(crate) fn segments_of(c: &Connection, meeting: EntityId) -> Result<Vec<Segme
     query(c, &sql, &[id_value(meeting)], segment_row)
 }
 
+/// The segment rows of `meeting` in [`segments_of`]'s order, split into those that read and
+/// the SQLite rowids of those whose stored values do not convert (damaged rows, T14.26).
+pub(crate) fn segments_or_damaged(
+    c: &Connection,
+    meeting: EntityId,
+) -> Result<(Vec<SegmentRow>, Vec<i64>), RepoError> {
+    let mut cols = synced_cols(&SEGMENT);
+    let rowid_at = cols.len();
+    cols.push("rowid");
+    let sql = select_sql(
+        "segment",
+        &cols,
+        "WHERE meeting_id = ?1 ORDER BY start_ms, id",
+    );
+    let rows = query(c, &sql, &[id_value(meeting)], |r| {
+        Ok((segment_row(r), r.get::<_, i64>(rowid_at)?))
+    })?;
+    let (mut readable, mut damaged) = (Vec::new(), Vec::new());
+    for (row, rowid) in rows {
+        match row {
+            Ok(row) => readable.push(row),
+            Err(e) if is_unreadable(&e) => damaged.push(rowid),
+            Err(e) => return Err(storage(e)),
+        }
+    }
+    Ok((readable, damaged))
+}
+
 /// The query of [`has_live_segment`]: `?1` the meeting id, `?2` the pass name.
 pub(crate) const HAS_LIVE_SEGMENT_SQL: &str =
     "SELECT 1 FROM segment WHERE meeting_id = ?1 AND pass = ?2 AND deleted = 0 LIMIT 1";
@@ -471,10 +499,7 @@ fn shown_lines(c: &Connection, meeting: EntityId) -> Result<ShownLines, RepoErro
         for row in rows {
             match row {
                 Ok(line) => out.lines.push(line),
-                // Text that is not UTF-8 is a damaged value here too.
-                Err(e) if is_damaged(&e) || matches!(e, rusqlite::Error::Utf8Error(..)) => {
-                    out.unreadable += 1;
-                }
+                Err(e) if is_unreadable(&e) => out.unreadable += 1,
                 Err(e) => return Err(storage(e)),
             }
         }
@@ -1199,6 +1224,12 @@ fn is_damaged(e: &rusqlite::Error) -> bool {
             | rusqlite::Error::IntegralValueOutOfRange(..)
             | rusqlite::Error::InvalidColumnType(..)
     )
+}
+
+/// [`is_damaged`], or text that is not UTF-8: a row this crate's own readers leave out and
+/// count (T14.24, T14.26). The sync outbox keeps [`is_damaged`] alone.
+fn is_unreadable(e: &rusqlite::Error) -> bool {
+    is_damaged(e) || matches!(e, rusqlite::Error::Utf8Error(..))
 }
 
 fn synced_by_id_raw(

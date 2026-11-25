@@ -261,6 +261,36 @@ fn delete_meeting_is_refused_while_a_job_holds_it() {
     ));
 }
 
+/// T14.26: a meeting with a segment row the store cannot read is still deleted, the row's text
+/// erased with the rest.
+#[test]
+fn delete_meeting_with_a_segment_row_that_does_not_read() {
+    let dir = TempDir::new("delete-damaged-row");
+    let (svc, _clock) = services(&dir);
+    let m = meeting(&svc, "Damaged", 1);
+    let rows = svc.store().segments(m).unwrap();
+    assert!(rows.len() >= 2);
+    {
+        let c = rusqlite::Connection::open(svc.data.db_path()).unwrap();
+        let n = c
+            .execute(
+                "UPDATE segment SET words = 'not json' WHERE id = ?1",
+                [rows[0].segment.id.as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+    assert!(svc.store().segments(m).is_err());
+    svc.delete_meeting(m).unwrap();
+    assert!(svc.store().meeting(m).unwrap().unwrap().meta.deleted);
+    let rows = svc.store().segments(m).unwrap();
+    assert!(
+        rows.iter()
+            .all(|r| r.meta.deleted && r.segment.text.is_empty() && r.segment.words.is_empty()),
+        "every row erased, the damaged one included"
+    );
+}
+
 #[test]
 fn delete_meeting_keeps_records_of_a_deleted_meeting_a_job_still_holds() {
     let dir = TempDir::new("delete-held");

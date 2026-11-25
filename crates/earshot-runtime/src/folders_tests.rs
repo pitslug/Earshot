@@ -520,6 +520,46 @@ fn folders_delete_with_a_busy_meeting_leaves_the_folder_holding_it() {
     assert!(list(&svc).unwrap().is_empty());
 }
 
+/// T14.26: a meeting deletion whose checkpoint another connection blocked (`Busy` after the
+/// commit) is a deleted meeting, so the folder goes too, its erasure checkpoint pending.
+#[test]
+fn folders_delete_with_meetings_counts_busy_after_the_commit_as_deleted() {
+    let dir = TempDir::new("folders-delete-checkpoint-busy");
+    let (svc, _clock) = services(&dir);
+    let a = meeting(&svc, "Gone one", 1);
+    let b = meeting(&svc, "Gone two", 2);
+    let f = create(&svc, "Retired").unwrap();
+    move_meeting(&svc, a, Some(f)).unwrap();
+    move_meeting(&svc, b, Some(f)).unwrap();
+    // Another connection holds a read snapshot, so no checkpoint can empty the WAL.
+    let reader = rusqlite::Connection::open(svc.data.db_path()).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM meeting", [], |r| r.get(0))
+        .unwrap();
+    assert!(matches!(
+        svc.delete_meeting(a),
+        Err(RuntimeError::Store(earshot_store::StoreError::Busy(_)))
+    ));
+    assert!(svc.store().meeting(a).unwrap().unwrap().meta.deleted);
+    let done = delete_with_meetings(&svc, f).unwrap();
+    assert_eq!(
+        done,
+        FolderDeletion {
+            folder_deleted: true,
+            meetings_deleted: 1,
+            meetings_left: 0,
+            meetings_unfiled: 0,
+            checkpoint_pending: true,
+        }
+    );
+    assert!(svc.store().meeting(b).unwrap().unwrap().meta.deleted);
+    assert!(list(&svc).unwrap().is_empty());
+    reader.execute_batch("COMMIT").unwrap();
+    drop(reader);
+    svc.store().flush_erasures().unwrap();
+}
+
 #[test]
 fn folders_a_meeting_moved_in_during_the_delete_loop_ends_unfiled() {
     let dir = TempDir::new("folders-delete-race");

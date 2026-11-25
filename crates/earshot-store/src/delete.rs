@@ -6,7 +6,10 @@
 //! [`Store::remove_person`] deletes them.
 
 use earshot_core::identity::{Clock, EntityId, Hlc};
-use earshot_core::model::{AudioFileRepo, MeetingRepo, RepoError, delete_meeting};
+use earshot_core::model::{
+    AudioFileRepo, Meeting, MeetingRepo, Note, RepoError, SegmentRow, Speaker, Summary, Track,
+    delete_meeting,
+};
 use earshot_core::voiceprint::{VoiceprintRepo, identity_of};
 use rusqlite::Connection;
 
@@ -89,8 +92,11 @@ impl Store {
         report.stray_audio_removed = remove_meeting_audio_dir(data, meeting)?;
 
         self.transaction(|tx| -> Result<(), StoreError> {
-            let erased = delete_meeting(tx, meeting, hlc, clock)?;
-            report.rows_tombstoned = erased.rows_written;
+            // A segment row that does not read is erased in SQL by its rowid first (T14.26), so
+            // it can neither keep its text nor stop the deletion; the core rule erases the rest.
+            let damaged = erase_damaged_segments(tx, meeting, hlc, clock)?;
+            let erased = delete_meeting(&mut ReadableSegments(tx), meeting, hlc, clock)?;
+            report.rows_tombstoned = erased.rows_written + damaged;
             report.export_records_removed = tx.conn.execute(
                 "DELETE FROM export_record WHERE meeting_id = ?1",
                 [meeting.as_uuid().as_bytes().as_slice()],
@@ -207,6 +213,84 @@ fn local_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(keys)
+}
+
+/// Erases each segment row of `meeting` whose stored values do not convert (T14.26), by its
+/// SQLite rowid, as [`delete_meeting`] erases a row it can read: text and words cleared,
+/// confidence 0, no speaker, a tombstone with this device's stamp. A row already erased so is
+/// not written again. Returns how many were written.
+fn erase_damaged_segments<C: Clock + ?Sized>(
+    tx: &StoreTx<'_>,
+    meeting: EntityId,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<usize, StoreError> {
+    let (_, damaged) = crate::repo::segments_or_damaged(&tx.conn, meeting)?;
+    let mut written = 0;
+    for rowid in damaged {
+        let at = hlc.now(clock);
+        let wall = i64::try_from(at.wall_ms)
+            .map_err(|_| StoreError::Corrupt("a clock reading past the SQLite range".into()))?;
+        written += tx.conn.execute(
+            "UPDATE segment SET text = '', words = '[]', confidence = 0.0, speaker_id = NULL, \
+             deleted = 1, updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+             WHERE rowid = ?4 AND NOT (deleted = 1 AND text = '' AND words = '[]' \
+             AND confidence = 0.0 AND speaker_id IS NULL)",
+            rusqlite::params![
+                wall,
+                i64::from(at.logical),
+                at.node.as_uuid().as_bytes().as_slice(),
+                rowid
+            ],
+        )?;
+    }
+    Ok(written)
+}
+
+/// The deletion's view of the transaction: every read as [`StoreTx`]'s, except that segment rows
+/// that do not read are left out (they were erased in SQL first, [`erase_damaged_segments`]).
+struct ReadableSegments<'a, 'b>(&'a mut StoreTx<'b>);
+
+impl MeetingRepo for ReadableSegments<'_, '_> {
+    fn meeting(&self, id: EntityId) -> Result<Option<Meeting>, RepoError> {
+        self.0.meeting(id)
+    }
+    fn meetings(&self) -> Result<Vec<Meeting>, RepoError> {
+        self.0.meetings()
+    }
+    fn put_meeting(&mut self, meeting: Meeting) -> Result<(), RepoError> {
+        self.0.put_meeting(meeting)
+    }
+    fn tracks(&self, meeting: EntityId) -> Result<Vec<Track>, RepoError> {
+        self.0.tracks(meeting)
+    }
+    fn put_track(&mut self, track: Track) -> Result<(), RepoError> {
+        self.0.put_track(track)
+    }
+    fn segments(&self, meeting: EntityId) -> Result<Vec<SegmentRow>, RepoError> {
+        Ok(crate::repo::segments_or_damaged(&self.0.conn, meeting)?.0)
+    }
+    fn put_segment(&mut self, segment: SegmentRow) -> Result<(), RepoError> {
+        self.0.put_segment(segment)
+    }
+    fn speakers(&self, meeting: EntityId) -> Result<Vec<Speaker>, RepoError> {
+        self.0.speakers(meeting)
+    }
+    fn put_speaker(&mut self, speaker: Speaker) -> Result<(), RepoError> {
+        self.0.put_speaker(speaker)
+    }
+    fn notes(&self, meeting: EntityId) -> Result<Vec<Note>, RepoError> {
+        self.0.notes(meeting)
+    }
+    fn put_note(&mut self, note: Note) -> Result<(), RepoError> {
+        self.0.put_note(note)
+    }
+    fn summaries(&self, meeting: EntityId) -> Result<Vec<Summary>, RepoError> {
+        self.0.summaries(meeting)
+    }
+    fn put_summary(&mut self, summary: Summary) -> Result<(), RepoError> {
+        self.0.put_summary(summary)
+    }
 }
 
 /// "Speaker N" for the smallest N no name of `taken` uses, as the final pass numbers them.

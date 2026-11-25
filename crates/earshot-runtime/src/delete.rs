@@ -52,8 +52,9 @@ impl Services {
     pub fn delete_meeting(&self, meeting: EntityId) -> Result<MeetingDeletion, RuntimeError> {
         let _claim = self.begin_deletion(meeting)?;
         let clock = Arc::clone(&self.clock);
-        let mut db = self.store();
+        // The activity lock, then the store lock, never nested (T14.26).
         let leased = self.leased_meetings();
+        let mut db = self.store();
         // Records of other meetings whose rows are deleted or missing and that no job holds.
         let mut gone = BTreeSet::new();
         for key in db.local_keys()? {

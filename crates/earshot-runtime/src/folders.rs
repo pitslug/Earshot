@@ -321,7 +321,9 @@ pub fn delete_keeping_meetings(
 /// Deletes `folder` and its meetings: each meeting through [`Services::delete_meeting`]
 /// (people and voiceprints stay), with no store or activity lock held across the loop. A
 /// deletion that fails (the meeting is busy, [`RuntimeError::MeetingBusy`], or any other
-/// error) is counted and the rest go on. Only when every one was deleted does the folder go,
+/// error) is counted and the rest go on; one whose checkpoint was blocked after its commit
+/// (`Busy`, the meeting reading deleted) counts as deleted, with
+/// [`FolderDeletion::checkpoint_pending`] (T14.26). Only when every one was deleted does the folder go,
 /// in the closing transaction of [`delete_keeping_meetings`] (a meeting moved in during the
 /// loop is unfiled, not deleted); otherwise the folder stays with what is left.
 ///
@@ -351,6 +353,12 @@ pub(crate) fn delete_with_meetings_then(
     for meeting in filed {
         match services.delete_meeting(meeting) {
             Ok(_) => out.meetings_deleted += 1,
+            // The checkpoint after the deletion's commit was blocked (T14.26): the meeting is
+            // deleted and its erasure leaves the WAL at the next checkpoint.
+            Err(e) if committed_but_busy(services, meeting, &e)? => {
+                out.meetings_deleted += 1;
+                out.checkpoint_pending = true;
+            }
             Err(_) => failed += 1,
         }
         after_each(meeting);
@@ -361,8 +369,28 @@ pub(crate) fn delete_with_meetings_then(
     }
     out.meetings_unfiled = write(services, |tx, stamp| close_folder(tx, stamp, folder))?;
     out.folder_deleted = true;
-    out.checkpoint_pending = services.store().flush_erasures().is_err();
+    out.checkpoint_pending |= services.store().flush_erasures().is_err();
     Ok(out)
+}
+
+/// Whether `error` from deleting `meeting` came after the deletion committed: only the
+/// checkpoint after the commit gives [`earshot_store::StoreError::Busy`] there
+/// ([`earshot_store::Store::delete_meeting`]), and the meeting must read deleted.
+fn committed_but_busy(
+    services: &Services,
+    meeting: EntityId,
+    error: &RuntimeError,
+) -> Result<bool, RuntimeError> {
+    if !matches!(
+        error,
+        RuntimeError::Store(earshot_store::StoreError::Busy(_))
+    ) {
+        return Ok(false);
+    }
+    Ok(services
+        .store()
+        .meeting(meeting)?
+        .is_some_and(|m| m.meta.deleted))
 }
 
 #[cfg(test)]

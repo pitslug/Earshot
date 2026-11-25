@@ -479,3 +479,92 @@ fn retention_run_reports_deletions_made_before_a_failed_orphan_sweep() {
     let r = run_choice(&svc, AudioRetention::OneHour).unwrap();
     assert!(!r.sweep_failed && r.orphans_removed == 1, "{r:?}");
 }
+
+/// T14.26, clock-free: a step is the wall clock running more than the tolerance ahead of the
+/// time that passed; the trusted time is the last run's wall clock plus that time.
+#[test]
+fn retention_a_clock_step_is_the_wall_clock_running_ahead_of_the_time_that_passed() {
+    use std::time::Duration;
+    let last = LastRun {
+        wall_ms: 1_000_000,
+        since_start: Duration::from_secs(100),
+        choice: AudioRetention::OneHour,
+        due: BTreeSet::new(),
+    };
+    let at = |s: u64| Duration::from_secs(100 + s);
+    // The first run of a process has nothing to compare with.
+    assert_eq!(stepped_from(None, 9_000_000_000, at(1)), None);
+    // A clock that kept time, or a sleep both clocks counted (15 min later).
+    assert_eq!(
+        stepped_from(Some(&last), 1_000_000 + 900_000, at(900)),
+        None
+    );
+    // Within the tolerance, and a step backwards.
+    let edge = 1_000_000 + 900_000 + CLOCK_STEP_TOLERANCE_MS;
+    assert_eq!(stepped_from(Some(&last), edge, at(900)), None);
+    assert_eq!(stepped_from(Some(&last), 10, at(900)), None);
+    // Past it: the trusted time is the last wall clock plus the time that passed.
+    assert_eq!(
+        stepped_from(Some(&last), edge + 1, at(900)),
+        Some(1_000_000 + 900_000)
+    );
+    assert_eq!(
+        stepped_from(Some(&last), 1_000_000 + 30 * DAY_MS, at(1)),
+        Some(1_001_000)
+    );
+}
+
+/// T14.26: after a forward clock step the unattended run keeps what only the step made due and
+/// deletes it when the next run agrees; what the previous run already found due goes at once.
+#[test]
+fn retention_run_after_a_clock_step_waits_for_a_second_run_to_agree() {
+    let dir = TempDir::new("retention");
+    let (svc, clock) = services(&dir);
+    set_audio_retention(&mut svc.store(), AudioRetention::OneHour).unwrap();
+    let held = recorded(&svc, 111);
+    after(&svc, &held, None, SkipReason::NotRequested);
+    clock.advance_ms(2 * HOUR_MS);
+    let fresh = recorded(&svc, 112);
+    after(&svc, &fresh, None, SkipReason::NotRequested);
+    // First run: `held` is due but a job holds it; `fresh` is not due yet.
+    let lease = svc.lease_meeting(held.meeting).unwrap();
+    let r = run(&svc).unwrap();
+    assert_eq!((r.meetings, r.busy, r.waiting), (0, 1, 0), "{r:?}");
+    drop(lease);
+    // The wall clock jumps a day ahead at once.
+    clock.advance_ms(DAY_MS);
+    let r = run(&svc).unwrap();
+    assert_eq!((r.meetings, r.waiting), (1, 1), "{r:?}");
+    assert!(r.some_left());
+    assert!(audio_paths(&svc, held.meeting).iter().all(|p| !p.exists()));
+    assert!(audio_paths(&svc, fresh.meeting).iter().all(|p| p.exists()));
+    // The next run, with no new step, agrees and deletes it.
+    let r = run(&svc).unwrap();
+    assert_eq!((r.meetings, r.waiting), (1, 0), "{r:?}");
+    assert!(audio_paths(&svc, fresh.meeting).iter().all(|p| !p.exists()));
+}
+
+/// T14.26: a step the clock takes back before the next run deletes nothing; a saved setting
+/// (`run_choice`) applies at once whatever the clock did.
+#[test]
+fn retention_run_after_a_clock_step_taken_back_deletes_nothing() {
+    let dir = TempDir::new("retention");
+    let (svc, clock) = services(&dir);
+    set_audio_retention(&mut svc.store(), AudioRetention::OneHour).unwrap();
+    let m = recorded(&svc, 121);
+    after(&svc, &m, None, SkipReason::NotRequested);
+    let before = clock.now_unix_ms();
+    assert_eq!(run(&svc).unwrap().meetings, 0);
+    clock.advance_ms(30 * DAY_MS);
+    let r = run(&svc).unwrap();
+    assert_eq!((r.meetings, r.waiting), (0, 1), "{r:?}");
+    clock.set_ms(before + 1);
+    let r = run(&svc).unwrap();
+    assert_eq!((r.meetings, r.waiting), (0, 0), "{r:?}");
+    assert!(audio_paths(&svc, m.meeting).iter().all(|p| p.exists()));
+    // The same step before a saved setting's run: it applies at once, as its preview said.
+    clock.advance_ms(30 * DAY_MS);
+    assert_eq!(preview(&svc, AudioRetention::OneHour).unwrap().meetings, 1);
+    let r = run_choice(&svc, AudioRetention::OneHour).unwrap();
+    assert_eq!((r.meetings, r.waiting), (1, 0), "{r:?}");
+}
