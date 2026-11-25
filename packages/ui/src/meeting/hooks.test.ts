@@ -72,7 +72,7 @@ describe("useLiveMeeting and the app's snapshot (T14.51)", () => {
     expect(result.current.meeting?.meetingId).toBe("m");
     expect(result.current.meeting?.lines.map((l) => l.text)).toEqual(["An invented line."]);
     // A late answer changes nothing.
-    await act(async () => answer({ starting: false, followed: null, behind: [] }));
+    await act(async () => answer({ followed: null, behind: [] }));
     expect(result.current.meeting?.lines).toHaveLength(1);
   });
 
@@ -89,7 +89,6 @@ describe("useLiveMeeting and the app's snapshot (T14.51)", () => {
   it("keeps the lines shown when its effect runs again, and reads the snapshot once", async () => {
     // The app says meeting "m" records: a second seed would replace what the window shows.
     const s = withSnapshot(async () => ({
-      starting: false,
       followed: {
         meeting: "m",
         mode: "Call",

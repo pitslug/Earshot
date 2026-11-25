@@ -1577,16 +1577,14 @@ fn banner_keys(s: &FollowedSnapshot) -> Vec<(&str, bool)> {
 #[test]
 fn meeting_events_snapshot_with_nothing_sent_has_no_meeting() {
     let r = SentRecord::default();
-    let s = r.snapshot(false, Instant::now());
+    let s = r.snapshot(Instant::now());
     assert_eq!(
         s,
         MeetingSnapshot {
-            starting: false,
             followed: None,
             behind: Vec::new(),
         }
     );
-    assert!(r.snapshot(true, Instant::now()).starting);
 }
 
 #[test]
@@ -1640,7 +1638,7 @@ fn meeting_events_snapshot_keeps_the_banners_in_force_and_the_counts_of_a_record
         },
         t0,
     );
-    let s = r.snapshot(false, t0 + Duration::from_millis(95_000));
+    let s = r.snapshot(t0 + Duration::from_millis(95_000));
     let f = s.followed.expect("the recording");
     assert_eq!(f.meeting, "m1");
     assert_eq!(f.mode, CaptureMode::Call);
@@ -1660,7 +1658,7 @@ fn meeting_events_snapshot_keeps_the_banners_in_force_and_the_counts_of_a_record
         (12, Some(3.5), TranscriptState::CatchingUp, true)
     );
     assert!(s.behind.is_empty());
-    let json = serde_json::to_string(&r.snapshot(false, t0)).unwrap();
+    let json = serde_json::to_string(&r.snapshot(t0)).unwrap();
     assert!(!json.contains("invented"), "{json}");
 }
 
@@ -1694,10 +1692,7 @@ fn meeting_events_snapshot_of_a_finishing_meeting_freezes_its_clock_and_marks_la
         total: Some(6),
     };
     r.apply(1, &step, t0);
-    let f = r
-        .snapshot(false, t0 + Duration::from_secs(600))
-        .followed
-        .unwrap();
+    let f = r.snapshot(t0 + Duration::from_secs(600)).followed.unwrap();
     assert_eq!(f.elapsed_ms, 60_000);
     assert_eq!(f.ended, Some(EndedReason::Stopped));
     assert!(!f.call_end_offer);
@@ -1722,7 +1717,7 @@ fn meeting_events_snapshot_of_a_finishing_meeting_freezes_its_clock_and_marks_la
         },
         t0,
     );
-    assert_eq!(r.snapshot(false, t0).followed, None);
+    assert_eq!(r.snapshot(t0).followed, None);
 }
 
 #[test]
@@ -1749,7 +1744,7 @@ fn meeting_events_snapshot_puts_an_older_meeting_behind_the_newer_one() {
         },
         t0,
     );
-    let s = r.snapshot(false, t0);
+    let s = r.snapshot(t0);
     assert_eq!(s.followed.as_ref().unwrap().meeting, "new");
     assert_eq!(s.followed.as_ref().unwrap().ended, None);
     assert_eq!(
@@ -1773,7 +1768,7 @@ fn meeting_events_snapshot_puts_an_older_meeting_behind_the_newer_one() {
         },
         t0,
     );
-    let s = r.snapshot(false, t0);
+    let s = r.snapshot(t0);
     assert_eq!(s.followed, None);
     assert_eq!(s.behind.len(), 1);
 }
@@ -1818,11 +1813,7 @@ fn meeting_events_snapshot_folding_an_event_twice_changes_nothing() {
         for e in &events[cut - 1..] {
             twice.apply(1, e, t0);
         }
-        assert_eq!(
-            twice.snapshot(false, t0),
-            once.snapshot(false, t0),
-            "cut at {cut}"
-        );
+        assert_eq!(twice.snapshot(t0), once.snapshot(t0), "cut at {cut}");
     }
 }
 
@@ -1835,17 +1826,17 @@ fn meeting_events_snapshot_holds_the_call_end_question_as_last_sent() {
     r.apply(1, &started("m1", CaptureMode::Call), t0);
     let offer = |open, stops| MeetingEvent::CallEndOffer { open, stops };
     r.apply(1, &offer(true, true), t0);
-    let f = r.snapshot(false, t0).followed.unwrap();
+    let f = r.snapshot(t0).followed.unwrap();
     assert_eq!((f.call_end_offer, f.call_end_stops), (true, true));
     r.apply(1, &offer(true, false), t0);
-    let f = r.snapshot(false, t0).followed.unwrap();
+    let f = r.snapshot(t0).followed.unwrap();
     assert_eq!((f.call_end_offer, f.call_end_stops), (true, false));
     // Applied again on top (a window that heard it while reading): the same.
     r.apply(1, &offer(true, false), t0);
-    let again = r.snapshot(false, t0).followed.unwrap();
+    let again = r.snapshot(t0).followed.unwrap();
     assert_eq!(again, f);
     // Closed by "Keep recording": closed, in the words it was last asked in.
     r.apply(1, &offer(false, false), t0);
-    let f = r.snapshot(false, t0).followed.unwrap();
+    let f = r.snapshot(t0).followed.unwrap();
     assert_eq!((f.call_end_offer, f.call_end_stops), (false, false));
 }

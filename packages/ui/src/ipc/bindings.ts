@@ -47,8 +47,7 @@ export const commands = {
 	keepRecording: () => __TAURI_INVOKE<void>("keep_recording"),
 	/**
 	 *  What a window that has just loaded needs to rebuild the meeting screen (T14.51): the meeting
-	 *  the screen follows, recording or finishing, the older ones finishing behind it, and whether a
-	 *  start is under way. A window subscribes to `MeetingEvent`s first, then reads this, then applies
+	 *  the screen follows, recording or finishing, and the older ones finishing behind it. A window subscribes to `MeetingEvent`s first, then reads this, then applies
 	 *  every event it heard meanwhile on top ([`MeetingDriver::snapshot`]). No transcript text: lines
 	 *  already shown are not kept.
 	 */
@@ -1645,11 +1644,10 @@ export type MeetingListItem = {
 /**
  *  What a window that has just loaded needs to show the meetings in progress (T14.51): built only
  *  from the [`MeetingEvent`]s the driver has sent ([`SentRecord`]), so it says nothing those events
- *  did not. Transcript text is not in it: lines already shown are not kept.
+ *  did not. Transcript text is not in it: lines already shown are not kept. A start whose
+ *  `Started` has not gone out is not in it: the window shows that meeting from its `Started`.
  */
 export type MeetingSnapshot = {
-	/**  A start is under way and its `Started` has not gone out: pre-flight or the capture's start. */
-	starting: boolean,
 	/**  The meeting the screen follows. */
 	followed: FollowedSnapshot | null,
 	/**  Older meetings finishing behind it, oldest first. */

@@ -705,8 +705,7 @@ fn keep_recording(driver: State<'_, MeetingDriver>) {
 }
 
 /// What a window that has just loaded needs to rebuild the meeting screen (T14.51): the meeting
-/// the screen follows, recording or finishing, the older ones finishing behind it, and whether a
-/// start is under way. A window subscribes to `MeetingEvent`s first, then reads this, then applies
+/// the screen follows, recording or finishing, and the older ones finishing behind it. A window subscribes to `MeetingEvent`s first, then reads this, then applies
 /// every event it heard meanwhile on top ([`MeetingDriver::snapshot`]). No transcript text: lines
 /// already shown are not kept.
 #[tauri::command]

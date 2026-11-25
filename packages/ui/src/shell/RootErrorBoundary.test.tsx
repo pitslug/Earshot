@@ -87,8 +87,8 @@ function followed(meeting: string, ended: FollowedSnapshot["ended"] = null): Fol
 }
 
 /** A recording this window never heard start (the window loaded during it). */
-const RECORDING: MeetingSnapshot = { starting: false, followed: followed("m-rec"), behind: [] };
-const NOTHING: MeetingSnapshot = { starting: false, followed: null, behind: [] };
+const RECORDING: MeetingSnapshot = { followed: followed("m-rec"), behind: [] };
+const NOTHING: MeetingSnapshot = { followed: null, behind: [] };
 
 function setup(over: Partial<Ipc> = {}, snapshot: MeetingSnapshot = NOTHING) {
   const listeners = new Set<(e: MeetingEvent) => void>();
@@ -290,9 +290,8 @@ describe("root error boundary", () => {
     expect(screen.getByText(CRASH_COPY.recording)).toBeInTheDocument();
   });
 
-  it("error boundary: a meeting that is only finishing, or still starting, offers no Stop", async () => {
+  it("error boundary: a meeting that is only finishing offers no Stop", async () => {
     const finishing: MeetingSnapshot = {
-      starting: true,
       followed: followed("m-done", "Stopped"),
       behind: [{ meeting: "m-older", progress: null }],
     };

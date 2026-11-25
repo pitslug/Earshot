@@ -526,7 +526,7 @@ impl MeetingDriver {
 
     /// What a window that has just loaded needs to show the meetings in progress (T14.51): the
     /// meeting the screen follows, recording or finishing, and the older ones finishing behind
-    /// it, as the events sent so far left them ([`SentRecord`]), and whether a start is under way.
+    /// it, as the events sent so far left them ([`SentRecord`]). A start whose `Started` has not gone out is not in it.
     ///
     /// How a window stays in step with the events: it subscribes to them first, reads this, and
     /// then applies every event it heard since subscribing, in order, on top. Each event is folded
@@ -536,13 +536,12 @@ impl MeetingDriver {
     /// by assignment (a banner by its key) and transcript text is not here at all.
     #[must_use]
     pub fn snapshot(&self) -> MeetingSnapshot {
-        let starting = self.threads().starting();
         let now = (self.0.now)();
         self.0
             .sent
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .snapshot(starting, now)
+            .snapshot(now)
     }
 
     /// Whether a stop was asked of the newest meeting.

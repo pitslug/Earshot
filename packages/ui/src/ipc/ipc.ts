@@ -97,8 +97,7 @@ export interface IpcCommands
   /** "Keep recording" on the offer to stop when a call seems to have ended. */
   keepRecording(): Promise<void>;
   /** What a window that has just loaded needs to show the meetings in progress (T14.51): the
-   * meeting the screen follows, recording or finishing, those finishing behind it, and whether a
-   * start is under way. Read after subscribing to `onMeetingEvent`; every event heard meanwhile is
+   * meeting the screen follows, recording or finishing, and those finishing behind it. Read after subscribing to `onMeetingEvent`; every event heard meanwhile is
    * then applied on top (`useLiveMeeting`). Rejects with an `IpcFailure`. */
   meetingSnapshot(): Promise<MeetingSnapshot>;
   /** Answers the offer to record a call that seems to have started (T12.86): with `start`, the

@@ -702,7 +702,7 @@ export function AppShell({
       }
       // A recording keeps the window, as its `Started` does; one finishing shows its own page,
       // the view the window opens on. A start still under way is shown by its `Started`, which
-      // has not gone out yet (`snapshot.starting`): nothing is shown for it before.
+      // has not gone out yet: the snapshot has nothing of it.
       if (followed.ended === null) setView("meeting");
     }
   });

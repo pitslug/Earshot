@@ -35,7 +35,7 @@ export interface SentRecord {
   /** Folds in `event`, sent at `now` (the injected clock's ms). */
   apply(event: MeetingEvent, now: number): void;
   /** The snapshot at `now`. */
-  snapshot(starting: boolean, now: number): MeetingSnapshot;
+  snapshot(now: number): MeetingSnapshot;
   /** Whether `meeting`'s `Started` was sent. */
   started(meeting: string): boolean;
 }
@@ -121,10 +121,9 @@ export function createSentRecord(): SentRecord {
           return;
       }
     },
-    snapshot(starting, now) {
+    snapshot(now) {
       const f = followed === null ? undefined : byId(followed);
       return {
-        starting,
         followed:
           f === undefined
             ? null

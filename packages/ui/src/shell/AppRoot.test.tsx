@@ -58,7 +58,6 @@ describe("the window's tree", () => {
     const stopMeeting = vi.fn(async () => {});
     // The app says the broken row's meeting records (T14.51: the boundary asks the snapshot).
     const meetingSnapshot = async (): Promise<MeetingSnapshot> => ({
-      starting: false,
       followed: {
         meeting: BROKEN.id,
         mode: "InRoom",

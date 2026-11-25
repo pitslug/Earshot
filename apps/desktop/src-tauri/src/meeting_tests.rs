@@ -3789,13 +3789,12 @@ fn banner_keys(s: &crate::meeting_events::MeetingSnapshot) -> Vec<String> {
 fn meeting_snapshot_with_nothing_running_has_no_meeting() {
     let (d, _rx, _clock) = snapshot_driver(FakePrepare::new(Script::Ends));
     let s = d.snapshot();
-    assert!(!s.starting);
     assert_eq!(s.followed, None);
     assert!(s.behind.is_empty());
 }
 
 #[test]
-fn meeting_snapshot_during_the_preflight_says_starting_and_names_no_meeting() {
+fn meeting_snapshot_during_the_preflight_names_no_meeting() {
     let dir = TempDir::new("snapshot-preflight");
     let svc = services(&dir);
     let (prepare, entered, let_through) = GatedPrepare::new(Script::UntilStopped);
@@ -3805,11 +3804,10 @@ fn meeting_snapshot_during_the_preflight_says_starting_and_names_no_meeting() {
         .recv_timeout(MEET_GUARD)
         .expect("the pre-flight began");
     let s = d.snapshot();
-    assert!(s.starting, "{s:?}");
-    assert_eq!(s.followed, None);
+    assert_eq!(s.followed, None, "{s:?}");
     let_through.send(()).unwrap();
     let meeting = starter.join().unwrap().unwrap();
-    let s = snapshot_when(&d, |s| !s.starting && s.followed.is_some());
+    let s = snapshot_when(&d, |s| s.followed.is_some());
     assert_eq!(s.followed.unwrap().meeting, meeting);
     d.stop().unwrap();
     until_summary(&rx);
@@ -3830,7 +3828,6 @@ fn meeting_snapshot_of_a_recording_keeps_its_banners_in_force_and_its_clock() {
     assert_eq!(f.mode, CaptureMode::Call);
     assert_eq!(f.tracks, [LiveTrack::You, LiveTrack::Them]);
     assert_eq!(f.ended, None);
-    assert!(!s.starting);
     // Its condition is over: the banner goes, through the driver's own sending.
     let seq = d.0.shown.load(Ordering::SeqCst);
     d.0.send(seq, MeetingEvent::WarningCleared { key: "onnx".into() });
@@ -3870,7 +3867,6 @@ fn meeting_snapshot_finishing_and_then_behind_a_newer_recording() {
     assert_eq!(f.ended, Some(EndedReason::Stopped));
     assert_eq!(f.elapsed_ms, 30_000);
     assert!(s.behind.is_empty());
-    assert!(!s.starting);
 
     // A newer meeting records while the first finishes: the first is behind it.
     let second = d.start(&svc, request(CaptureMode::InRoom)).unwrap();

@@ -131,7 +131,6 @@ describe("a window loaded while a meeting is in progress", () => {
     expect(screen.queryByRole("button", { name: "Stop meeting" })).toBeNull();
     await act(async () =>
       answer.resolve({
-        starting: false,
         followed: followed(NEWER.id, {
           banners: [{ key: "speakers", kind: "SpeakersOff", message: "Invented speaker words.", after_end: false }],
           words: 44,
@@ -153,7 +152,6 @@ describe("a window loaded while a meeting is in progress", () => {
   it("shows a meeting that is finishing as finishing, its edits and Re-transcribe locked", async () => {
     await load(
       {
-        starting: false,
         followed: followed(OLDER.id, {
           ended: "Stopped",
           progress: { step: { kind: "Stored" }, done: 5, total: 6 },
@@ -173,7 +171,6 @@ describe("a window loaded while a meeting is in progress", () => {
     const cancelFinishing = vi.fn(async () => {});
     const s = await load(
       {
-        starting: false,
         followed: followed(NEWER.id),
         behind: [{ meeting: OLDER.id, progress: { step: { kind: "Starting" }, done: 0, total: 6 } }],
       },
@@ -193,7 +190,7 @@ describe("a window loaded while a meeting is in progress", () => {
   });
 
   it("with nothing in progress shows the meeting list as always", async () => {
-    await load({ starting: false, followed: null, behind: [] }, [OLDER]);
+    await load({ followed: null, behind: [] }, [OLDER]);
     expect(await screen.findByRole("heading", { level: 1, name: OLDER.title })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop meeting" })).toBeNull();
     expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull();
@@ -204,7 +201,7 @@ describe("the call-end question across a reload (T14.52)", () => {
   it("shows the words and buttons it was last sent with", async () => {
     // Asked with stopping by itself on; then the setting is turned off while it is open, and the
     // app sends it again with `stops: false`.
-    const asked = { starting: false, behind: [] };
+    const asked = { behind: [] };
     const first = await load({ ...asked, followed: followed(NEWER.id, { call_end_offer: true, call_end_stops: true }) }, [NEWER]);
     expect(await screen.findByText(CALL_END_COPY.will_stop)).toBeInTheDocument();
     first.meeting({ type: "CallEndOffer", open: true, stops: false });
@@ -240,7 +237,7 @@ describe("a window that kept running while hidden", () => {
   it("is shown again mid-meeting with what it heard, and reads the snapshot only once", async () => {
     // Closed to the tray for the whole recording: the page kept running and heard every event.
     setWindowWatched(false, false, true);
-    const s = await load({ starting: false, followed: null, behind: [] }, [OLDER]);
+    const s = await load({ followed: null, behind: [] }, [OLDER]);
     await screen.findByRole("heading", { level: 1, name: OLDER.title });
     s.meeting({ type: "Started", meeting: NEWER.id, mode: "Call", tracks: ["You", "Them"] });
     s.meeting({ type: "Warning", key: "far-end", kind: "Audio", message: "Invented far-end words." });
@@ -260,7 +257,7 @@ describe("a window that kept running while hidden", () => {
 });
 
 describe("the first-run wizard and a meeting the tray started", () => {
-  const recording: MeetingSnapshot = { starting: false, followed: followed(NEWER.id), behind: [] };
+  const recording: MeetingSnapshot = { followed: followed(NEWER.id), behind: [] };
 
   for (const order of ["the wizard first", "the snapshot first"] as const) {
     it(`a recording found at load keeps the window whatever answers first (${order})`, async () => {
@@ -291,7 +288,6 @@ describe("the first-run wizard and a meeting the tray started", () => {
     const ipc: Ipc = {
       ...createMockIpc({ timer, now: NOW, meetings: [], firstRun: { show: true } }),
       meetingSnapshot: async () => ({
-        starting: false,
         followed: followed(NEWER.id, { ended: "Stopped" }),
         behind: [],
       }),
@@ -327,7 +323,7 @@ describe("banners dismissed before a reload", () => {
   }
 
   it("stay dismissed after a reload until the app sends them again", async () => {
-    const snapshot: MeetingSnapshot = { starting: false, followed: followed(NEWER.id, { banners }), behind: [] };
+    const snapshot: MeetingSnapshot = { followed: followed(NEWER.id, { banners }), behind: [] };
     const first = loadWindow(snapshot);
     const user = userEvent.setup();
     const bar = (await screen.findByText("Invented far-end words.")).closest<HTMLElement>(".fui-MessageBar");
@@ -349,7 +345,7 @@ describe("banners dismissed before a reload", () => {
   });
 
   it("are forgotten when the meeting ends or another one is followed", async () => {
-    const snapshot: MeetingSnapshot = { starting: false, followed: followed(NEWER.id, { banners }), behind: [] };
+    const snapshot: MeetingSnapshot = { followed: followed(NEWER.id, { banners }), behind: [] };
     const first = loadWindow(snapshot);
     const user = userEvent.setup();
     const bar = (await screen.findByText("Invented far-end words.")).closest<HTMLElement>(".fui-MessageBar");
@@ -369,7 +365,7 @@ describe("the compact recording card", () => {
     const stopMeeting = vi.fn(async () => {
       throw new IpcFailure({ kind: "not_recording", message: "Invented refusal.", retryable: false });
     });
-    const s = await load({ starting: false, followed: followed(NEWER.id), behind: [] }, [NEWER], {
+    const s = await load({ followed: followed(NEWER.id), behind: [] }, [NEWER], {
       stopMeeting,
     });
     await s.user.click(await screen.findByRole("button", { name: "Compact" }));

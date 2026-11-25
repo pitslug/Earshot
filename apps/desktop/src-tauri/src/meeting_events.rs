@@ -1551,11 +1551,10 @@ pub struct BehindSnapshot {
 
 /// What a window that has just loaded needs to show the meetings in progress (T14.51): built only
 /// from the [`MeetingEvent`]s the driver has sent ([`SentRecord`]), so it says nothing those events
-/// did not. Transcript text is not in it: lines already shown are not kept.
+/// did not. Transcript text is not in it: lines already shown are not kept. A start whose
+/// `Started` has not gone out is not in it: the window shows that meeting from its `Started`.
 #[derive(Debug, Clone, PartialEq, Serialize, Type)]
 pub struct MeetingSnapshot {
-    /// A start is under way and its `Started` has not gone out: pre-flight or the capture's start.
-    pub starting: bool,
     /// The meeting the screen follows.
     pub followed: Option<FollowedSnapshot>,
     /// Older meetings finishing behind it, oldest first.
@@ -1693,9 +1692,9 @@ impl SentRecord {
         }
     }
 
-    /// The snapshot at `now`; `starting` says whether a start is under way without its `Started`.
+    /// The snapshot at `now`.
     #[must_use]
-    pub fn snapshot(&self, starting: bool, now: Instant) -> MeetingSnapshot {
+    pub fn snapshot(&self, now: Instant) -> MeetingSnapshot {
         let followed = self
             .followed
             .and_then(|seq| self.meetings.iter().find(|m| m.seq == seq));
@@ -1707,7 +1706,6 @@ impl SentRecord {
             .collect();
         behind.sort_by_key(|m| m.seq);
         MeetingSnapshot {
-            starting,
             followed: followed.map(|m| FollowedSnapshot {
                 meeting: m.meeting.clone(),
                 mode: m.mode,

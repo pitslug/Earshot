@@ -919,8 +919,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       // The offer closes on the screen; the mock only notes it is closed.
       if (liveCallEnd) liveCallEnd.open = false;
     },
-    meetingSnapshot: async () =>
-      sent.snapshot(live !== null && !sent.started(live.row.id), timer.now()),
+    meetingSnapshot: async () => sent.snapshot(timer.now()),
     stopMeeting: async () => {
       if (!live) return fail("not_recording", "no meeting is recording");
       const { row, cancel } = live;
