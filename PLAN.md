@@ -2596,16 +2596,16 @@ From the read-only review of 2026-11-25 (eight reviewers by area; nothing was ru
 
 Lane docs (no build):
 
-- [ ] T14.1 PRIVACY.md says what 1.0 does
+- [x] T14.1 PRIVACY.md says what 1.0 does
   - do: rewrite from PLAN 3.9 and the code: sync and the relay (what the relay can and cannot see), opt-in voiceprint and Dictionary sync, summary offload to another computer and the worker (whose host can read synced meetings), the sync key and token in Credential Manager, the call-start and call-end watchers reading which call app has an audio session (names never stored), agent-CLI hand-offs, the update host and model hosts. Only current Settings page names.
   - accept: every claim traced to code or PLAN 3.9 in the lane report; the owner reads it before the tag
-- [ ] T14.2 README.md for 1.0
+- [x] T14.2 README.md for 1.0
   - do: Status, What you need, Using it and the grey-words limits rewritten from the code (`backends.rs` preview rules); sync, Dictionary, the call-start offer and the five first-run steps named; where the data lives, what a backup must copy, that sync is not a backup, that a newer database cannot be opened by an older build (no copy is taken at upgrade: it would outlive deletions).
   - accept: every limit and page name traced to code in the lane report
-- [ ] T14.3 Project files a public 1.0 needs
+- [x] T14.3 Project files a public 1.0 needs
   - do: `SECURITY.md` (report through GitHub's private vulnerability reporting on the repo, no email address), `CHANGELOG.md` from the tags, `CONTRIBUTING.md` (points at AGENTS.md, says Windows ci is local), `docs/compatibility.md` (update file, sync format and "update the worker last", relay and worker pairing, schema and downgrade, stored settings), `docs/sync.md` status line and a short "run it" pointer.
   - accept: files present; no em dashes; no private path or name
-- [ ] T14.4 Relay and worker compose files for strangers
+- [x] T14.4 Relay and worker compose files for strangers
   - do: the relay's compose binds `127.0.0.1:8787` (or the proxy network only) with the reason; both compose files pin `EARSHOT_VERSION` in their example `.env` text and say to update the worker last; `.github/workflows/relay-image.yml` and docs/updates.md stop pushing the pre-0.4.0 image name.
   - accept: `image-check.sh` unchanged or updated with the reason; files read back in the lane report
 

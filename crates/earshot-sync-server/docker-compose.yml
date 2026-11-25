@@ -1,17 +1,41 @@
 # The sync relay (docs/sync-spec.md section 4). Put a `.env` file beside this one with
 #
 #   EARSHOT_SYNC_SETUP_SECRET=<at least 24 characters>
-#   EARSHOT_VERSION=<the Earshot version, or leave it out for latest>
+#   EARSHOT_VERSION=<the Earshot version your computers run, for example 1.0.0>
 #
 # or give the secret as a Docker secret file and set EARSHOT_SYNC_SETUP_SECRET_FILE to its
 # path (/run/secrets/<name>) instead; never both.
 #
 # then `docker compose up -d`. Updating from a compose file before 0.4.0, whose service was
 # `earshot-sync` and image `earshot-sync-server`: use `docker compose up -d --remove-orphans`, which
-# replaces the old container and keeps its data (the volume's name has not changed). Put it behind your reverse proxy for TLS; the relay speaks
-# plain HTTP on port 8787 and holds only sealed data. Behind the proxy every caller shares
-# the proxy's address, so ten failed registrations or pairing attempts by anyone make
-# everyone wait a minute.
+# replaces the old container and keeps its data (the volume's name has not changed).
+#
+# Pin EARSHOT_VERSION to the version your computers run (Settings, General shows it). Left out,
+# the image is `latest`, and a container that is recreated then takes whatever is newest. When
+# you update Earshot, update the relay and your computers together, and a summary worker last
+# (docs/compatibility.md says why).
+#
+# Reaching it. The relay speaks plain HTTP on port 8787 and holds only sealed data, but the
+# device tokens and the setup secret travel in its requests, and Earshot on another computer
+# accepts only an https:// address. So the way in is your reverse proxy, which adds TLS. This
+# file publishes the port on this host's loopback address only (127.0.0.1:8787), which nothing
+# outside this host can reach:
+#
+# - A proxy running on this host (not in a container): forward to http://127.0.0.1:8787.
+# - A proxy running in a container on this host: it cannot reach the host's loopback address.
+#   Remove the `ports` block and put the relay on the proxy's network instead (the commented
+#   `networks` lines below), then forward to http://earshot-server:8787.
+# - A proxy on another machine: publish the port on this host's own address on the network
+#   that proxy reaches it by, for example "192.0.2.10:8787:8787" where 192.0.2.10 is this
+#   host's address there, and only on a network you trust, because that hop is plain HTTP.
+#   Publishing it on every interface ("8787:8787") is what this file did up to 0.4.2; choose
+#   it deliberately or not at all.
+#
+# Updating from a compose file that published "8787:8787": unless your proxy runs on this host
+# outside a container, pick one of the last two ways above or it will stop reaching the relay.
+#
+# Behind the proxy every caller shares the proxy's address, so ten failed registrations or
+# pairing attempts by anyone make everyone wait a minute.
 services:
   earshot-server:
     image: ghcr.io/pitslug/earshot-server:${EARSHOT_VERSION:-latest}
@@ -20,10 +44,18 @@ services:
       EARSHOT_SYNC_SETUP_SECRET: ${EARSHOT_SYNC_SETUP_SECRET:?set EARSHOT_SYNC_SETUP_SECRET in .env}
     volumes:
       - earshot-sync-data:/data
+    # Loopback only (see "Reaching it" above).
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
+    # networks:
+    #   - proxy
 
 # The data volume keeps its name from before 0.4.0 (when the image was earshot-sync-server):
 # a new name would start the relay with an empty database and every device would pair again.
 volumes:
   earshot-sync-data:
+
+# networks:
+#   proxy:
+#     external: true
+#     name: <the name of your proxy's network>

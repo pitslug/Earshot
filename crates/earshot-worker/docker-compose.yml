@@ -11,8 +11,17 @@
 # 2. Put a `.env` file beside this one with
 #
 #      EARSHOT_WORKER_RELAY=https://<your relay's address, as your devices use it>
-#      EARSHOT_VERSION=<the Earshot version, or leave it out for latest>
+#      EARSHOT_VERSION=<the Earshot version your computers run, for example 1.0.0>
 #      EARSHOT_WORKER_MODEL_PLACE=<cpu, or gpu: the same word as the profile below>
+#
+#    Pin EARSHOT_VERSION, and update the worker last. Left out, the image is `latest`, and a
+#    container that is recreated then takes whatever is newest. The worker is a sync device: if
+#    it moves to a newer Earshot before your computers do, its first sync can make every one of
+#    them stop syncing until it is updated. So when you update, update your computers first,
+#    then change this line and run the `up -d` command of step 3 again. A worker left on an
+#    older version only stops itself (its health check says "unhealthy: stopped:
+#    update_needed") until its image is updated; nothing in its volume needs changing.
+#    docs/compatibility.md has the whole rule.
 #
 #    The last line is optional: your other devices then show the worker as "local model,
 #    processor" or "local model, graphics card". Left out, they show "local model" only. Any
