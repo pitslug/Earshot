@@ -7,6 +7,36 @@
 //! of a [`Release`] is checked after that: [`verify`] returns only a release of this product whose
 //! installer name follows from its version and architecture, which leaves nothing in the file
 //! able to choose a host or a path.
+//!
+//! # Growing the file, and a second key (T14.34)
+//!
+//! Copies up to 0.4.2 read the file with `deny_unknown_fields` on both objects and verify against
+//! one key. They must still be able to update to every later release, so what [`sign`] writes
+//! never changes shape: exactly `manifest` and `signature` outside, exactly the six [`Release`]
+//! fields inside, signed by the first key ([`RELEASE_PUBLIC_KEY`]). Only the reader grows:
+//!
+//! - **Unknown manifest fields are ignored.** The signature is checked over the manifest's exact
+//!   bytes as transported before anything is parsed, so an extra field is still covered by it; it
+//!   is simply not read. Every known field keeps its checks, a known field given twice is still
+//!   refused, and nothing outside the known fields can name a host or a path, because the
+//!   installer's URL is built only from `version` and `installer`. A later release can therefore
+//!   add a field that copies from this one on skip, while 0.4.x copies refuse such a file
+//!   (`not a release`): add one only once those copies no longer matter.
+//! - **Unknown fields beside `manifest` and `signature` are ignored too.** Nothing outside the
+//!   manifest is signed, so ignoring such a field trusts nothing new. It keeps one door open: a
+//!   later file could carry a second signature (say by the backup key) beside today's one, for
+//!   copies that some later release no longer lets the first key sign for. A file that uses only
+//!   today's two fields reads the same in 0.4.x and here; one with an extra field is refused by
+//!   0.4.x (`malformed`), so the same rule holds as for the manifest. Today nothing needs it: a
+//!   file signed by the backup key alone goes in the same `signature` field, and copies that know
+//!   the backup key ([`RELEASE_KEYS`]) accept it.
+//! - **Any key of [`RELEASE_KEYS`] may sign.** Its second entry is to be the owner's offline
+//!   backup key (docs/updates.md, "The backup key"), so that losing the first key does not strand
+//!   every copy built after the backup's public half went in. A slot that is not a usable public
+//!   key (all zeros, not a curve point, a small-order point) verifies nothing.
+//!
+//! There is still no date and no expiry: a release is offered only when it is newer than the
+//! running version.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -15,12 +45,23 @@ use std::str::FromStr;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// The public key of the owner's release key, built into the app. A build with `None` says updates are not
-/// set up and `sign-update` refuses to make a file for it. Changing this leaves installed copies unable to verify later releases.
-pub const RELEASE_PUBLIC_KEY: Option<[u8; 32]> = Some([
+/// The public half of the owner's first release key, the one every copy up to 0.4.2 knows.
+const FIRST_RELEASE_KEY: [u8; 32] = [
     0x30, 0x36, 0x48, 0xc9, 0x08, 0x18, 0xb9, 0xff, 0x31, 0xbc, 0x64, 0x49, 0x4e, 0x0b, 0x00, 0xcd,
     0xa7, 0x5c, 0xf4, 0x6a, 0xc7, 0xe2, 0xc2, 0x77, 0xfb, 0xfb, 0xaf, 0x1c, 0xb9, 0x52, 0xac, 0x32,
-]);
+];
+
+/// The public key of the owner's release key, the one `sign-update` signs with, built into the
+/// app. A build with `None` says updates are not set up and `sign-update` refuses to make a file
+/// for it. Changing this leaves installed copies unable to verify later releases.
+pub const RELEASE_PUBLIC_KEY: Option<[u8; 32]> = Some(FIRST_RELEASE_KEY);
+
+/// Every key a version file may be signed with: [`verify`] accepts a signature by any of them.
+/// The first is [`RELEASE_PUBLIC_KEY`]. The second is reserved for the owner's offline backup
+/// key, which does not exist yet: adding it is one line here, plus the pinned list in the test
+/// `update_the_release_keys_are_pinned` (docs/updates.md, "The backup key"). Never remove the
+/// first while copies that only know it should still update.
+pub const RELEASE_KEYS: &[[u8; 32]] = &[FIRST_RELEASE_KEY];
 
 /// What the signature covers before the manifest.
 pub const DOMAIN: &[u8] = b"earshot-update-v1\n";
@@ -31,9 +72,9 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024;
 /// The largest installer a release may announce (today's is about 25 MB).
 pub const MAX_INSTALLER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// What a release says about itself.
+/// What a release says about itself. A field this version does not know is ignored when read
+/// (module docs); [`sign`] writes exactly these six.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Release {
     /// Always [`PRODUCT`].
     pub product: String,
@@ -49,9 +90,9 @@ pub struct Release {
     pub sha256: String,
 }
 
-/// The file as it travels.
+/// The file as it travels. A field beside these two is ignored when read (module docs); [`sign`]
+/// writes exactly these two.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SignedFile {
     manifest: String,
     signature: String,
@@ -201,20 +242,30 @@ fn check(release: &Release, arch: &str) -> Result<(), VerifyError> {
     Ok(())
 }
 
-/// Verifies a version file against `key` for this `arch`. Nothing in the file is read as a release
-/// until its signature matches.
+/// `key` as a key that can verify something: a curve point that is not of small order. All zeros,
+/// a non-point or a weak point is `None`, so such a slot in [`RELEASE_KEYS`] verifies nothing.
+fn usable_key(key: &[u8; 32]) -> Option<VerifyingKey> {
+    VerifyingKey::from_bytes(key).ok().filter(|k| !k.is_weak())
+}
+
+/// Verifies a version file for this `arch` against `keys`: a signature by any one of them is
+/// enough ([`RELEASE_KEYS`] in the app). Nothing in the file is read as a release until its
+/// signature matches. An empty list verifies nothing.
 ///
 /// # Errors
 /// [`VerifyError`]: why it is refused.
-pub fn verify(bytes: &[u8], key: &[u8; 32], arch: &str) -> Result<Release, VerifyError> {
+pub fn verify(bytes: &[u8], keys: &[[u8; 32]], arch: &str) -> Result<Release, VerifyError> {
     let file: SignedFile = serde_json::from_slice(bytes).map_err(|_| VerifyError::Malformed)?;
     let signature = from_hex::<64>(&file.signature).ok_or(VerifyError::Malformed)?;
-    let key = VerifyingKey::from_bytes(key).map_err(|_| VerifyError::BadSignature)?;
-    key.verify_strict(
-        &signed_bytes(&file.manifest),
-        &Signature::from_bytes(&signature),
-    )
-    .map_err(|_| VerifyError::BadSignature)?;
+    let signature = Signature::from_bytes(&signature);
+    let message = signed_bytes(&file.manifest);
+    let signed = keys
+        .iter()
+        .filter_map(usable_key)
+        .any(|key| key.verify_strict(&message, &signature).is_ok());
+    if !signed {
+        return Err(VerifyError::BadSignature);
+    }
     let release: Release = serde_json::from_str(&file.manifest)
         .map_err(|_| VerifyError::BadManifest("not a release"))?;
     check(&release, arch)?;

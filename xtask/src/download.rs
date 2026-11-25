@@ -302,6 +302,9 @@ pub fn fetch(
     if have < exp.size {
         transfer(url, &part, have, exp.size, policy)?;
     }
+    // Deliberately unlike `earshot_runtime::download` (T14.36), which hashes a transfer as it
+    // writes it: this developer tool reads the finished `.part` back to hash it. The rules and
+    // the outcomes are the same.
     if let Err(e) = verify_file(&part, exp) {
         let _ = fs::remove_file(&part);
         return Err(e.context(format!("download of {url} failed verification")));

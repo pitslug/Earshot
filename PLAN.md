@@ -2722,13 +2722,13 @@ Lane llm (`earshot-llm`, `earshot-net`, runtime `summary_settings.rs`):
 
 Lane update (`earshot-update`, runtime `update.rs`, `download.rs`, desktop `update_settings.rs`, xtask `update.rs`):
 
-- [ ] T14.34 The version file can grow, and a second key can sign it
+- [x] T14.34 The version file can grow, and a second key can sign it
   - do: unknown manifest fields are ignored (the signature still covers the exact bytes; every known field checked as today); verification accepts any key of a built-in list, whose second entry is the owner's offline backup key (the owner generates it: until then the list holds one key and a test pins that an empty slot verifies nothing); `sign-update` unchanged for the first key. The file's shape does not change: 0.4.x copies still read it.
   - accept: `cargo test -p earshot-update`; `cargo test -p xtask update`; `cargo test -p earshot-runtime update`
-- [ ] T14.35 The installer that was verified is the one that runs
+- [x] T14.35 The installer that was verified is the one that runs
   - do: the verified file is held open, shared for reading only, from the last verify until the installer has started.
   - accept: `cargo test -p earshot-desktop --bin earshot update_settings`
-- [ ] T14.36 A download is hashed once
+- [x] T14.36 A download is hashed once
   - do: a transfer that starts at byte 0 hashes while it writes; a resumed one hashes the kept part once.
   - accept: `cargo test -p earshot-runtime download`
 
