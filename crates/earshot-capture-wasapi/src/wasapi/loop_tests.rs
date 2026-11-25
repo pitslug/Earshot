@@ -2516,23 +2516,49 @@ fn capture_loop_a_packet_without_samples_must_be_read_as_silence() {
 /// Bounds a start test that would otherwise wait for ever; never reached by a passing test.
 const START_GUARD: Duration = Duration::from_secs(60);
 
+/// Stands for the power request a capture thread holds: says when it has been let go of.
+struct Request(Arc<AtomicBool>);
+
+impl Request {
+    /// A request and the flag that says it was released.
+    fn held() -> (Self, Arc<AtomicBool>) {
+        let released = Arc::new(AtomicBool::new(false));
+        (Self(Arc::clone(&released)), released)
+    }
+}
+
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 #[test]
 fn capture_start_gives_up_on_a_thread_that_does_not_report() {
     // T14.22: the capture thread is stuck in a call (here: until the test lets go). The start
     // fails after its wait and leaves the thread.
-    let (release, held) = mpsc::channel::<()>();
+    let (release, stuck) = mpsc::channel::<()>();
     let (seen_tx, seen) = mpsc::channel();
+    let (request, request_released) = Request::held();
+    let (late, late_released) = Request::held();
     let began = std::time::Instant::now();
-    let start =
-        start_capture_thread::<u32, u32, _>(Duration::from_millis(50), move |stop, ready, tx| {
-            let _ = held.recv();
+    let start = start_capture_thread::<u32, u32, Request, _>(
+        Duration::from_millis(50),
+        move |stop, ready, tx, held| {
+            // Taken before the call that never returns, as the power request is.
+            held.keep(request);
+            let _ = stuck.recv();
             // A start that completes after all: told to stop, its report refused, and what it
             // delivers has nobody to receive it.
             let told_to_stop = stop.load(Ordering::Acquire);
             let report_refused = ready.send(Ok(7)).is_err();
             let output_refused = tx.send(1).is_err();
+            // And anything it would hold from now on is let go of at once.
+            held.keep(late);
             let _ = seen_tx.send((told_to_stop, report_refused, output_refused));
-        });
+            let _ = stuck.recv();
+        },
+    );
     let error = start.err().expect("the start gave up");
     assert!(matches!(error, CaptureError::StartTimedOut), "{error:?}");
     assert!(began.elapsed() < START_GUARD, "{:?}", began.elapsed());
@@ -2541,37 +2567,80 @@ fn capture_start_gives_up_on_a_thread_that_does_not_report() {
         Err(mpsc::RecvTimeoutError::Timeout),
         "the thread is still in its call: it was left, not waited for"
     );
+    // The thread is stuck, yet what it held is released: a start that was given up does not
+    // keep the computer awake for the life of the app.
+    assert!(request_released.load(Ordering::Acquire));
+    assert!(!late_released.load(Ordering::Acquire));
     release.send(()).unwrap();
     assert_eq!(seen.recv_timeout(START_GUARD), Ok((true, true, true)));
+    // The thread has not ended (it waits again), and what it tried to hold is gone already.
+    assert!(late_released.load(Ordering::Acquire));
+    release.send(()).unwrap();
 }
 
 #[test]
 fn capture_start_returns_what_the_thread_reports_in_time() {
     // Capture runs: what was reported, the channel, and a stop flag the thread sees.
-    let running = start_capture_thread::<u32, u32, _>(START_GUARD, |stop, ready, tx| {
-        ready.send(Ok(7)).unwrap();
-        tx.send(11).unwrap();
-        while !stop.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let _ = tx.send(12);
-    })
-    .expect("capture runs");
+    let (request, request_released) = Request::held();
+    let running =
+        start_capture_thread::<u32, u32, Request, _>(START_GUARD, move |stop, ready, tx, held| {
+            held.keep(request);
+            ready.send(Ok(7)).unwrap();
+            tx.send(11).unwrap();
+            while !stop.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let _ = tx.send(12);
+        })
+        .expect("capture runs");
     assert_eq!(running.started, 7);
     assert_eq!(running.rx.recv_timeout(START_GUARD), Ok(11));
+    // What the thread holds stays held for as long as capture runs: the starter returning
+    // does not let go of it.
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!request_released.load(Ordering::Acquire));
     running.stop.store(true, Ordering::Release);
     running.handle.join().unwrap();
     assert_eq!(running.rx.try_recv(), Ok(12));
+    // Released with the thread's end.
+    assert!(request_released.load(Ordering::Acquire));
     // A start that fails says why; a thread that ends without a word is reported as that.
-    let failed = start_capture_thread::<u32, u32, _>(START_GUARD, |_, ready, _| {
-        let _ = ready.send(Err(CaptureError::ActivationTimeout));
-    });
+    // Either way nothing stays held.
+    let (request, request_released) = Request::held();
+    let failed =
+        start_capture_thread::<u32, u32, Request, _>(START_GUARD, move |_, ready, _, held| {
+            held.keep(request);
+            let _ = ready.send(Err(CaptureError::ActivationTimeout));
+        });
     assert!(matches!(
         failed.err(),
         Some(CaptureError::ActivationTimeout)
     ));
-    let gone = start_capture_thread::<u32, u32, _>(START_GUARD, |_, _, _| {});
+    assert!(request_released.load(Ordering::Acquire));
+    let (request, request_released) = Request::held();
+    let gone = start_capture_thread::<u32, u32, Request, _>(START_GUARD, move |_, _, _, held| {
+        held.keep(request);
+    });
     assert!(matches!(gone.err(), Some(CaptureError::ThreadExited)));
+    assert!(request_released.load(Ordering::Acquire));
+}
+
+#[test]
+fn capture_start_keeps_the_power_request_where_a_given_up_start_lets_go_of_it() {
+    // The capture thread's own wiring cannot run without a device: its power request is taken
+    // first, before COM and any stream, and kept in the starter's `Held`, never in a local the
+    // stuck thread alone could drop.
+    let source = include_str!("../wasapi.rs");
+    let from = source.find("\nfn capture_thread(").expect("the thread");
+    let body = &source[from..];
+    let body = &body[..body.find("\nstruct LiveRequest").expect("its end")];
+    let (hold, keep, com) = (
+        body.find("KeepAwake::hold()").expect("takes the request"),
+        body.find("held.keep(awake)").expect("keeps it in Held"),
+        body.find("ComApartment::init_mta()").expect("then COM"),
+    );
+    assert!(hold < keep && keep < com);
+    assert_eq!(body.matches("KeepAwake::hold()").count(), 1);
 }
 
 #[test]

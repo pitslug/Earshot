@@ -2932,8 +2932,8 @@ impl WasapiSource {
             stop,
             handle,
             rx,
-        } = start_capture_thread(START_WAIT, move |stop, ready, tx| {
-            capture_thread(&request, stop, ready, tx, producer_gauge);
+        } = start_capture_thread(START_WAIT, move |stop, ready, tx, held| {
+            capture_thread(&request, stop, ready, tx, producer_gauge, held);
         })?;
         let stopper = move || {
             stop.store(true, Ordering::Release);
@@ -3049,25 +3049,65 @@ struct RunningCapture<T, M> {
     rx: mpsc::Receiver<M>,
 }
 
+/// What a capture thread holds for as long as it runs and must not go on holding once its
+/// start has been given up (the power request that keeps the computer awake): the thread puts
+/// it here, where the starter can let go of it while the thread is stuck in a call. Dropped
+/// with the thread's own end otherwise (the thread's closure owns the last reference).
+struct Held<H> {
+    /// Whether the start was given up, and what is held.
+    state: Mutex<(bool, Option<H>)>,
+}
+
+impl<H> Held<H> {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new((false, None)),
+        }
+    }
+
+    /// Holds `value` until the thread ends; lets go of it at once when the start was already
+    /// given up.
+    fn keep(&self, value: H) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.0 {
+            state.1 = Some(value);
+        }
+    }
+
+    /// The start is given up: lets go of what is held, and of anything kept later.
+    fn give_up(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state = (true, None);
+    }
+}
+
 /// Runs `body` (the capture thread: its stop flag, where it reports that capture runs or why
-/// not, and the channel it delivers into) on a new `earshot-capture` thread and waits at most
-/// `wait` for its report (T14.22: a thread stuck in a Windows call must not keep a meeting
-/// from ever starting or failing).
+/// not, the channel it delivers into, and where it keeps what it holds while it runs) on a new
+/// `earshot-capture` thread and waits at most `wait` for its report (T14.22: a thread stuck in
+/// a Windows call must not keep a meeting from ever starting or failing).
 ///
 /// A thread that has not reported in time is told to stop and left, never joined, and the start
 /// fails with [`CaptureError::StartTimedOut`]. What it does later goes nowhere: both receiving
 /// ends are dropped here, so a late report is refused (the thread ends there) or, had it just
 /// been taken into the channel, lost; the stop flag was set first, so a capture loop that
-/// starts after all ends at once; and anything it delivers has no receiver. A later start has
-/// its own thread, flag and channels.
-fn start_capture_thread<T, M, F>(
+/// starts after all ends at once; and anything it delivers has no receiver. What it held
+/// ([`Held`]) is let go of here, so a start that was given up does not keep the computer awake
+/// for as long as its thread stays stuck. A later start has its own thread, flag and channels.
+fn start_capture_thread<T, M, H, F>(
     wait: Duration,
     body: F,
 ) -> Result<RunningCapture<T, M>, CaptureError>
 where
     T: Send + 'static,
     M: Send + 'static,
-    F: FnOnce(&AtomicBool, &mpsc::SyncSender<Result<T, CaptureError>>, mpsc::Sender<M>)
+    H: Send + 'static,
+    F: FnOnce(&AtomicBool, &mpsc::SyncSender<Result<T, CaptureError>>, mpsc::Sender<M>, &Held<H>)
         + Send
         + 'static,
 {
@@ -3075,9 +3115,11 @@ where
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (tx, rx) = mpsc::channel();
     let flag = Arc::clone(&stop);
+    let held = Arc::new(Held::new());
+    let kept = Arc::clone(&held);
     let handle = std::thread::Builder::new()
         .name("earshot-capture".into())
-        .spawn(move || body(&flag, &ready_tx, tx))
+        .spawn(move || body(&flag, &ready_tx, tx, &kept))
         .map_err(CaptureError::Thread)?;
     match ready_rx.recv_timeout(wait) {
         Ok(Ok(started)) => Ok(RunningCapture {
@@ -3096,6 +3138,7 @@ where
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
             stop.store(true, Ordering::Release);
+            held.give_up();
             drop(handle);
             Err(CaptureError::StartTimedOut)
         }
@@ -3110,11 +3153,17 @@ fn capture_thread(
     ready: &ReadyTx,
     tx: mpsc::Sender<LiveMsg<CaptureError>>,
     gauge: QueueGauge,
+    held: &Held<KeepAwake>,
 ) {
-    // Held for as long as capture runs. A refusal costs nothing but the protection: a recording
-    // never depends on it, and any gap a sleep leaves is reported by the runtime.
+    // Held for as long as capture runs, from before any stream opens. A refusal costs nothing
+    // but the protection: a recording never depends on it, and any gap a sleep leaves is
+    // reported by the runtime. Kept where the starter can let go of it: a start given up while
+    // this thread is stuck in a call must not keep the computer awake (T14.22).
     let awake = KeepAwake::hold();
     let sleep_not_prevented = sleep_refusal(&awake);
+    if let Ok(awake) = awake {
+        held.keep(awake);
+    }
     match ComApartment::init_mta() {
         Ok(com) => live_capture(&com, request, stop, ready, tx, gauge, sleep_not_prevented),
         Err(e) => {
@@ -3382,6 +3431,12 @@ impl KeepAwake {
         Ok(held)
     }
 }
+
+// SAFETY: the value is only a handle to a power request, a kernel object of the process that
+// no thread owns: `PowerClearRequest` and `CloseHandle` may be called for it from any thread,
+// and nothing else is ever done with it. It is moved to another thread only to be dropped there
+// (a start that was given up while its capture thread is stuck, `Held::give_up`).
+unsafe impl Send for KeepAwake {}
 
 impl Drop for KeepAwake {
     fn drop(&mut self) {
