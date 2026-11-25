@@ -844,6 +844,45 @@ fn settings_cuda_reads_the_nvidia_card_and_vulkan_the_smallest_discrete_card() {
             Some(16),
             Some(16),
         ),
+        // An adapter whose kind could not be read (perhaps an integrated GPU) never shrinks the
+        // reading beside a card known to be discrete...
+        (
+            vec![
+                Gpu {
+                    integrated: None,
+                    ..discrete(AMD, 1)
+                },
+                discrete(AMD, 16),
+            ],
+            None,
+            Some(16),
+        ),
+        (
+            vec![
+                Gpu {
+                    integrated: None,
+                    ..discrete(NVIDIA, 2)
+                },
+                discrete(NVIDIA, 16),
+            ],
+            Some(16),
+            Some(16),
+        ),
+        // ...and counts when no card is known discrete, the smallest of several.
+        (
+            vec![
+                Gpu {
+                    integrated: None,
+                    ..discrete(AMD, 4)
+                },
+                Gpu {
+                    integrated: None,
+                    ..discrete(NVIDIA, 12)
+                },
+            ],
+            Some(12),
+            Some(4),
+        ),
         // No NVIDIA card: CUDA's card is unknown.
         (vec![discrete(AMD, 16)], None, Some(16)),
         (vec![], None, None),

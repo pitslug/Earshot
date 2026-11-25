@@ -408,35 +408,43 @@ pub struct Placement {
     pub note: Option<String>,
 }
 
-/// The dedicated memory of the discrete (or unknown-kind) graphics card, `None` when the read
-/// found none with a known size: Vulkan's reading ([`card_memory`]); CUDA reads
-/// [`cuda_card_memory`]. With one such card, that card. With more than one, the smallest, the
-/// safe reading (T14.40): llama.cpp and whisper.cpp take the first discrete Vulkan device, and
-/// which adapter that is cannot be told from the OS's list. A card whose memory cannot be read is
-/// left out. Since every NVIDIA card is among these, this is never above [`cuda_card_memory`]:
-/// a fit here holds on whichever card a GPU backend lands on.
+/// The dedicated memory of the discrete graphics card, `None` when the read found none with a
+/// known size: Vulkan's reading ([`card_memory`]); CUDA reads [`cuda_card_memory`]. With one such
+/// card, that card. With more than one, the smallest, the safe reading (T14.40): llama.cpp and
+/// whisper.cpp take the first discrete Vulkan device, and which adapter that is cannot be told
+/// from the OS's list. Cards known to be discrete count first; an adapter whose kind could not be
+/// read (it may be an integrated GPU on a start where DXCore's flag was unreadable) counts only
+/// when no card is known to be discrete ([`smallest_card`]). A card whose memory cannot be read
+/// is left out.
 pub(crate) fn graphics_memory(hardware: &Hardware) -> Option<u64> {
-    hardware
-        .gpus
-        .iter()
-        .filter(|g| g.integrated != Some(true))
-        .filter_map(|g| g.dedicated_memory)
-        .min()
+    smallest_card(hardware.gpus.iter())
 }
 
 /// The dedicated memory of the card CUDA runs on: an NVIDIA card that is not integrated, never
 /// another vendor's (T14.40). CUDA uses its device 0, and which NVIDIA card that is (CUDA orders
 /// them fastest first by default) cannot be told from the OS's adapter list, so with two the
-/// smaller counts. A card whose memory cannot be read is left out, as [`graphics_memory`] leaves
-/// it out; `None` when no NVIDIA card of known memory is there.
+/// smaller counts, known-discrete cards before ones of unknown kind ([`smallest_card`]). A card
+/// whose memory cannot be read is left out; `None` when no NVIDIA card of known memory is there.
 #[must_use]
 pub fn cuda_card_memory(hardware: &Hardware) -> Option<u64> {
-    hardware
-        .gpus
-        .iter()
-        .filter(|g| g.vendor_id == earshot_hardware::NVIDIA_VENDOR_ID && g.integrated != Some(true))
-        .filter_map(|g| g.dedicated_memory)
-        .min()
+    smallest_card(
+        hardware
+            .gpus
+            .iter()
+            .filter(|g| g.vendor_id == earshot_hardware::NVIDIA_VENDOR_ID),
+    )
+}
+
+/// The smallest known dedicated memory among `gpus` known to be discrete; when none is known
+/// discrete, among those of unknown kind; integrated GPUs never count.
+fn smallest_card<'a>(gpus: impl Iterator<Item = &'a earshot_hardware::Gpu> + Clone) -> Option<u64> {
+    let of_kind = |kind: Option<bool>| {
+        gpus.clone()
+            .filter(move |g| g.integrated == kind)
+            .filter_map(|g| g.dedicated_memory)
+            .min()
+    };
+    of_kind(Some(false)).or_else(|| of_kind(None))
 }
 
 /// The dedicated memory of the card work on `on` lands on: [`cuda_card_memory`] for CUDA, else
@@ -476,9 +484,9 @@ pub fn integrated_gpu_names(hardware: &Hardware) -> Vec<String> {
 /// and summaries, the model check's [`MEMORY_FACTOR`] (twice the file size: weights plus
 /// activations or, for a summary, the context's KV cache) within the card's dedicated
 /// memory. A judgement, not a measurement on the cards; unknown memory is not held against
-/// a model. This reads [`graphics_memory`], which no GPU backend's card is smaller than, so it
-/// is the fit for a caller that does not know whether CUDA or Vulkan will run the work; a caller
-/// that knows uses [`fits_card`].
+/// a model. This reads [`graphics_memory`], the smallest discrete card, so it is the fit for a
+/// caller that does not know whether CUDA or Vulkan will run the work; a caller that knows uses
+/// [`fits_card`].
 #[must_use]
 pub fn fits_graphics_card(size: u64, hardware: &Hardware) -> bool {
     fits_memory(size, graphics_memory(hardware))
@@ -636,7 +644,11 @@ fn placement_when(
     if let Some(m) = &requested {
         summary_model::summary_model(m)?;
     }
-    // The card a GPU summary lands on: CUDA's NVIDIA card or Vulkan's discrete card.
+    // The card read for a GPU summary, by the first accelerator of llama.cpp's order (the caller
+    // passes `summary_model::llama_order`): the NVIDIA card only when that order leads with CUDA,
+    // which is a `cuda` build's llama.cpp. The shipped x64 build strips CUDA from it, so its
+    // summaries, the CUDA library set included, are judged on the Vulkan reading (the smallest
+    // discrete card).
     let on = order.first().copied().unwrap_or(Accelerator::Cpu);
     let card = card_memory(hardware, on);
     // Why the card cannot take it, or None. CUDA keeps its own rule: only a forced card is
