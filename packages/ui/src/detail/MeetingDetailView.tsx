@@ -75,6 +75,7 @@ import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
 import { keepUnchanged } from "./keepUnchanged";
+import { scrollLineIntoView } from "./scrollLine";
 import { ResummariseControl } from "./ResummariseControl";
 import { SpeakersPanel } from "./SpeakersPanel";
 import {
@@ -850,8 +851,8 @@ export function MeetingDetailView({
   // would otherwise carry over, and the end of a long transcript is past the end of a summary.
   useEffect(() => {
     const row = tab === "transcript" && cited !== null ? rows.current.get(cited) : undefined;
-    if (row !== undefined) row.scrollIntoView?.({ block: "center" });
-    else view.current?.scrollIntoView?.({ block: "start" });
+    if (row !== undefined) return scrollLineIntoView(row);
+    view.current?.scrollIntoView?.({ block: "start" });
   }, [tab, cited]);
 
   // Find in the transcript (T12.98). The bar shows only on the Transcript tab: leaving it
@@ -966,7 +967,8 @@ export function MeetingDetailView({
   const findRow = findLine(findResult, findIndex);
   const findRowId = findRow === null ? null : (detail?.transcript[findRow]?.segment_id ?? null);
   useEffect(() => {
-    if (findRowId !== null) rows.current.get(findRowId)?.scrollIntoView?.({ block: "center" });
+    const row = findRowId === null ? undefined : rows.current.get(findRowId);
+    if (row !== undefined) return scrollLineIntoView(row);
   }, [findRowId, findIndex]);
 
   /** The name of the person speaker `s` is linked to now, before an edit changes it. */
