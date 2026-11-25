@@ -1501,3 +1501,297 @@ async fn relay_a_format_one_pull_racing_the_raise_never_gets_a_pushed_row() {
     }
     println!("format-1 pulls: {before} before the raise, {refused} refused update_needed");
 }
+
+// ---- T14.46: relay hardening ----
+
+/// A relay whose clock counts how often it is read. Checking a token reads it once (to record
+/// when the device was seen), so the count tells whether the token was checked yet.
+fn counting_harness(name: &str) -> (Harness, Arc<AtomicU64>) {
+    let dir = TempDir::new(name);
+    let reads = Arc::new(AtomicU64::new(0));
+    let clock: Clock = {
+        let reads = Arc::clone(&reads);
+        Arc::new(move || {
+            reads.fetch_add(1, Ordering::SeqCst);
+            1_800_000_000
+        })
+    };
+    let config = Config {
+        setup_secret: SECRET.into(),
+        data: dir.0.clone(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+    };
+    let relay = Relay::open_with_clock(&config, clock).unwrap();
+    let app = router(relay).layer(MockConnectInfo(SocketAddr::from(([192, 0, 2, 7], 4000))));
+    let harness = Harness {
+        app,
+        now: Arc::new(AtomicU64::new(1_800_000_000)),
+        _dir: dir,
+    };
+    (harness, reads)
+}
+
+/// Sends `body` to `uri` with `token` and returns the answer and how often the relay's clock
+/// had been read at the moment the relay took the body off the request (`u64::MAX`: it never
+/// took it).
+async fn send_watching_the_body(
+    h: &Harness,
+    reads: &Arc<AtomicU64>,
+    uri: &str,
+    token: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Value, u64) {
+    let at_body = Arc::new(AtomicU64::new(u64::MAX));
+    let watched = {
+        let (reads, at_body) = (Arc::clone(reads), Arc::clone(&at_body));
+        // The frame is handed over only when the relay reads the request's body.
+        http_body_util::Full::new(axum::body::Bytes::from(body)).map_frame(move |frame| {
+            let _ = at_body.compare_exchange(
+                u64::MAX,
+                reads.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            frame
+        })
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header(FORMAT_HEADER, "1")
+        .header("content-type", "application/json")
+        .body(Body::new(watched))
+        .unwrap();
+    let res = h.app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        at_body.load(Ordering::SeqCst),
+    )
+}
+
+/// The token is checked before the body is read: on every call that takes a token and a body,
+/// the relay has looked the token up (which reads its clock) by the time it takes the body, for
+/// a device it knows and for a caller it refuses alike. A refused caller's body is never parsed:
+/// the answer is `unknown_device` whatever it holds.
+#[tokio::test]
+async fn relay_checks_the_token_before_it_reads_the_body() {
+    let (h, reads) = counting_harness("auth-first");
+    let token = h.register(1, 0xC1).await;
+    let presence = serde_json::to_vec(&json!({"blob": b64(b"sealed presence")})).unwrap();
+    let rows = serde_json::to_vec(&json!({"format": 1, "rows": [row(1, 100, 0, b"one")]})).unwrap();
+    let slot =
+        serde_json::to_vec(&json!({"slot": b64(&[7; 16]), "wrapped": b64(&[1; 73])})).unwrap();
+    let revoke = serde_json::to_vec(&json!({"device_id": b64(&[9; 16])})).unwrap();
+    for (uri, body) in [
+        ("/v1/presence", presence),
+        ("/v1/rows", rows),
+        ("/v1/pairing", slot),
+        ("/v1/devices/revoke", revoke),
+    ] {
+        // A caller the relay refuses.
+        let before = reads.load(Ordering::SeqCst);
+        let (s, v, at_body) =
+            send_watching_the_body(&h, &reads, uri, "not-a-token-the-relay-gave", body.clone())
+                .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::UNAUTHORIZED, "unknown_device"),
+            "{uri}"
+        );
+        assert!(
+            at_body == u64::MAX || at_body > before,
+            "{uri}: the body was read before the token was checked"
+        );
+        // The same from a refused caller with a body the call could never take.
+        let (s, v, _) = send_watching_the_body(
+            &h,
+            &reads,
+            uri,
+            "not-a-token-the-relay-gave",
+            b"{ not json at all".to_vec(),
+        )
+        .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::UNAUTHORIZED, "unknown_device"),
+            "{uri}"
+        );
+        // A device it knows: the token is looked up first, then the body is read and used.
+        let before = reads.load(Ordering::SeqCst);
+        let (s, v, at_body) = send_watching_the_body(&h, &reads, uri, &token, body).await;
+        assert_eq!(s, StatusCode::OK, "{uri}: {v}");
+        assert!(
+            at_body != u64::MAX && at_body > before,
+            "{uri}: the body was read before the token was checked"
+        );
+    }
+    // A call with no token at all is refused the same way.
+    let (s, v) = h
+        .call("POST", "/v1/rows", None, Some(1), Some(b"{}".to_vec()))
+        .await;
+    assert_eq!(
+        (s, error_of(&v)),
+        (StatusCode::UNAUTHORIZED, "unknown_device")
+    );
+}
+
+/// A caller the relay refuses gets its answer whole even while it is sending a large body, over
+/// a real connection: the relay takes what is sent and drops it rather than closing on unread
+/// bytes (which can lose the answer on the way, leaving a removed computer to read "could not
+/// be reached" for "this computer was removed").
+#[test]
+fn relay_answers_a_refused_caller_whole_while_it_sends_a_large_body() {
+    use std::io::{Read as _, Write as _};
+    let dir = TempDir::new("auth-large-body");
+    let config = Config {
+        setup_secret: SECRET.into(),
+        data: dir.0.clone(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+    };
+    let relay = earshot_sync_server::LocalRelay::start(Relay::open(&config).unwrap()).unwrap();
+    for size in [0usize, 64 * 1024, 3 * 1024 * 1024] {
+        let mut s = std::net::TcpStream::connect(relay.addr()).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(60)))
+            .unwrap();
+        write!(
+            s,
+            "POST /v1/rows HTTP/1.1\r\nHost: relay.invalid\r\nAuthorization: Bearer \
+             not-a-token-the-relay-gave\r\n{FORMAT_HEADER}: 1\r\nContent-Type: application/json\r\n\
+             Content-Length: {size}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        s.write_all(&vec![b'x'; size]).unwrap();
+        let mut answer = Vec::new();
+        s.read_to_end(&mut answer).unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(
+            answer.starts_with("HTTP/1.1 401 "),
+            "{size} bytes: {answer}"
+        );
+        assert!(
+            answer.ends_with(r#"{"error":"unknown_device"}"#),
+            "{size} bytes: {answer}"
+        );
+    }
+}
+
+/// The calls that take no token hold little for a caller: a body over 16 KiB is refused as too
+/// large, where a push may be megabytes. A registration of ordinary size, with a long secret,
+/// still fits.
+#[tokio::test]
+async fn relay_holds_little_for_a_caller_with_no_token() {
+    let h = harness("open-limit");
+    let limit = earshot_sync_server::MAX_OPEN_REQUEST;
+    assert_eq!(limit, 16 * 1024);
+    for uri in ["/v1/devices", "/v1/pairing/take"] {
+        let padded =
+            serde_json::to_vec(&json!({"slot": b64(&[1; 16]), "pad": "x".repeat(limit)})).unwrap();
+        assert!(padded.len() > limit && padded.len() < MAX_REQUEST);
+        let (s, v) = h.call("POST", uri, None, Some(1), Some(padded)).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::PAYLOAD_TOO_LARGE, "too_large"),
+            "{uri}"
+        );
+    }
+    // Under the limit the calls read their body as before (a wrong long secret is a wrong
+    // secret, an unknown slot is no slot).
+    let (s, v) = h
+        .post(
+            "/v1/devices",
+            None,
+            &json!({"device_id": b64(&[1; 16]), "key_check": b64(&[0xC1; 32]),
+                    "setup_secret": "s".repeat(8 * 1024)}),
+        )
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::FORBIDDEN, "bad_secret"));
+    let (s, v) = h
+        .post("/v1/pairing/take", None, &json!({"slot": b64(&[1; 16])}))
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::NOT_FOUND, "no_slot"));
+    // A call with a token still takes a body of megabytes.
+    let t = h.register(1, 0xC1).await;
+    let rows: Vec<Value> = (0..8u8)
+        .map(|k| row(k + 1, 1, 0, &vec![k; MAX_ROW_BODY]))
+        .collect();
+    let (s, v) = h
+        .post("/v1/rows", Some(&t), &json!({"format": 1, "rows": rows}))
+        .await;
+    assert_eq!(
+        (s, v["accepted"].as_u64()),
+        (StatusCode::OK, Some(8)),
+        "{v}"
+    );
+}
+
+/// The setup secret is compared whole, whatever part of it a guess gets right: a prefix of it,
+/// it with more after it, and a guess of its length that differs in one place are all refused
+/// the same way; only the secret itself (spaces around it aside, as before) registers.
+#[tokio::test]
+async fn relay_refuses_every_near_miss_of_the_setup_secret_and_the_key_check() {
+    let h = harness("near-miss");
+    let mut one_off = SECRET.to_owned().into_bytes();
+    *one_off.last_mut().unwrap() ^= 1;
+    let guesses = [
+        SECRET[..SECRET.len() - 1].to_owned(),
+        format!("{SECRET}x"),
+        String::from_utf8(one_off).unwrap(),
+        String::new(),
+        SECRET.to_uppercase(),
+    ];
+    for guess in guesses {
+        let (s, v) = h
+            .post(
+                "/v1/devices",
+                None,
+                &json!({"device_id": b64(&[1; 16]), "key_check": b64(&[0xC1; 32]),
+                        "setup_secret": guess}),
+            )
+            .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::FORBIDDEN, "bad_secret"),
+            "{guess:?}"
+        );
+    }
+    let (s, _) = h
+        .post(
+            "/v1/devices",
+            None,
+            &json!({"device_id": b64(&[1; 16]), "key_check": b64(&[0xC1; 32]),
+                    "setup_secret": format!("  {SECRET}\n")}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // The vault's key check is compared whole too: one bit off anywhere is another vault.
+    for flip in [0usize, 15, 31] {
+        let mut check = [0xC1u8; 32];
+        check[flip] ^= 0x80;
+        let (s, v) = h
+            .post(
+                "/v1/devices",
+                None,
+                &json!({"device_id": b64(&[2; 16]), "key_check": b64(&check),
+                        "setup_secret": SECRET}),
+            )
+            .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::CONFLICT, "key_mismatch"),
+            "byte {flip}"
+        );
+    }
+    let (s, _) = h
+        .post(
+            "/v1/devices",
+            None,
+            &json!({"device_id": b64(&[2; 16]), "key_check": b64(&[0xC1; 32]),
+                    "setup_secret": SECRET}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+}

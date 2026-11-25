@@ -8,6 +8,7 @@ use earshot_sync::wire::{
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 /// The schema this build writes. A database with a higher `user_version` is refused.
 ///
@@ -342,7 +343,11 @@ impl Db {
         let stored: Option<Vec<u8>> =
             tx.query_row("SELECT key_check FROM vault WHERE id = 1", [], |r| r.get(0))?;
         match stored {
-            Some(s) if s.as_slice() != check.as_slice() => return Ok(Registered::KeyMismatch),
+            // Compared in constant time (T14.46): a device that does not hold the vault's key
+            // learns nothing of its check from how long a refusal took.
+            Some(s) if !bool::from(s.as_slice().ct_eq(check.as_slice())) => {
+                return Ok(Registered::KeyMismatch);
+            }
             Some(_) => {}
             None => {
                 tx.execute(
@@ -455,18 +460,26 @@ impl Db {
     }
 
     /// Stores each row whose stamp is later than the one held for its key, numbering it with
-    /// the next sequence; raises the vault's format to `format`. The device's `claim` is heard
-    /// first, in the same transaction (`hear_claim`).
+    /// the next sequence; raises the vault's format to `format`. `None`, with nothing stored
+    /// and nothing changed, when `format` is below the vault's: checked here, in the
+    /// transaction that stores the rows (T14.46), so a device that passed an earlier check
+    /// cannot store rows of an older format after another device raised the vault's. The
+    /// device's `claim` is heard next, in the same transaction (`hear_claim`).
     pub(crate) fn push(
         &mut self,
         device: &[u8; 16],
         format: u32,
         rows: &[NewRow<'_>],
         claim: &Claim,
-    ) -> Result<Pushed, DbError> {
+    ) -> Result<Option<Pushed>, DbError> {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let vault_format: u32 =
+            tx.query_row("SELECT format FROM vault WHERE id = 1", [], |r| r.get(0))?;
+        if format < vault_format {
+            return Ok(None);
+        }
         let (max_seq_before, epoch) = hear_claim(&tx, claim)?;
         let mut next: i64 =
             tx.query_row("SELECT next_seq FROM vault WHERE id = 1", [], |r| r.get(0))?;
@@ -517,13 +530,13 @@ impl Db {
             params![next, format],
         )?;
         tx.commit()?;
-        Ok(Pushed {
+        Ok(Some(Pushed {
             accepted,
             superseded,
             seq: u64_of(next - 1),
             epoch,
             max_seq_before,
-        })
+        }))
     }
 
     /// Rows with a sequence above `after`, ascending: at most `limit` rows and at most
@@ -637,5 +650,85 @@ impl Db {
             vault_format: self.vault_format()?,
             devices,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(key: u8) -> NewRow<'static> {
+        NewRow {
+            key: [key; 16],
+            stamp: Stamp {
+                wall_ms: 5,
+                logical: 0,
+                node: [9; 16],
+            },
+            body: b"sealed",
+        }
+    }
+
+    /// The vault's format, next sequence number, epoch and row count.
+    fn state(db: &Db) -> (u32, i64, Vec<u8>, i64) {
+        let (format, next, epoch) =
+            db.0.query_row(
+                "SELECT format, next_seq, epoch FROM vault WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        let rows =
+            db.0.query_row("SELECT count(*) FROM row", [], |r| r.get(0))
+                .unwrap();
+        (format, next, epoch, rows)
+    }
+
+    /// T14.46: the push itself refuses a format below the vault's, in the transaction that
+    /// would store its rows. The call's earlier check reads the vault's format under another
+    /// lock hold, so a device can pass it just before another device raises the vault; its
+    /// push then reaches the database with the old format and must store nothing and change
+    /// nothing (not the numbering, not the epoch, whatever it says it has seen).
+    #[test]
+    fn relay_push_refuses_an_older_format_inside_its_own_transaction() {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "earshot-relay-db-format-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut db = Db::open(&dir.join("relay.db")).unwrap();
+        let device = [1u8; 16];
+        // A format-1 device passes the early check: the vault is still at 0.
+        assert!(1 >= db.vault_format().unwrap());
+        // Another device's format-2 push raises the vault first.
+        let pushed = db
+            .push(&device, 2, &[row(1)], &Claim::default())
+            .unwrap()
+            .expect("a push at the vault's format or above is stored");
+        assert_eq!((pushed.accepted, pushed.seq), (1, 1));
+        let before = state(&db);
+        assert_eq!((before.0, before.1, before.3), (2, 2, 1));
+        // The format-1 push arrives now: refused, with everything as it was.
+        assert!(
+            db.push(&device, 1, &[row(2)], &Claim::default())
+                .unwrap()
+                .is_none()
+        );
+        let claim = Claim {
+            seen: Some(50),
+            epoch: None,
+        };
+        assert!(db.push(&device, 1, &[row(3)], &claim).unwrap().is_none());
+        assert_eq!(state(&db), before);
+        // At the vault's format it is stored.
+        let pushed = db
+            .push(&device, 2, &[row(2)], &Claim::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!((pushed.accepted, pushed.seq), (1, 2));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

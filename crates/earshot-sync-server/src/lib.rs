@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::body::Bytes;
 use axum::extract::rejection::{BytesRejection, QueryRejection};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -40,6 +40,12 @@ pub const MIN_SECRET_CHARS: usize = 24;
 
 /// The largest wrapped vault key a pairing slot holds (a wrap is 73 bytes today).
 const MAX_WRAPPED: usize = 256;
+
+/// The largest body of a call that takes no token (registering, taking a pairing slot): 16 KiB,
+/// a judgement. Such a body holds a device id, a key check and a setup secret or a slot, a few
+/// hundred bytes; the limit leaves room for a long secret and nothing for a caller with no
+/// token to make the relay hold (T14.46). Over it is `too_large`.
+pub const MAX_OPEN_REQUEST: usize = 16 * 1024;
 
 /// The relay's settings.
 #[derive(Clone)]
@@ -298,21 +304,85 @@ impl LocalRelay {
 }
 
 /// The relay's routes (docs/sync-spec.md section 3).
+///
+/// The calls that take a token are behind [`authenticate`], which runs before any of their
+/// handler's arguments are made, the body among them (T14.46): a caller the relay does not know
+/// is answered without its body ever being held in memory. The layer covers only the calls
+/// themselves (`route_layer`), so an unknown path or method on them is still `not_found`, with
+/// or without a token.
 pub fn router(relay: Relay) -> Router {
-    Router::new()
-        .route("/v1/health", get(health))
-        .route("/v1/devices", post(register))
+    let with_token = Router::new()
         .route("/v1/devices/revoke", post(revoke))
         .route("/v1/pairing", post(offer_slot))
-        .route("/v1/pairing/take", post(take_slot))
         .route("/v1/rows", post(push).get(pull))
         .route("/v1/presence", post(put_presence).get(get_presence))
         .route("/v1/vault", get(vault))
+        .route_layer(middleware::from_fn_with_state(relay.clone(), authenticate));
+    // The two calls anyone may make take a few short fields: a body past MAX_OPEN_REQUEST is
+    // refused before it is read, rather than held up to the limit a push may reach.
+    let open = Router::new()
+        .route("/v1/devices", post(register))
+        .route("/v1/pairing/take", post(take_slot))
+        .layer(DefaultBodyLimit::max(MAX_OPEN_REQUEST));
+    Router::new()
+        .route("/v1/health", get(health))
+        .merge(open)
+        .merge(with_token)
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
         .layer(DefaultBodyLimit::max(MAX_REQUEST))
         .layer(middleware::from_fn(log))
         .with_state(relay)
+}
+
+/// The device a call came from, as [`authenticate`] found it from the bearer token.
+#[derive(Debug, Clone, Copy)]
+struct Caller([u8; 16]);
+
+/// How long the relay goes on taking a refused caller's body before it answers anyway (10
+/// seconds, a judgement: longer than a slow link needs for the few megabytes a push may be,
+/// short enough that a caller who sends nothing does not hold the call open).
+const DISCARD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Checks the bearer token before the call's handler runs (T14.46). A device the relay knows
+/// goes on to the handler with its id ([`Caller`]). Anyone else is answered `unknown_device`:
+/// what they were sending is taken off the connection and dropped, piece by piece, never
+/// collected, so the relay holds nothing for a caller it does not know, and the answer still
+/// reaches a caller in the middle of a large push (a connection closed with unread bytes on it
+/// can lose the answer, and a removed computer must read that it was removed).
+async fn authenticate(State(relay): State<Relay>, mut req: Request, next: Next) -> Response {
+    match caller(&relay, req.headers()) {
+        Ok(device) => {
+            req.extensions_mut().insert(Caller(device));
+            next.run(req).await
+        }
+        Err(fail) => {
+            discard(req.into_body()).await;
+            fail.into_response()
+        }
+    }
+}
+
+/// Takes what is left of a request's body and drops it as it comes: at most [`MAX_REQUEST`]
+/// bytes and for at most [`DISCARD_WAIT`]. Past either the call is answered anyway and the
+/// connection is the server's to close.
+async fn discard(mut body: axum::body::Body) {
+    use axum::body::HttpBody as _;
+    let taking = async {
+        let mut left = MAX_REQUEST;
+        while let Some(Ok(frame)) =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+        {
+            let Some(data) = frame.data_ref() else {
+                continue;
+            };
+            if data.len() > left {
+                return;
+            }
+            left -= data.len();
+        }
+    };
+    let _ = tokio::time::timeout(DISCARD_WAIT, taking).await;
 }
 
 /// One line per request: method, path (no query), status, milliseconds.
@@ -434,6 +504,17 @@ fn check_format(relay: &Relay, headers: &HeaderMap) -> Result<u32, Fail> {
     Ok(format)
 }
 
+/// Whether `given` is the setup secret, taking the same time whichever byte differs and
+/// whatever the lengths (T14.46): the two SHA-256 digests are compared in constant time, so a
+/// guess learns nothing from how long the answer took, not even how long the secret is (a
+/// direct compare of the texts stops at the first difference in length).
+fn same_secret(given: &str, secret: &str) -> bool {
+    use sha2::{Digest as _, Sha256};
+    let given = Sha256::digest(given.as_bytes());
+    let secret = Sha256::digest(secret.as_bytes());
+    given.as_slice().ct_eq(secret.as_slice()).into()
+}
+
 /// Refuses an address with too many recent failures.
 fn not_slowed(relay: &Relay, ip: IpAddr) -> Result<(), Fail> {
     if relay.limiter().blocked(ip, relay.now()) {
@@ -468,9 +549,7 @@ async fn register(
     let now = relay.now();
     let slot = match (&req.setup_secret, &req.slot) {
         (Some(secret), None) => {
-            let given = secret.trim().as_bytes();
-            let ok: bool = given.ct_eq(relay.0.secret.as_bytes()).into();
-            if !ok {
+            if !same_secret(secret.trim(), &relay.0.secret) {
                 return Err(failed(&relay, ip, ErrorWord::BadSecret));
             }
             None
@@ -498,10 +577,9 @@ async fn register(
 
 async fn revoke(
     State(relay): State<Relay>,
-    headers: HeaderMap,
+    Extension(Caller(_)): Extension<Caller>,
     bytes: Result<Bytes, BytesRejection>,
 ) -> Answer<serde_json::Value> {
-    caller(&relay, &headers)?;
     let req: RevokeRequest = body(bytes)?;
     let device = exact::<16>(&req.device_id)?;
     relay.db().revoke(&device)?;
@@ -510,10 +588,9 @@ async fn revoke(
 
 async fn offer_slot(
     State(relay): State<Relay>,
-    headers: HeaderMap,
+    Extension(Caller(_)): Extension<Caller>,
     bytes: Result<Bytes, BytesRejection>,
 ) -> Answer<PairingResponse> {
-    caller(&relay, &headers)?;
     let req: PairingRequest = body(bytes)?;
     let slot = exact::<SLOT_LEN>(&req.slot)?;
     if req.wrapped.0.is_empty() || req.wrapped.0.len() > MAX_WRAPPED {
@@ -547,10 +624,13 @@ async fn take_slot(
 
 async fn push(
     State(relay): State<Relay>,
+    Extension(Caller(device)): Extension<Caller>,
     headers: HeaderMap,
     bytes: Result<Bytes, BytesRejection>,
 ) -> Answer<PushResponse> {
-    let device = caller(&relay, &headers)?;
+    // Refused early when the device is plainly behind the vault; the check that decides is
+    // made again inside the transaction that stores the rows (T14.46), since another device
+    // may raise the vault's format between this read and that write.
     let announced = check_format(&relay, &headers)?;
     let req: PushRequest = body(bytes)?;
     // The format in the body is the one the vault's format rises to: it must be the one the
@@ -588,7 +668,9 @@ async fn push(
         });
     }
     let claim = claim_of(req.seen_seq, req.epoch.as_ref())?;
-    let pushed = relay.db().push(&device, req.format, &rows, &claim)?;
+    let Some(pushed) = relay.db().push(&device, req.format, &rows, &claim)? else {
+        return Err(ErrorWord::UpdateNeeded.into());
+    };
     Ok(Json(PushResponse {
         accepted: pushed.accepted,
         superseded: pushed
@@ -627,10 +709,10 @@ struct PullQuery {
 
 async fn pull(
     State(relay): State<Relay>,
+    Extension(Caller(_)): Extension<Caller>,
     headers: HeaderMap,
     query: Result<Query<PullQuery>, QueryRejection>,
 ) -> Answer<PullResponse> {
-    caller(&relay, &headers)?;
     let format = format_header(&headers)?;
     let Query(q) = query.map_err(|_| ErrorWord::BadRequest)?;
     let limit = q.limit.unwrap_or(PULL_DEFAULT).clamp(1, PULL_MAX);
@@ -653,10 +735,9 @@ async fn pull(
 
 async fn put_presence(
     State(relay): State<Relay>,
-    headers: HeaderMap,
+    Extension(Caller(device)): Extension<Caller>,
     bytes: Result<Bytes, BytesRejection>,
 ) -> Answer<serde_json::Value> {
-    let device = caller(&relay, &headers)?;
     let req: PresenceRequest = body(bytes)?;
     if req.blob.0.is_empty() {
         return Err(ErrorWord::BadRequest.into());
@@ -669,14 +750,18 @@ async fn put_presence(
     Ok(Json(serde_json::json!({})))
 }
 
-async fn get_presence(State(relay): State<Relay>, headers: HeaderMap) -> Answer<PresenceResponse> {
-    caller(&relay, &headers)?;
+async fn get_presence(
+    State(relay): State<Relay>,
+    Extension(Caller(_)): Extension<Caller>,
+) -> Answer<PresenceResponse> {
     let now = relay.now();
     Ok(Json(relay.db().presence(now)?))
 }
 
-async fn vault(State(relay): State<Relay>, headers: HeaderMap) -> Answer<VaultResponse> {
-    caller(&relay, &headers)?;
+async fn vault(
+    State(relay): State<Relay>,
+    Extension(Caller(_)): Extension<Caller>,
+) -> Answer<VaultResponse> {
     let now = relay.now();
     Ok(Json(relay.db().vault(now)?))
 }
