@@ -18,6 +18,7 @@ import {
 } from "../ipc";
 import { COMPACT_STOP_FAILED, RELOADED_NOTE } from "../meeting/MeetingViews";
 import { renderApp } from "../test/app";
+import { setWindowWatched } from "../test/windowWatched";
 import { createManualTimer } from "../time";
 
 const at = (hour: number) => new Date(2026, 10, 2, hour, 0).getTime();
@@ -195,6 +196,74 @@ describe("a window loaded while a meeting is in progress", () => {
     expect(await screen.findByRole("heading", { level: 1, name: OLDER.title })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop meeting" })).toBeNull();
     expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull();
+  });
+});
+
+describe("a window that kept running while hidden", () => {
+  it("is shown again mid-meeting with what it heard, and reads the snapshot only once", async () => {
+    // Closed to the tray for the whole recording: the page kept running and heard every event.
+    setWindowWatched(false, false, true);
+    const s = await load({ starting: false, followed: null, behind: [] }, [OLDER]);
+    await screen.findByRole("heading", { level: 1, name: OLDER.title });
+    s.meeting({ type: "Started", meeting: NEWER.id, mode: "Call", tracks: ["You", "Them"] });
+    s.meeting({ type: "Warning", key: "far-end", kind: "Audio", message: "Invented far-end words." });
+    s.meeting({ type: "Landed", track: "Them", start_ms: 1_000, end_ms: 3_000, text: "An invented line said while hidden." });
+    s.meeting({ type: "Words", total: 6 });
+    await act(async () => s.timer.advance(70_000));
+    // Shown again from the tray.
+    setWindowWatched(true, true, true);
+    await act(async () => {});
+    expect(await screen.findByRole("button", { name: "Stop meeting" })).toBeEnabled();
+    expect(screen.getByText("An invented line said while hidden.")).toBeInTheDocument();
+    expect(screen.getAllByText("Invented far-end words.")).toHaveLength(1);
+    expect(screen.queryByText(RELOADED_NOTE)).toBeNull();
+    expect(screen.getByLabelText("Elapsed")).toHaveTextContent("1:10");
+    expect(s.meetingSnapshot).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the first-run wizard and a meeting the tray started", () => {
+  const recording: MeetingSnapshot = { starting: false, followed: followed(NEWER.id), behind: [] };
+
+  for (const order of ["the wizard first", "the snapshot first"] as const) {
+    it(`a recording found at load keeps the window whatever answers first (${order})`, async () => {
+      const wizard = deferred<{ show: boolean }>();
+      const snapshot = deferred<MeetingSnapshot>();
+      const timer = createManualTimer(NOW);
+      const base = createMockIpc({ timer, now: NOW, meetings: [], firstRun: { show: true } });
+      const ipc: Ipc = {
+        ...base,
+        firstRunState: async () => ({ ...(await base.firstRunState()), ...(await wizard.promise) }),
+        meetingSnapshot: () => snapshot.promise,
+      };
+      renderApp(ipc, { timer, now: () => NOW });
+      if (order === "the wizard first") {
+        await act(async () => wizard.resolve({ show: true }));
+        await act(async () => snapshot.resolve(recording));
+      } else {
+        await act(async () => snapshot.resolve(recording));
+        await act(async () => wizard.resolve({ show: true }));
+      }
+      // Stop is on screen: a recording keeps the window, as its `Started` does.
+      expect(await screen.findByRole("button", { name: "Stop meeting" })).toBeEnabled();
+    });
+  }
+
+  it("a meeting that is only finishing leaves the wizard open", async () => {
+    const timer = createManualTimer(NOW);
+    const ipc: Ipc = {
+      ...createMockIpc({ timer, now: NOW, meetings: [], firstRun: { show: true } }),
+      meetingSnapshot: async () => ({
+        starting: false,
+        followed: followed(NEWER.id, { ended: "Stopped" }),
+        behind: [],
+      }),
+    };
+    renderApp(ipc, { timer, now: () => NOW });
+    await act(async () => {});
+    await act(async () => {});
+    expect(screen.queryByRole("button", { name: "Stop meeting" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Meetings and settings" })).toBeNull();
   });
 });
 
