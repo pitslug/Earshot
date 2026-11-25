@@ -292,10 +292,45 @@ impl UpdateWork for HostUpdates {
     fn launch(&self) -> Result<(), UpdateError> {
         let offer = self.offer()?;
         let path = offer.installer_path(self.dir()?);
-        earshot_runtime::update::verify_installer(&offer, &path)?;
-        earshot_proc::spawn_detached(&path, &earshot_runtime::update::installer_args())
-            .map_err(|e| UpdateError::Unreadable(e.to_string()))
+        launch_held(
+            &path,
+            |file| earshot_runtime::update::verify_installer_file(&offer, file),
+            |p| earshot_proc::spawn_detached(p, &earshot_runtime::update::installer_args()),
+        )
     }
+}
+
+/// Opens the installer at `path` for reading, shared with readers only: while the handle lives,
+/// nobody can write, truncate, rename, replace or delete the file (Windows refuses each open or
+/// move that needs write or delete access), and nobody who already has it open for writing lets
+/// this open succeed. Reading stays possible, which is all starting a program needs:
+/// `CreateProcess` opens the image for execute with read sharing, and execute counts as read.
+fn hold_installer(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        /// `FILE_SHARE_READ`: no `FILE_SHARE_WRITE`, no `FILE_SHARE_DELETE`.
+        const FILE_SHARE_READ: u32 = 0x1;
+        options.share_mode(FILE_SHARE_READ);
+    }
+    options.open(path)
+}
+
+/// The install's last step (T14.35): holds the installer ([`hold_installer`]) from before
+/// `verify` reads it until `start` has returned, so the file that runs is the file that was
+/// checked. A check that fails starts nothing; the handle is let go either way.
+fn launch_held(
+    path: &std::path::Path,
+    verify: impl FnOnce(&mut std::fs::File) -> Result<(), UpdateError>,
+    start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), UpdateError> {
+    let mut held = hold_installer(path).map_err(|e| UpdateError::Unreadable(e.to_string()))?;
+    verify(&mut held)?;
+    let started = start(path).map_err(|e| UpdateError::Unreadable(e.to_string()));
+    drop(held);
+    started
 }
 
 /// What the page's events go to.

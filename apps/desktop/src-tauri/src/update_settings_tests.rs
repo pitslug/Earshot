@@ -732,3 +732,113 @@ fn update_toast_is_fixed_copy_and_the_version() {
     );
     assert!(t.buttons.is_empty() && !t.stays);
 }
+
+/// An installer stand-in in `dir` holding `bytes`.
+fn installer_at(dir: &crate::testutil::TempDir, bytes: &[u8]) -> PathBuf {
+    let path = dir.0.join("Earshot_9.9.9_x64-setup.exe");
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[cfg(windows)]
+#[test]
+fn update_install_holds_the_checked_installer_until_it_has_started() {
+    use std::io::Read as _;
+    let dir = crate::testutil::TempDir::new("update-hold");
+    let path = installer_at(&dir, b"the checked installer");
+    let started = AtomicBool::new(false);
+    launch_held(
+        &path,
+        |file| {
+            // The check reads through the held handle.
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"the checked installer");
+            Ok(())
+        },
+        |p| {
+            assert_eq!(p, path);
+            // Held: nothing can replace, change, rename or delete it before it starts.
+            assert!(std::fs::remove_file(p).is_err(), "deleted");
+            assert!(
+                std::fs::rename(p, dir.0.join("aside.exe")).is_err(),
+                "renamed"
+            );
+            assert!(
+                std::fs::OpenOptions::new().write(true).open(p).is_err(),
+                "opened for writing"
+            );
+            assert!(std::fs::File::create(p).is_err(), "truncated");
+            let other = dir.0.join("other.exe");
+            std::fs::write(&other, b"another installer").unwrap();
+            assert!(std::fs::rename(&other, p).is_err(), "replaced");
+            // Reading stays possible: starting a program reads its file.
+            assert_eq!(std::fs::read(p).unwrap(), b"the checked installer");
+            started.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(started.load(Ordering::SeqCst));
+    // Let go once it started.
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn update_install_a_failed_check_starts_nothing_and_lets_the_file_go() {
+    let dir = crate::testutil::TempDir::new("update-hold-refused");
+    let path = installer_at(&dir, b"a changed installer");
+    let result = launch_held(
+        &path,
+        |_| Err(UpdateError::InstallerChanged),
+        |_| panic!("started a refused installer"),
+    );
+    assert!(matches!(result, Err(UpdateError::InstallerChanged)));
+    std::fs::remove_file(&path).unwrap();
+    let missing = launch_held(&path, |_| Ok(()), |_| panic!("started a missing file"));
+    assert!(matches!(missing, Err(UpdateError::Unreadable(_))));
+}
+
+#[cfg(windows)]
+#[test]
+fn update_install_a_file_someone_has_open_for_writing_is_not_held_or_started() {
+    let dir = crate::testutil::TempDir::new("update-hold-writer");
+    let path = installer_at(&dir, b"being written");
+    let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let result = launch_held(&path, |_| Ok(()), |_| panic!("started while written"));
+    assert!(
+        matches!(result, Err(UpdateError::Unreadable(_))),
+        "{result:?}"
+    );
+    drop(writer);
+}
+
+#[cfg(windows)]
+#[test]
+fn update_install_a_program_starts_while_its_file_is_held() {
+    // What the install relies on: CreateProcess (std's spawn, which `earshot_proc::spawn_detached`
+    // uses) opens the program for execute with read sharing, which a read-only share allows. A
+    // copy of a harmless system program stands in for the installer; it exits at once.
+    let system = std::env::var_os("SystemRoot").expect("SystemRoot");
+    let whoami = PathBuf::from(system).join("System32").join("whoami.exe");
+    let dir = crate::testutil::TempDir::new("update-hold-start");
+    let path = dir.0.join("Earshot_9.9.9_x64-setup.exe");
+    std::fs::copy(&whoami, &path).unwrap();
+    let mut status = None;
+    launch_held(
+        &path,
+        |_| Ok(()),
+        |p| {
+            status = Some(
+                std::process::Command::new(p)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()?,
+            );
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(status.is_some_and(|s| s.success()), "{status:?}");
+}

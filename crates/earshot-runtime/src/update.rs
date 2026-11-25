@@ -489,6 +489,22 @@ impl Updater {
 /// [`UpdateError::InstallerChanged`], or [`UpdateError::Unreadable`].
 pub fn verify_installer(offer: &UpdateOffer, path: &Path) -> Result<(), UpdateError> {
     let mut file = std::fs::File::open(path).map_err(|e| UpdateError::Unreadable(e.to_string()))?;
+    verify_installer_file(offer, &mut file)
+}
+
+/// [`verify_installer`] through a handle the caller already holds, read from its start. The
+/// app holds the installer open, shared for reading only, from this check until the installer
+/// has started (T14.35), so the file that runs is the file that was checked.
+///
+/// # Errors
+/// [`UpdateError::InstallerChanged`], or [`UpdateError::Unreadable`].
+pub fn verify_installer_file(
+    offer: &UpdateOffer,
+    file: &mut std::fs::File,
+) -> Result<(), UpdateError> {
+    use std::io::Seek as _;
+    file.rewind()
+        .map_err(|e| UpdateError::Unreadable(e.to_string()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut size = 0u64;
