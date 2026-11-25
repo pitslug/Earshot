@@ -442,14 +442,25 @@ fn call_end_driver() -> (MeetingDriver, Receiver<MeetingEvent>, CallScript) {
 
 /// The next `CallEndOffer` event, skipping everything else.
 fn next_offer(rx: &Receiver<MeetingEvent>) -> bool {
+    next_offer_and_stops(rx).0
+}
+
+/// The next `CallEndOffer` event's `open` and `stops`, skipping everything else.
+fn next_offer_and_stops(rx: &Receiver<MeetingEvent>) -> (bool, bool) {
     let deadline = Instant::now() + MEET_GUARD;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left).expect("no offer event") {
-            MeetingEvent::CallEndOffer { open, .. } => return open,
+            MeetingEvent::CallEndOffer { open, stops } => return (open, stops),
             _ => continue,
         }
     }
+}
+
+/// Turns the General page's "stop recording by itself" on, as every test of the stop was
+/// written for (T14.52: off by default).
+fn stop_by_itself(svc: &earshot_runtime::Services) {
+    earshot_runtime::call_end::set_stop_on(&mut svc.store(), true).unwrap();
 }
 
 /// Passes several looks of the meeting thread; only then is "nothing happened" evidence.
@@ -481,7 +492,7 @@ fn meeting_call_end_opens_and_closes_the_question_with_the_call() {
         speaking,
         at: earshot_core::asr::MeetingTime::ZERO,
     };
-    let event = |open| Some(MeetingEvent::CallEndOffer { open });
+    let event = |open| Some(MeetingEvent::CallEndOffer { open, stops: false });
     readings.lock().unwrap().extend([
         CallSessions::Active,
         CallSessions::NoneActive,
@@ -527,6 +538,7 @@ fn meeting_call_end_opens_and_closes_the_question_with_the_call() {
 fn meeting_call_end_stops_the_recording_when_nobody_answers_for_the_wait() {
     let dir = TempDir::new("call-end");
     let svc = services(&dir);
+    stop_by_itself(&svc);
     let (d, rx, script) = call_end_driver();
     d.start(&svc, request(CaptureMode::Call)).unwrap();
     script.read(&[
@@ -535,7 +547,11 @@ fn meeting_call_end_stops_the_recording_when_nobody_answers_for_the_wait() {
         CallSessions::NoneActive,
     ]);
     script.at(31);
-    assert!(next_offer(&rx), "the question is asked");
+    assert_eq!(
+        next_offer_and_stops(&rx),
+        (true, true),
+        "the question is asked, saying the recording will stop"
+    );
 
     // One second short of the wait: still recording.
     script.at(31 + 179);
@@ -572,9 +588,71 @@ fn meeting_call_end_stops_the_recording_when_nobody_answers_for_the_wait() {
 }
 
 #[test]
+fn meeting_call_end_with_the_stop_off_nothing_stops_by_itself_and_both_answers_work() {
+    // T14.52: the session changes that stop a meeting with the setting on, here with it off
+    // (the default).
+    let dir = TempDir::new("call-end-off");
+    let svc = services(&dir);
+    let (d, rx, script) = call_end_driver();
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    script.read(&[
+        CallSessions::Active,
+        CallSessions::NoneActive,
+        CallSessions::NoneActive,
+    ]);
+    script.at(31);
+    assert_eq!(
+        next_offer_and_stops(&rx),
+        (true, false),
+        "asked, without saying a stop is coming"
+    );
+
+    // Past the wait with fresh readings that the call is over, and a day after it: still
+    // recording, the question still open.
+    for at in [31 + 180, 31 + 181, 86_400] {
+        script.at(at);
+        script.read(&[CallSessions::NoneActive]);
+        several_looks();
+        assert_eq!(d.phase(), DriverPhase::Recording, "at {at} s");
+    }
+
+    // "Keep recording" takes it away; a new session that ends asks again.
+    d.keep_recording();
+    assert_eq!(next_offer_and_stops(&rx), (false, false), "taken away");
+    script.read(&[
+        CallSessions::Active,
+        CallSessions::NoneActive,
+        CallSessions::NoneActive,
+    ]);
+    script.at(86_400 + 31);
+    assert_eq!(next_offer_and_stops(&rx), (true, false));
+
+    // "Stop recording" stops it, as the user's own stop.
+    d.stop().unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        MeetingEvent::Ended {
+            reason: EndedReason::Stopped,
+            ..
+        }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, MeetingEvent::CallEndStopped)
+                || matches!(e, MeetingEvent::Warning { key, .. } if key == "call-end-stopped"))
+    );
+    // The same session changes with the setting on stop the meeting:
+    // `meeting_call_end_stops_the_recording_when_nobody_answers_for_the_wait`.
+}
+
+#[test]
 fn meeting_call_end_a_stop_the_user_asked_for_is_not_reported_as_automatic() {
     let dir = TempDir::new("call-end-answered");
     let svc = services(&dir);
+    stop_by_itself(&svc);
     let (d, rx, script) = call_end_driver();
     d.start(&svc, request(CaptureMode::Call)).unwrap();
     script.read(&[
@@ -607,6 +685,7 @@ fn meeting_call_end_a_stop_the_user_asked_for_is_not_reported_as_automatic() {
 fn meeting_call_end_keep_recording_takes_the_question_away_and_it_stays_away() {
     let dir = TempDir::new("call-end-keep");
     let svc = services(&dir);
+    stop_by_itself(&svc);
     let (d, rx, script) = call_end_driver();
     d.start(&svc, request(CaptureMode::Call)).unwrap();
     script.read(&[

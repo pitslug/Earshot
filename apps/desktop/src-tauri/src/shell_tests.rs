@@ -359,21 +359,31 @@ fn shell_record_dot_marks_the_lower_right_and_leaves_the_rest() {
 
 #[test]
 fn call_end_toast_is_fixed_copy_that_stays_and_answers_in_one_click() {
-    let t = call_end_toast();
+    let t = call_end_toast(true);
     assert_eq!(t.title, "The call seems to have ended");
     assert_eq!(
         t.body,
         "Earshot will stop recording within 3 minutes unless you keep it going."
     );
-    assert_eq!(t.click, ToastClick::Window);
+    // T14.52: with "stop recording by itself" off nothing promises a stop; the rest is the same.
+    let asks = call_end_toast(false);
+    assert_eq!(asks.title, t.title);
     assert_eq!(
-        t.buttons,
-        vec![
-            ("Stop recording", ToastClick::StopRecording),
-            ("Keep recording", ToastClick::KeepRecording),
-        ]
+        asks.body,
+        "Do you want to stop recording? Earshot keeps recording until you stop it."
     );
-    assert!(t.stays);
+    assert!(!asks.body.contains("will stop"), "{}", asks.body);
+    for t in [t, asks] {
+        assert_eq!(t.click, ToastClick::Window);
+        assert_eq!(
+            t.buttons,
+            vec![
+                ("Stop recording", ToastClick::StopRecording),
+                ("Keep recording", ToastClick::KeepRecording),
+            ]
+        );
+        assert!(t.stays);
+    }
     // What it says is what the rule does.
     assert_eq!(
         earshot_runtime::call_end::CallEndConfig::default().stop_after,
@@ -420,7 +430,7 @@ fn shell_meeting_that_stopped_itself_always_notifies_with_fixed_copy() {
 
 #[test]
 fn call_end_question_closes_with_the_recording_and_not_with_an_older_meetings_summary() {
-    let offer = |open| MeetingEvent::CallEndOffer { open };
+    let offer = |open| MeetingEvent::CallEndOffer { open, stops: true };
     let summary = |meeting: &str| MeetingEvent::Summary {
         meeting: meeting.into(),
         result: SummaryEvent::Cancelled,

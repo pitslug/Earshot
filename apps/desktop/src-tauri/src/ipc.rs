@@ -176,6 +176,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::cuda_settings::restart_app,
             crate::shell::quit_app,
             crate::shell::answer_call_start,
+            crate::general::call_end_stop,
+            crate::general::set_call_end_stop,
             crate::general::call_start_offer,
             crate::general::set_call_start_offer
         ])

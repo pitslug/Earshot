@@ -410,13 +410,23 @@ function Banners({ banners, onDismiss }: { banners: Banner[]; onDismiss(key: str
   );
 }
 
-/** The question when the call seems to have ended. The app stops the recording if it stays open
- * for 3 minutes; anything that closes it starts that over. */
+/** What the call-end question says when the recording stops by itself if nobody answers (the
+ * notification's copy, `shell::CALL_END_WILL_STOP`). */
+export const CALL_END_WILL_STOP = "Earshot will stop recording within 3 minutes unless you keep it going.";
+/** What it says when nothing stops by itself (T14.52: the General page's setting is off;
+ * `shell::CALL_END_ASKS_ONLY`). */
+export const CALL_END_ASKS_ONLY = "Do you want to stop recording? Earshot keeps recording until you stop it.";
+
+/** The question when the call seems to have ended. With `stops` the app stops the recording if it
+ * stays open for 3 minutes, and anything that closes it starts that over; without it nothing
+ * stops by itself and the copy promises no stop (T14.52). */
 function CallEndOffer({
+  stops,
   onStop,
   onKeep,
   stopping,
 }: {
+  stops: boolean;
   onStop(): void;
   onKeep(): void;
   stopping: boolean;
@@ -427,7 +437,7 @@ function CallEndOffer({
       <MessageBar intent="info" role="status">
         <MessageBarBody>
           <MessageBarTitle>The call seems to have ended.</MessageBarTitle>
-          Earshot will stop recording within 3 minutes unless you keep it going.
+          {stops ? CALL_END_WILL_STOP : CALL_END_ASKS_ONLY}
         </MessageBarBody>
         <MessageBarActions>
           <Button onClick={onStop} disabled={stopping}>
@@ -673,7 +683,12 @@ export function RecordingView({
         </div>
       </div>
       {meeting.callEndOffer && (
-        <CallEndOffer onStop={onStop} onKeep={onKeepRecording} stopping={stopping} />
+        <CallEndOffer
+          stops={meeting.callEndStops}
+          onStop={onStop}
+          onKeep={onKeepRecording}
+          stopping={stopping}
+        />
       )}
       <Banners banners={bannersNewestFirst(meeting)} onDismiss={onDismiss} />
       <div className={styles.meters} role="group" aria-label="Levels">
@@ -736,7 +751,9 @@ export function CompactCard({
       </div>
       <Caption1 className={styles.muted}>
         {meeting.callEndOffer
-          ? "The call seems to have ended. Stopping within 3 minutes."
+          ? meeting.callEndStops
+            ? "The call seems to have ended. Stopping within 3 minutes."
+            : "The call seems to have ended."
           : `${wordCount(meeting.words)} words so far`}
       </Caption1>
       <div className={styles.buttons}>

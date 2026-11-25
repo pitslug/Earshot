@@ -61,8 +61,11 @@ export interface LiveMeeting {
   /** Live banners by key; dismissed ones are removed until their condition comes back. */
   banners: Banner[];
   /** The call seems to have ended and the question "stop recording?" is open. Only the user's
-   * answer stops anything. */
+   * answer, or the stop below, stops anything. */
   callEndOffer: boolean;
+  /** The recording stops by itself if that question stays unanswered (T14.52: the General page's
+   * setting, off by default, read when the meeting started). Off, nothing may promise a stop. */
+  callEndStops: boolean;
   /** The event count at the end of the recording: later banners are about what came after. */
   endedSeq: number | null;
   endedReason: EndedReason | null;
@@ -94,6 +97,7 @@ export function startedMeeting(
     provisional: { You: [], Them: [] },
     banners: [],
     callEndOffer: false,
+    callEndStops: false,
     endedSeq: null,
     endedReason: null,
     progress: null,
@@ -168,7 +172,7 @@ export function reduce(
         ? { ...state, banners: state.banners.filter((b) => b.key !== event.key) }
         : state;
     case "CallEndOffer":
-      return { ...state, callEndOffer: event.open };
+      return { ...state, callEndOffer: event.open, callEndStops: event.stops };
     case "CallEndStopped":
       return { ...state, callEndOffer: false };
     case "Ended":

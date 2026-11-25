@@ -1002,6 +1002,8 @@ struct CallEndOffer {
     watch: CallEndWatch,
     signal: CallSignal,
     started: Instant,
+    /// The recording stops by itself when nobody answers ([`CallEndConfig::stops`]).
+    stops: bool,
 }
 
 impl CallEndOffer {
@@ -1010,6 +1012,18 @@ impl CallEndOffer {
             watch: CallEndWatch::new(config),
             signal,
             started,
+            stops: config.stops,
+        }
+    }
+
+    /// The config of a meeting that starts now: the General page's "stop recording by itself",
+    /// read once here (T14.52; a change applies from the next meeting). A setting that cannot be
+    /// read is off: nothing stops by itself.
+    fn config_from(store: &earshot_store::Store) -> CallEndConfig {
+        let stops = earshot_runtime::call_end::stop_setting(store).is_ok_and(|(on, _)| on);
+        CallEndConfig {
+            stops,
+            ..CallEndConfig::default()
         }
     }
 
@@ -1034,15 +1048,20 @@ impl CallEndOffer {
         }
         if keep.swap(false, Ordering::SeqCst) {
             self.watch.keep_recording();
-            return Some(MeetingEvent::CallEndOffer { open: false });
+            return Some(self.offer(false));
         }
         self.watch.check(at).map(|change| match change {
-            CallEndChange::Offer | CallEndChange::OfferAgain => {
-                MeetingEvent::CallEndOffer { open: true }
-            }
-            CallEndChange::Withdraw => MeetingEvent::CallEndOffer { open: false },
+            CallEndChange::Offer | CallEndChange::OfferAgain => self.offer(true),
+            CallEndChange::Withdraw => self.offer(false),
             CallEndChange::Stop => MeetingEvent::CallEndStopped,
         })
+    }
+
+    fn offer(&self, open: bool) -> MeetingEvent {
+        MeetingEvent::CallEndOffer {
+            open,
+            stops: self.stops,
+        }
     }
 }
 
@@ -1163,7 +1182,10 @@ fn run(
     let mut call_end = prepared
         .call_signal
         .filter(|_| request.mode == CaptureMode::Call)
-        .map(|signal| CallEndOffer::new(signal, CallEndConfig::default(), (inner.now)()));
+        .map(|signal| {
+            let config = CallEndOffer::config_from(&svc.store());
+            CallEndOffer::new(signal, config, (inner.now)())
+        });
     if let Some(events) = session.take_events() {
         let mut stop_sent = false;
         let mut stopped_by_call_end = false;

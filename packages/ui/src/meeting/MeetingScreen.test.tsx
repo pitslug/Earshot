@@ -20,7 +20,7 @@ import {
 import { renderApp } from "../test/app";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
-import { MAX_TITLE, RecordingView, finishingExplanation } from "./MeetingViews";
+import { CompactCard, MAX_TITLE, RecordingView, finishingExplanation } from "./MeetingViews";
 import { type LiveMeeting, STEPS_BANNER_KEY, afterMeetingBanners, reduce, startedMeeting } from "./liveMeeting";
 
 const START = new Date(2026, 10, 2, 10, 0).getTime();
@@ -61,6 +61,8 @@ describe("the offer to stop when a call ends", () => {
 
   it("says it will stop, and the mock leaves the recording to the app", async () => {
     const s = setup({ callEndOfferAfterMs: OFFER_AFTER_MS });
+    // T14.52: only with the General page's "stop recording by itself" on.
+    await s.ipc.setCallEndStop(true);
     await startMeeting(s);
     expect(screen.queryByText("The call seems to have ended.")).toBeNull();
     advance(s.timer, OFFER_AFTER_MS);
@@ -73,6 +75,44 @@ describe("the offer to stop when a call ends", () => {
     expect(screen.getByText("The call seems to have ended.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Stop meeting" })).toBeTruthy();
     expect((await s.ipc.listMeetings())[0].state).toBe("Recording");
+  });
+
+  it("with stopping by itself off (the default), asks without promising a stop", async () => {
+    const s = setup({ callEndOfferAfterMs: OFFER_AFTER_MS });
+    await startMeeting(s);
+    advance(s.timer, OFFER_AFTER_MS);
+    await screen.findByText("The call seems to have ended.");
+    expect(
+      screen.getByText("Do you want to stop recording? Earshot keeps recording until you stop it."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/within 3 minutes/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Keep recording" })).toBeTruthy();
+  });
+
+  it("the compact card promises a stop only when the meeting stops by itself", () => {
+    const started = startedMeeting("m", "Call", ["You", "Them"], 0);
+    const card = (stops: boolean) => {
+      const meeting = reduce(started, { type: "CallEndOffer", open: true, stops }, 1)!;
+      const view = render(
+        <EarshotThemeProvider>
+          <CompactCard
+            meeting={meeting}
+            timer={createManualTimer(START)}
+            onStop={() => {}}
+            onExpand={() => {}}
+            onKeepRecording={() => {}}
+          />
+        </EarshotThemeProvider>,
+      );
+      const text = view.container.textContent ?? "";
+      view.unmount();
+      return text;
+    };
+    expect(card(true)).toContain("The call seems to have ended. Stopping within 3 minutes.");
+    const off = card(false);
+    expect(off).toContain("The call seems to have ended.");
+    expect(off).not.toContain("Stopping");
   });
 
   it("Keep recording closes the question and tells the app", async () => {
@@ -106,9 +146,10 @@ describe("the offer to stop when a call ends", () => {
 
   it("goes away when the app takes it back or the recording ends", () => {
     const started = startedMeeting("m", "Call", ["You", "Them"], 0);
-    const open = reduce(started, { type: "CallEndOffer", open: true }, 1);
+    const open = reduce(started, { type: "CallEndOffer", open: true, stops: true }, 1);
     expect(open?.callEndOffer).toBe(true);
-    expect(reduce(open, { type: "CallEndOffer", open: false }, 2)?.callEndOffer).toBe(false);
+    expect(open?.callEndStops).toBe(true);
+    expect(reduce(open, { type: "CallEndOffer", open: false, stops: true }, 2)?.callEndOffer).toBe(false);
     expect(reduce(open, { type: "CallEndStopped" }, 2)?.callEndOffer).toBe(false);
     expect(
       reduce(open, { type: "Ended", meeting: "m", reason: "Stopped" }, 2)?.callEndOffer,

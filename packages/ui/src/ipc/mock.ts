@@ -417,6 +417,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   let callStartOn = data.callStartOffer ?? true;
   let callStartOpen = false;
   let callStartScheduled = false;
+  // T14.52: whether a call's recording stops by itself, read when a meeting starts (off).
+  let callEndStopOn = false;
   const shellListeners = new Set<(event: ShellEvent) => void>();
   const emitShell = (event: ShellEvent) => {
     for (const l of [...shellListeners]) l(event);
@@ -863,9 +865,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (keepLocal) keptLocal.add(row.id);
       const { cancel, speaking, tracks, release } = record(row, mode, held);
       if (data.callEndOfferAfterMs !== undefined && mode === "Call") {
+        const stops = callEndStopOn;
         cancel.push(
           timer.setTimeout(
-            () => emit({ type: "CallEndOffer", open: true }),
+            () => emit({ type: "CallEndOffer", open: true, stops }),
             data.callEndOfferAfterMs,
           ),
         );
@@ -1039,6 +1042,12 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       // The meeting starts in the background; a refusal reaches the window as the app's StartFailed.
       if (start) ipc.startMeeting("Call", null, false).catch(() => {});
       return true;
+    },
+    callEndStop: async () => ({ on: callEndStopOn, unknown: [] }),
+    setCallEndStop: async (on) => {
+      call("setCallEndStop", on);
+      callEndStopOn = on;
+      return { on: callEndStopOn, unknown: [] };
     },
     callStartOffer: async () => callStartOn,
     setCallStartOffer: async (on) => {

@@ -617,13 +617,26 @@ pub fn ended_toast(reason: EndedReason, already_told: bool) -> Option<Toast> {
     })
 }
 
+/// What the call-end question says when the recording stops by itself if nobody answers (T9.4).
+pub const CALL_END_WILL_STOP: &str =
+    "Earshot will stop recording within 3 minutes unless you keep it going.";
+/// What it says when nothing stops by itself (T14.52: the General page's setting is off).
+pub const CALL_END_ASKS_ONLY: &str =
+    "Do you want to stop recording? Earshot keeps recording until you stop it.";
+
 /// The notification that the call seems to have ended (T9.4): fixed copy, and it stays on screen
-/// until it is answered or taken back.
+/// until it is answered or taken back. It promises a stop only when the meeting `stops` by itself
+/// (T14.52).
 #[must_use]
-pub fn call_end_toast() -> Toast {
+pub fn call_end_toast(stops: bool) -> Toast {
     Toast {
         title: "The call seems to have ended".into(),
-        body: "Earshot will stop recording within 3 minutes unless you keep it going.".into(),
+        body: if stops {
+            CALL_END_WILL_STOP
+        } else {
+            CALL_END_ASKS_ONLY
+        }
+        .into(),
         click: ToastClick::Window,
         buttons: vec![
             ("Stop recording", ToastClick::StopRecording),
@@ -788,7 +801,7 @@ pub fn call_end_open_after(event: &MeetingEvent, phase: Phase, was: bool) -> boo
         return false;
     }
     match event {
-        MeetingEvent::CallEndOffer { open } => *open,
+        MeetingEvent::CallEndOffer { open, .. } => *open,
         MeetingEvent::CallEndStopped | MeetingEvent::Started { .. } => false,
         _ => was,
     }
@@ -1322,8 +1335,8 @@ impl Shell {
         }
         match event {
             MeetingEvent::Started { .. } => self.end_already_told.store(false, Ordering::SeqCst),
-            MeetingEvent::CallEndOffer { open: true } if !self.window_watched() => {
-                self.notify(&call_end_toast(), None);
+            MeetingEvent::CallEndOffer { open: true, stops } if !self.window_watched() => {
+                self.notify(&call_end_toast(*stops), None);
             }
             MeetingEvent::CallEndStopped => {
                 self.end_already_told.store(true, Ordering::SeqCst);

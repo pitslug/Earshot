@@ -528,3 +528,29 @@ describe("mock IPC, the offer to record a call (T12.86)", () => {
     expect(await createMockIpc().callStartOffer()).toBe(true);
   });
 });
+
+describe("mock IPC, stopping by itself when a call ends (T14.52)", () => {
+  it("is off by default and a meeting's offer says what was stored when it started", async () => {
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ timer, meetings: [], callEndOfferAfterMs: 1_000 });
+    const meeting: MeetingEvent[] = [];
+    await ipc.onMeetingEvent((e) => meeting.push(e));
+    expect(await ipc.callEndStop()).toEqual({ on: false, unknown: [] });
+    await ipc.startMeeting("Call", null, false);
+    // Turned on during the meeting: from the next one.
+    expect(await ipc.setCallEndStop(true)).toEqual({ on: true, unknown: [] });
+    timer.advance(1_000);
+    expect(meeting.filter((e) => e.type === "CallEndOffer")).toEqual([
+      { type: "CallEndOffer", open: true, stops: false },
+    ]);
+    await ipc.stopMeeting();
+    await ipc.startMeeting("Call", null, false);
+    timer.advance(1_000);
+    expect(meeting.filter((e) => e.type === "CallEndOffer").at(-1)).toEqual({
+      type: "CallEndOffer",
+      open: true,
+      stops: true,
+    });
+    expect(await ipc.callEndStop()).toEqual({ on: true, unknown: [] });
+  });
+});

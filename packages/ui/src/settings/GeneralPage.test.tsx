@@ -7,7 +7,7 @@ import { MOCK_VERSION } from "../ipc/mockSettings";
 import { openSettings, renderApp } from "../test/app";
 import { THEME_KEY } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
-import { CALL_START_EXPLAINED, START_EXPLAINED, THEME_SYSTEM_EXPLAINED, TRAY_EXPLAINED, shortcutExplained } from "./GeneralPage";
+import { CALL_END_STOP_EXPLAINED, CALL_START_EXPLAINED, START_EXPLAINED, THEME_SYSTEM_EXPLAINED, TRAY_EXPLAINED, shortcutExplained } from "./GeneralPage";
 
 async function open(data: MockIpcData = {}): Promise<{ ipc: Ipc; user: ReturnType<typeof userEvent.setup> }> {
   const timer = createManualTimer(1_000_000);
@@ -165,5 +165,55 @@ describe("Settings, General, the offer to record a call (T12.86)", () => {
     expect(await screen.findByText("The setting could not be stored.")).toBeInTheDocument();
     expect(offer()).toBeChecked();
     expect(offer()).toBeEnabled();
+  });
+});
+
+describe("Settings, General, stopping by itself when a call ends (T14.52)", () => {
+  const name = "Stop recording by itself when a call ends";
+  const stop = () => screen.getByRole("switch", { name });
+
+  it("is off by default, beside the offer to record, with what on and off do", async () => {
+    await open();
+    expect(await screen.findByRole("switch", { name })).not.toBeChecked();
+    expect(screen.getByText(CALL_END_STOP_EXPLAINED)).toBeInTheDocument();
+    expect(CALL_END_STOP_EXPLAINED).toMatch(/after 3 minutes with no answer/);
+    expect(CALL_END_STOP_EXPLAINED).toMatch(/keeps recording until you stop it/);
+    // In the Calls section, after the offer to record.
+    const calls = screen.getByRole("switch", { name: "Offer to record when a call starts" });
+    expect(calls.compareDocumentPosition(stop()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("applies a change at once and shows the value the app stored", async () => {
+    const calls: unknown[][] = [];
+    const s = await open({ onCall: (c) => calls.push(c) });
+    await s.user.click(await screen.findByRole("switch", { name }));
+    await waitFor(() => expect(stop()).toBeChecked());
+    expect(calls).toContainEqual(["setCallEndStop", true]);
+    expect((await s.ipc.callEndStop()).on).toBe(true);
+    await s.user.click(stop());
+    await waitFor(() => expect(stop()).not.toBeChecked());
+    expect(calls).toContainEqual(["setCallEndStop", false]);
+  });
+
+  it("says when a stored value is not known, and when a change was refused", async () => {
+    const timer = createManualTimer(1_000_000);
+    const base = createMockIpc({ meetings: [], timer });
+    renderApp(
+      {
+        ...base,
+        callEndStop: async () => ({ on: false, unknown: ["Not known: off is used."] }),
+        setCallEndStop: async () => {
+          throw new IpcFailure({ kind: "internal", message: "The setting could not be stored.", retryable: false });
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "General");
+    expect(await screen.findByText("Not known: off is used.")).toBeInTheDocument();
+    await user.click(await screen.findByRole("switch", { name }));
+    expect(await screen.findByText("The setting could not be stored.")).toBeInTheDocument();
+    expect(stop()).not.toBeChecked();
+    expect(stop()).toBeEnabled();
   });
 });
