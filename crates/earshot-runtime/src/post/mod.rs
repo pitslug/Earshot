@@ -176,7 +176,9 @@
 //!
 //! Model calls block; the processor runs on the caller's thread or its own
 //! ([`PostProcessor::spawn`]). The store is locked only to read rows (FLAC is decoded
-//! after the lock is released) and for the final transaction.
+//! after the lock is released) and for the final transaction. The transcript is labelled
+//! with its speakers before that transaction, with the lock free (T14.48); the transaction
+//! labels again only when the user's edited lines changed in between.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -799,6 +801,25 @@ pub struct PostProcessor<T, S, E> {
     /// ONNX Runtime threads of the speaker models; live speaker windows are reused only
     /// when they were computed with the same count ([`PostProcessor::with_speaker_threads`]).
     speaker_threads: Option<usize>,
+    /// Tests only: runs between the labelling before the write transaction and the
+    /// transaction itself (T14.48), so a test can change the edited lines in between.
+    #[cfg(test)]
+    before_write: Option<BeforeWrite>,
+}
+
+/// Tests only: what [`PostProcessor::with_before_write`] runs.
+#[cfg(test)]
+pub(crate) type BeforeWriteHook = Box<dyn FnMut(&Services) + Send>;
+
+/// Tests only: [`PostProcessor::with_before_write`]'s hook.
+#[cfg(test)]
+struct BeforeWrite(BeforeWriteHook);
+
+#[cfg(test)]
+impl fmt::Debug for BeforeWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("BeforeWrite")
+    }
 }
 
 /// The speech detector and settings for piece-wise final-pass decoding.
@@ -1161,7 +1182,18 @@ where
             config,
             pieces: None,
             speaker_threads: None,
+            #[cfg(test)]
+            before_write: None,
         })
+    }
+
+    /// Tests only: `hook` runs after the labelling before the write transaction and before
+    /// the transaction (T14.48).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_before_write(mut self, hook: BeforeWriteHook) -> Self {
+        self.before_write = Some(BeforeWrite(hook));
+        self
     }
 
     /// The diarisation settings the final pass runs with (tests).
@@ -1490,6 +1522,31 @@ where
             .iter()
             .all(|k| input.tracks.iter().any(|t| t.track.kind == *k));
 
+        // Labelling with the store lock free (T14.48): it needs only this run's transcripts,
+        // the diarisation's turns (naming never changes them) and the user's edited final
+        // lines on the processed tracks, read here and again in the transaction, which labels
+        // again if they changed in between.
+        let early = {
+            let edited: Vec<Segment> = services
+                .store()
+                .segments(input.meeting)?
+                .into_iter()
+                .filter(|r| {
+                    r.pass == TranscriptPass::Final
+                        && !r.meta.deleted
+                        && processed.contains(&r.segment.track)
+                        && r.text_edited_at.is_some()
+                })
+                .map(|r| r.segment)
+                .collect();
+            let mut next_id = || EntityId::generate(&*clock, &mut *rng);
+            label_tracks(transcripts.clone(), edited, &meeting_diar, &mut next_id)
+        };
+        #[cfg(test)]
+        if let Some(BeforeWrite(hook)) = self.before_write.as_mut() {
+            hook(services);
+        }
+
         // 4-5. Naming and persistence in one transaction.
         let threshold = self.voiceprint_threshold;
         let naming = self.naming_threshold;
@@ -1577,48 +1634,18 @@ where
             // The transcript labelled with its diarisation speakers before any speaker row is
             // written (T7.3b): a voice that owns no segment (heard, but no word of it was
             // transcribed) gets no row, takes no part in carrying earlier names, and is
-            // reported instead.
+            // reported instead. Done before the transaction with the edited lines read then
+            // (T14.48); labelled again here only if the user's edited lines changed meanwhile.
             let edited_segments: Vec<Segment> = edited.iter().map(|r| r.segment.clone()).collect();
-            let mut words_under_edits = 0;
-            let mut unknown_lines: BTreeSet<EntityId> = BTreeSet::new();
-            let mut labelled: Vec<(Segment, Option<usize>)> = Vec::new();
-            for (kind, segments) in transcripts {
-                let (segments, dropped) = drop_words_under_edits(segments, &edited_segments);
-                words_under_edits += dropped;
-                let turns: Vec<SpeakerTurn> = meeting_diar
-                    .turns
-                    .iter()
-                    .filter(|t| t.track == kind)
-                    .map(|t| SpeakerTurn {
-                        speaker: t.speaker,
-                        start: t.start,
-                        end: t.end,
-                    })
-                    .collect();
-                let unassigned: Vec<UnassignedSpan> = meeting_diar
-                    .unassigned
-                    .iter()
-                    .filter(|s| s.track == kind)
-                    .map(|s| UnassignedSpan {
-                        start: s.start,
-                        end: s.end,
-                    })
-                    .collect();
+            let labels = if edited_segments == early.edited {
+                early
+            } else {
                 let mut next_id = || EntityId::generate(stamp.clock, &mut *stamp.rng);
-                let out =
-                    label_segment_speakers_unassigned(segments, &turns, &unassigned, &mut next_id);
-                // Words with no speaker (T12.65): kept with their text and times, no row, and
-                // the lines recorded as unknown (`crate::unknown_lines`).
-                if out.words > 0 {
-                    warnings.push(PostWarning::SpeakerUnknown {
-                        track: kind,
-                        lines: out.unassigned.len(),
-                        words: out.words,
-                    });
-                }
-                unknown_lines.extend(out.unassigned);
-                labelled.extend(out.parts);
-            }
+                label_tracks(transcripts, edited_segments, &meeting_diar, &mut next_id)
+            };
+            warnings.extend(labels.unknown);
+            let (labelled, unknown_lines, words_under_edits) =
+                (labels.parts, labels.unknown_lines, labels.words_under_edits);
             if !edited.is_empty() {
                 warnings.push(PostWarning::EditedLinesKept {
                     lines: edited.len(),
@@ -2594,6 +2621,74 @@ fn name_speakers<Repo: VoiceprintRepo + ?Sized>(
         out.push(naming);
     }
     Ok(out)
+}
+
+/// The final transcript labelled with its diarisation speakers ([`label_tracks`]).
+struct Labelled {
+    /// The user's edited final lines the labelling kept clear of (the words under them dropped).
+    edited: Vec<Segment>,
+    /// Every segment part with its diarisation speaker (`None`: no speaker).
+    parts: Vec<(Segment, Option<usize>)>,
+    /// Lines that went to speech diarisation left without a speaker (T12.65).
+    unknown_lines: BTreeSet<EntityId>,
+    /// New words dropped under the edited lines.
+    words_under_edits: usize,
+    /// One [`PostWarning::SpeakerUnknown`] per track that has such lines.
+    unknown: Vec<PostWarning>,
+}
+
+/// Labels each track's segments with `diar`'s speakers after dropping the new words under the
+/// user's `edited` lines (module docs, steps 4 and 5). Reads no store: the final pass runs it
+/// before its write transaction (T14.48).
+fn label_tracks(
+    transcripts: Vec<(TrackId, Vec<Segment>)>,
+    edited: Vec<Segment>,
+    diar: &MeetingDiarization,
+    next_id: &mut dyn FnMut() -> EntityId,
+) -> Labelled {
+    let mut out = Labelled {
+        edited,
+        parts: Vec::new(),
+        unknown_lines: BTreeSet::new(),
+        words_under_edits: 0,
+        unknown: Vec::new(),
+    };
+    for (kind, segments) in transcripts {
+        let (segments, dropped) = drop_words_under_edits(segments, &out.edited);
+        out.words_under_edits += dropped;
+        let turns: Vec<SpeakerTurn> = diar
+            .turns
+            .iter()
+            .filter(|t| t.track == kind)
+            .map(|t| SpeakerTurn {
+                speaker: t.speaker,
+                start: t.start,
+                end: t.end,
+            })
+            .collect();
+        let unassigned: Vec<UnassignedSpan> = diar
+            .unassigned
+            .iter()
+            .filter(|s| s.track == kind)
+            .map(|s| UnassignedSpan {
+                start: s.start,
+                end: s.end,
+            })
+            .collect();
+        let labelled = label_segment_speakers_unassigned(segments, &turns, &unassigned, next_id);
+        // Words with no speaker (T12.65): kept with their text and times, no row, and the
+        // lines recorded as unknown (`crate::unknown_lines`).
+        if labelled.words > 0 {
+            out.unknown.push(PostWarning::SpeakerUnknown {
+                track: kind,
+                lines: labelled.unassigned.len(),
+                words: labelled.words,
+            });
+        }
+        out.unknown_lines.extend(labelled.unassigned);
+        out.parts.extend(labelled.parts);
+    }
+    out
 }
 
 /// `N` of an automatic speaker name "Speaker N".

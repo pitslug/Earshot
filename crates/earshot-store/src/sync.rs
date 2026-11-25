@@ -1143,7 +1143,11 @@ impl Store {
                     continue;
                 }
                 // A local row that does not read (T14.26) is replaced by the pulled one, as an
-                // absent row is; only a meeting tombstone here stays final against a live copy.
+                // absent row is, except where the readable path below keeps the local state
+                // final against the pulled copy: a meeting or voiceprint tombstone, an erased
+                // voice sample, and this device's withdrawal of its own summary request against
+                // an open one. Those are judged from the columns that still read and the pulled
+                // row is ignored (a damaged row cannot be stamped again or sent).
                 let local = match crate::repo::synced_by_id_or_damaged(
                     &tx.conn,
                     row.table(),
@@ -1151,10 +1155,34 @@ impl Store {
                 )? {
                     Ok(local) => local,
                     Err(()) => {
-                        if matches!(row, SyncedRow::Meeting(_))
-                            && !row.meta().deleted
-                            && crate::repo::row_reads_deleted(&tx.conn, "meeting", row.id())?
-                        {
+                        let stays_final = match row {
+                            SyncedRow::Meeting(_) | SyncedRow::Voiceprint(_) => {
+                                !row.meta().deleted
+                                    && crate::repo::row_reads_deleted(
+                                        &tx.conn,
+                                        row.table(),
+                                        row.id(),
+                                    )?
+                            }
+                            SyncedRow::VoiceprintSample(there) => {
+                                !there.is_erased()
+                                    && crate::repo::row_reads_deleted(
+                                        &tx.conn,
+                                        row.table(),
+                                        row.id(),
+                                    )?
+                            }
+                            SyncedRow::SummaryRequest(there) => {
+                                there.state.is_open()
+                                    && crate::repo::request_reads_withdrawn_by(
+                                        &tx.conn,
+                                        row.id(),
+                                        hlc.node(),
+                                    )?
+                            }
+                            _ => false,
+                        };
+                        if stays_final {
                             unhold(tx, inc)?;
                             out.ignored += 1;
                             continue;

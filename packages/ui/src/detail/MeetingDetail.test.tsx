@@ -1349,7 +1349,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     expect(calls).toContainEqual(["ignoreSpeaker", ITEM.id, SAMPLE_SPEAKERS.third]);
   });
 
-  it("keeps line edits and word choices off while the meeting is busy (TODO 95)", async () => {
+  it("keeps line edits and word choices off while the meeting is finishing or running a job", async () => {
     const calls: unknown[][] = [];
     const ipc = createMockIpc({
       timer: createManualTimer(10_000),

@@ -335,6 +335,141 @@ fn edit_retranscribe_keeps_edited_lines_and_warns() {
     assert_eq!(texts, ["me", "first, corrected by hand", "second"]);
 }
 
+/// The stored final transcript as text, times and speaker names (ids are random per run).
+fn stored_parts(svc: &Services, m: EntityId) -> Vec<(String, u64, u64, String)> {
+    let v = view(svc, m);
+    v.segments
+        .iter()
+        .map(|s| {
+            let name = s
+                .speaker_id
+                .and_then(|id| v.speakers.iter().find(|p| p.id == id))
+                .map(|p| p.display_name.clone())
+                .unwrap_or_default();
+            (s.text.clone(), s.start.as_millis(), s.end.as_millis(), name)
+        })
+        .collect()
+}
+
+/// Re-transcribes `m` with the fake processor; `hook` runs between the final pass's early
+/// labelling and its write transaction.
+fn retranscribe_hooked(
+    svc: &Services,
+    m: EntityId,
+    hook: Option<crate::post::BeforeWriteHook>,
+) -> crate::post::PostOutcome {
+    let cancel = CancelToken::new();
+    let load = || {
+        fake_post().map(|mut l| {
+            if let Some(hook) = hook {
+                l.processor = l.processor.with_before_write(hook);
+            }
+            l
+        })
+    };
+    let again = retranscribe_with(svc, m, &cancel, load, &mut |_| {}).unwrap();
+    let HostPost::Done(outcome) = again.post else {
+        panic!("{:?}", again.post);
+    };
+    *outcome
+}
+
+/// Marks the Final row of `id` edited with `text`, or tombstones it, as another writer would
+/// between the final pass's early read and its transaction.
+fn change_final_row(svc: &Services, m: EntityId, id: EntityId, text: Option<&str>) {
+    let clock = std::sync::Arc::clone(&svc.clock);
+    let mut row = segment_row(svc, m, id);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    match text {
+        Some(text) => {
+            row.segment.text = text.into();
+            row.segment.words.clear();
+            row.meta.touch(hlc, &*clock);
+            row.text_edited_at = Some(row.meta.updated_at);
+        }
+        None => row.meta.mark_deleted(hlc, &*clock),
+    }
+    store.put_segment(row).unwrap();
+}
+
+/// T14.48: the final pass labels before its write transaction with the edited lines it read
+/// then; an edit made or removed in between is seen in the transaction, which labels again.
+#[test]
+fn edit_retranscribe_post_labels_again_when_the_edited_lines_change_before_the_write() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let first_of = |m: EntityId| {
+        view(&svc, m)
+            .segments
+            .into_iter()
+            .find(|s| s.text == "first")
+            .unwrap()
+    };
+    let edited_text = "first, corrected by hand";
+
+    // An edit that lands in between: its new words are dropped as if it was there from the
+    // start.
+    let late = processed(&svc, 420);
+    let line = first_of(late);
+    let outcome = retranscribe_hooked(
+        &svc,
+        late,
+        Some(Box::new(move |s: &Services| {
+            change_final_row(s, late, line.id, Some(edited_text));
+        })),
+    );
+    assert!(
+        outcome.warnings.contains(&PostWarning::EditedLinesKept {
+            lines: 1,
+            words_dropped: 1
+        }),
+        "{:?}",
+        outcome.warnings
+    );
+    let v = view(&svc, late);
+    let under: Vec<&str> = v
+        .segments
+        .iter()
+        .filter(|s| s.id != line.id && s.start < line.end && line.start < s.end)
+        .map(|s| s.text.as_str())
+        .collect();
+    assert!(under.is_empty(), "new words under the edit: {under:?}");
+    let early = processed(&svc, 421);
+    assert!(edit_segment(&svc, early, first_of(early).id, edited_text).unwrap());
+    retranscribe_hooked(&svc, early, None);
+    assert_eq!(stored_parts(&svc, late), stored_parts(&svc, early));
+
+    // An edit removed in between: nothing is dropped, as if it had never been made.
+    let undone = processed(&svc, 422);
+    let line = first_of(undone);
+    assert!(edit_segment(&svc, undone, line.id, edited_text).unwrap());
+    let outcome = retranscribe_hooked(
+        &svc,
+        undone,
+        Some(Box::new(move |s: &Services| {
+            change_final_row(s, undone, line.id, None);
+        })),
+    );
+    assert!(
+        !outcome
+            .warnings
+            .iter()
+            .any(|w| matches!(w, PostWarning::EditedLinesKept { .. })),
+        "{:?}",
+        outcome.warnings
+    );
+    let never = processed(&svc, 423);
+    retranscribe_hooked(&svc, never, None);
+    assert_eq!(stored_parts(&svc, undone), stored_parts(&svc, never));
+    assert!(
+        stored_parts(&svc, undone)
+            .iter()
+            .any(|(text, ..)| text == "first"),
+        "the new word is back"
+    );
+}
+
 /// T12.92: every final row one run of the final pass writes carries that run's one id; an
 /// edited line keeps the run it had; the next run writes a new id.
 #[test]

@@ -572,6 +572,9 @@ fn list_meetings_resolves_folders_as_the_runtime_does_in_the_same_read() {
     let by_runtime = earshot_runtime::folders::meeting_folders(&svc).unwrap();
     let list = meeting_list(&svc).unwrap();
     assert_eq!(list.len(), 3);
+    // Newest first, as before.
+    let titles: Vec<&str> = list.iter().map(|m| m.title.as_str()).collect();
+    assert_eq!(titles, ["Dangling", "Loose", "Filed"]);
     for item in &list {
         let id: EntityId = item.id.parse().unwrap();
         assert_eq!(

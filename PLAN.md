@@ -2778,7 +2778,7 @@ Second wave (after the lanes above are merged):
   - deps: T14.42, T14.23
   - do: a rule in docs/sync-spec.md first (spec-reviewed): when a final pass replaces segments their tombstones hold no text or words, and once a final transcript is stored the meeting's Live-pass rows hold none either, on every device, without being read as a meeting deletion's erasure (`SegmentRow::is_erasure`, rule 4's order) and without a `ENVELOPE_FORMAT` change unless the row's shape changes. Summary history used by Undo is kept. Tests through `LocalRelay` and straight pages.
   - accept: `cargo test -p earshot-core model`; `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime post`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.48 Speaker labelling runs before the write transaction
+- [x] T14.48 Speaker labelling runs before the write transaction
   - do: `label_segment_speakers` runs with the store lock free (or sweeps with a pointer), with the same labels on the existing tests.
   - accept: `cargo test -p earshot-core diar`; `cargo test -p earshot-runtime post`
 - [ ] T14.49 A removed person or folder stays removed

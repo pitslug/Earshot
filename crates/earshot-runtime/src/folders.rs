@@ -143,9 +143,19 @@ pub fn folder_of(
 /// # Errors
 /// Storage errors.
 pub fn meeting_folders(services: &Services) -> Result<BTreeMap<EntityId, EntityId>, RuntimeError> {
-    let db = services.store();
-    let folders = LiveFolders::read(&**db)?;
-    Ok(db
+    meeting_folders_in(&**services.store())
+}
+
+/// [`meeting_folders`] in a store the caller already holds (a host listing meetings under
+/// its own one lock): the one rule both use.
+///
+/// # Errors
+/// Storage errors.
+pub fn meeting_folders_in<R: MeetingRepo + FolderRepo + ?Sized>(
+    repo: &R,
+) -> Result<BTreeMap<EntityId, EntityId>, RuntimeError> {
+    let folders = LiveFolders::read(repo)?;
+    Ok(repo
         .meetings()?
         .into_iter()
         .filter(|m| !m.meta.deleted)

@@ -1502,7 +1502,8 @@ pub(crate) fn synced_by_id(
 }
 
 /// [`synced_by_id`] that tells a row whose stored values do not convert (a damaged row: its
-/// check or a column's value refused) apart from any other store error: `Ok(Err(()))` for the
+/// check or a column's value refused, or text that is not UTF-8, as [`is_unreadable`] judges
+/// it for the store's own readers) apart from any other store error: `Ok(Err(()))` for the
 /// damaged row, `Err` for everything else.
 pub(crate) fn synced_by_id_or_damaged(
     c: &Connection,
@@ -1511,7 +1512,7 @@ pub(crate) fn synced_by_id_or_damaged(
 ) -> Result<Result<Option<crate::sync::SyncedRow>, ()>, RepoError> {
     match synced_by_id_raw(c, table, id) {
         Ok(row) => Ok(Ok(row)),
-        Err(e) if is_damaged(&e) => Ok(Err(())),
+        Err(e) if is_unreadable(&e) => Ok(Err(())),
         Err(e) => Err(storage(e)),
     }
 }
@@ -1533,6 +1534,31 @@ pub(crate) fn row_reads_deleted(
     Ok(rows.first().copied().unwrap_or(false))
 }
 
+/// Whether the summary request `id` reads as withdrawn by `asker`, from its `state` and
+/// `asking_device` columns alone, so a row whose other values do not convert still answers
+/// (the withdrawal rule's `KeepMine` case, T14.26 review). `false` when absent or when either
+/// column itself does not read.
+pub(crate) fn request_reads_withdrawn_by(
+    c: &Connection,
+    id: EntityId,
+    asker: DeviceId,
+) -> Result<bool, RepoError> {
+    let rows = query(
+        c,
+        "SELECT state, asking_device FROM summary_request WHERE id = ?1",
+        &[id_value(id)],
+        |r| {
+            let state = r.get::<_, String>(0).ok();
+            let device = r.get::<_, Vec<u8>>(1).ok();
+            Ok(
+                state.as_deref() == Some(earshot_core::model::RequestState::Withdrawn.name())
+                    && device.as_deref() == Some(&asker.as_uuid().as_bytes()[..]),
+            )
+        },
+    )?;
+    Ok(rows.first().copied().unwrap_or(false))
+}
+
 /// Whether `e` says a row's stored values do not convert (a damaged row), not that the store
 /// failed.
 fn is_damaged(e: &rusqlite::Error) -> bool {
@@ -1545,7 +1571,7 @@ fn is_damaged(e: &rusqlite::Error) -> bool {
 }
 
 /// [`is_damaged`], or text that is not UTF-8: a row this crate's own readers leave out and
-/// count (T14.24, T14.26). The sync outbox keeps [`is_damaged`] alone.
+/// count (T14.24, T14.26), and the sync outbox and apply count the same way.
 fn is_unreadable(e: &rusqlite::Error) -> bool {
     is_damaged(e) || matches!(e, rusqlite::Error::Utf8Error(..))
 }

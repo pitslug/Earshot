@@ -996,8 +996,8 @@ fn cuda_a_read_only_file_held_open_is_in_use() {
     remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap();
 }
 
-/// TODO 40: a link in the CUDA folder named like a pinned file is removed as a link: the file it
-/// points at, held open elsewhere and read-only, neither stops the removal nor changes.
+/// A link in the CUDA folder named like a pinned file is removed as a link: the file it points
+/// at, held open elsewhere and read-only, neither stops the removal nor changes.
 #[cfg(windows)]
 #[test]
 #[ignore = "creates a file symlink: run with `-- --ignored` from a shell with Developer Mode on or elevated"]
