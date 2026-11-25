@@ -741,6 +741,83 @@ fn export_merge_never_carries_a_mark_from_outside_the_region() {
     assert_eq!(merged.matches(&format!("- [ ] {ME_TASK}")).count(), 1);
 }
 
+// ---- T14.28: generated text cannot embed or fetch ----
+
+/// Text that would make Obsidian fetch or embed something, or hide text, if written raw.
+const HOSTILE: [&str; 7] = [
+    "![](https://example.invalid/a.png)",
+    "![[Secret note]]",
+    "<img src=\"https://example.invalid/b.png\">",
+    "<iframe src=\"https://example.invalid/\"></iframe>",
+    "<https://example.invalid/c>",
+    "\\![x](https://example.invalid/d.png)",
+    "<!-- hidden -->",
+];
+
+#[test]
+fn export_generated_text_cannot_form_an_image_an_embed_or_html() {
+    let mut f = fixture();
+    let all = HOSTILE.join(" and ");
+    f.summary.tldr = all.clone();
+    f.summary.enhanced_notes[0].heading = all.clone();
+    f.summary.enhanced_notes[0].bullets[0].text = all.clone();
+    f.summary.decisions[0].text = all.clone();
+    f.summary.action_items[0].owner = all.clone();
+    f.summary.action_items[0].task = all.clone();
+    f.summary.action_items[0].due = Some(all.clone());
+    f.summary.open_questions[0] = all.clone();
+    f.speakers[1].display_name = all.clone();
+    f.segments[0].text = all.clone();
+    f.notes.clear();
+    let r = render(&input(&f), &opts()).unwrap();
+    let region = r
+        .region
+        .strip_prefix(&format!("{BEGIN_MARKER}\n"))
+        .and_then(|s| s.strip_suffix(&format!("{END_MARKER}\n")))
+        .unwrap();
+    assert!(!region.contains("!["), "{region}");
+    assert!(!region.contains('<'), "{region}");
+    // Ordinary text around the triggers is kept, the triggers written as entities that
+    // Obsidian's reading view shows as the original characters.
+    assert!(
+        region.contains("!&#91;](https://example.invalid/a.png)"),
+        "{region}"
+    );
+    assert!(region.contains("!&#91;[Secret note]]"), "{region}");
+    assert!(region.contains("&lt;img src=\"https://example.invalid/b.png\">"));
+    assert!(region.contains("&lt;!-- hidden -->"));
+    // Every generated place got the escape: tldr, heading, bullet, decision, owner, task,
+    // due, question, the speaker name on its one line and the transcript line.
+    assert_eq!(region.matches("&lt;iframe").count(), 10, "{region}");
+    // Still a fixed point.
+    let doc = r.to_file();
+    assert_eq!(merge(&doc, &r).unwrap(), doc);
+}
+
+#[test]
+fn export_ordinary_prose_with_the_trigger_characters_still_reads_naturally() {
+    let mut f = fixture();
+    f.summary.tldr = "Costs fell! [Budget] is <5% over, a -> b, and 3 > 2.".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    assert!(
+        r.region
+            .contains("Costs fell! [Budget] is &lt;5% over, a -> b, and 3 > 2.\n"),
+        "{}",
+        r.region
+    );
+}
+
+#[test]
+fn export_the_users_own_notes_are_written_as_typed() {
+    let mut f = fixture();
+    f.notes[1].text = "see ![chart](https://example.invalid/e.png) <b>now</b>".into();
+    let doc = render(&input(&f), &opts()).unwrap().to_file();
+    assert!(
+        doc.contains("- `00:33:20` see ![chart](https://example.invalid/e.png) <b>now</b>\n"),
+        "{doc}"
+    );
+}
+
 #[test]
 fn export_content_cannot_forge_region_markers() {
     let mut f = fixture();

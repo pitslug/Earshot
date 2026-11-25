@@ -74,9 +74,26 @@ pub fn replace_em_dash(s: &str) -> String {
     out
 }
 
-/// Makes rendered content unable to contain a region marker (or any HTML comment).
+/// Makes rendered content unable to contain a region marker (or any HTML comment). Used
+/// for the user's own notes, which are otherwise written as typed.
 pub(super) fn neutralise(s: &str) -> String {
     s.replace("<!--", "&lt;!--")
+}
+
+/// Makes generated text (summary fields, speaker names, transcript lines) unable to form
+/// an image or embed, raw HTML or an HTML comment in the note (T14.28): every `<` is
+/// written `&lt;` and the `[` of every `![` is written `&#91;`. Obsidian's reading view
+/// shows both as the original characters, so ordinary prose reads as it was written. This
+/// includes everything [`neutralise`] does (`<!--` becomes `&lt;!--`, as before).
+///
+/// Entities rather than backslash escapes: a backslash already in the text before an
+/// inserted one would turn it into a literal backslash and bring the trigger back
+/// (`\![x](u)` would become `\\![x](u)`, an image), and `\<!--` still holds the marker's
+/// bytes. An entity is never part of Markdown structure, whatever comes before it.
+/// Plain links (`[text](url)`, `[[Note]]`) are left as written: they fetch nothing until
+/// clicked.
+pub(super) fn neutralise_generated(s: &str) -> String {
+    s.replace('<', "&lt;").replace("![", "!&#91;")
 }
 
 /// A YAML double-quoted scalar.
