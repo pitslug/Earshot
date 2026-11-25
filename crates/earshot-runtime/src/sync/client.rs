@@ -9,9 +9,9 @@ use std::time::Duration;
 use earshot_net::{Allowlist, AuditLog, Method, NetClient, NetConfig, NetError, NetRequest, Url};
 use earshot_sync::ENVELOPE_FORMAT;
 use earshot_sync::wire::{
-    ErrorBody, ErrorWord, FORMAT_HEADER, PULL_DEFAULT, PairingRequest, PairingResponse,
-    PresenceRequest, PresenceResponse, PullResponse, PushRequest, PushResponse, RegisterRequest,
-    RegisterResponse, RevokeRequest, TakeRequest, TakeResponse, VaultResponse,
+    ErrorBody, ErrorWord, FORMAT_HEADER, PairingRequest, PairingResponse, PresenceRequest,
+    PresenceResponse, PullResponse, PushRequest, PushResponse, RegisterRequest, RegisterResponse,
+    RevokeRequest, TakeRequest, TakeResponse, VaultResponse,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -162,16 +162,17 @@ impl Relay {
         self.post("v1/rows", Some(token), req)
     }
 
-    /// `GET /v1/rows?after=<after>&limit=<PULL_DEFAULT>`.
+    /// `GET /v1/rows?after=<after>&limit=<limit>` (`PULL_DEFAULT` outside tests).
     pub(crate) fn pull(
         &self,
         token: &DeviceToken,
         after: u64,
+        limit: u32,
     ) -> Result<PullResponse, SyncProblem> {
         let mut url = self.url("v1/rows")?;
         url.query_pairs_mut()
             .append_pair("after", &after.to_string())
-            .append_pair("limit", &PULL_DEFAULT.to_string());
+            .append_pair("limit", &limit.to_string());
         self.call(Method::GET, url, Some(token), None)
     }
 

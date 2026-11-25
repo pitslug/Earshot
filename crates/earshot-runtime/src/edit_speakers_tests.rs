@@ -145,7 +145,9 @@ fn edit_a_legacy_entry_ignore_counts_until_the_copy() {
         !ignore_speaker(&svc, m, a.id).unwrap(),
         "already ignored, nothing written"
     );
-    // A re-transcription honours it and moves it onto the continued row.
+    // A re-transcription honours it and carries it into the new entry, never onto the row
+    // (a re-stamp there could beat a remote name not pulled yet).
+    let a_before = row(&svc, m, a.id);
     let cancel = CancelToken::new();
     let again = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
     let HostPost::Done(outcome) = again.post else {
@@ -159,32 +161,37 @@ fn edit_a_legacy_entry_ignore_counts_until_the_copy() {
             .unwrap()
             .ignored
     );
-    assert!(row(&svc, m, a.id).ignored && row(&svc, m, b.id).ignored);
-    assert!(!entry(&svc, m, a.id).ignored, "the new entry holds no flag");
-    // Un-ignore clears a legacy entry flag even when the row was never flagged.
-    write(&svc, |tx, _| {
-        update_identity_entry(tx, m, b.id, |i| i.ignored = true).map(|_| ())
-    })
-    .unwrap();
-    let mut clear = row(&svc, m, b.id);
-    clear.ignored = false;
-    clear.meta.updated_at.logical += 1;
-    svc.store().put_speaker(clear).unwrap();
-    assert!(ignored(&svc, m, b.id));
+    let a_after = row(&svc, m, a.id);
+    assert!(
+        !a_after.ignored && !row(&svc, m, b.id).ignored,
+        "rows untouched"
+    );
+    assert_eq!(
+        a_after.meta.updated_at, a_before.meta.updated_at,
+        "no re-stamp"
+    );
+    assert!(entry(&svc, m, a.id).ignored, "carried for the copy");
+    assert!(ignored(&svc, m, a.id) && ignored(&svc, m, b.id));
+    // Un-ignore clears a legacy entry flag (the row was never flagged).
     assert!(unignore_speaker(&svc, m, b.id).unwrap());
     assert!(!ignored(&svc, m, b.id) && !entry(&svc, m, b.id).ignored);
-    // After the copy the entry flag is never read.
-    write(&svc, |tx, _| {
-        update_identity_entry(tx, m, b.id, |i| i.ignored = true).map(|_| ())
-    })
-    .unwrap();
+    // The copy puts the carried flag on the row; after it the entry flag is never read.
     crate::ignore_copy::copy_once(&svc).unwrap();
     assert!(!legacy_on(&svc));
-    let mut clear = row(&svc, m, b.id);
+    assert!(row(&svc, m, a.id).ignored);
+    let mut clear = row(&svc, m, a.id);
     clear.ignored = false;
     clear.meta.updated_at.logical += 1;
     svc.store().put_speaker(clear).unwrap();
-    assert!(!ignored(&svc, m, b.id));
+    assert!(entry(&svc, m, a.id).ignored);
+    assert!(
+        !ignored(&svc, m, a.id),
+        "the entry flag is not read after the copy"
+    );
+    // A re-run after the copy writes no flag into the entry.
+    let cancel = CancelToken::new();
+    retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    assert!(!entry(&svc, m, a.id).ignored);
 }
 
 #[test]

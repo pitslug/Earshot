@@ -299,6 +299,21 @@ fn outbox_len(services: &Services) -> Option<u64> {
     services.store().outbox_len().ok()
 }
 
+/// After a tick, the one-off copy of legacy ignores (T12.93, [`crate::ignore_copy`]) runs only
+/// when the tick ended with no problem, its pull reached the end (`more == false`), it held no
+/// row and no earlier held row waits in the store for a retry: any of those may be the edit
+/// another computer made. Returns whether the copy ran (and succeeded) after this tick.
+pub(crate) fn copy_after_tick<P>(
+    client: &SyncClient,
+    ticked: &Result<Result<(), SyncProblem>, P>,
+    report: Option<&super::TickReport>,
+) -> bool {
+    matches!(ticked, Ok(Ok(())))
+        && report.is_some_and(|r| r.pull_complete && r.held == 0)
+        && client.holds_rows_for_retry() == Ok(false)
+        && crate::ignore_copy::copy_once(client.services()).is_ok()
+}
+
 fn beats_of(beats: &Mutex<Beats>) -> MutexGuard<'_, Beats> {
     beats.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -412,13 +427,12 @@ fn run(
             Err(panic) => (None, Err(panic)),
         };
         // After the first completed pull, so an edit another computer made is already here
-        // (T12.93): this device's legacy ignores go onto the speaker rows, once. A failure or a
-        // panic is the next completed pull's to retry; it never ends sync.
-        if matches!(&ticked, Ok(Ok(()))) && tick_report.as_ref().is_some_and(|r| r.pull_complete) {
-            let _ = catch_unwind(AssertUnwindSafe(|| {
-                crate::ignore_copy::copy_once(&services)
-            }));
-        }
+        // (T12.93): this device's legacy ignores go onto the speaker rows, once. Not while any
+        // pulled row is held (a meeting in use, a missing parent): it may be that edit. A
+        // failure or a panic is the next completed pull's to retry; it never ends sync.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            copy_after_tick(client, &ticked, tick_report.as_ref())
+        }));
         let mut step_report = crate::offload::StepReport::default();
         if let Some(pair) = offload {
             // A store failure or a panic here is the next step's to retry; it never ends sync.

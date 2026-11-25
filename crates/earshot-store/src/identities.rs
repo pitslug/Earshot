@@ -92,26 +92,37 @@ pub struct SpeakerIdentity {
     pub enrolled: bool,
     /// A legacy ignore (T12.19 to 0.4.2): the user chose to ignore this voice when the choice
     /// was kept here, device-locally. Since T12.93 the choice lives on the synced speaker row
-    /// (`earshot_core::model::Speaker::ignored`) and nothing writes this field true again; it
-    /// is read only until this device's one-off copy onto the rows has run
+    /// (`earshot_core::model::Speaker::ignored`). The one writer of `true` is a final pass that
+    /// runs before this device's one-off copy, carrying a legacy flag into the new entry of the
+    /// voice it continues (so the copy still finds it); it is read only until the copy has run
     /// (`earshot_runtime::ignore_copy`), and never after. Added within version 2 with a
     /// `false` default, as [`SpeakerIdentity::enrolled`] was.
     #[serde(default)]
     pub ignored: bool,
 }
 
+/// The one rule for an ignored voice (T12.19, T12.93; `earshot_runtime::edit::is_ignored`
+/// passes its legacy set through it): only an unnamed voice that is not the user counts, with
+/// the row's synced flag or, until the one-off copy ran, a legacy entry flag
+/// (`legacy_entry_flag`). Applied to every read, because a synced row is a trust boundary.
+#[must_use]
+pub fn counts_as_ignored(row: &earshot_core::model::Speaker, legacy_entry_flag: bool) -> bool {
+    row.role != earshot_core::diar::SpeakerRole::Me
+        && row.person_id.is_none()
+        && (row.ignored || legacy_entry_flag)
+}
+
 impl SpeakerIdentity {
     /// Whether `row` was changed after the pass that wrote this entry (module docs): a
-    /// carried edit, an ignored row (`Speaker::ignored`, or this entry's legacy flag
-    /// [`SpeakerIdentity::ignored`] while `legacy_ignores` holds, that is until the one-off
-    /// copy ran), a row written since the pass ([`SpeakerIdentity::given_stamp`]; so a rename
+    /// carried edit, an ignored row by the one rule ([`counts_as_ignored`]: the row's flag, or
+    /// this entry's legacy flag [`SpeakerIdentity::ignored`] while `legacy_ignores` holds, that
+    /// is until the one-off copy ran), a row written since the pass ([`SpeakerIdentity::given_stamp`]; so a rename
     /// back to the automatic name is still an edit), or, for entries without a stamp, a name
     /// or person different from what the pass gave it.
     #[must_use]
     pub fn edited(&self, row: &earshot_core::model::Speaker, legacy_ignores: bool) -> bool {
         self.user_edited
-            || row.ignored
-            || (legacy_ignores && self.ignored)
+            || counts_as_ignored(row, legacy_ignores && self.ignored)
             || self.given_stamp.is_some_and(|s| row.meta.updated_at != s)
             || row.display_name != self.given_name
             || row.person_id != self.given_person

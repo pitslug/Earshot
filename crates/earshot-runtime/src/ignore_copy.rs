@@ -10,10 +10,12 @@
 //!
 //! **When.** At app start only when this device has no sync vault at all (nothing can arrive
 //! from another computer); otherwise only after the sync thread's first completed pull (a tick
-//! whose pull ended with `more == false` and no problem,
-//! `crate::sync::TickReport::pull_complete`), whatever the sync switch was at start, so an edit
-//! another computer made (a name, a link, an un-ignore) is already here and is never
-//! overwritten by an older choice.
+//! whose pull ended with `more == false`, `crate::sync::TickReport::pull_complete`, with no
+//! problem, no row held in that tick and none waiting in the store for a retry), whatever the
+//! sync switch was at start, so an edit another computer made (a name, a link, an un-ignore)
+//! is already here and is never overwritten by an older choice. A device with no vault copies
+//! at start; if it joins a vault later, its copied flags are ordinary edits stamped then, and
+//! can beat a name another computer gave the voice meanwhile (accepted: rare, and visible).
 //!
 //! **What.** In one transaction, re-reading each row: every live speaker of a live meeting
 //! whose entry says ignored and whose row is unnamed, not the user and not yet ignored gets the
@@ -21,8 +23,10 @@
 //! pull it protects nothing, and it would drop a voice the user renamed and ignored.
 //!
 //! **Before the copy** the entry flag is a legacy ignore and is honoured everywhere: the one
-//! rule `crate::edit::is_ignored` reads `row.ignored` or the entry flag ([`legacy_of`]), and the
-//! final pass's `SpeakerIdentity::edited` reads it too. After the copy the entry flag is never
+//! rule `crate::edit::is_ignored` reads `row.ignored` or the entry flag ([`legacy_of`]), the
+//! final pass's `SpeakerIdentity::edited` reads it too, and a final pass that continues the
+//! voice carries the flag into its new entry (never onto the row, whose re-stamp could beat a
+//! remote name not pulled yet), the one place the flag is still written true. After the copy the entry flag is never
 //! read ([`legacy_of`] returns nothing). The worker (a headless paired device) shares the sync
 //! thread and holds no entries: there the copy finds nothing and only records that it ran.
 //!

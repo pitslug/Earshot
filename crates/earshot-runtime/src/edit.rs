@@ -2530,9 +2530,7 @@ fn legacy_ignores_tx(
 /// "Me" and a linked voice never do whatever their flag says.
 #[must_use]
 pub fn is_ignored(row: &Speaker, legacy: &BTreeSet<EntityId>) -> bool {
-    row.role != SpeakerRole::Me
-        && row.person_id.is_none()
-        && (row.ignored || legacy.contains(&row.id))
+    earshot_store::identities::counts_as_ignored(row, legacy.contains(&row.id))
 }
 
 /// Whether [`ignore_speaker`] would accept `row`: any unnamed voice that is not the user (what

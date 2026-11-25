@@ -481,7 +481,12 @@ fn store_remove_person_takes_everyone_merged_into_them() {
     store.put_meeting(m.clone()).unwrap();
     let keeper = enrolled(&mut store, &mut w, "Kay", false, 0.041);
     let mut dup = enrolled(&mut store, &mut w, "Kay Too", false, 0.053);
-    let row = speaker(&mut store, &mut w, m.id, &dup);
+    let mut row = speaker(&mut store, &mut w, m.id, &dup);
+    // T12.93: a linked row carrying an ignore flag (a pulled row is a trust boundary) is not an
+    // ignored voice once unlinked.
+    row.ignored = true;
+    row.meta.touch(&mut w.hlc, &w.clock);
+    store.put_speaker(row.clone()).unwrap();
     dup.merged_into = Some(keeper.id);
     dup.meta.touch(&mut w.hlc, &w.clock);
     store.put_person(dup.clone()).unwrap();
@@ -507,8 +512,7 @@ fn store_remove_person_takes_everyone_merged_into_them() {
             .is_empty()
     );
     let rows = store.speakers(m.id).unwrap();
-    assert_eq!(
-        rows.iter().find(|s| s.id == row.id).unwrap().display_name,
-        "Speaker 1"
-    );
+    let unlinked = rows.iter().find(|s| s.id == row.id).unwrap();
+    assert_eq!(unlinked.display_name, "Speaker 1");
+    assert!(unlinked.person_id.is_none() && !unlinked.ignored);
 }

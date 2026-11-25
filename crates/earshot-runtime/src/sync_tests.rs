@@ -3238,9 +3238,12 @@ fn sync_an_ignore_on_one_computer_is_read_on_the_other_and_kept_through_a_retran
     assert_eq!(a.rows(), b.rows());
 }
 
-/// The one-off copy waits for the sync thread's first completed pull, so a name another
-/// computer gave a 0.4.2-ignored voice is pulled first and never overwritten; the copy runs
-/// once, honours the rule (linked, Me, tombstoned and deleted-meeting rows skipped) and its
+/// The one-off copy runs in the sync thread only after a pull that reached the end, so a name
+/// another computer gave a 0.4.2-ignored voice, still on the relay when the thread starts, is
+/// pulled first and never overwritten. A pulls one row per page here, so a copy after any
+/// earlier page, or before the pull, would run while the name is still unpulled; A's clock is
+/// ahead of B's, so such a copy's write would be newer and win (checked by mutation). The copy
+/// runs once, honours the rule (linked, Me, tombstoned and deleted-meeting rows skipped) and its
 /// flags reach the other computer.
 #[test]
 fn sync_ignore_copy_runs_after_the_first_completed_pull_and_keeps_a_pulled_name() {
@@ -3267,8 +3270,14 @@ fn sync_ignore_copy_runs_after_the_first_completed_pull_and_keeps_a_pulled_name(
     }
     let in_gone = voices(&a, gone_meeting)[0].id;
     legacy_ignore_on(&a, gone_meeting, in_gone);
+    a.svc.delete_meeting(gone_meeting).unwrap();
     assert!(ignored_on(&a, m, named) && ignored_on(&a, m, kept));
-    // Meanwhile B (already updated) names one of them.
+    // Meanwhile B (already updated) writes other rows, then names one of the voices last, and
+    // pushes; A has pulled none of it when its thread starts.
+    b.clock.advance_ms(1_000);
+    for seed in 0..3 {
+        meeting(&b.svc, "Invented later meeting", 940 + seed);
+    }
     b.clock.advance_ms(1_000);
     crate::edit::link_speaker(
         &b.svc,
@@ -3280,18 +3289,10 @@ fn sync_ignore_copy_runs_after_the_first_completed_pull_and_keeps_a_pulled_name(
     )
     .unwrap();
     b.client().tick().unwrap();
-    a.svc.delete_meeting(gone_meeting).unwrap();
-    // A tick alone copies nothing: only the thread's completed pull does.
-    let report = a.client().tick().unwrap();
-    assert!(report.pull_complete, "{report:?}");
+    a.clock.advance_ms(60_000);
     assert!(!crate::ignore_copy::copied(&a.svc.store()).unwrap());
 
-    // With sync switched off nothing runs, and the copy keeps waiting.
-    set_sync_on(&a.svc, false).unwrap();
-    assert!(!crate::ignore_copy::copied(&a.svc.store()).unwrap());
-    set_sync_on(&a.svc, true).unwrap();
-
-    let thread = SyncThread::start(a.client(), quick()).unwrap();
+    let thread = SyncThread::start(a.client().with_pull_pages(1, 1), quick()).unwrap();
     wait_for("the copy after the first completed pull", || {
         crate::ignore_copy::copied(&a.svc.store()).unwrap()
     });
@@ -3313,15 +3314,114 @@ fn sync_ignore_copy_runs_after_the_first_completed_pull_and_keeps_a_pulled_name(
     );
     // Once only.
     assert_eq!(crate::ignore_copy::copy_once(&a.svc).unwrap(), 0);
-    // The copied flag reaches B, which never had the entry.
+    // The copied flag reaches B, which never had the entry, and B keeps its name.
     trade(&a, &b);
     assert!(ignored_on(&b, m, kept));
+    assert_eq!(speaker_row(&b, m, named).display_name, "Avery Invented");
 }
 
-/// Before the copy, a re-transcription honours a 0.4.2 entry flag and moves it onto the row,
-/// which reaches the other computer; un-ignore clears it.
+/// The copy does not run after a tick that failed, after a tick whose pull stopped with
+/// `more == true`, or while a pulled row is held (its meeting in use here): any of those may
+/// hold the edit another computer made. Legacy ignores stay honoured meanwhile; once the held
+/// row is applied the copy runs and keeps B's name.
 #[test]
-fn sync_ignore_legacy_flag_is_honoured_before_the_copy_and_travels_after_a_retranscribe() {
+fn sync_ignore_copy_waits_for_a_failed_tick_a_partial_pull_and_a_held_row() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = processed_on(&a, 934);
+    trade(&a, &b);
+    let named = voices(&a, m)[0].id;
+    legacy_ignore_on(&a, m, named);
+
+    // A failed tick: the relay is somewhere nothing listens.
+    {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let down = Device::new("sync-ignore-down");
+        {
+            let mut db = down.svc.store();
+            crate::local::set(
+                &mut db,
+                &crate::local::DeviceRecord::SyncServer.key(),
+                format!("http://127.0.0.1:{port}").as_bytes(),
+            )
+            .unwrap();
+        }
+        let key = earshot_sync::VaultKey::generate().unwrap();
+        down.vault
+            .save(&key, &DeviceToken::new("invented-token".into()))
+            .unwrap();
+        let c = down.client();
+        let (report, outcome) = c.tick_reporting();
+        assert!(outcome.is_err());
+        let ticked: Result<_, ()> = Ok(outcome);
+        assert!(!super::thread::copy_after_tick(&c, &ticked, Some(&report)));
+        assert!(!crate::ignore_copy::copied(&down.svc.store()).unwrap());
+    }
+
+    // B names the voice and writes more rows; A pulls one row per page.
+    b.clock.advance_ms(1_000);
+    crate::edit::link_speaker(
+        &b.svc,
+        m,
+        named,
+        &crate::edit::PersonChoice::New {
+            name: "Blair Invented".into(),
+        },
+    )
+    .unwrap();
+    for seed in 0..2 {
+        meeting(&b.svc, "Invented later meeting", 950 + seed);
+    }
+    b.client().tick().unwrap();
+    a.clock.advance_ms(60_000);
+
+    // The meeting is in use here for the next ticks, so B's speaker row is held when pulled.
+    let lease = a.svc.lease_meeting_for(m, MeetingJob::Processing).unwrap();
+
+    // A partial pull: one page of one row, more left on the relay.
+    let partial = a.client().with_pull_pages(1, 1);
+    let (report, outcome) = partial.tick_reporting();
+    assert!(outcome.is_ok() && !report.pull_complete, "{report:?}");
+    let ticked: Result<_, ()> = Ok(outcome);
+    assert!(!super::thread::copy_after_tick(
+        &partial,
+        &ticked,
+        Some(&report)
+    ));
+    assert!(!crate::ignore_copy::copied(&a.svc.store()).unwrap());
+
+    // A complete pull while B's speaker row is held: still no copy.
+    let c = a.client();
+    let (report, outcome) = c.tick_reporting();
+    assert!(outcome.is_ok() && report.pull_complete, "{report:?}");
+    assert!(c.holds_rows_for_retry().unwrap(), "{report:?}");
+    let ticked: Result<_, ()> = Ok(outcome);
+    assert!(!super::thread::copy_after_tick(&c, &ticked, Some(&report)));
+    assert!(!crate::ignore_copy::copied(&a.svc.store()).unwrap());
+    assert!(ignored_on(&a, m, named), "the legacy ignore still counts");
+    assert_eq!(speaker_row(&a, m, named).person_id, None);
+
+    // Free again: the held row is applied, then the copy runs and the name stays.
+    drop(lease);
+    let (report, outcome) = c.tick_reporting();
+    assert!(!c.holds_rows_for_retry().unwrap(), "{report:?}");
+    let ticked: Result<_, ()> = Ok(outcome);
+    assert!(super::thread::copy_after_tick(&c, &ticked, Some(&report)));
+    let after = speaker_row(&a, m, named);
+    assert_eq!(after.display_name, "Blair Invented");
+    assert!(after.person_id.is_some() && !after.ignored);
+    assert!(!ignored_on(&a, m, named));
+}
+
+/// Before the copy, a re-transcription honours a 0.4.2 entry flag and carries it into its new
+/// entry, never onto the row (which would sync it before the copy's completed pull); the copy
+/// then puts it on the row, from where it reaches the other computer. Un-ignore clears it.
+#[test]
+fn sync_ignore_legacy_flag_is_honoured_before_the_copy_and_travels_after_it() {
     let relay = relay();
     let (a, b) = pair(&relay);
     let m = processed_on(&a, 933);
@@ -3332,11 +3432,17 @@ fn sync_ignore_legacy_flag_is_honoured_before_the_copy_and_travels_after_a_retra
     assert!(ignored_on(&a, m, v) && !ignored_on(&b, m, v));
     let outcome = retranscribed_on(&a, m);
     assert!(outcome.speakers.iter().find(|p| p.id == v).unwrap().ignored);
-    assert!(speaker_row(&a, m, v).ignored, "moved onto the row");
+    assert!(!speaker_row(&a, m, v).ignored, "not written onto the row");
+    assert!(
+        ignored_on(&a, m, v),
+        "still honoured through the carried entry flag"
+    );
+    trade(&a, &b);
+    assert!(!ignored_on(&b, m, v), "nothing synced before the copy");
+    assert_eq!(crate::ignore_copy::copy_once(&a.svc).unwrap(), 1);
     trade(&a, &b);
     assert!(ignored_on(&b, m, v));
-    // Un-ignore on A clears both the row and the entry flag.
-    legacy_ignore_on(&a, m, v);
+    // Un-ignore on A clears the row; B follows.
     assert!(crate::edit::unignore_speaker(&a.svc, m, v).unwrap());
     assert!(!ignored_on(&a, m, v));
     trade(&a, &b);

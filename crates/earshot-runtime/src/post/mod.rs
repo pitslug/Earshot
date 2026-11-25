@@ -127,8 +127,9 @@
 //!    user ignored ([`crate::edit::ignore_speaker`], T12.19) is an edit too: it keeps its row,
 //!    label and the row's synced ignore flag (T12.93) unlinked whatever voiceprint it now
 //!    matches ([`PostSpeaker::ignored`]). Until this device's one-off copy ran
-//!    ([`crate::ignore_copy`]) an entry's legacy ignore counts as well and moves onto the
-//!    continued row. Carrying still needs the entry: an ignored row this run cannot continue
+//!    ([`crate::ignore_copy`]) an entry's legacy ignore counts as well and is carried into the
+//!    continued voice's new entry (never onto the row, whose re-stamp could beat a remote name
+//!    not pulled yet). Carrying still needs the entry: an ignored row this run cannot continue
 //!    is tombstoned like any other edit.
 //!    Earlier speakers found with another embedding model, or an identity record this build
 //!    cannot read, are not carried over ([`PostWarning::SpeakerNamesNotCarried`]). This
@@ -470,8 +471,9 @@ pub struct PostSpeaker {
     pub display_name: String,
     /// Total speech.
     pub speech: Duration,
-    /// The continued row is ignored by the one rule (`crate::edit::is_ignored` over the row's
-    /// synced flag, T12.19, T12.93): it does not need a name.
+    /// The continued row is ignored by the one rule (`counts_as_ignored` over the row's synced
+    /// flag, or a carried legacy flag before the one-off copy; T12.19, T12.93): it does not
+    /// need a name.
     pub ignored: bool,
 }
 
@@ -1769,13 +1771,14 @@ where
                     } else {
                         naming.role
                     };
-                    // A legacy ignore (the entry's flag, before the one-off copy ran) moves onto
-                    // the continued row, where every computer reads it (T12.93); the row's own
-                    // flag is kept as it is.
-                    let moved_ignore = legacy && identity.ignored && !row.ignored;
-                    if row.role != role || moved_ignore {
+                    // The row's own flag is kept as it is. A legacy ignore (the entry's flag,
+                    // before the one-off copy ran) is not written onto the row here: that would
+                    // re-stamp it and could beat a name another computer gave it that is not
+                    // pulled yet. It is carried into the new entry instead (below), so it stays
+                    // honoured until the copy, which runs after a completed pull (T12.93).
+                    let legacy_flag = legacy && identity.ignored;
+                    if row.role != role {
                         row.role = role;
-                        row.ignored |= moved_ignore;
                         row.meta.touch(stamp.hlc, stamp.clock);
                         tx.put_speaker(row.clone())?;
                     }
@@ -1793,14 +1796,15 @@ where
                             // docs/voice-samples.md 5.2) still counts, so a re-save adds it
                             // nothing again.
                             enrolled: identity.enrolled,
-                            // The ignore lives on the row (T12.93): never written here again.
-                            ignored: false,
+                            // The ignore lives on the row (T12.93); only a legacy flag from
+                            // before the one-off copy is carried, for the copy to find.
+                            ignored: legacy_flag,
                         });
                     }
                     row_ids[k] = Some(row.id);
-                    // The row's flag, by the one rule (an ignored voice stays ignored); a legacy
-                    // flag was moved onto the row above.
-                    let ignored = crate::edit::is_ignored(&row, &BTreeSet::new());
+                    // By the one rule over the row's flag and a carried legacy flag (an ignored
+                    // voice stays ignored).
+                    let ignored = earshot_store::identities::counts_as_ignored(&row, legacy_flag);
                     speakers.push(PostSpeaker {
                         id: row.id,
                         role,
