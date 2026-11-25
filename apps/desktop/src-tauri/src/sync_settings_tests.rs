@@ -731,6 +731,49 @@ fn sync_devices_are_asked_through_the_threads_client_or_one_kept_for_the_pages()
     a.host.stop_and_wait();
 }
 
+/// T14.50 review: a page's client built while this computer is removed is not kept for the
+/// address being left (the removal moves the pages' generation on). Control: built with nothing
+/// in between, it is kept.
+#[test]
+fn sync_a_page_client_built_across_a_removal_is_not_kept() {
+    let env = relay();
+    let a = computer("sync-page-client-remove");
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    set_on(&a.svc, &a.host, false).unwrap();
+    assert!(!a.host.running());
+    // Control: nothing happens between building and keeping.
+    a.host.on_spare_built_for_test(Box::new(|| {}));
+    assert_eq!(devices(&a.svc, &a.host).unwrap().len(), 1);
+    assert!(a.host.keeps_page_client_for_test(), "the control kept it");
+    // A start drops it; the next ask is built while this computer is removed.
+    set_on(&a.svc, &a.host, true).unwrap();
+    set_on(&a.svc, &a.host, false).unwrap();
+    assert!(!a.host.keeps_page_client_for_test());
+    let made = a.host.spares_made_for_test();
+    let (built_tx, built_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    a.host.on_spare_built_for_test(Box::new(move || {
+        built_tx.send(()).unwrap();
+        go_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+    }));
+    std::thread::scope(|s| {
+        let ask = s.spawn(|| devices(&a.svc, &a.host).map(|d| d.len()));
+        built_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the ask never built a client");
+        remove(&a.svc, &a.host).unwrap();
+        go_tx.send(()).unwrap();
+        // The ask's own answer does not matter: the address it asked is gone.
+        let _ = ask.join().unwrap();
+    });
+    assert_eq!(a.host.spares_made_for_test(), made + 1, "the ask built one");
+    assert!(
+        !a.host.keeps_page_client_for_test(),
+        "a client built across the removal was kept"
+    );
+    a.host.stop_and_wait();
+}
+
 #[cfg(windows)]
 #[test]
 fn sync_sleep_says_gone_at_once_and_resume_says_online_again() {

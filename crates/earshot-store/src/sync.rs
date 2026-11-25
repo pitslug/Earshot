@@ -1522,6 +1522,7 @@ impl Store {
                         crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?
                             .total();
                     // It tombstones that identity's prints and erases its samples.
+                    // Belt-and-braces: `forget_identity_biometrics` already erased them.
                     wrote.prints = true;
                     wrote.samples = true;
                 }

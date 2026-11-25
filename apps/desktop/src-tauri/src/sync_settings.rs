@@ -151,13 +151,24 @@ pub struct SyncHost {
     /// page asks every few seconds). Dropped whenever the thread is started or this computer is
     /// removed, so it never outlives the address it was made for. Taken alone, after the slot.
     spare: Mutex<Option<Arc<SyncClient>>>,
+    /// Moved on, under the `spare` lock, every time the pages' client is dropped (a start, a
+    /// removal). An ask notes it before building a client and keeps the client only when it has
+    /// not moved, so a client built across a removal is never kept for the address being left.
+    spare_generation: std::sync::atomic::AtomicU64,
     /// Tests: the next threads cannot be started, as when the system has no thread to give.
     #[cfg(test)]
     refuse_start: std::sync::atomic::AtomicBool,
     /// Tests: how many clients were made for the pages' asks.
     #[cfg(test)]
     spares_made: std::sync::atomic::AtomicUsize,
+    /// Tests: run once a page's client is built and before it is kept.
+    #[cfg(test)]
+    spare_built: Mutex<Option<SpareBuiltHook>>,
 }
+
+/// Tests: what runs between building a page's client and keeping it.
+#[cfg(test)]
+pub type SpareBuiltHook = Box<dyn FnOnce() + Send>;
 
 /// What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
 /// tick and the offload step after it) changed here, by id only (never a title, a line or a
@@ -207,15 +218,42 @@ impl SyncHost {
             changes: Mutex::new(None),
             retired: Mutex::new(Vec::new()),
             spare: Mutex::new(None),
+            spare_generation: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             refuse_start: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             spares_made: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            spare_built: Mutex::new(None),
         }
     }
 
     fn spare(&self) -> std::sync::MutexGuard<'_, Option<Arc<SyncClient>>> {
         self.spare.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Drops the pages' client and moves the generation on, so an ask building one meanwhile
+    /// does not keep it.
+    fn drop_spare(&self) {
+        let mut spare = self.spare();
+        *spare = None;
+        self.spare_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether a client is kept for the pages (tests).
+    #[cfg(test)]
+    pub fn keeps_page_client_for_test(&self) -> bool {
+        self.spare().is_some()
+    }
+
+    /// Sets what runs once a page's client is built and before it is kept (tests).
+    #[cfg(test)]
+    pub fn on_spare_built_for_test(&self, hook: SpareBuiltHook) {
+        *self
+            .spare_built
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
     }
 
     /// How many clients were made for the pages' asks (tests).
@@ -233,19 +271,45 @@ impl SyncHost {
     /// requests, and takes neither the tick lock nor any lock of the thread's
     /// ([`SyncClient::vault_devices`]). The slot is not held while asking.
     fn page_client(&self, services: &Services) -> Result<Arc<SyncClient>, SyncProblem> {
+        let generation = self
+            .spare_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
         let running = self.slot().as_ref().map(SyncThread::client);
         if let Some(client) = running {
             return Ok(client);
         }
-        let mut spare = self.spare();
-        if let Some(client) = spare.as_ref() {
+        if let Some(client) = self.spare().as_ref() {
             return Ok(Arc::clone(client));
         }
         let client = Arc::new(SyncClient::new(services.clone(), self.vault())?);
         #[cfg(test)]
         self.spares_made
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        *spare = Some(Arc::clone(&client));
+        #[cfg(test)]
+        {
+            let hook = self
+                .spare_built
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        let mut spare = self.spare();
+        // Kept only when nothing dropped the pages' client while this one was built: a start
+        // or a removal in between may have changed or left the address it was made for. It
+        // still answers this one ask.
+        if self
+            .spare_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == generation
+        {
+            if let Some(kept) = spare.as_ref() {
+                return Ok(Arc::clone(kept));
+            }
+            *spare = Some(Arc::clone(&client));
+        }
         Ok(client)
     }
 
@@ -363,7 +427,7 @@ impl SyncHost {
         // Whatever follows, the pages' own client is made anew when next needed: the address
         // may be another (this runs after setting up and joining), and a thread about to start
         // brings its own.
-        *self.spare() = None;
+        self.drop_spare();
         let on = {
             let db = services.store();
             earshot_runtime::sync::sync_settings(&db).is_ok_and(|s| s.on)
@@ -831,11 +895,15 @@ pub fn remove(services: &Services, host: &SyncHost) -> Result<SyncView, IpcError
         let _lifecycle = host.lifecycle();
         host.stop_and_wait_locked();
         // The pages' own client was made for the address this computer is leaving.
-        *host.spare() = None;
+        host.drop_spare();
         let removed = earshot_runtime::sync::remove_this_device(services, host.vault());
         if removed.is_err() {
             // Still set up: carry on syncing.
             host.start_locked(services);
+        } else {
+            // Again once the address is gone: an ask that began building during the removal
+            // keeps nothing either.
+            host.drop_spare();
         }
         removed
     };
