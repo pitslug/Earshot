@@ -226,6 +226,8 @@ A re-open asks for the track's rate (`Some(rate)`) and, for the mono mic, any ch
 - Tries stop when the track ends and wait while the track has no stream; a chosen mic given up for the default goes on trying there, from a fresh first wait. The audio check's source never tries (a move onto raw mid-run would fail the measurement). The raw recorder never falls back and never tries.
 - `earshot-cli record-raw` now also prints each stream error that made it re-open (the call and the HRESULT number, on its output, not in `timestamps.json`), beside the refused re-open's, so the Surface reproduction captures both codes.
 
-### Desktop measurement (pending)
+### Desktop measurement (2026-11-25)
 
-`cargo test -p earshot-capture-wasapi raw_reopen_requests_on_the_default_mic -- --ignored --nocapture` opens the desktop's default mic raw as the start does, then raw at the same and at another rate (with the first stream held and after it is closed) and raw beside a processed stream, printing each refusal as call and HRESULT only. Not run yet: the microphone was not free. Its outcome goes here.
+`cargo test -p earshot-capture-wasapi raw_reopen_requests_on_the_default_mic -- --ignored --nocapture` opens the desktop's default mic raw as the start does, then raw at the same and at another rate (with the first stream held and after it is closed) and raw beside a processed stream, printing each refusal as call and HRESULT only.
+
+Result: the desktop's default mic (a USB audio interface) does not declare raw processing (`raw_refusal` reads `NotSupported`), so the first raw open is refused before any stream exists and the re-open requests cannot be compared here. The hypothesis that a raw re-open fails on its conversion request stays untested; it needs the Surface, where raw is supported: `earshot-cli record-raw --mic-raw` with a default-device switch, which now prints both the stream error and the refused re-open's codes. Under Automatic (T12.36b) this desktop records processed in the room with no banner, as designed.
