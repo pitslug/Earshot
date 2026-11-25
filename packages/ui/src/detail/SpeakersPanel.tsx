@@ -2,15 +2,18 @@
 // transcript. Voices that need a name come first, each with a name field, Save (name it,
 // link it to that person and remember the voice, in one step) and Ignore. Named voices (the
 // user, linked and recognised ones) sit in a collapsed list where a wrong name or match can
-// still be fixed: rename here, rename person, link, merge and forget voice; "This is me" and
+// still be fixed: the pencil changes the name and "Not <name>" unlinks it; "This is me" and
 // "This isn't me" in an in-room meeting. Ignored voices keep their label and can be named
 // after all. T12.44: a typed name that is someone's says "Links to <name>" before Save; after
 // "This is me" a separate person with the user's name is offered for merging into the user;
 // "This isn't me" waits on a voice the user's voiceprint named. T12.77: "Not <name>" puts a
 // voice named or recognised as the wrong person back as an ignored "Speaker N". T12.80: the
-// name of a voice that needs one, and Link on a named voice, are one combobox that lists saved
-// people as you type (any part of the name, case and accents ignored), tells persons with one
-// name apart by how many meetings each is in, and offers "New person: <name>".
+// name field is one combobox that lists saved people as you type (any part of the name, case
+// and accents ignored), tells persons with one name apart by how many meetings each is in, and
+// offers "New person: <name>". T12.104: a named card holds only its name, the pencil and "Not
+// <name>"; naming a voice after a person who already has another card on its track (the user
+// beside the user's own row included) makes the two voices one (a merge), and "Manage people"
+// opens Settings on the People page.
 
 import {
   Accordion,
@@ -22,33 +25,16 @@ import {
   Button,
   Caption1,
   Combobox,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
-  Field,
-  Input,
-  Menu,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
-  MenuButton,
-  MenuItem,
-  MenuList,
-  MenuPopover,
-  MenuTrigger,
   Option,
-  Popover,
-  PopoverSurface,
-  PopoverTrigger,
   Subtitle2,
   Tooltip,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, type ReactElement, type Ref, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactElement, type Ref, useEffect, useRef, useState } from "react";
 
 import { RECOGNISED_ME_COPY, type LinkChoice, type MeetingDetail, type PersonItem, type SpeakerCard } from "../ipc";
 import { recognised, recordingsGone, sourceLabel, speakerGroups } from "./detail";
@@ -115,11 +101,23 @@ const useStyles = makeStyles({
     flexWrap: "wrap",
     columnGap: tokens.spacingHorizontalXS,
   },
-  linkSurface: {
-    display: "flex",
-    flexDirection: "column",
-    gap: tokens.spacingVerticalS,
-    width: "240px",
+  count: {
+    color: tokens.colorNeutralForeground4,
+  },
+  // Read by assistive technology, not drawn (the usual clip pattern).
+  srOnly: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    margin: "-1px",
+    padding: 0,
+    overflow: "hidden",
+    clip: "rect(0 0 0 0)",
+    whiteSpace: "nowrap",
+    border: 0,
+  },
+  manage: {
+    alignSelf: "flex-start",
   },
   section: {
     display: "flex",
@@ -142,26 +140,27 @@ export interface SpeakersPanelProps {
   /** Closes the panel. */
   onClose(): void;
   onPlay(speaker: string): void;
-  /** Renames the speaker in this meeting only. */
-  onRename(speaker: string, name: string): Promise<void>;
-  /** Renames a person, and so their speakers in every meeting. */
-  onRenamePerson(person: string, name: string): Promise<void>;
-  onLink(speaker: string, choice: LinkChoice): Promise<void>;
+  /** Links a named voice to the person its changed name means (links only, remembers nothing).
+   * Resolves whether it was done; a refusal is shown by the host. */
+  onLink(speaker: string, choice: LinkChoice): Promise<boolean>;
   /** "Save": names the voice, links it to that person and remembers the voice (`name`: the
-   * name it is saved as). */
-  onSave(speaker: string, choice: LinkChoice, name: string): Promise<void>;
+   * name it is saved as). Resolves whether it was done. */
+  onSave(speaker: string, choice: LinkChoice, name: string): Promise<boolean>;
   /** "Ignore": the voice no longer needs a name. */
-  onIgnore(speaker: string): Promise<void>;
+  onIgnore(speaker: string): Promise<unknown>;
   /** Undoes "Ignore". */
-  onUnignore(speaker: string): Promise<void>;
+  onUnignore(speaker: string): Promise<unknown>;
   /** "Not <name>": the voice is not that person; back to an ignored "Speaker N". */
-  onNotThisPerson(speaker: string): Promise<void>;
+  onNotThisPerson(speaker: string): Promise<unknown>;
   /** Says this voice is the user's, in this meeting. */
-  onMarkMe(speaker: string): Promise<void>;
+  onMarkMe(speaker: string): Promise<unknown>;
   /** Puts the user's row back as a voice that needs a name. */
-  onUnmarkMe(speaker: string): Promise<void>;
-  onMerge(keep: string, merge: string): Promise<void>;
-  onForget(person: string): Promise<void>;
+  onUnmarkMe(speaker: string): Promise<unknown>;
+  /** Makes two voices one: `merge` joins `keep` (a name chosen for a voice whose person already
+   * has another card on the same track here, [`mergeTarget`]). Resolves whether it was done. */
+  onMerge(keep: string, merge: string): Promise<boolean>;
+  /** "Manage people": opens Settings on the People page. */
+  onManagePeople?(): void;
   /** Called with the name field of the first voice that needs a name (for "Name voices"). */
   firstNameField?: (input: HTMLInputElement | null) => void;
   /** The meeting is still finishing (T12.28): the voices can be seen and heard, but every edit
@@ -174,7 +173,7 @@ export interface SpeakersPanelProps {
    * me" (T12.44); `null` or absent when there is none. */
   mergeOffer?: PersonItem | null;
   /** Merges the offered person into the user. */
-  onMergeIntoMe?(person: string): Promise<void>;
+  onMergeIntoMe?(person: string): Promise<unknown>;
   /** Declines the offer: the person stays separate. */
   onKeepSeparate?(): void;
 }
@@ -202,12 +201,52 @@ export function mergeOfferText(person: PersonItem): string {
 
 /** What "Not <name>" does (T12.77), for its tooltip. `savedHere`: this meeting's voice is saved
  * as a sample of `name`'s voice, so "Not" takes it out (T12.77b7, the agreed copy); otherwise
- * `name`'s saved voice may still hold it, and `forgetShown` (the row shows Forget voice, the
- * person has a saved voice) adds that Forget voice deletes that saved voice only. */
-export function notThisPersonHint(name: string, forgetShown: boolean, savedHere = false): string {
+ * `name`'s saved voice may still hold it. */
+export function notThisPersonHint(name: string, savedHere = false): string {
   if (savedHere) return notThisPersonSavedHint(name);
-  const forget = forgetShown ? ` Forget voice deletes ${name}'s saved voice.` : "";
-  return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it.${forget}`;
+  return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it.`;
+}
+
+/** Whether two speakers share a track, by the runtime's one track rule as the detail sends it
+ * (`MeetingDetail.movable_by_track`, `edit::speakers_on_track`; empty in a draft, where no two
+ * speakers share a track as far as the panel knows). */
+export function sameTrack(a: string, b: string, detail: MeetingDetail): boolean {
+  return Object.values(detail.movable_by_track).some(
+    (list) => list.some((s) => s.id === a) && list.some((s) => s.id === b),
+  );
+}
+
+/** The meeting's Me row when it shares a track with `card` and is linked to the user, so naming
+ * `card` with the user's own name makes the two voices one (T12.104); else null, and the user's
+ * name makes a separate person as before (T12.44). */
+export function userRowBeside(card: SpeakerCard, detail: MeetingDetail, persons: PersonItem[]): SpeakerCard | null {
+  const user = persons.find((p) => p.is_me);
+  const me = detail.speakers.find((s) => s.kind === "Me");
+  if (!user || !me || me.id === card.id || me.person?.id !== user.id) return null;
+  return sameTrack(me.id, card.id, detail) ? me : null;
+}
+
+/** The other card a name makes this voice one with (T12.104): when the person `pick` links to
+ * already has another card on the same track in this meeting, saving merges this voice into
+ * that card instead of linking it. Only within one track: a merge across tracks is undone by
+ * the next re-transcription, so across tracks it links (or saves) as before. The other card may
+ * be the user's row (the user's name picked on a voice of the same track). The first check is a
+ * guard: no name field is ever shown for the user's own row (it has no pencil and never needs a
+ * name), and the runtime refuses merging it away. */
+export function mergeTarget(card: SpeakerCard, pick: PersonPick, detail: MeetingDetail): SpeakerCard | null {
+  if (card.kind === "Me" || pick.kind !== "existing") return null;
+  return (
+    detail.speakers.find(
+      (s) => s.id !== card.id && s.person?.id === pick.person.id && sameTrack(s.id, card.id, detail),
+    ) ?? null
+  );
+}
+
+/** The line under a name field while the chosen person already has another card here. */
+export function becomeOneText(person: string, other: string): string {
+  return other === person
+    ? `${person} already has a voice in this meeting: the two become one.`
+    : `${person} is already ${other} here: the two voices become one.`;
 }
 
 /** Why the Speakers panel's edits wait while the meeting finishes. */
@@ -219,10 +258,26 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
   const styles = useStyles();
   const { detail } = props;
   const { unnamed, named, ignored } = speakerGroups(detail);
+  const panel = useRef<HTMLElement | null>(null);
+  // After two voices become one the merged card is gone: focus goes to the card kept once the
+  // panel shows it, else (its list is folded) to the panel's heading.
+  const [focusAfterMerge, setFocusAfterMerge] = useState<string | null>(null);
+  useEffect(() => {
+    if (focusAfterMerge === null || panel.current === null) return;
+    const kept = panel.current.querySelector<HTMLElement>(`[data-card="${focusAfterMerge}"]`);
+    const heading = panel.current.querySelector<HTMLElement>("h2");
+    (kept ?? heading)?.focus();
+    setFocusAfterMerge(null);
+  });
+  const onMerge = async (keep: string, merge: string) => {
+    const done = await props.onMerge(keep, merge);
+    if (done) setFocusAfterMerge(keep);
+    return done;
+  };
   return (
-    <aside id={props.id} className={styles.panel} aria-label="Speakers">
+    <aside id={props.id} ref={panel} className={styles.panel} aria-label="Speakers">
       <div className={styles.top}>
-        <Subtitle2 as="h2" className={styles.heading}>
+        <Subtitle2 as="h2" tabIndex={-1} className={styles.heading}>
           Speakers
         </Subtitle2>
         <Button size="small" appearance="subtle" aria-label="Close Speakers" onClick={props.onClose}>
@@ -269,6 +324,7 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
                 key={s.id}
                 card={s}
                 {...props}
+                onMerge={onMerge}
                 nameRef={i === 0 ? props.firstNameField : undefined}
               />
             ))}
@@ -283,7 +339,7 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
           <AccordionPanel className={styles.accordionPanel}>
             <ul className={styles.list} aria-label="Named">
               {named.map((s) => (
-                <NamedRow key={s.id} card={s} {...props} />
+                <NamedRow key={s.id} card={s} {...props} onMerge={onMerge} />
               ))}
             </ul>
           </AccordionPanel>
@@ -302,6 +358,16 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
         )}
       </Accordion>
       <Caption1 className={styles.muted}>Your own voice is never saved here.</Caption1>
+      {props.onManagePeople && (
+        <Button
+          size="small"
+          appearance="transparent"
+          className={styles.manage}
+          onClick={() => props.onManagePeople?.()}
+        >
+          Manage people
+        </Button>
+      )}
     </aside>
   );
 }
@@ -342,40 +408,6 @@ function PlayButton({ card, detail, onPlay }: RowProps) {
   );
 }
 
-function MergeMenu({ card, detail, onMerge, locked }: RowProps) {
-  const others = detail.speakers.filter((s) => s.id !== card.id);
-  if (card.kind === "Me") {
-    return (
-      <Tooltip
-        content="Your own row cannot be merged away. Merge the other speaker into it."
-        relationship="description"
-      >
-        <Button size="small" appearance="subtle" disabledFocusable>
-          Merge
-        </Button>
-      </Tooltip>
-    );
-  }
-  return (
-    <Menu>
-      <MenuTrigger disableButtonEnhancement>
-        <MenuButton size="small" appearance="subtle" disabled={others.length === 0 || locked}>
-          Merge
-        </MenuButton>
-      </MenuTrigger>
-      <MenuPopover>
-        <MenuList>
-          {others.map((o) => (
-            <MenuItem key={o.id} onClick={() => void onMerge(o.id, card.id)}>
-              Into {o.name}
-            </MenuItem>
-          ))}
-        </MenuList>
-      </MenuPopover>
-    </Menu>
-  );
-}
-
 function MarkMeButton({ card, onMarkMe, locked }: RowProps) {
   if (!card.can_mark_me) return null;
   return (
@@ -398,17 +430,21 @@ function MarkMeButton({ card, onMarkMe, locked }: RowProps) {
 /** A voice that needs a name: its name field with Save (Enter saves too) and Ignore. */
 function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | null) => void }) {
   const styles = useStyles();
-  const { card, persons, onSave, onIgnore, nameRef, locked = false } = props;
+  const { card, persons, onSave, onMerge, onIgnore, nameRef, locked = false } = props;
   const [saving, setSaving] = useState(false);
   // Saving makes a person (or links the one chosen or named) and remembers the voice, so only
   // on Save or Enter: leaving the field keeps the draft.
+  // A person who already has another card on this track makes the two voices one instead
+  // (T12.104). A refusal leaves the row and what was typed as they were.
   const save = async (pick: PersonPick) => {
     if (saving || locked) return;
     const target = linkOf(pick);
     if (target === null) return;
+    const other = mergeTarget(card, pick, props.detail);
     setSaving(true);
     try {
-      await onSave(card.id, target.choice, target.name);
+      if (other !== null) await onMerge(other.id, card.id);
+      else await onSave(card.id, target.choice, target.name);
     } finally {
       setSaving(false);
     }
@@ -416,6 +452,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
   const field = usePersonField({
     card,
     persons,
+    detail: props.detail,
     label: `Name of ${card.name}`,
     placeholder: `Name ${card.name.toLowerCase().startsWith("speaker") ? card.name.toLowerCase() : "this voice"}`,
     disabled: locked,
@@ -423,7 +460,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
     onEnter: (pick) => void save(pick),
   });
   return (
-    <li className={styles.row} aria-label={card.name}>
+    <li className={styles.row} aria-label={card.name} data-card={card.id} tabIndex={-1}>
       <div className={styles.nameLine}>
         <PlayButton {...props} />
         {field.element}
@@ -455,7 +492,6 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
             </Button>
           </Tooltip>
         )}
-        <MergeMenu {...props} />
         <MarkMeButton {...props} />
       </div>
     </li>
@@ -467,7 +503,7 @@ function IgnoredRow(props: RowProps) {
   const styles = useStyles();
   const { card, onUnignore, locked } = props;
   return (
-    <li className={styles.row} aria-label={card.name}>
+    <li className={styles.row} aria-label={card.name} data-card={card.id} tabIndex={-1}>
       <div className={styles.nameLine}>
         <PlayButton {...props} />
         <Body1Strong className={styles.name}>{card.name}</Body1Strong>
@@ -487,75 +523,69 @@ function IgnoredRow(props: RowProps) {
   );
 }
 
-/** A voice with a name: the user, a linked voice or a recognised one. */
+/** A pencil, for "Change name of <name>". */
+function PencilIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+      <path d="M10.5 2.5l3 3-8 8H2.5v-3l8-8zM9 4l3 3" />
+    </svg>
+  );
+}
+
+/** A voice with a name: the user, a linked voice or a recognised one. Its name, the pencil that
+ * changes it (not on the user's own row) and "Not <name>"; in the room "This is me" and "This
+ * isn't me" (T12.104). */
 function NamedRow(props: RowProps) {
   const styles = useStyles();
-  const {
-    card,
-    persons,
-    onRename,
-    onLink,
-    onUnmarkMe,
-    onNotThisPerson,
-    onForget,
-    onRenamePerson,
-    locked,
-    linesLocked,
-  } = props;
-  // Which rename is open: this meeting's row, or the person in every meeting.
-  const [editing, setEditing] = useState<"row" | "person" | null>(null);
-  const [forgetting, setForgetting] = useState(false);
-  const placeholder = `Name ${card.name.toLowerCase().startsWith("speaker") ? card.name.toLowerCase() : "this voice"}`;
-
-  const rename = async (value: string) => {
-    const n = value.trim();
-    const kind = editing;
-    setEditing(null);
-    if (n === "") return;
-    if (kind === "person" && card.person !== null) {
-      if (n !== card.person.name) await onRenamePerson(card.person.id, n);
-    } else if (n !== card.name) {
-      await onRename(card.id, n);
+  const { card, onUnmarkMe, onNotThisPerson, locked, linesLocked } = props;
+  const [editing, setEditing] = useState(false);
+  const pencil = useRef<HTMLButtonElement | null>(null);
+  // Set when the field closes: the pencil it brought back takes focus once drawn.
+  const refocus = useRef(false);
+  const pencilRef = (el: HTMLButtonElement | null) => {
+    pencil.current = el;
+    if (el !== null && refocus.current) {
+      refocus.current = false;
+      el.focus();
     }
+  };
+  const close = () => {
+    refocus.current = true;
+    setEditing(false);
   };
 
   return (
-    <li className={styles.row} aria-label={card.name}>
-      <div className={styles.nameLine}>
-        <PlayButton {...props} />
-        {editing !== null ? (
-          <NameInput
-            initial={editing === "person" && card.person ? card.person.name : card.name}
-            placeholder={placeholder}
-            label={
-              editing === "person"
-                ? `New name of ${card.person?.name ?? card.name} in every meeting`
-                : `Name of ${card.name} in this meeting`
-            }
-            onCommit={rename}
-          />
-        ) : (
+    <li className={styles.row} aria-label={card.name} data-card={card.id} tabIndex={-1}>
+      {editing ? (
+        <NameChange {...props} onDone={close} />
+      ) : (
+        <div className={styles.nameLine}>
+          <PlayButton {...props} />
           <Body1Strong className={styles.name}>
             {card.kind === "Me" && card.person && card.person.name !== card.name
               ? `${card.name} (${card.person.name})`
               : card.name}
           </Body1Strong>
-        )}
-        {recognised(card) && (
-          <Badge appearance="tint" color="success" size="small">
-            Recognised
-          </Badge>
-        )}
-      </div>
+          {recognised(card) && (
+            <Badge appearance="tint" color="success" size="small">
+              Recognised
+            </Badge>
+          )}
+          {card.kind !== "Me" && (
+            <Button
+              ref={pencilRef}
+              size="small"
+              appearance="subtle"
+              icon={<PencilIcon />}
+              aria-label={`Change name of ${card.name}`}
+              disabled={locked}
+              onClick={() => setEditing(true)}
+            />
+          )}
+        </div>
+      )}
       <RowFacts {...props} />
-      {editing === "person" && (
-        <Caption1 className={styles.muted}>Renames this person in every meeting.</Caption1>
-      )}
-      {editing === "row" && (
-        <Caption1 className={styles.muted}>Renames this speaker in this meeting only.</Caption1>
-      )}
       <div className={styles.actions}>
-        <MergeMenu {...props} />
         <MarkMeButton {...props} />
         {card.can_unmark_me && (
           <Button
@@ -574,10 +604,9 @@ function NamedRow(props: RowProps) {
             </Button>
           </Tooltip>
         )}
-        <LinkPopover card={card} persons={persons} onLink={onLink} locked={locked} />
-        {card.can_not_this_person && card.person !== null && editing === null && (
+        {card.can_not_this_person && card.person !== null && !editing && (
           <Tooltip
-            content={notThisPersonHint(card.person.name, card.person.has_voiceprint, card.voice_saved_here)}
+            content={notThisPersonHint(card.person.name, card.voice_saved_here)}
             relationship="description"
           >
             <Button
@@ -590,92 +619,76 @@ function NamedRow(props: RowProps) {
             </Button>
           </Tooltip>
         )}
-        {card.kind === "Other" && editing === null && (
-          <Button size="small" appearance="subtle" disabled={locked} onClick={() => setEditing("row")}>
-            Rename here
-          </Button>
-        )}
-        {card.kind === "Other" && card.person !== null && editing === null && (
-          <Button
-            size="small"
-            appearance="subtle"
-            disabled={locked}
-            onClick={() => setEditing("person")}
-          >
-            Rename person
-          </Button>
-        )}
-        {card.kind === "Other" && card.person?.has_voiceprint && (
-          <Button size="small" appearance="subtle" disabled={locked} onClick={() => setForgetting(true)}>
-            Forget voice
-          </Button>
-        )}
       </div>
-      {card.person !== null && (
-        <Dialog modalType="alert" open={forgetting} onOpenChange={(_, d) => setForgetting(d.open)}>
-          <DialogSurface>
-            <DialogBody>
-              <DialogTitle>Forget {card.person.name}&apos;s voice?</DialogTitle>
-              <DialogContent>
-                Earshot deletes the voiceprint it keeps for {card.person.name}. Later meetings
-                will not recognise this voice until you remember it again. Names in this meeting
-                stay as they are.
-              </DialogContent>
-              <DialogActions>
-                <Button
-                  appearance="primary"
-                  onClick={() => {
-                    setForgetting(false);
-                    if (card.person) void onForget(card.person.id);
-                  }}
-                >
-                  Forget voice
-                </Button>
-                <Button onClick={() => setForgetting(false)}>Cancel</Button>
-              </DialogActions>
-            </DialogBody>
-          </DialogSurface>
-        </Dialog>
-      )}
     </li>
   );
 }
 
-/** A rename field: Enter or leaving it commits once. */
-function NameInput({
-  initial,
-  placeholder,
-  label,
-  onCommit,
-}: {
-  initial: string;
-  placeholder: string;
-  label: string;
-  onCommit(value: string): Promise<void>;
-}) {
+/** The pencil's field, mounted only while it is open, so each opening starts from the name:
+ * the same person field as a voice that needs a name, then Save (links, remembering nothing,
+ * as Link did) or, for a person with another card on this track, the merge into that card.
+ * Escape or Cancel closes it unchanged; a refused save keeps it open with what was typed (the
+ * host shows why). */
+function NameChange(props: RowProps & { onDone(): void }) {
   const styles = useStyles();
-  const [value, setValue] = useState(initial);
-  // Enter and then blur commit once.
-  const sent = useRef<string | null>(null);
-  const commit = () => {
-    if (sent.current === value) return;
-    sent.current = value;
-    void onCommit(value);
+  const { card, persons, detail, onLink, onMerge, onDone, locked = false } = props;
+  const [saving, setSaving] = useState(false);
+  // The voice's own person under the person's own name: nothing to do. A card that shows
+  // another name for its person (an older "Rename here" label) re-links, which resets the label.
+  const unchanged = (pick: PersonPick) =>
+    pick.kind === "existing" && pick.person.id === card.person?.id && card.name === card.person.name;
+  const save = async (pick: PersonPick) => {
+    if (saving || locked) return;
+    if (unchanged(pick)) {
+      onDone();
+      return;
+    }
+    const target = linkOf(pick);
+    if (target === null) return;
+    const other = mergeTarget(card, pick, detail);
+    setSaving(true);
+    let done = false;
+    try {
+      done = other !== null ? await onMerge(other.id, card.id) : await onLink(card.id, target.choice);
+    } finally {
+      setSaving(false);
+    }
+    if (done) onDone();
   };
+  const field = usePersonField({
+    card,
+    persons,
+    detail,
+    initial: card.person?.name ?? card.name,
+    label: `Name of ${card.name}`,
+    placeholder: "Type a name",
+    disabled: locked,
+    autoFocus: true,
+    onEnter: (pick) => void save(pick),
+    onEscape: onDone,
+  });
   return (
-    <Input
-      className={styles.nameInput}
-      size="small"
-      value={value}
-      placeholder={placeholder}
-      aria-label={label}
-      autoFocus
-      onChange={(_, d) => setValue(d.value)}
-      onBlur={commit}
-      onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-        if (e.key === "Enter") commit();
-      }}
-    />
+    <>
+      <div className={styles.nameLine}>
+        <PlayButton {...props} />
+        {field.element}
+      </div>
+      {field.hint}
+      <div className={styles.actions}>
+        <Button
+          size="small"
+          appearance="primary"
+          aria-label={`Save name of ${card.name}`}
+          disabled={linkOf(field.pick) === null || unchanged(field.pick) || saving || locked}
+          onClick={() => void save(field.pick)}
+        >
+          Save
+        </Button>
+        <Button size="small" appearance="subtle" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </>
   );
 }
 
@@ -683,12 +696,13 @@ function NameInput({
 const NEW_PERSON = "__new__";
 
 /** What a person field's text and choice mean (T12.80). */
-type PersonPick =
-  /** Nothing typed, or (on the user's own row) a name that is not the user's. */
+export type PersonPick =
+  /** Nothing typed. */
   | { kind: "none" }
-  /** A saved person: chosen from the list, or the only one with the whole typed name. */
+  /** A saved person: chosen from the list, or the only one with the whole typed name (the user
+   * only beside the user's own row on this track, [`userRowBeside`]). */
   | { kind: "existing"; person: PersonItem }
-  /** A new person with this name: chosen, or a name no one other than the user has. */
+  /** A new person with this name: chosen, or a name no one else the field offers has. */
   | { kind: "new"; name: string }
   /** Several people have the whole typed name and none was chosen. */
   | { kind: "several"; name: string; count: number };
@@ -725,7 +739,7 @@ function samePick(a: PersonPick, b: PersonPick): boolean {
 
 /** What Enter or Tab does in a person field: the one rule, decided from the option highlighted
  * in the open list as the user saw it, never from key history.
- * - A highlighted disabled option (the user, on another voice's row): nothing.
+ * - A highlighted disabled option (the user, on a voice not beside the user's row): nothing.
  * - A highlighted option that is not what the hint says: choose it (the hint then says it);
  *   nothing is saved, because Save is the consent to remember the voice (T12.19).
  * - Otherwise (no highlighted option, or the one the hint already says): Enter does what the
@@ -744,54 +758,64 @@ export function keyAction(
 
 /** The person combobox of a voice (T12.80): typing filters saved people by any part of the name,
  * case and accents ignored; each is listed with how many meetings they are in, the user
- * disabled (only the user's own row can be them), and "New person: <name>" for a name no one
- * other than the user has, so a click never makes a second person with a saved name. A click on
- * an option, or Enter or Tab on a highlighted option the hint does not already say, chooses it
- * and shows what Save will do; else the whole typed name decides: the one person with it,
- * several (the user must choose), or a new person ([`keyAction`]). `onEnter` gets the pick an
- * Enter saves. */
+ * disabled unless the user's own row shares this voice's track ([`userRowBeside`]: then
+ * choosing the user makes the two voices one), and "New person: <name>" for a name no one the
+ * field offers has, so a click never makes a second person with a saved name. A click on an
+ * option, or Enter or Tab on a highlighted option the hint does not already say, chooses it and
+ * shows what Save will do; else the whole typed name decides: the one person with it, several
+ * (the user must choose), or a new person ([`keyAction`]). `onEnter` gets the pick an Enter
+ * saves; `onEscape`, when given, is Escape with the list closed. A person who already has
+ * another card on this track says the two voices become one ([`mergeTarget`]). No field is
+ * shown for the user's own row. */
 function usePersonField({
   card,
   persons,
+  detail,
+  initial = "",
   label,
   placeholder,
   disabled,
+  autoFocus = false,
   inputRef,
   onEnter,
+  onEscape,
 }: {
   card: SpeakerCard;
   persons: PersonItem[];
+  detail: MeetingDetail;
+  initial?: string;
   label: string;
   placeholder: string;
   disabled: boolean;
+  autoFocus?: boolean;
   inputRef?: Ref<HTMLInputElement>;
   onEnter(pick: PersonPick): void;
+  onEscape?(): void;
 }): { element: ReactElement; pick: PersonPick; hint: ReactElement | null } {
   const styles = useStyles();
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initial);
   const [chosen, setChosen] = useState<PersonPick | null>(null);
-  const own = card.kind === "Me";
   const typed = value.trim();
+  // Beside the user's own row on this track, the user's name makes the two voices one.
+  const userHere = userRowBeside(card, detail, persons) !== null;
+  // Persons with the whole typed name (case, accents and spaces ignored); the user only here.
+  const userMatch = userHere ? userNamed(typed, persons) : null;
+  const named = [...personsNamed(typed, persons), ...(userMatch ? [userMatch] : [])];
 
   const pickOf = (choice: PersonPick | null): PersonPick => {
     if (choice !== null) return choice;
     if (typed === "") return { kind: "none" };
-    if (own) {
-      const user = persons.find((p) => p.is_me && personNameKey(p.name) === personNameKey(typed));
-      return user ? { kind: "existing", person: user } : { kind: "none" };
-    }
-    const named = personsNamed(typed, persons);
     if (named.length === 1) return { kind: "existing", person: named[0] };
     if (named.length > 1) return { kind: "several", name: typed, count: named.length };
     return { kind: "new", name: typed };
   };
   const pick = pickOf(chosen);
 
-  // The pick of an option's value; null for the user on another voice's row (disabled).
+  // The pick of an option's value; null for the user when not offered (disabled).
   const pickOfOption = (optionValue: string): PersonPick | null => {
     if (optionValue === NEW_PERSON) return typed === "" ? null : { kind: "new", name: typed };
     const person = persons.find((p) => p.id === optionValue);
-    if (!person || (person.is_me && !own)) return null;
+    if (!person || (person.is_me && !userHere)) return null;
     return { kind: "existing", person };
   };
   const choose = (choice: PersonPick) => {
@@ -799,11 +823,14 @@ function usePersonField({
     if (choice.kind === "existing") setValue(choice.person.name);
   };
 
-  // The user's own name makes a separate person (only the meeting's own row can be the user,
-  // and the runtime refuses linking any other voice to them).
-  const ownName = !own && pick.kind === "new" ? userNamed(pick.name, persons) : null;
+  // Elsewhere the user's own name makes a separate person (only the meeting's own row can be
+  // the user, and the runtime refuses linking any other voice to them).
+  const ownName = !userHere && pick.kind === "new" ? userNamed(pick.name, persons) : null;
+  const other = mergeTarget(card, pick, detail);
   const hintText =
-    pick.kind === "existing"
+    other !== null && pick.kind === "existing"
+      ? becomeOneText(pick.person.name, other.name)
+      : pick.kind === "existing"
       ? `Links to ${pick.person.name} (${meetingsText(pick.person.meetings)})`
       : pick.kind === "several"
         ? `${pick.count} people are called ${pick.name}. Choose one from the list.`
@@ -814,27 +841,38 @@ function usePersonField({
             : null;
   const hintId = `${card.id}-links-to`;
 
-  // Persons with the whole typed name (case, accents and spaces ignored) first, so the first
-  // option is the person the typed name means (`OPTION_TEXT_PREFIX`).
-  const named = own ? [] : personsNamed(typed, persons);
-  const listed = personsMatching(typed, own ? persons.filter((p) => p.is_me) : persons);
+  // Persons with the whole typed name first, so the first option is the person the typed name
+  // means (`OPTION_TEXT_PREFIX`).
+  const listed = personsMatching(typed, persons);
   const ordered = [...named, ...listed.filter((p) => !named.includes(p))];
   const personOptions = ordered.map((p) => {
-    const user = p.is_me && !own;
     return (
       <Option
         key={p.id}
         value={p.id}
         text={OPTION_TEXT_PREFIX + p.name}
-        disabled={user}
+        disabled={p.is_me && !userHere}
         {...{ [OPTION_VALUE_ATTRIBUTE]: p.id }}
       >
-        {user ? `${p.name} (you)` : `${p.name} (${meetingsText(p.meetings)})`}
+        {p.is_me ? (
+          `${p.name} (you)`
+        ) : (
+          <>
+            {`${p.name} `}
+            {/* The count is short so a long name stays on one line; the whole words are read out. */}
+            <span className={styles.count} aria-hidden="true">
+              {`(${p.meetings})`}
+            </span>
+            <span className={styles.srOnly} data-sr-only="">
+              {`(${meetingsText(p.meetings)})`}
+            </span>
+          </>
+        )}
       </Option>
     );
   });
   const newOption =
-    !own && typed !== "" && named.length === 0 ? (
+    typed !== "" && named.length === 0 ? (
       <Option
         key={NEW_PERSON}
         value={NEW_PERSON}
@@ -858,6 +896,7 @@ function usePersonField({
       selectedOptions={selected}
       disableAutoFocus={pick.kind !== "existing" && pick.kind !== "new"}
       placeholder={placeholder}
+      autoFocus={autoFocus}
       aria-label={label}
       aria-describedby={hintText ? hintId : undefined}
       disabled={disabled}
@@ -873,6 +912,12 @@ function usePersonField({
         if (choice !== null) choose(choice);
       }}
       onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+        // Escape first closes an open list (Fluent); with the list closed it cancels.
+        if (e.key === "Escape" && onEscape && e.currentTarget.getAttribute("aria-expanded") !== "true") {
+          e.preventDefault();
+          onEscape();
+          return;
+        }
         if ((e.key !== "Enter" && e.key !== "Tab") || e.nativeEvent.isComposing) return;
         // The list and highlight as last rendered, which is what the user saw: Fluent's own
         // handler has already run for this key, but nothing it changed is drawn yet.
@@ -899,76 +944,4 @@ function usePersonField({
     </Caption1>
   ) : null;
   return { element, pick, hint };
-}
-
-/** Link on a named voice: the same person combobox, then Link (links only, remembers nothing). */
-function LinkPopover({
-  card,
-  persons,
-  onLink,
-  locked = false,
-}: {
-  card: SpeakerCard;
-  persons: PersonItem[];
-  onLink(speaker: string, choice: LinkChoice): Promise<void>;
-  locked?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Popover open={open} onOpenChange={(_, d) => setOpen(d.open)} trapFocus>
-      <PopoverTrigger disableButtonEnhancement>
-        <Button size="small" appearance="subtle" disabled={locked}>
-          Link to person
-        </Button>
-      </PopoverTrigger>
-      <PopoverSurface aria-label={`Link ${card.name} to a person`}>
-        {open && (
-          <LinkForm
-            card={card}
-            persons={persons}
-            onLink={(choice) => {
-              setOpen(false);
-              void onLink(card.id, choice);
-            }}
-          />
-        )}
-      </PopoverSurface>
-    </Popover>
-  );
-}
-
-/** The popover's form, mounted only while it is open, so each opening starts empty. */
-function LinkForm({
-  card,
-  persons,
-  onLink,
-}: {
-  card: SpeakerCard;
-  persons: PersonItem[];
-  onLink(choice: LinkChoice): void;
-}) {
-  const styles = useStyles();
-  const link = (pick: PersonPick) => {
-    const target = linkOf(pick);
-    if (target !== null) onLink(target.choice);
-  };
-  const field = usePersonField({
-    card,
-    persons,
-    label: "Person",
-    placeholder: card.kind === "Me" ? "Your name" : "Type a name",
-    disabled: false,
-    onEnter: link,
-  });
-  return (
-    <div className={styles.linkSurface}>
-      <Field label="Person">{field.element}</Field>
-      {field.hint}
-      <div>
-        <Button appearance="primary" size="small" disabled={linkOf(field.pick) === null} onClick={() => link(field.pick)}>
-          Link
-        </Button>
-      </div>
-    </div>
-  );
 }

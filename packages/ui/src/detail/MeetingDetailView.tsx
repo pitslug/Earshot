@@ -497,6 +497,8 @@ export interface MeetingDetailViewProps {
   synced?: number;
   /** Changes when the meeting's summary was stored: the page shows it. */
   showSummary?: number;
+  /** The Speakers panel's "Manage people": opens Settings on the People page (T12.104). */
+  onManagePeople?(): void;
 }
 
 /** The title of the waiting banner (T11.3db). */
@@ -648,6 +650,7 @@ export function MeetingDetailView({
   refresh = 0,
   synced = 0,
   showSummary = 0,
+  onManagePeople,
 }: MeetingDetailViewProps) {
   const styles = useStyles();
   const ipc = useIpc();
@@ -890,14 +893,18 @@ export function MeetingDetailView({
   const choiceName = (choice: LinkChoice): string =>
     choice.kind === "New" ? choice.name.trim() : (persons.find((p) => p.id === choice.person)?.name ?? "");
 
-  const run = async (f: () => Promise<unknown>, failTitle: string) => {
+  /** Runs an edit and reads the meeting again; false when it was refused (the notice says why),
+   * so a caller can keep what the user typed. */
+  const run = async (f: () => Promise<unknown>, failTitle: string): Promise<boolean> => {
     try {
       await f();
-      await reload();
-      onChanged();
     } catch (e) {
       setNotice({ key: "edit", intent: "error", title: failTitle, text: failureText(e) });
+      return false;
     }
+    await reload();
+    onChanged();
+    return true;
   };
 
   /** Saves a typed edit (T12.16); false when it was refused, so the editor stays open. */
@@ -1300,10 +1307,7 @@ export function MeetingDetailView({
                       speakersButton.current?.focus();
                     }}
                     onPlay={(s) => void play(s)}
-                    onRename={(s, name) => run(() => ipc.renameSpeaker(id, s, name), "The name was not saved")}
-                    onRenamePerson={(person, name) =>
-                      run(() => ipc.renamePerson(person, name), "The person was not renamed")
-                    }
+                    onManagePeople={onManagePeople}
                     onLink={(s, choice: LinkChoice) =>
                       run(async () => {
                         const was = personNameOf(s);
@@ -1344,12 +1348,6 @@ export function MeetingDetailView({
                         const text = mergedText(was, result);
                         if (text !== null) setNotice({ key: "edit", intent: "success", text });
                       }, "The speakers were not merged")
-                    }
-                    onForget={(person) =>
-                      run(async () => {
-                        await ipc.forgetPersonVoices(person);
-                        setNotice({ key: "edit", intent: "success", text: "The voice was forgotten." });
-                      }, "The voice was not forgotten")
                     }
                     onSave={(s, choice, name) =>
                       run(async () => {

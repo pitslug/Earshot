@@ -595,7 +595,7 @@ pub fn edit_error(e: &EditError) -> IpcError {
         EditError::SameSpeaker(_) => err("same_speaker", "A speaker cannot be merged into itself."),
         EditError::MergeAwayMe(_) => err(
             "merge_away_me",
-            "Your own row cannot be merged away. Merge the other speaker into it instead.",
+            "Your own row cannot be merged away. Give the other voice your name to merge it into your row instead.",
         ),
         EditError::NoPerson(_) => err("no_person", "Name this voice or link it to a person first."),
         EditError::MeVoice(_) => err(
@@ -1241,7 +1241,7 @@ fn token_index(token: usize) -> u32 {
     u32::try_from(token).unwrap_or(u32::MAX)
 }
 
-/// Every live person, for "Link to person".
+/// Every live person, for the Speakers panel's name fields.
 ///
 /// # Errors
 /// Store errors.

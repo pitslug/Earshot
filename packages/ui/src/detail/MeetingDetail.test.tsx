@@ -712,19 +712,15 @@ describe("MeetingDetailView", () => {
     expect(item).not.toHaveTextContent("no longer kept");
   });
 
-  it("asks before forgetting a voice", async () => {
+  it("leaves forgetting a voice to the People page, which Manage people opens (T12.104)", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
     await openNamed(user);
-    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Forget voice" }));
-    const dialog = await screen.findByRole("alertdialog");
-    expect(within(dialog).getByText("Forget Priya Shah's voice?")).toBeInTheDocument();
+    // Priya Shah has a saved voice, yet her card offers no Forget voice.
+    expect(within(speakerRow("Priya Shah")).queryByRole("button", { name: "Forget voice" })).toBeNull();
+    await user.click(within(panel()).getByRole("button", { name: "Manage people" }));
+    await screen.findByRole("heading", { level: 1, name: "People" });
     expect(calls.some((c) => c[0] === "forgetPersonVoices")).toBe(false);
-    await user.click(within(dialog).getByRole("button", { name: "Forget voice" }));
-    await waitFor(() => expect(calls.some((c) => c[0] === "forgetPersonVoices")).toBe(true));
-    await waitFor(() =>
-      expect(within(speakerRow("Priya Shah")).queryByRole("button", { name: "Forget voice" })).toBeNull(),
-    );
   });
 });
 
@@ -742,20 +738,21 @@ describe("MeetingDetailView, review fixes", () => {
     );
   });
 
-  it("renames a person in every meeting, apart from renaming the row", async () => {
+  it("changes a named voice's name by linking it, never by renaming the person or the row (T12.104)", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
     await openNamed(user);
-    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Rename person" }));
-    expect(within(panel()).getByText("Renames this person in every meeting.")).toBeInTheDocument();
-    const field = within(panel()).getByRole("textbox", { name: "New name of Priya Shah in every meeting" });
+    expect(within(speakerRow("Priya Shah")).queryByRole("button", { name: "Rename person" })).toBeNull();
+    expect(within(speakerRow("Priya Shah")).queryByRole("button", { name: "Rename here" })).toBeNull();
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" }));
+    const field = within(panel()).getByRole("combobox", { name: "Name of Priya Shah" });
     await user.clear(field);
     await user.type(field, "Priya Shah-Rao{Enter}");
-    await waitFor(() => expect(calls).toContainEqual(["renamePerson", "9e000000-0000-7000-8000-000000000002", "Priya Shah-Rao"]));
-    expect(calls.some((c) => c[0] === "renameSpeaker")).toBe(false);
-    expect(await within(panel()).findByText("Priya Shah-Rao")).toBeInTheDocument();
-    // A voice without a person has no "Rename person".
-    expect(within(speakerRow("Speaker 3")).queryByRole("button", { name: "Rename person" })).toBeNull();
+    await waitFor(() =>
+      expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, { kind: "New", name: "Priya Shah-Rao" }]),
+    );
+    expect(calls.some((c) => c[0] === "renameSpeaker" || c[0] === "renamePerson")).toBe(false);
+    expect(await within(panel()).findByRole("listitem", { name: "Priya Shah-Rao" })).toBeInTheDocument();
   });
 
   it("says why a saved voice was not remembered", async () => {
@@ -1314,7 +1311,6 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     expect(name).toBeDisabled();
     expect(within(row).getByRole("button", { name: "Save Speaker 3" })).toBeDisabled();
     expect(within(row).getByRole("button", { name: "Ignore" })).toBeDisabled();
-    expect(within(row).getByRole("button", { name: "Merge" })).toBeDisabled();
     // Playing a sample changes nothing, so it stays.
     expect(within(row).getByRole("button", { name: "Play a sample of Speaker 3" })).toBeEnabled();
     await openNamed(user);
@@ -1325,7 +1321,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
       }
     }
     await user.click(within(row).getByRole("button", { name: "Ignore" }));
-    await user.click(within(named).getAllByRole("button", { name: "Link to person" })[0]);
+    await user.click(within(named).getByRole("button", { name: "Change name of Priya Shah" }));
     await user.click(within(named).getByRole("button", { name: "Not Priya Shah" }));
     const edits = [
       "saveVoice",
@@ -1338,7 +1334,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
       "notThisPerson",
     ];
     expect(calls.filter((c) => edits.includes(c[0] as string))).toEqual([]);
-    expect(screen.queryByRole("dialog", { name: /Link .* to a person/ })).toBeNull();
+    expect(within(panel()).queryByRole("combobox", { name: "Name of Priya Shah" })).toBeNull();
 
     view.rerender(show(false, ipc));
     expect(within(panel()).queryByText(/Name voices when the summary is done/)).toBeNull();
@@ -1399,7 +1395,7 @@ describe("MeetingDetailView while the meeting finishes (T12.28)", () => {
     const not = within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" });
     expect(not).toBeDisabled();
     // Other speaker edits keep their own lock (finishing only).
-    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" })).toBeEnabled();
+    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" })).toBeEnabled();
     await user.click(not);
     expect(calls.some((c) => c[0] === "notThisPerson")).toBe(false);
 

@@ -4,9 +4,18 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { POST_STEP_MS, RECOGNISED_ME_COPY, SAMPLE_SPEAKERS, sampleDetail, samplePersons } from "../ipc";
+import {
+  IpcFailure,
+  type MeetingDetail,
+  POST_STEP_MS,
+  RECOGNISED_ME_COPY,
+  SAMPLE_SPEAKERS,
+  sampleDetail,
+  samplePersons,
+} from "../ipc";
+import { SAMPLE_TRACKS, movableByTrack } from "../ipc/mockDetail";
 import { ITEM, setup, panel, speakerRow, openNamed } from "../test/meetingDetail";
-import { keyAction, notThisPersonHint } from "./SpeakersPanel";
+import { becomeOneText, keyAction, mergeTarget, notThisPersonHint, sameTrack, userRowBeside } from "./SpeakersPanel";
 
 describe("MeetingDetailView", () => {
   it("offers This is me only in the room, and it and its undo follow through the transcript", async () => {
@@ -68,8 +77,8 @@ describe("MeetingDetailView", () => {
   it("says which person a typed name links to before Save", async () => {
     const { user } = await setup();
     const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
-    await user.type(field, "  priya SHAH ");
-    const hint = within(speakerRow("Speaker 2")).getByText("Links to Priya Shah (4 meetings)");
+    await user.type(field, "  tom REID ");
+    const hint = within(speakerRow("Speaker 2")).getByText("Links to Tom Reid (2 meetings)");
     expect(field).toHaveAttribute("aria-describedby", hint.id);
     // A new name links to nobody yet: it makes a new person.
     await user.clear(field);
@@ -158,53 +167,121 @@ describe("MeetingDetailView", () => {
     expect(calls.some((c) => c[0] === "linkSpeaker")).toBe(false);
     expect(await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Speakers, 1 needs a name" })).toBeInTheDocument();
-    // It moved to the named voices, where its voice can be forgotten.
+    // It moved to the named voices, where its name can still be changed.
     await openNamed(user);
-    expect(within(speakerRow("Sam Lee")).getByRole("button", { name: "Forget voice" })).toBeInTheDocument();
+    expect(within(speakerRow("Sam Lee")).getByRole("button", { name: "Change name of Sam Lee" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Transcript" }));
     const rows = within(screen.getByRole("table", { name: "Transcript" })).getAllByRole("row");
     expect(within(rows[0]).getAllByRole("cell")[1].textContent).toBe("Sam Lee");
   });
 
-  it("renames a named speaker on Enter", async () => {
+  it("shows a named voice's card with only its name, the pencil and Not <name>", async () => {
+    const { user } = await setup();
+    await screen.findByText(/TL;DR/);
+    await openNamed(user);
+    const row = speakerRow("Priya Shah");
+    const buttons = within(row)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    expect(buttons).toEqual(["Play a sample of Priya Shah", "Change name of Priya Shah", "Not Priya Shah"]);
+    for (const gone of ["Merge", "Link to person", "Rename here", "Rename person", "Forget voice"]) {
+      expect(within(panel()).queryByRole("button", { name: gone })).toBeNull();
+    }
+    // The user's own row has no pencil: only the user can be them.
+    expect(within(speakerRow("Me")).queryByRole("button", { name: /^Change name/ })).toBeNull();
+  });
+
+  it("opens the name field from the pencil, and Escape or Cancel close it with focus back on the pencil", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
     await openNamed(user);
-    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Rename here" }));
-    expect(within(panel()).getByText("Renames this speaker in this meeting only.")).toBeInTheDocument();
-    const field = within(panel()).getByRole("textbox", { name: "Name of Priya Shah in this meeting" });
+    const pencil = within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" });
+    await user.click(pencil);
+    const field = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    expect(field).toHaveFocus();
+    expect(field).toHaveValue("Priya Shah");
+    // The field starts at the voice's own person: Save would change nothing.
+    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Save name of Priya Shah" })).toBeDisabled();
     await user.clear(field);
-    await user.type(field, "Priya S{Enter}");
-    expect(await within(panel()).findByText("Priya S")).toBeInTheDocument();
-    expect(calls).toContainEqual(["renameSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, "Priya S"]);
+    await user.type(field, "Ana");
+    // Typing opens the list; the first Escape only closes it, keeping the field and its text.
+    expect(field).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(field).toHaveAttribute("aria-expanded", "false");
+    expect(within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" })).toHaveValue("Ana");
+    expect(field).toHaveFocus();
+    // The second cancels.
+    await user.keyboard("{Escape}");
+    expect(within(speakerRow("Priya Shah")).queryByRole("combobox")).toBeNull();
+    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" })).toHaveFocus();
+
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" }));
+    // Each opening starts from the name again.
+    expect(within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" })).toHaveValue("Priya Shah");
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Cancel" }));
+    expect(within(speakerRow("Priya Shah")).queryByRole("combobox")).toBeNull();
+    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" })).toHaveFocus();
+    const edits = ["linkSpeaker", "saveVoice", "mergeSpeakers", "renameSpeaker", "renamePerson"];
+    expect(calls.filter((c) => edits.includes(c[0] as string))).toEqual([]);
   });
 
-  it("merges a speaker away from the panel", async () => {
-    const { user, calls } = await setup();
-    await screen.findByText(/TL;DR/);
-    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Merge" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Into Priya Shah" }));
-    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 3" })).toBeNull());
-    expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.priya, SAMPLE_SPEAKERS.third]);
-    await openNamed(user);
-    expect(within(speakerRow("Priya Shah")).getByText(/29% of talk time/)).toBeInTheDocument();
-    // The user's own row cannot be merged away.
-    expect(within(speakerRow("Me")).getByRole("button", { name: "Merge" })).toHaveAttribute("aria-disabled", "true");
-  });
-
-  it("links a wrong match to a new person from the named voices", async () => {
+  it("links a named voice to a new person from the pencil's field", async () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
     await openNamed(user);
-    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" }));
-    const dialog = await screen.findByRole("dialog", { name: "Link Priya Shah to a person" });
-    await user.type(within(dialog).getByRole("combobox", { name: "Person" }), "Ana Diaz");
-    await user.click(await screen.findByRole("option", { name: "New person: Ana Diaz" }));
-    await user.click(within(dialog).getByRole("button", { name: "Link" }));
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" }));
+    const field = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    await user.clear(field);
+    await user.type(field, "Ana Diaz{Enter}");
     await waitFor(() => expect(within(panel()).getByRole("listitem", { name: "Ana Diaz" })).toBeInTheDocument());
     expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, { kind: "New", name: "Ana Diaz" }]);
-    // Linking is not saving: no voice is remembered by it.
-    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+    // Linking is not saving: no voice is remembered by it, and nothing is merged.
+    expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "mergeSpeakers")).toBe(false);
+  });
+
+  it("makes two voices one when a voice that needs a name is named after a person with a card here", async () => {
+    const { user, calls } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 3" });
+    await user.type(field, "priya shah");
+    // Said before Save, in place of "Links to".
+    const line = within(speakerRow("Speaker 3")).getByText("Priya Shah already has a voice in this meeting: the two become one.");
+    expect(field).toHaveAttribute("aria-describedby", line.id);
+    expect(within(speakerRow("Speaker 3")).queryByText(/^Links to/)).toBeNull();
+    expect(calls.some((c) => c[0] === "mergeSpeakers")).toBe(false);
+    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Save Speaker 3" }));
+    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 3" })).toBeNull());
+    expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.priya, SAMPLE_SPEAKERS.third]);
+    expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
+    // The merged card is gone; with the named list folded, focus goes to the panel's heading.
+    await waitFor(() => expect(within(panel()).getByRole("heading", { name: "Speakers" })).toHaveFocus());
+    await openNamed(user);
+    expect(within(panel()).getAllByRole("listitem", { name: "Priya Shah" })).toHaveLength(1);
+    expect(within(speakerRow("Priya Shah")).getByText(/29% of talk time/)).toBeInTheDocument();
+  });
+
+  it("makes two named voices one when the pencil picks a person with another card here", async () => {
+    const { user, calls } = await setup();
+    await user.type(await screen.findByRole("combobox", { name: "Name of Speaker 2" }), "Sam Lee{Enter}");
+    await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.");
+    await openNamed(user);
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" }));
+    const field = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    await user.clear(field);
+    await user.type(field, "sam");
+    await user.click(screen.getByRole("option", { name: "Sam Lee (1 meeting)" }));
+    expect(
+      within(speakerRow("Priya Shah")).getByText("Sam Lee already has a voice in this meeting: the two become one."),
+    ).toBeInTheDocument();
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Save name of Priya Shah" }));
+    // Keep the other card, merge this one into it.
+    await waitFor(() =>
+      expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.second, SAMPLE_SPEAKERS.priya]),
+    );
+    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Priya Shah" })).toBeNull());
+    expect(within(panel()).getAllByRole("listitem", { name: "Sam Lee" })).toHaveLength(1);
+    expect(calls.some((c) => c[0] === "linkSpeaker")).toBe(false);
+    // Focus goes to the card kept.
+    await waitFor(() => expect(within(panel()).getByRole("listitem", { name: "Sam Lee" })).toHaveFocus());
   });
 
   it("saves with the Save button, to an existing person by exact name, and never an empty name", async () => {
@@ -257,11 +334,11 @@ describe("MeetingDetailView", () => {
     expect(within(speakerRow("Me")).queryByRole("button", { name: /^Not / })).toBeNull();
     const not = within(speakerRow("Priya Shah")).getByRole("button", { name: "Not Priya Shah" });
     expect(not).toHaveAccessibleDescription(
-      "Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it Priya Shah, because Priya Shah's saved voice may hold it. Forget voice deletes Priya Shah's saved voice.",
+      "Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it Priya Shah, because Priya Shah's saved voice may hold it.",
     );
-    // Forget voice is named only where the row shows it (a saved voice).
-    expect(within(speakerRow("Priya Shah")).getByRole("button", { name: "Forget voice" })).toBeInTheDocument();
-    expect(notThisPersonHint("Ana Diaz", false)).toBe(
+    // Forget voice left the card (T12.104), so the tooltip no longer names it.
+    expect(within(speakerRow("Priya Shah")).queryByRole("button", { name: "Forget voice" })).toBeNull();
+    expect(notThisPersonHint("Ana Diaz")).toBe(
       "Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it Ana Diaz, because Ana Diaz's saved voice may hold it.",
     );
     await user.click(not);
@@ -282,6 +359,127 @@ describe("MeetingDetailView", () => {
     expect(within(table).getAllByText("Speaker 1").length).toBeGreaterThan(0);
   });
 
+  it("saves rather than merges across tracks, saying Links to as before", async () => {
+    // Speaker 3 heard on the mic, Priya Shah on the computer's audio.
+    const base = sampleDetail(ITEM);
+    const detail = {
+      ...base,
+      transcript: base.transcript.map((r) =>
+        r.speaker_id === SAMPLE_SPEAKERS.third ? { ...r, track: "You" as const, track_id: SAMPLE_TRACKS.mic } : r,
+      ),
+    };
+    const { user, calls } = await setup({ details: { [ITEM.id]: detail } });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 3" });
+    await user.type(field, "priya shah");
+    expect(within(speakerRow("Speaker 3")).getByText("Links to Priya Shah (4 meetings)")).toBeInTheDocument();
+    expect(within(speakerRow("Speaker 3")).queryByText(/become one/)).toBeNull();
+    await user.click(within(speakerRow("Speaker 3")).getByRole("button", { name: "Save Speaker 3" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        "saveVoice",
+        ITEM.id,
+        SAMPLE_SPEAKERS.third,
+        { kind: "Existing", person: "9e000000-0000-7000-8000-000000000002" },
+      ]),
+    );
+    expect(calls.some((c) => c[0] === "mergeSpeakers")).toBe(false);
+  });
+
+  it("makes a voice beside the user's row one with it when given the user's own name", async () => {
+    // In the room every voice is on the mic, with the user's row recognised as Casey.
+    const { user, calls } = await setup({ inRoom: "recognised" });
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.type(field, "casey");
+    // The user is offered and the line says what Save does, not the separate-person refusal.
+    expect(screen.getByRole("option", { name: "Casey (you)" })).not.toHaveAttribute("aria-disabled", "true");
+    const line = within(speakerRow("Speaker 2")).getByText(becomeOneText("Casey", "Casey"));
+    expect(field).toHaveAttribute("aria-describedby", line.id);
+    expect(within(speakerRow("Speaker 2")).queryByText(/^This is your name/)).toBeNull();
+    await user.click(within(speakerRow("Speaker 2")).getByRole("button", { name: "Save Speaker 2" }));
+    // In the room sample Speaker 2 is the voice with id `priya`; keep the user's row, merge it.
+    await waitFor(() =>
+      expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.me, SAMPLE_SPEAKERS.priya]),
+    );
+    await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 2" })).toBeNull());
+    expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
+  });
+
+  it("keeps the pencil's field open with what was typed when a link is refused", async () => {
+    const { user, calls, ipc } = await setup();
+    await screen.findByText(/TL;DR/);
+    ipc.linkSpeaker = async (...args) => {
+      calls.push(["linkSpeaker", ...args]);
+      throw new IpcFailure({ kind: "store", message: "Invented refusal.", retryable: true });
+    };
+    await openNamed(user);
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" }));
+    const field = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    await user.clear(field);
+    await user.type(field, "Ana Diaz{Enter}");
+    expect(await screen.findByText("Invented refusal.")).toBeInTheDocument();
+    expect(calls).toContainEqual(["linkSpeaker", ITEM.id, SAMPLE_SPEAKERS.priya, { kind: "New", name: "Ana Diaz" }]);
+    const still = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    expect(still).toHaveValue("Ana Diaz");
+    expect(still).toHaveFocus();
+  });
+
+  it("keeps the field and focus when a merge is refused", async () => {
+    const { user, calls, ipc } = await setup();
+    ipc.mergeSpeakers = async (...args) => {
+      calls.push(["mergeSpeakers", ...args]);
+      throw new IpcFailure({ kind: "store", message: "Invented refusal.", retryable: true });
+    };
+    // A voice that needs a name.
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 3" });
+    await user.type(field, "priya shah{Enter}");
+    expect(await screen.findByText("Invented refusal.")).toBeInTheDocument();
+    expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.priya, SAMPLE_SPEAKERS.third]);
+    expect(within(speakerRow("Speaker 3")).getByRole("combobox", { name: "Name of Speaker 3" })).toHaveValue("priya shah");
+    expect(field).toHaveFocus();
+    // A named voice through the pencil: Speaker 2 saved as Sam Lee, then Priya Shah named Sam Lee.
+    await user.type(within(panel()).getByRole("combobox", { name: "Name of Speaker 2" }), "Sam Lee{Enter}");
+    await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.");
+    await openNamed(user);
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" }));
+    const change = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    await user.clear(change);
+    await user.type(change, "Sam Lee{Enter}");
+    await waitFor(() =>
+      expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.second, SAMPLE_SPEAKERS.priya]),
+    );
+    expect(await screen.findByText("Invented refusal.")).toBeInTheDocument();
+    const still = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    expect(still).toHaveValue("Sam Lee");
+    expect(still).toHaveFocus();
+  });
+
+  it("re-links a card whose label differs from its person's name when the same person is saved", async () => {
+    const base = sampleDetail(ITEM);
+    const detail = {
+      ...base,
+      speakers: base.speakers.map((s) => (s.id === SAMPLE_SPEAKERS.priya ? { ...s, name: "Priya S" } : s)),
+    };
+    const { user, calls } = await setup({ details: { [ITEM.id]: detail } });
+    await screen.findByText(/TL;DR/);
+    await openNamed(user);
+    await user.click(within(speakerRow("Priya S")).getByRole("button", { name: "Change name of Priya S" }));
+    const field = within(speakerRow("Priya S")).getByRole("combobox", { name: "Name of Priya S" });
+    // It starts at the person's name, and saving that is a change: the label resets.
+    expect(field).toHaveValue("Priya Shah");
+    const save = within(speakerRow("Priya S")).getByRole("button", { name: "Save name of Priya S" });
+    expect(save).toBeEnabled();
+    await user.click(save);
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        "linkSpeaker",
+        ITEM.id,
+        SAMPLE_SPEAKERS.priya,
+        { kind: "Existing", person: "9e000000-0000-7000-8000-000000000002" },
+      ]),
+    );
+    expect(await within(panel()).findByRole("listitem", { name: "Priya Shah" })).toBeInTheDocument();
+  });
+
   it("says a saved voice leaves the person with Not, and the tooltip says it will", async () => {
     const { user } = await setup();
     const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
@@ -292,7 +490,7 @@ describe("MeetingDetailView", () => {
     expect(not).toHaveAccessibleDescription(
       "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of Sam Lee's saved voice.",
     );
-    expect(notThisPersonHint("Ana Diaz", true, true)).toBe(
+    expect(notThisPersonHint("Ana Diaz", true)).toBe(
       "Shows this voice as an unnamed speaker in this meeting, stops asking for its name and takes this meeting's voice out of Ana Diaz's saved voice.",
     );
     await user.click(not);
@@ -319,11 +517,12 @@ describe("MeetingDetailView", () => {
     await user.type(field, "Sam Lee{Enter}");
     await screen.findByText("Saved Sam Lee. Later meetings will recognise this voice.");
     await openNamed(user);
-    await user.click(within(speakerRow("Sam Lee")).getByRole("button", { name: "Link to person" }));
-    const dialog = await screen.findByRole("dialog", { name: "Link Sam Lee to a person" });
-    await user.type(within(dialog).getByRole("combobox", { name: "Person" }), "Ana Diaz");
+    await user.click(within(speakerRow("Sam Lee")).getByRole("button", { name: "Change name of Sam Lee" }));
+    const change = within(speakerRow("Sam Lee")).getByRole("combobox", { name: "Name of Sam Lee" });
+    await user.clear(change);
+    await user.type(change, "Ana Diaz");
     await user.click(await screen.findByRole("option", { name: "New person: Ana Diaz" }));
-    await user.click(within(dialog).getByRole("button", { name: "Link" }));
+    await user.click(within(speakerRow("Sam Lee")).getByRole("button", { name: "Save name of Sam Lee" }));
     expect(
       await screen.findByText("Linked to Ana Diaz. This meeting's voice is no longer part of Sam Lee's saved voice."),
     ).toBeInTheDocument();
@@ -520,6 +719,18 @@ describe("MeetingDetailView", () => {
   });
 });
 
+/** An option's text as drawn: without the words only assistive technology reads. */
+function shownText(option: HTMLElement): string {
+  const copy = option.cloneNode(true) as HTMLElement;
+  for (const hidden of copy.querySelectorAll("[data-sr-only]")) hidden.remove();
+  return copy.textContent ?? "";
+}
+
+/** The open list's options as drawn. */
+function shownOptions(): string[] {
+  return screen.getAllByRole("option").map(shownText);
+}
+
 describe("Speakers panel person field (T12.80)", () => {
   // Two saved people with one name: the cause of T12.80's missing "Links to" (the hint needed
   // exactly one person with the typed name and said nothing for two).
@@ -531,6 +742,19 @@ describe("Speakers panel person field (T12.80)", () => {
     meetings: 1,
   };
   const ZOE = { id: "9e000000-0000-7000-8000-000000000011", name: "Zoë Brontë", has_voiceprint: true, is_me: false, meetings: 2 };
+
+  it("shows each saved person's meetings as a greyed count, read out in words (T12.104)", async () => {
+    const { user } = await setup();
+    const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
+    await user.click(field);
+    const priya = screen.getByRole("option", { name: "Priya Shah (4 meetings)" });
+    const count = within(priya).getByText("(4)");
+    expect(count).toHaveAttribute("aria-hidden", "true");
+    expect(priya.textContent).not.toMatch(/^Priya Shah \(4 meetings\)$/);
+    expect(shownText(priya)).toBe("Priya Shah (4)");
+    // The user keeps "(you)".
+    expect(shownText(screen.getByRole("option", { name: "Casey (you)" }))).toBe("Casey (you)");
+  });
 
   it("tells two people with one whole name apart instead of saying nothing", async () => {
     const { user, calls } = await setup({ persons: [...samplePersons(), SECOND_PRIYA] });
@@ -565,30 +789,30 @@ describe("Speakers panel person field (T12.80)", () => {
     const field = await screen.findByRole("combobox", { name: "Name of Speaker 2" });
     await user.click(field);
     // Everyone before typing, the user disabled.
-    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+    expect(shownOptions()).toEqual([
       "Casey (you)",
-      "Priya Shah (4 meetings)",
-      "Tom Reid (2 meetings)",
-      "Zoë Brontë (2 meetings)",
+      "Priya Shah (4)",
+      "Tom Reid (2)",
+      "Zoë Brontë (2)",
     ]);
     expect(screen.getByRole("option", { name: "Casey (you)" })).toHaveAttribute("aria-disabled", "true");
     await user.type(field, "BRONTE");
-    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+    expect(shownOptions()).toEqual([
       "New person: BRONTE",
-      "Zoë Brontë (2 meetings)",
+      "Zoë Brontë (2)",
     ]);
     await user.clear(field);
     await user.type(field, "eid");
-    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+    expect(shownOptions()).toEqual([
       "New person: eid",
-      "Tom Reid (2 meetings)",
+      "Tom Reid (2)",
     ]);
     // An accented whole name links without typing the accents.
     await user.clear(field);
     await user.type(field, "zoe bronte");
     expect(within(speakerRow("Speaker 2")).getByText("Links to Zoë Brontë (2 meetings)")).toBeInTheDocument();
     // A name someone has offers no new person, and the highlighted option is the one Enter links.
-    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Zoë Brontë (2 meetings)"]);
+    expect(shownOptions()).toEqual(["Zoë Brontë (2)"]);
     expect(field).toHaveAttribute("aria-activedescendant", screen.getByRole("option", { name: "Zoë Brontë (2 meetings)" }).id);
     // So with inner spaces and another case.
     await user.clear(field);
@@ -655,7 +879,7 @@ describe("Speakers panel person field (T12.80)", () => {
     await user.keyboard("{ArrowDown}");
     await user.tab();
     expect(field).toHaveValue("Priya Shah");
-    expect(within(speakerRow("Speaker 2")).getByText("Links to Priya Shah (4 meetings)")).toBeInTheDocument();
+    expect(within(speakerRow("Speaker 2")).getByText("Priya Shah already has a voice in this meeting: the two become one.")).toBeInTheDocument();
     expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
   });
 
@@ -682,11 +906,13 @@ describe("Speakers panel person field (T12.80)", () => {
     const { user, calls } = await setup();
     await screen.findByText(/TL;DR/);
     await openNamed(user);
-    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Link to person" }));
-    const dialog = await screen.findByRole("dialog", { name: "Link Priya Shah to a person" });
-    await user.type(within(dialog).getByRole("combobox", { name: "Person" }), "tom");
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Change name of Priya Shah" }));
+    const field = within(speakerRow("Priya Shah")).getByRole("combobox", { name: "Name of Priya Shah" });
+    await user.clear(field);
+    await user.type(field, "tom");
     await user.click(screen.getByRole("option", { name: "Tom Reid (2 meetings)" }));
-    await user.click(within(dialog).getByRole("button", { name: "Link" }));
+    expect(within(speakerRow("Priya Shah")).getByText("Links to Tom Reid (2 meetings)")).toBeInTheDocument();
+    await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Save name of Priya Shah" }));
     await waitFor(() =>
       expect(calls).toContainEqual([
         "linkSpeaker",
@@ -695,7 +921,81 @@ describe("Speakers panel person field (T12.80)", () => {
         { kind: "Existing", person: "9e000000-0000-7000-8000-000000000003" },
       ]),
     );
-    expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
+    expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "mergeSpeakers")).toBe(false);
+  });
+
+  it("opens Settings on the People page from Manage people", async () => {
+    const { user } = await setup();
+    await screen.findByText(/TL;DR/);
+    await user.click(within(panel()).getByRole("button", { name: "Manage people" }));
+    await screen.findByRole("heading", { level: 1, name: "People" });
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(within(nav).getByRole("button", { name: "People" })).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("becomeOneText", () => {
+  it("names the other card only when it reads differently from the person", () => {
+    expect(becomeOneText("Avery Chen", "Avery Chen")).toBe("Avery Chen already has a voice in this meeting: the two become one.");
+    expect(becomeOneText("Avery Chen", "Me (Avery Chen)")).toBe(
+      "Avery Chen is already Me (Avery Chen) here: the two voices become one.",
+    );
+  });
+});
+
+describe("mergeTarget", () => {
+  // A call: Me on the mic, Priya Shah, Speaker 2 and Speaker 3 on the computer's audio, with
+  // the tracks as the detail sends them.
+  const base = sampleDetail(ITEM);
+  const call: MeetingDetail = { ...base, movable_by_track: movableByTrack(base) };
+  const card = (detail: MeetingDetail, id: string) => {
+    const c = detail.speakers.find((s) => s.id === id);
+    if (!c) throw new Error(id);
+    return c;
+  };
+  const persons = samplePersons();
+  const existing = (i: number) => ({ kind: "existing" as const, person: persons[i] });
+  // Speaker 3's lines moved to the mic: it no longer shares a track with Priya Shah.
+  const crossed = (() => {
+    const transcript = base.transcript.map((r) =>
+      r.speaker_id === SAMPLE_SPEAKERS.third ? { ...r, track: "You" as const, track_id: SAMPLE_TRACKS.mic } : r,
+    );
+    const d = { ...base, transcript };
+    return { ...d, movable_by_track: movableByTrack(d) };
+  })();
+
+  it("merges into the other card of the chosen person on the same track only", () => {
+    // Priya Shah has a card on Speaker 3's track: naming Speaker 3 after her joins it.
+    expect(sameTrack(SAMPLE_SPEAKERS.third, SAMPLE_SPEAKERS.priya, call)).toBe(true);
+    expect(mergeTarget(card(call, SAMPLE_SPEAKERS.third), existing(1), call)?.id).toBe(SAMPLE_SPEAKERS.priya);
+    // On another track it links: a merge across tracks is undone by the next re-transcription.
+    expect(sameTrack(SAMPLE_SPEAKERS.third, SAMPLE_SPEAKERS.priya, crossed)).toBe(false);
+    expect(mergeTarget(card(crossed, SAMPLE_SPEAKERS.third), existing(1), crossed)).toBeNull();
+    // A draft sends no tracks: nothing is known to share one, so nothing merges.
+    expect(mergeTarget(card(base, SAMPLE_SPEAKERS.third), existing(1), base)).toBeNull();
+    // Tom Reid has no card: a plain link.
+    expect(mergeTarget(card(call, SAMPLE_SPEAKERS.third), existing(2), call)).toBeNull();
+    // The card's own person is not another card.
+    expect(mergeTarget(card(call, SAMPLE_SPEAKERS.priya), existing(1), call)).toBeNull();
+    // New people and unsettled names merge nothing.
+    expect(mergeTarget(card(call, SAMPLE_SPEAKERS.third), { kind: "new", name: "Priya Shah" }, call)).toBeNull();
+    expect(mergeTarget(card(call, SAMPLE_SPEAKERS.third), { kind: "several", name: "x", count: 2 }, call)).toBeNull();
+  });
+
+  it("keeps the user's row when the user is chosen on its track, and guards it from being merged away", () => {
+    const me = card(call, SAMPLE_SPEAKERS.me);
+    expect(me.person?.id).toBe(persons[0].id);
+    const user = { kind: "existing" as const, person: persons[0] };
+    // Speaker 3 on the mic, beside the user's row: the user's name merges it into that row.
+    expect(userRowBeside(card(crossed, SAMPLE_SPEAKERS.third), crossed, persons)?.id).toBe(SAMPLE_SPEAKERS.me);
+    expect(mergeTarget(card(crossed, SAMPLE_SPEAKERS.third), user, crossed)?.id).toBe(SAMPLE_SPEAKERS.me);
+    // On the far end it is not beside the user's row: the user is not offered, nothing merges.
+    expect(userRowBeside(card(call, SAMPLE_SPEAKERS.third), call, persons)).toBeNull();
+    expect(mergeTarget(card(call, SAMPLE_SPEAKERS.third), user, call)).toBeNull();
+    // The guard: the user's row is never the one merged away (no field is shown for it).
+    expect(mergeTarget(me, user, crossed)).toBeNull();
+    expect(mergeTarget(me, existing(1), call)).toBeNull();
+    expect(userRowBeside(me, crossed, persons)).toBeNull();
   });
 });
 
@@ -732,7 +1032,7 @@ describe("Speakers panel person field keys (T12.80 re-review)", () => {
     );
     await user.keyboard("{ArrowLeft}{Enter}");
     expect(field).toHaveValue("Priya Shah");
-    expect(within(speakerRow("Speaker 2")).getByText("Links to Priya Shah (4 meetings)")).toBeInTheDocument();
+    expect(within(speakerRow("Speaker 2")).getByText("Priya Shah already has a voice in this meeting: the two become one.")).toBeInTheDocument();
     expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
   });
 
