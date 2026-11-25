@@ -7,6 +7,7 @@ import type {
   AudioCheckView,
   AudioPageView,
   AudioSettingsValue,
+  CallEndStopView,
   CaptureMode,
   ExportDone,
   HardwareView,
@@ -104,6 +105,11 @@ export interface IpcCommands
    * app starts the meeting itself. Resolves to whether the answer was taken (a closed question
    * takes none). */
   answerCallStart(start: boolean): Promise<boolean>;
+  /** Whether a call's recording stops by itself when the call seems to have ended (the General
+   * page, T14.52; off by default). */
+  callEndStop(): Promise<CallEndStopView>;
+  /** Stores it, from the next meeting; resolves with it as stored. */
+  setCallEndStop(on: boolean): Promise<CallEndStopView>;
   /** Whether Earshot offers to record when a call starts (the General page; on by default). */
   callStartOffer(): Promise<boolean>;
   /** Stores whether Earshot offers to record when a call starts; resolves with it as stored. */

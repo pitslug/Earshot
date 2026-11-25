@@ -1621,7 +1621,14 @@ fn meeting_events_snapshot_keeps_the_banners_in_force_and_the_counts_of_a_record
         },
         t0,
     );
-    r.apply(1, &MeetingEvent::CallEndOffer { open: true }, t0);
+    r.apply(
+        1,
+        &MeetingEvent::CallEndOffer {
+            open: true,
+            stops: true,
+        },
+        t0,
+    );
     // Text is never kept.
     r.apply(
         1,
@@ -1663,7 +1670,14 @@ fn meeting_events_snapshot_of_a_finishing_meeting_freezes_its_clock_and_marks_la
     let mut r = SentRecord::default();
     r.apply(1, &started("m1", CaptureMode::InRoom), t0);
     r.apply(1, &warning("during", "Said while recording."), t0);
-    r.apply(1, &MeetingEvent::CallEndOffer { open: true }, t0);
+    r.apply(
+        1,
+        &MeetingEvent::CallEndOffer {
+            open: true,
+            stops: true,
+        },
+        t0,
+    );
     r.apply(
         1,
         &MeetingEvent::Ended {
@@ -1810,4 +1824,28 @@ fn meeting_events_snapshot_folding_an_event_twice_changes_nothing() {
             "cut at {cut}"
         );
     }
+}
+
+#[test]
+fn meeting_events_snapshot_holds_the_call_end_question_as_last_sent() {
+    // T14.52: the question asked with stopping by itself on, then the setting turned off while it
+    // is open: it is re-sent open with `stops: false`, and a window loaded now must say that.
+    let t0 = Instant::now();
+    let mut r = SentRecord::default();
+    r.apply(1, &started("m1", CaptureMode::Call), t0);
+    let offer = |open, stops| MeetingEvent::CallEndOffer { open, stops };
+    r.apply(1, &offer(true, true), t0);
+    let f = r.snapshot(false, t0).followed.unwrap();
+    assert_eq!((f.call_end_offer, f.call_end_stops), (true, true));
+    r.apply(1, &offer(true, false), t0);
+    let f = r.snapshot(false, t0).followed.unwrap();
+    assert_eq!((f.call_end_offer, f.call_end_stops), (true, false));
+    // Applied again on top (a window that heard it while reading): the same.
+    r.apply(1, &offer(true, false), t0);
+    let again = r.snapshot(false, t0).followed.unwrap();
+    assert_eq!(again, f);
+    // Closed by "Keep recording": closed, in the words it was last asked in.
+    r.apply(1, &offer(false, false), t0);
+    let f = r.snapshot(false, t0).followed.unwrap();
+    assert_eq!((f.call_end_offer, f.call_end_stops), (false, false));
 }

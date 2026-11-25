@@ -244,6 +244,9 @@ pub(crate) enum DeviceRecord {
     /// `settings/call-start-offer`: whether Earshot offers to start recording when a call starts
     /// (T12.86).
     CallStartOffer,
+    /// `settings/call-end-stop`: whether a call's recording stops by itself when the question
+    /// "the call seems to have ended" stays unanswered (T14.52; [`crate::call_end`]).
+    CallEndStop,
     /// `settings/cuda-summaries`: whether summaries run on CUDA (T8.4af).
     #[cfg(feature = "engines")]
     CudaSummaries,
@@ -347,6 +350,7 @@ impl DeviceRecord {
         DeviceRecord::SummaryTemplate,
         DeviceRecord::FirstRun,
         DeviceRecord::CallStartOffer,
+        DeviceRecord::CallEndStop,
         DeviceRecord::CudaSummaries,
         DeviceRecord::CudaTranscription,
         DeviceRecord::Previews,
@@ -422,6 +426,7 @@ impl DeviceRecord {
                 DeviceRecord::SummaryTemplate => crate::summary_style::SUMMARY_TEMPLATE_KEY,
                 DeviceRecord::FirstRun => crate::first_run::FIRST_RUN_KEY,
                 DeviceRecord::CallStartOffer => crate::call_start::OFFER_KEY,
+                DeviceRecord::CallEndStop => crate::call_end::STOP_KEY,
                 #[cfg(feature = "engines")]
                 DeviceRecord::CudaSummaries => crate::cuda_switch::CUDA_SUMMARIES_KEY,
                 #[cfg(feature = "engines")]

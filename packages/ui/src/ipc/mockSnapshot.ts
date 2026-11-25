@@ -27,6 +27,7 @@ interface Sent {
   lagSeconds: number | null;
   transcript: TranscriptState;
   callEndOffer: boolean;
+  callEndStops: boolean;
   progress: ProgressSnapshot | null;
 }
 
@@ -61,6 +62,7 @@ export function createSentRecord(): SentRecord {
             lagSeconds: null,
             transcript: "Live",
             callEndOffer: false,
+            callEndStops: false,
             progress: null,
           });
           followed = event.meeting;
@@ -107,7 +109,9 @@ export function createSentRecord(): SentRecord {
           m.banners = m.banners.filter((b) => b.key !== event.key);
           return;
         case "CallEndOffer":
+          // As last sent: re-sent open with `stops: false` when the setting is turned off.
           m.callEndOffer = event.open;
+          m.callEndStops = event.stops;
           return;
         case "CallEndStopped":
           m.callEndOffer = false;
@@ -136,6 +140,7 @@ export function createSentRecord(): SentRecord {
                 lag_seconds: f.lagSeconds,
                 transcript: f.transcript,
                 call_end_offer: f.callEndOffer,
+                call_end_stops: f.callEndStops,
                 progress: f.progress,
               },
         behind: meetings

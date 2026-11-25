@@ -553,3 +553,41 @@ describe("mock summary seen (T14.51)", () => {
     expect((await ipc.listMeetings()).some((m) => m.new_summary)).toBe(false);
   });
 });
+
+describe("mock IPC, stopping by itself when a call ends (T14.52)", () => {
+  it("is off by default and a meeting's offer says what was stored when it started", async () => {
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ timer, meetings: [], callEndOfferAfterMs: 1_000 });
+    const meeting: MeetingEvent[] = [];
+    await ipc.onMeetingEvent((e) => meeting.push(e));
+    expect(await ipc.callEndStop()).toEqual({ on: false, unknown: [] });
+    await ipc.startMeeting("Call", null, false);
+    // Turned on during the meeting: from the next one.
+    expect(await ipc.setCallEndStop(true)).toEqual({ on: true, unknown: [] });
+    timer.advance(1_000);
+    expect(meeting.filter((e) => e.type === "CallEndOffer")).toEqual([
+      { type: "CallEndOffer", open: true, stops: false },
+    ]);
+    await ipc.stopMeeting();
+    await ipc.startMeeting("Call", null, false);
+    timer.advance(1_000);
+    expect(meeting.filter((e) => e.type === "CallEndOffer").at(-1)).toEqual({
+      type: "CallEndOffer",
+      open: true,
+      stops: true,
+    });
+    expect(await ipc.callEndStop()).toEqual({ on: true, unknown: [] });
+
+    // Off reaches the recording meeting at once: its open question is asked in the off wording.
+    expect(await ipc.setCallEndStop(false)).toEqual({ on: false, unknown: [] });
+    expect(meeting.filter((e) => e.type === "CallEndOffer").at(-1)).toEqual({
+      type: "CallEndOffer",
+      open: true,
+      stops: false,
+    });
+    // Turned on again: not for this meeting.
+    const before = meeting.length;
+    await ipc.setCallEndStop(true);
+    expect(meeting.length).toBe(before);
+  });
+});

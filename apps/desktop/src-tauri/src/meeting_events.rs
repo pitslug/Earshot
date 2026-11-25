@@ -307,6 +307,10 @@ pub enum MeetingEvent {
     CallEndOffer {
         /// Whether it is being asked.
         open: bool,
+        /// Whether the recording stops by itself if nobody answers (the General page's "stop
+        /// recording by itself", read when the meeting started; T14.52). Off, the question only
+        /// asks, and nothing may say that a stop is coming.
+        stops: bool,
     },
     /// Nobody answered that question in time, and the recording is being stopped.
     CallEndStopped,
@@ -1529,6 +1533,9 @@ pub struct FollowedSnapshot {
     pub transcript: TranscriptState,
     /// Whether the question "the call seems to have ended" is open.
     pub call_end_offer: bool,
+    /// Whether that question, as last sent, says the recording stops by itself (T14.52): its
+    /// wording and buttons follow it.
+    pub call_end_stops: bool,
     /// How its finishing goes, once a step was said.
     pub progress: Option<ProgressSnapshot>,
 }
@@ -1570,6 +1577,7 @@ struct SentMeeting {
     lag_seconds: Option<f64>,
     transcript: TranscriptState,
     call_end_offer: bool,
+    call_end_stops: bool,
     progress: Option<ProgressSnapshot>,
 }
 
@@ -1616,6 +1624,7 @@ impl SentRecord {
                     // As the window starts a meeting.
                     transcript: TranscriptState::Live,
                     call_end_offer: false,
+                    call_end_stops: false,
                     progress: None,
                 });
                 self.followed = Some(seq);
@@ -1669,7 +1678,12 @@ impl SentRecord {
                         });
                     }
                     MeetingEvent::WarningCleared { key } => m.banners.retain(|b| b.key != *key),
-                    MeetingEvent::CallEndOffer { open } => m.call_end_offer = *open,
+                    // As last sent: an open question re-sent with `stops: false` (the setting
+                    // turned off mid-meeting) keeps it open in the off wording.
+                    MeetingEvent::CallEndOffer { open, stops } => {
+                        m.call_end_offer = *open;
+                        m.call_end_stops = *stops;
+                    }
                     MeetingEvent::CallEndStopped => m.call_end_offer = false,
                     // Levels, voice activity and transcript text are not kept: they change many
                     // times a second, or are content the window was shown once.
@@ -1709,6 +1723,7 @@ impl SentRecord {
                 lag_seconds: m.lag_seconds,
                 transcript: m.transcript,
                 call_end_offer: m.call_end_offer,
+                call_end_stops: m.call_end_stops,
                 progress: m.progress,
             }),
             behind: behind

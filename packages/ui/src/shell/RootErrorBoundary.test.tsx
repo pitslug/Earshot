@@ -81,6 +81,7 @@ function followed(meeting: string, ended: FollowedSnapshot["ended"] = null): Fol
     lag_seconds: null,
     transcript: "Live",
     call_end_offer: false,
+    call_end_stops: false,
     progress: null,
   };
 }

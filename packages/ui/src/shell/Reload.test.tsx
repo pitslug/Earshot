@@ -2,7 +2,7 @@
 // app's snapshot (T14.51): it lands where the meeting is, with Stop, Cancel and the locks of a
 // finishing meeting as before the reload.
 
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,7 +16,7 @@ import {
   SCRIPT_WARNING_AT,
   createMockIpc,
 } from "../ipc";
-import { COMPACT_STOP_FAILED, RELOADED_NOTE } from "../meeting/MeetingViews";
+import { CALL_END_COPY, COMPACT_STOP_FAILED, RELOADED_NOTE } from "../meeting/MeetingViews";
 import { renderApp } from "../test/app";
 import { setWindowWatched } from "../test/windowWatched";
 import { createManualTimer } from "../time";
@@ -56,6 +56,7 @@ function followed(meeting: string, over: Partial<FollowedSnapshot> = {}): Follow
     lag_seconds: 3,
     transcript: "Live",
     call_end_offer: false,
+    call_end_stops: false,
     progress: null,
     ...over,
   };
@@ -196,6 +197,42 @@ describe("a window loaded while a meeting is in progress", () => {
     expect(await screen.findByRole("heading", { level: 1, name: OLDER.title })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop meeting" })).toBeNull();
     expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull();
+  });
+});
+
+describe("the call-end question across a reload (T14.52)", () => {
+  it("shows the words and buttons it was last sent with", async () => {
+    // Asked with stopping by itself on; then the setting is turned off while it is open, and the
+    // app sends it again with `stops: false`.
+    const asked = { starting: false, behind: [] };
+    const first = await load({ ...asked, followed: followed(NEWER.id, { call_end_offer: true, call_end_stops: true }) }, [NEWER]);
+    expect(await screen.findByText(CALL_END_COPY.will_stop)).toBeInTheDocument();
+    first.meeting({ type: "CallEndOffer", open: true, stops: false });
+    expect(screen.getByText(CALL_END_COPY.asks_only)).toBeInTheDocument();
+    expect(screen.queryByText(CALL_END_COPY.will_stop)).toBeNull();
+    cleanup();
+
+    // The reload: the app's snapshot holds the question as last sent.
+    await load({ ...asked, followed: followed(NEWER.id, { call_end_offer: true, call_end_stops: false }) }, [NEWER]);
+    expect(await screen.findByText(CALL_END_COPY.asks_only)).toBeInTheDocument();
+    expect(screen.queryByText(CALL_END_COPY.will_stop)).toBeNull();
+    const bar = screen.getByText(CALL_END_COPY.banner_title).closest<HTMLElement>(".fui-MessageBar");
+    if (bar === null) throw new Error("the question is not a message bar");
+    expect(within(bar).getByRole("button", { name: CALL_END_COPY.stop_button })).toBeEnabled();
+    expect(within(bar).getByRole("button", { name: CALL_END_COPY.keep_button })).toBeEnabled();
+  });
+
+  it("follows the mock app's own re-send through its snapshot", async () => {
+    const timer = createManualTimer(NOW);
+    const ipc = createMockIpc({ timer, now: NOW, meetings: [], callEndOfferAfterMs: 1_000 });
+    await ipc.setCallEndStop(true);
+    await ipc.startMeeting("Call", null, false);
+    timer.advance(1_000);
+    let s = await ipc.meetingSnapshot();
+    expect([s.followed?.call_end_offer, s.followed?.call_end_stops]).toEqual([true, true]);
+    await ipc.setCallEndStop(false);
+    s = await ipc.meetingSnapshot();
+    expect([s.followed?.call_end_offer, s.followed?.call_end_stops]).toEqual([true, false]);
   });
 });
 
