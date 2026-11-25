@@ -636,6 +636,51 @@ fn store_sync_queue_everything_requeues_sent_rows_and_drops_held_ones() {
     assert_eq!(e.store.outbox_len().unwrap(), 2);
 }
 
+/// T14.45: a device whose relay lost rows queues every row again, tombstones too, inside a
+/// transaction of its caller's, and keeps the rows it holds for later (they are sealed under
+/// the same key, and the relay may no longer hold them). Nothing is queued when the
+/// transaction fails.
+#[test]
+fn store_sync_queue_every_row_keeps_held_rows_and_rolls_back_with_its_transaction() {
+    let mut e = env("sync-queue-rows");
+    e.store
+        .put_meeting(meeting(1, "Sent before", at(T0 + 1, 0, HERE)))
+        .unwrap();
+    e.store.put_track(track(2, 1, at(T0 + 2, 0, HERE))).unwrap();
+    let mut gone = meeting(3, "Deleted here", at(T0 + 3, 0, HERE));
+    gone.meta.deleted = true;
+    e.store.put_meeting(gone).unwrap();
+    let sent: Vec<(&str, EntityId, HlcTimestamp)> = e
+        .store
+        .outbox(10)
+        .unwrap()
+        .iter()
+        .map(|r| (r.table(), r.id(), r.meta().updated_at))
+        .collect();
+    assert_eq!(e.store.outbox_sent(&sent).unwrap(), 3);
+    let orphan = incoming(9, SyncedRow::Track(track(4, 7, at(T0 + 3, 0, THERE))));
+    let a = e.apply(std::slice::from_ref(&orphan), &rules(false));
+    assert_eq!(a.held, held(1, HoldReason::Parent));
+    // A failing transaction queues nothing.
+    let failed: Result<(), earshot_store::StoreError> = e.store.transaction(|tx| {
+        assert_eq!(tx.queue_every_row()?, 3);
+        Err(earshot_store::StoreError::Corrupt(
+            "an invented failure".into(),
+        ))
+    });
+    assert!(failed.is_err());
+    assert_eq!(e.store.outbox_len().unwrap(), 0);
+    // A committed one queues all three, the tombstone among them, and holds what was held.
+    let queued: Result<u64, earshot_store::StoreError> =
+        e.store.transaction(|tx| tx.queue_every_row());
+    assert_eq!(queued.unwrap(), 3);
+    assert_eq!(e.outbox_ids(), [id(1), id(2), id(3)]);
+    assert!(e.store.is_held(&orphan.key).unwrap(), "held rows are kept");
+    let again: Result<u64, earshot_store::StoreError> =
+        e.store.transaction(|tx| tx.queue_every_row());
+    assert_eq!(again.unwrap(), 0, "queued once only");
+}
+
 #[test]
 fn store_sync_a_live_meeting_never_overwrites_a_deletion_here() {
     let mut e = env("sync-deletion-final");

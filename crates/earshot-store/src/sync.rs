@@ -790,6 +790,30 @@ fn erased_sample(out: &mut Applied, meeting: Option<&[u8]>) {
     }
 }
 
+impl StoreTx<'_> {
+    /// Queues every synced row to be sent, tombstones included, inside the caller's
+    /// transaction; returns how many were not already queued. Held rows are left alone: for a
+    /// device whose relay lost rows (it was restored from an older copy, T14.45), which sends
+    /// everything again to the same vault and whose held rows, sealed under the same key, the
+    /// relay may no longer hold. A device joining a vault uses [`Store::queue_everything`].
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn queue_every_row(&self) -> Result<u64, StoreError> {
+        let mut queued = 0;
+        for table in SYNCED_TABLES {
+            queued += self.conn.execute(
+                &format!(
+                    "INSERT INTO sync_outbox (tbl, id) SELECT ?1, r.id FROM {table} r \
+                     WHERE NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.tbl = ?1 AND o.id = r.id)"
+                ),
+                params![table],
+            )?;
+        }
+        Ok(u64::try_from(queued).unwrap_or(u64::MAX))
+    }
+}
+
 impl Store {
     /// Up to `limit` rows changed on this device and not yet sent, oldest `updated_at` first,
     /// across every synced table.
@@ -892,18 +916,9 @@ impl Store {
     /// Store errors; nothing changes then.
     pub fn queue_everything(&mut self) -> Result<u64, StoreError> {
         self.immediate(|tx| {
-            let mut queued = 0;
-            for table in SYNCED_TABLES {
-                queued += tx.conn.execute(
-                    &format!(
-                        "INSERT INTO sync_outbox (tbl, id) SELECT ?1, r.id FROM {table} r \
-                         WHERE NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.tbl = ?1 AND o.id = r.id)"
-                    ),
-                    params![table],
-                )?;
-            }
+            let queued = tx.queue_every_row()?;
             tx.conn.execute("DELETE FROM sync_pending", [])?;
-            Ok(u64::try_from(queued).unwrap_or(u64::MAX))
+            Ok(queued)
         })
     }
 

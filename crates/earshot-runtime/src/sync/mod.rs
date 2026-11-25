@@ -524,7 +524,7 @@ pub fn set_sync_voiceprints(services: &Services, on: bool) -> Result<(), SyncPro
     db.transaction(|tx| -> Result<(), SyncProblem> {
         local::set_tx(tx, &DeviceRecord::SyncVoiceprints.key(), on_off_word(on))?;
         if on && !was {
-            local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
+            restart_pull_tx(tx)?;
         }
         Ok(())
     })?;
@@ -547,19 +547,80 @@ pub fn set_sync_dictionary(services: &Services, on: bool) -> Result<(), SyncProb
         local::set_tx(tx, &DeviceRecord::SyncDictionary.key(), on_off_word(on))?;
         if on && !was {
             crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
-            local::set_tx(tx, &DeviceRecord::SyncCursor.key(), &encode_cursor(0))?;
+            restart_pull_tx(tx)?;
         }
         Ok(())
     })
 }
 
-#[derive(Serialize, Deserialize)]
-struct Cursor {
-    pull_seq: u64,
+/// The `sync-cursor` record: where this device is in the vault's history.
+///
+/// Everything but `pull_seq` is new in T14.45 and left out of the record while it has its
+/// default, so a cursor without any of it is byte for byte what earlier builds wrote, and an
+/// earlier build reads a newer record as its `pull_seq` (it ignores what it does not know; what
+/// it writes back drops the rest, and this build then takes the first epoch it is given again).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Cursor {
+    /// The relay sequence number pulled up to.
+    pub(crate) pull_seq: u64,
+    /// The highest sequence number of this vault the device has seen in any answer (at least
+    /// `pull_seq` in an unbroken history). A relay that holds less has lost rows.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) seen_seq: u64,
+    /// The vault epoch last seen; `None` until a relay has named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) epoch: Option<earshot_sync::wire::B64>,
+    /// When (this device's clock, Unix ms) it last read the vault from the start because the
+    /// relay's history had changed, oldest first, at most [`MAX_VAULT_RESETS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) resets: Vec<u64>,
 }
 
+impl Cursor {
+    /// The highest sequence number this device has seen: `seen_seq`, or the cursor itself when
+    /// that is higher (a record written before T14.45 holds only the cursor, which is a number
+    /// the relay once named).
+    pub(crate) fn seen(&self) -> u64 {
+        self.seen_seq.max(self.pull_seq)
+    }
+}
+
+/// The most times in [`VAULT_RESET_WINDOW_MS`] a device reads the vault from the start and
+/// queues every row again because the relay's history changed (T14.45). Three, a judgement: a
+/// restore is one, and a second or third follows only when another device proves it saw even
+/// more; past that the relay is answering oddly (two relays behind one address, say), each
+/// reset re-sends everything, and the device waits instead ([`SyncProblem::Server`]).
+pub const MAX_VAULT_RESETS: usize = 3;
+
+/// The window [`MAX_VAULT_RESETS`] is counted in: 24 hours by this device's clock, a judgement.
+pub const VAULT_RESET_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
+
 fn encode_cursor(pull_seq: u64) -> Vec<u8> {
-    encode_versioned(CURSOR_VERSION, &Cursor { pull_seq }).expect("a cursor serialises")
+    encode_cursor_record(&Cursor {
+        pull_seq,
+        ..Cursor::default()
+    })
+}
+
+fn encode_cursor_record(cursor: &Cursor) -> Vec<u8> {
+    encode_versioned(CURSOR_VERSION, cursor).expect("a cursor serialises")
+}
+
+fn decode_cursor(bytes: Option<Vec<u8>>) -> Cursor {
+    bytes
+        .and_then(|b| {
+            let (v, payload) = split_version(&b)?;
+            (v == CURSOR_VERSION)
+                .then(|| serde_json::from_slice::<Cursor>(payload).ok())
+                .flatten()
+        })
+        .unwrap_or_default()
+}
+
+/// The stored cursor record; the default (the start of the vault, no epoch seen) when none is
+/// stored or it cannot be read.
+pub(crate) fn cursor_record(store: &Store) -> Result<Cursor, SyncProblem> {
+    Ok(decode_cursor(store.local_value(SYNC_CURSOR_KEY)?))
 }
 
 /// The relay sequence number pulled up to; 0 when none is stored or it cannot be read (a
@@ -568,26 +629,143 @@ fn encode_cursor(pull_seq: u64) -> Vec<u8> {
 /// # Errors
 /// [`SyncProblem::Store`].
 pub fn pull_cursor(store: &Store) -> Result<u64, SyncProblem> {
-    Ok(store
-        .local_value(SYNC_CURSOR_KEY)?
-        .and_then(|b| {
-            let (v, payload) = split_version(&b)?;
-            (v == CURSOR_VERSION)
-                .then(|| serde_json::from_slice::<Cursor>(payload).ok())
-                .flatten()
-        })
-        .map_or(0, |c| c.pull_seq))
+    Ok(cursor_record(store)?.pull_seq)
 }
 
 /// Moves the cursor from `after` to `to` only if it still reads `after` (the caller holds the
 /// store lock across both): a reset made while the page was on the way wins. Returns whether
-/// it moved.
+/// it moved. What the record holds beside the cursor is kept.
 fn advance_cursor(store: &mut Store, after: u64, to: u64) -> Result<bool, SyncProblem> {
-    if pull_cursor(store)? != after {
+    let mut cursor = cursor_record(store)?;
+    if cursor.pull_seq != after {
         return Ok(false);
     }
-    local::set(store, &DeviceRecord::SyncCursor.key(), &encode_cursor(to))?;
+    cursor.pull_seq = to;
+    cursor.seen_seq = cursor.seen_seq.max(to);
+    local::set(
+        store,
+        &DeviceRecord::SyncCursor.key(),
+        &encode_cursor_record(&cursor),
+    )?;
     Ok(true)
+}
+
+/// Inside `tx`: the pull starts over (a switch was turned on), keeping what the record holds of
+/// the vault's history. The epoch is not forgotten, or a relay restored meanwhile would not be
+/// noticed.
+fn restart_pull_tx(tx: &mut earshot_store::StoreTx<'_>) -> Result<(), SyncProblem> {
+    let mut cursor = decode_cursor(tx.local_value(SYNC_CURSOR_KEY)?);
+    cursor.pull_seq = 0;
+    local::set_tx(
+        tx,
+        &DeviceRecord::SyncCursor.key(),
+        &encode_cursor_record(&cursor),
+    )?;
+    Ok(())
+}
+
+/// What a relay answer says of the vault's history (T14.45).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct VaultSeen<'a> {
+    /// The vault's epoch, when the relay names one (a relay from before T14.45 does not).
+    pub(crate) epoch: Option<&'a [u8]>,
+    /// The vault's highest sequence number before the request.
+    pub(crate) before: Option<u64>,
+    /// The highest sequence number the answer shows the vault to hold now.
+    pub(crate) now: Option<u64>,
+}
+
+/// What to do about a relay answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VaultVerdict {
+    /// The same history as before; the record as it should now be stored, when that changed
+    /// (a first epoch taken in, a higher number seen).
+    Same(Option<Cursor>),
+    /// The relay's history changed: read the vault from the start and queue every row again,
+    /// with this record.
+    Reset(Cursor),
+    /// It changed again, too often ([`MAX_VAULT_RESETS`]): do nothing but report it.
+    TooOften,
+}
+
+/// Judges a relay answer against the stored record (pure; T14.45).
+///
+/// The history changed when the relay names an epoch other than the one stored, or holds fewer
+/// rows than this device has seen (`before` below [`Cursor::seen`]): it was restored from an older
+/// copy, or replaced. A device that has never stored an epoch takes the first it is given
+/// without reading anything again, unless the numbers already say rows were lost.
+pub(crate) fn judge_vault(stored: &Cursor, seen: VaultSeen<'_>, now_ms: u64) -> VaultVerdict {
+    let other_epoch = match (&stored.epoch, seen.epoch) {
+        (Some(mine), Some(theirs)) => mine.0 != theirs,
+        _ => false,
+    };
+    let rows_lost = seen.before.is_some_and(|before| before < stored.seen());
+    if other_epoch || rows_lost {
+        let mut resets: Vec<u64> = stored
+            .resets
+            .iter()
+            .copied()
+            .filter(|at| *at <= now_ms && now_ms - *at < VAULT_RESET_WINDOW_MS)
+            .collect();
+        if resets.len() >= MAX_VAULT_RESETS {
+            return VaultVerdict::TooOften;
+        }
+        resets.push(now_ms);
+        return VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: seen.now.unwrap_or(0),
+            epoch: seen
+                .epoch
+                .map(|e| earshot_sync::wire::B64(e.to_vec()))
+                .or_else(|| stored.epoch.clone()),
+            resets,
+        });
+    }
+    let mut next = stored.clone();
+    if next.epoch.is_none()
+        && let Some(e) = seen.epoch
+    {
+        next.epoch = Some(earshot_sync::wire::B64(e.to_vec()));
+    }
+    if let Some(n) = seen.now {
+        next.seen_seq = next.seen_seq.max(n);
+    }
+    VaultVerdict::Same((next != *stored).then_some(next))
+}
+
+/// Applies [`judge_vault`] to the stored record under the store lock. A reset writes the new
+/// record and queues every synced row in one transaction (held rows are kept: the relay may no
+/// longer hold them). Returns whether this device reset.
+///
+/// # Errors
+/// [`SyncProblem::Server`] when the history changed too often; [`SyncProblem::Store`].
+pub(crate) fn observe_vault(services: &Services, seen: VaultSeen<'_>) -> Result<bool, SyncProblem> {
+    let now_ms = services.clock.now_unix_ms();
+    let mut db = services.store();
+    db.transaction(|tx| -> Result<bool, SyncProblem> {
+        let stored = decode_cursor(tx.local_value(SYNC_CURSOR_KEY)?);
+        match judge_vault(&stored, seen, now_ms) {
+            VaultVerdict::Same(None) => Ok(false),
+            VaultVerdict::Same(Some(next)) => {
+                local::set_tx(
+                    tx,
+                    &DeviceRecord::SyncCursor.key(),
+                    &encode_cursor_record(&next),
+                )?;
+                Ok(false)
+            }
+            VaultVerdict::Reset(next) => {
+                local::set_tx(
+                    tx,
+                    &DeviceRecord::SyncCursor.key(),
+                    &encode_cursor_record(&next),
+                )?;
+                tx.queue_every_row()?;
+                Ok(true)
+            }
+            VaultVerdict::TooOften => Err(SyncProblem::Server),
+        }
+    })
 }
 
 /// The last tick's outcome. Times, a problem word and counts; never content.

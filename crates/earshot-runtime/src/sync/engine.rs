@@ -23,8 +23,8 @@ use earshot_sync::{
 
 use super::client::Relay;
 use super::{
-    SyncProblem, SyncVault, advance_cursor, check_address, pull_cursor, set_sync_status,
-    sync_settings, sync_status,
+    SyncProblem, SyncVault, VaultSeen, advance_cursor, check_address, cursor_record, observe_vault,
+    set_sync_status, sync_settings, sync_status,
 };
 use crate::services::Services;
 
@@ -86,6 +86,10 @@ pub struct TickReport {
     pub meetings: BTreeSet<EntityId>,
     /// Whether a person row was written here or "Me" people merged.
     pub people: bool,
+    /// The relay's history changed (it was restored from an older copy, or replaced): this
+    /// device queued every synced row again and set its cursor to the start, and the tick ended
+    /// there (T14.45). The next tick sends and reads everything.
+    pub vault_reset: bool,
     /// The pull reached the end of what the relay holds: its last page said `more == false`
     /// (T12.93: with no problem in the tick, no row held and none waiting for a retry, the
     /// one-off copy of legacy ignores may run, [`crate::ignore_copy`]).
@@ -659,6 +663,11 @@ impl SyncClient {
             crate::vocabulary::reconcile(&self.services)?;
         }
         self.push(&keys, &secrets.token, kinds, report)?;
+        if report.vault_reset {
+            // Everything is queued again and the cursor is at the start: the next tick sends
+            // and reads it all (it comes soon, the queue having grown).
+            return Ok(());
+        }
         self.retry_held(&keys, kinds, report)?;
         self.pull(&keys, &secrets.token, report)
     }
@@ -723,6 +732,9 @@ impl SyncClient {
                     };
                     if bytes + sealed.body.len() > PUSH_BYTES && !batch.is_empty() {
                         self.send(token, std::mem::take(&mut batch), &mut sent, report)?;
+                        if report.vault_reset {
+                            return Ok(());
+                        }
                         bytes = 0;
                     }
                     bytes += sealed.body.len();
@@ -730,6 +742,9 @@ impl SyncClient {
                 }
                 if !batch.is_empty() {
                     self.send(token, batch, &mut sent, report)?;
+                }
+                if report.vault_reset {
+                    return Ok(());
                 }
                 // A page is read oldest stamp first, so every row after one that is too far
                 // ahead is too far ahead as well: nothing more to send this tick.
@@ -775,11 +790,16 @@ impl SyncClient {
             rows.push(row);
         }
         let keys: BTreeSet<Vec<u8>> = rows.iter().map(|r| r.key.0.clone()).collect();
+        // What this device has seen of the vault goes with the push (T14.45): a relay that
+        // holds less was restored from an older copy, and says so in its answer.
+        let seen = cursor_record(&self.services.store())?;
         let resp = self.relay.push(
             token,
             &PushRequest {
                 format: ENVELOPE_FORMAT,
                 rows,
+                seen_seq: (seen.seen() > 0).then_some(seen.seen()),
+                epoch: seen.epoch,
             },
         )?;
         // Every row sent is stored or superseded; any other answer is not a relay's, and the
@@ -794,6 +814,22 @@ impl SyncClient {
         report.pushed += accepted;
         self.services.store().outbox_sent(&marks)?;
         sent.extend(marks);
+        // The relay's history, as this answer shows it. A relay from before T14.45 names no
+        // epoch and no number from before the request; its highest number after storing the
+        // rows it accepted gives that one.
+        let before = resp
+            .max_seq
+            .unwrap_or_else(|| resp.seq.saturating_sub(u64::from(resp.accepted)));
+        if observe_vault(
+            &self.services,
+            VaultSeen {
+                epoch: resp.epoch.as_ref().map(|e| e.0.as_slice()),
+                before: Some(before),
+                now: Some(resp.seq),
+            },
+        )? {
+            report.vault_reset = true;
+        }
         Ok(())
     }
 
@@ -899,19 +935,36 @@ impl SyncClient {
             }
             // The cursor and the kind switches are read together: turning a switch on resets
             // the cursor, and the page is applied under the switches it was pulled for.
-            let (after, kinds) = {
+            let (cursor, kinds) = {
                 let db = self.services.store();
-                (pull_cursor(&db)?, sync_settings(&db)?.kinds())
+                (cursor_record(&db)?, sync_settings(&db)?.kinds())
             };
+            let after = cursor.pull_seq;
             let PullResponse {
                 rows,
                 more,
                 vault_format,
-            } = self.relay.pull(token, after, self.pull_limit)?;
+                epoch,
+                max_seq,
+            } = self.relay.pull(token, after, self.pull_limit, &cursor)?;
             if vault_format > ENVELOPE_FORMAT {
                 return Err(SyncProblem::UpdateNeeded);
             }
             let last = rows.iter().map(|r| r.seq).max();
+            // The relay's history, as this answer shows it (T14.45). If it changed, this
+            // page was read from a cursor that means nothing in it: nothing of the page is
+            // applied, and the next tick reads the vault from the start.
+            if observe_vault(
+                &self.services,
+                VaultSeen {
+                    epoch: epoch.as_ref().map(|e| e.0.as_slice()),
+                    before: max_seq,
+                    now: max_seq.max(last),
+                },
+            )? {
+                report.vault_reset = true;
+                return Ok(());
+            }
             report.pulled += rows.len();
             let mut page = Vec::with_capacity(rows.len());
             for r in rows {

@@ -163,17 +163,29 @@ impl Relay {
         self.post("v1/rows", Some(token), req)
     }
 
-    /// `GET /v1/rows?after=<after>&limit=<limit>` (`PULL_DEFAULT` outside tests).
+    /// `GET /v1/rows?after=<after>&limit=<limit>` (`PULL_DEFAULT` outside tests), with what
+    /// this device has seen of the vault when it has seen more than its cursor says (`seen`,
+    /// `epoch`; T14.45). A relay from before those ignores them.
     pub(crate) fn pull(
         &self,
         token: &DeviceToken,
         after: u64,
         limit: u32,
+        seen: &super::Cursor,
     ) -> Result<PullResponse, SyncProblem> {
         let mut url = self.url("v1/rows")?;
-        url.query_pairs_mut()
-            .append_pair("after", &after.to_string())
-            .append_pair("limit", &limit.to_string());
+        {
+            let mut query = url.query_pairs_mut();
+            query
+                .append_pair("after", &after.to_string())
+                .append_pair("limit", &limit.to_string());
+            if seen.seen() > after {
+                query.append_pair("seen", &seen.seen().to_string());
+            }
+            if let Some(epoch) = &seen.epoch {
+                query.append_pair("epoch", &epoch.text());
+            }
+        }
         self.call(Method::GET, url, Some(token), None)
     }
 

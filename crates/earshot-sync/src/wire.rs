@@ -43,6 +43,15 @@ pub const MAX_STAMP_AHEAD_MS: u64 = 24 * 60 * 60 * 1000;
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct B64(pub Vec<u8>);
 
+impl B64 {
+    /// The bytes as the standard padded base64 text they are sent as (for a query parameter,
+    /// which the caller percent-encodes).
+    #[must_use]
+    pub fn text(&self) -> String {
+        STANDARD.encode(&self.0)
+    }
+}
+
 impl std::fmt::Debug for B64 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "B64({} bytes)", self.0.len())
@@ -147,16 +156,39 @@ pub struct WireRow {
     pub body: B64,
 }
 
+/// The length of a vault epoch ([`PushResponse::epoch`]).
+pub const EPOCH_LEN: usize = 16;
+
+/// The largest sequence number a device may say it has seen ([`PushRequest::seen_seq`], the
+/// pull's `seen`): about half of what the relay's database can count to (2^62), so its
+/// numbering can always move past a claim. Above it a request is `bad_request`.
+pub const MAX_SEEN_SEQ: u64 = u64::MAX / 4;
+
 /// `POST /v1/rows`.
+///
+/// `seen_seq` and `epoch` are new in T14.45 and optional both ways: a relay from before them
+/// ignores fields it does not know (its request types never refused unknown fields), and a
+/// client from before them sends neither.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushRequest {
     /// The highest envelope format the device writes.
     pub format: u32,
     /// The rows.
     pub rows: Vec<WireRow>,
+    /// The highest sequence number of this vault the device has seen (its pull cursor, or what
+    /// an earlier answer named). A relay that holds less has lost rows: it was restored from an
+    /// older copy (T14.45).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_seq: Option<u64>,
+    /// The vault epoch the device last saw, when it has seen one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<B64>,
 }
 
 /// The answer to [`PushRequest`].
+///
+/// `epoch` and `max_seq` are new in T14.45; a client from before them ignores fields it does
+/// not know, and a relay from before them sends neither.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushResponse {
     /// Rows stored.
@@ -165,6 +197,17 @@ pub struct PushResponse {
     pub superseded: Vec<B64>,
     /// The vault's highest sequence number.
     pub seq: u64,
+    /// The vault's epoch ([`EPOCH_LEN`] bytes): the same for as long as the relay's history is
+    /// unbroken, across restarts and updates; new when the relay finds it has lost rows a device
+    /// had seen. A device that sees it change reads the vault from the start and sends every
+    /// row again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<B64>,
+    /// The vault's highest sequence number before this request (before any of its rows was
+    /// stored, and before the relay moved its numbering past what the device said it had
+    /// seen). Below what the device has seen, the relay lost rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seq: Option<u64>,
 }
 
 /// A row as pulled.
@@ -184,7 +227,9 @@ pub struct PulledRow {
     pub body: B64,
 }
 
-/// The answer to `GET /v1/rows?after=<seq>&limit=<n>`.
+/// The answer to `GET /v1/rows?after=<seq>&limit=<n>` (since T14.45 a device may add
+/// `&seen=<seq>&epoch=<base64>`, the pull's [`PushRequest::seen_seq`] and
+/// [`PushRequest::epoch`]; a relay from before them ignores both).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullResponse {
     /// Rows after the cursor, ascending.
@@ -193,6 +238,12 @@ pub struct PullResponse {
     pub more: bool,
     /// The vault's format.
     pub vault_format: u32,
+    /// The vault's epoch ([`PushResponse::epoch`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<B64>,
+    /// The vault's highest sequence number before this request ([`PushResponse::max_seq`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seq: Option<u64>,
 }
 
 /// `POST /v1/presence`.

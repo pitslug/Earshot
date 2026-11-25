@@ -3942,5 +3942,511 @@ fn sync_rows_held_for_a_far_clock_apply_once_this_clock_is_right() {
     assert_eq!(a.rows(), b.rows());
 }
 
+// ---- T14.45: a relay restored from a backup is noticed ----
+
+/// A relay whose data can be copied aside and put back, which is what restoring it from a
+/// backup does: the same address and tokens, an older set of rows.
+struct RestorableRelay {
+    relay: Option<LocalRelay>,
+    dir: TempDir,
+    port: u16,
+}
+
+impl RestorableRelay {
+    fn start() -> Self {
+        let dir = TempDir::new("sync-restorable-relay");
+        let relay = LocalRelay::start(RelayServer::open(&relay_config(&dir)).unwrap()).unwrap();
+        let port = relay.addr().port();
+        Self {
+            relay: Some(relay),
+            dir,
+            port,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn data(&self) -> std::path::PathBuf {
+        self.dir.0.join("relay")
+    }
+
+    fn stop(&mut self) {
+        self.relay = None;
+    }
+
+    fn start_again(&mut self) {
+        let server = RelayServer::open(&relay_config(&self.dir)).unwrap();
+        self.relay = Some(LocalRelay::start_on(server, self.port).unwrap());
+    }
+
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        }
+    }
+
+    /// A copy of the relay's data as it is now.
+    fn backup(&mut self) -> TempDir {
+        self.stop();
+        let backup = TempDir::new("sync-relay-backup");
+        Self::copy(&self.data(), &backup.0);
+        self.start_again();
+        backup
+    }
+
+    /// The relay's data replaced by `backup`.
+    fn restore(&mut self, backup: &TempDir) {
+        self.stop();
+        std::fs::remove_dir_all(self.data()).unwrap();
+        Self::copy(&backup.0, &self.data());
+        self.start_again();
+    }
+
+    /// Gives the vault a new epoch behind the relay's back, as a relay that answers oddly
+    /// would (two relays behind one address).
+    fn change_epoch(&self, to: u8) {
+        let c = rusqlite::Connection::open(self.data().join("relay.db")).unwrap();
+        c.busy_timeout(Duration::from_secs(5)).unwrap();
+        c.execute("UPDATE vault SET epoch = ?1 WHERE id = 1", [vec![to; 16]])
+            .unwrap();
+    }
+}
+
+fn pair_on(relay: &RestorableRelay) -> (Device, Device) {
+    let a = Device::new("sync-restore-a");
+    let b = Device::new("sync-restore-b");
+    set_up_first_device(&a.svc, &*a.vault, &relay.url(), SECRET).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.url(), offer.code()).unwrap();
+    (a, b)
+}
+
+fn stored_cursor(dev: &Device) -> Cursor {
+    cursor_record(&dev.svc.store()).unwrap()
+}
+
+/// Ticks `dev` until a tick neither pushes, writes nor resets (at most ten).
+fn settle(dev: &Device) -> Vec<TickReport> {
+    let mut reports = Vec::new();
+    for _ in 0..10 {
+        let r = dev.client().tick().unwrap();
+        let quiet = r.pushed == 0 && r.written == 0 && !r.vault_reset;
+        reports.push(r);
+        if quiet {
+            return reports;
+        }
+    }
+    panic!("never settled: {reports:?}");
+}
+
+/// The relay is restored from a copy made before two computers went on syncing. Their tokens
+/// still work and nothing fails, but the relay holds fewer rows than they have seen. Each
+/// notices at its next tick, queues every row again and reads the vault from the start; the
+/// relay ends up holding everything again, and a computer that joins afterwards gets it all.
+#[test]
+fn sync_a_relay_restored_from_an_older_copy_is_noticed_and_filled_again() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    let first = meeting(&a.svc, "Before the backup", 1);
+    trade(&a, &b);
+    let epoch = stored_cursor(&a)
+        .epoch
+        .expect("the first epoch was taken in");
+    assert_eq!(epoch.0.len(), 16);
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&epoch));
+    assert!(stored_cursor(&a).resets.is_empty() && stored_cursor(&b).resets.is_empty());
+
+    let backup = relay.backup();
+    // Both go on: a new meeting on A, a rename on B, each reaching the other.
+    let second = meeting(&a.svc, "After the backup", 2);
+    trade(&a, &b);
+    b.clock.advance_ms(5_000);
+    b.rename(first, "Renamed after the backup");
+    trade(&b, &a);
+    assert_eq!(a.rows(), b.rows());
+    let before = a.rows();
+    assert_eq!(
+        stored_cursor(&a).epoch.as_ref(),
+        Some(&epoch),
+        "a restart changes nothing"
+    );
+    assert!(stored_cursor(&a).resets.is_empty());
+
+    relay.restore(&backup);
+
+    // A's next tick: nothing fails; it notices and starts over.
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    let after_reset = stored_cursor(&a);
+    assert_eq!(after_reset.pull_seq, 0);
+    assert_ne!(
+        after_reset.epoch.as_ref(),
+        Some(&epoch),
+        "the relay took a new epoch"
+    );
+    assert_eq!(after_reset.resets.len(), 1);
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        16,
+        "every row of both meetings is queued again"
+    );
+    // B holds the old epoch and so does the same, by itself.
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert_eq!(stored_cursor(&b).epoch, after_reset.epoch);
+
+    for dev in [&a, &b, &a, &b] {
+        let reports = settle(dev);
+        assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
+    }
+    assert_eq!(a.rows(), before, "nothing was lost or changed here");
+    assert_eq!(b.rows(), before);
+    assert_eq!(stored_cursor(&a).resets.len(), 1, "once");
+    assert_eq!(stored_cursor(&b).resets.len(), 1);
+    assert_eq!(sync_status(&a.svc.store()).unwrap().problem, None);
+
+    // The relay holds everything again: a computer joining now gets what the copy lacked.
+    let c = Device::new("sync-restore-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.title(second).as_deref(), Some("After the backup"));
+    assert_eq!(c.title(first).as_deref(), Some("Renamed after the backup"));
+    assert_eq!(c.rows(), before);
+}
+
+/// A computer updated from a build before the epoch, whose record holds only its cursor, still
+/// notices a relay restored while it was away: its cursor is past everything the relay holds.
+#[test]
+fn sync_a_computer_from_before_the_epoch_notices_a_restored_relay_by_its_cursor() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    meeting(&a.svc, "Before the backup", 1);
+    trade(&a, &b);
+    let backup = relay.backup();
+    let second = meeting(&a.svc, "After the backup", 2);
+    trade(&a, &b);
+    let before = b.rows();
+    // B's record as a 0.4.2 build left it: the cursor alone.
+    let cursor = stored_cursor(&b).pull_seq;
+    {
+        let mut db = b.svc.store();
+        crate::local::set(
+            &mut db,
+            &DeviceRecord::SyncCursor.key(),
+            &encode_cursor(cursor),
+        )
+        .unwrap();
+    }
+    relay.restore(&backup);
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert_eq!(b.svc.store().outbox_len().unwrap(), 16);
+    settle(&b);
+    // The relay has B's copy of everything again: a new computer gets the later meeting.
+    let c = Device::new("sync-restore-upgraded-c");
+    let offer = offer_pairing_code(&b.svc, b.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.title(second).as_deref(), Some("After the backup"));
+    assert_eq!(c.rows(), before);
+}
+
+/// Reading the vault again from a restored relay never brings back what was deleted here: the
+/// copy still holds a meeting both computers deleted afterwards, live, with its lines. It stays
+/// deleted on both, and the relay is told again.
+#[test]
+fn sync_a_restored_relay_does_not_bring_back_a_meeting_deleted_since() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    let gone = meeting(&a.svc, "Deleted after the backup", 1);
+    let kept = meeting(&a.svc, "Kept", 2);
+    trade(&a, &b);
+    let backup = relay.backup();
+    // The meeting as the copy holds it: live, with its lines.
+    let live_rows = meeting_rows(&a, gone);
+    a.clock.advance_ms(5_000);
+    a.svc.delete_meeting(gone).unwrap();
+    trade(&a, &b);
+    assert_eq!((a.title(gone), b.title(gone)), (None, None));
+
+    relay.restore(&backup);
+    for dev in [&b, &a, &b, &a] {
+        settle(dev);
+    }
+    assert_eq!((a.title(gone), b.title(gone)), (None, None));
+    // The copy's live rows as a pulled page of their own (a tick pushes before it pulls, so
+    // through the relay they arrive after this computer's tombstones went out again): none is
+    // written on either computer.
+    for dev in [&a, &b] {
+        let applied = apply_page(dev, &live_rows);
+        assert_eq!(applied.written, 0, "{applied:?}");
+    }
+    assert_eq!((a.title(gone), b.title(gone)), (None, None));
+    for dev in [&a, &b] {
+        let db = dev.svc.store();
+        assert!(
+            db.segments(gone)
+                .unwrap()
+                .iter()
+                .all(|s| s.meta.deleted && s.segment.text.is_empty()),
+            "no line of the deleted meeting came back"
+        );
+        assert!(db.meeting(gone).unwrap().unwrap().meta.deleted);
+    }
+    assert_eq!(a.title(kept).as_deref(), Some("Kept"));
+    assert_eq!(a.rows(), b.rows());
+    // A computer that joins now is given the deletion, not the copy's live meeting.
+    let c = Device::new("sync-restore-deleted-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.title(gone), None);
+    assert_eq!(c.title(kept).as_deref(), Some("Kept"));
+}
+
+/// A relay that keeps naming another epoch (two relays behind one address) makes this computer
+/// start over a bounded number of times: three in a day, then the tick fails with a word it
+/// retries on, and nothing is queued or reset until a day has passed.
+#[test]
+fn sync_a_relay_that_keeps_changing_its_epoch_resets_this_computer_a_bounded_number_of_times() {
+    let relay = RestorableRelay::start();
+    let (a, _b) = pair_on(&relay);
+    meeting(&a.svc, "Planning", 1);
+    settle(&a);
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
+    for n in 0..MAX_VAULT_RESETS {
+        relay.change_epoch(0x10 + u8::try_from(n).unwrap());
+        a.clock.advance_ms(60_000);
+        let r = a.client().tick().unwrap();
+        assert!(r.vault_reset, "reset {n}: {r:?}");
+        settle(&a);
+    }
+    assert_eq!(stored_cursor(&a).resets.len(), MAX_VAULT_RESETS);
+    let settled = stored_cursor(&a);
+
+    // A fourth and a fifth change inside the day: reported, and nothing else happens.
+    for n in 0..2u8 {
+        relay.change_epoch(0x40 + n);
+        a.clock.advance_ms(60_000);
+        let (r, outcome) = a.client().tick_reporting();
+        assert_eq!(outcome, Err(SyncProblem::Server), "{r:?}");
+        assert!(!r.vault_reset);
+        assert_eq!(
+            a.svc.store().outbox_len().unwrap(),
+            0,
+            "nothing queued again"
+        );
+        assert_eq!(stored_cursor(&a), settled, "the record is as it was");
+    }
+    assert_eq!(
+        sync_status(&a.svc.store()).unwrap().problem,
+        Some(SyncProblem::Server)
+    );
+    assert!(!SyncProblem::Server.stops(), "it goes on trying");
+
+    // A day after the first of the three, one more is allowed.
+    a.clock.advance_ms(VAULT_RESET_WINDOW_MS);
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert!(stored_cursor(&a).resets.len() <= MAX_VAULT_RESETS);
+}
+
+/// A computer updated from a build before the epoch has a cursor and no epoch. It takes the
+/// first epoch the relay names without reading anything again or queueing anything, keeps its
+/// cursor, and its record is then more than the old one; a record without any of the new parts
+/// is byte for byte the old one.
+#[test]
+fn sync_a_computer_from_before_the_epoch_takes_the_first_one_without_starting_over() {
+    let relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    meeting(&a.svc, "Planning", 1);
+    trade(&a, &b);
+    let now = stored_cursor(&b);
+    assert!(now.pull_seq > 0 && now.epoch.is_some());
+    // B's record as a 0.4.2 build wrote it: the cursor alone.
+    {
+        let mut db = b.svc.store();
+        crate::local::set(
+            &mut db,
+            &DeviceRecord::SyncCursor.key(),
+            &encode_cursor(now.pull_seq),
+        )
+        .unwrap();
+        assert_eq!(
+            db.local_value(SYNC_CURSOR_KEY).unwrap().unwrap(),
+            format!("\u{1}\0\0\0{{\"pull_seq\":{}}}", now.pull_seq).into_bytes()
+        );
+    }
+    let r = b.client().tick().unwrap();
+    assert!(!r.vault_reset, "{r:?}");
+    assert_eq!((r.pushed, r.written), (0, 0), "{r:?}");
+    assert_eq!(b.svc.store().outbox_len().unwrap(), 0);
+    let after = stored_cursor(&b);
+    assert_eq!(after.pull_seq, now.pull_seq, "the cursor is kept");
+    assert_eq!(after.epoch, now.epoch, "the epoch is taken in");
+    assert!(after.resets.is_empty());
+    // The full record's bytes, pinned.
+    let full = Cursor {
+        pull_seq: 7,
+        seen_seq: 9,
+        epoch: Some(earshot_sync::wire::B64(vec![1; 16])),
+        resets: vec![5, 6],
+    };
+    assert_eq!(
+        encode_cursor_record(&full),
+        b"\x01\x00\x00\x00{\"pull_seq\":7,\"seen_seq\":9,\"epoch\":\"AQEBAQEBAQEBAQEBAQEBAQ==\",\"resets\":[5,6]}"
+    );
+    assert_eq!(decode_cursor(Some(encode_cursor_record(&full))), full);
+    // Turning a switch on starts the pull over and keeps what is known of the vault.
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let restarted = stored_cursor(&b);
+    assert_eq!(restarted.pull_seq, 0);
+    assert_eq!(
+        (restarted.epoch, restarted.seen_seq),
+        (after.epoch, after.seen_seq)
+    );
+}
+
+/// The decision itself, without a relay (T14.45): what each kind of answer means against each
+/// stored record. A relay from before the epoch names none and no number from before the
+/// request; the client then goes by the push answer's own highest number.
+#[test]
+fn sync_vault_answers_are_judged_by_epoch_and_by_what_was_seen() {
+    let b64 = |n: u8| earshot_sync::wire::B64(vec![n; 16]);
+    let stored = Cursor {
+        pull_seq: 40,
+        seen_seq: 50,
+        epoch: Some(b64(1)),
+        resets: Vec::new(),
+    };
+    let now = 1_000_000;
+    const SAME: &[u8] = &[1u8; 16];
+    const OTHER: &[u8] = &[2u8; 16];
+    let (same, other) = (SAME, OTHER);
+    let seen = |epoch: Option<&&'static [u8]>, before: Option<u64>, now: Option<u64>| VaultSeen {
+        epoch: epoch.copied(),
+        before,
+        now,
+    };
+    // The same epoch and at least as many rows as seen: nothing to do, or a higher number.
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&same), Some(50), Some(50)), now),
+        VaultVerdict::Same(None)
+    );
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&same), Some(50), Some(53)), now),
+        VaultVerdict::Same(Some(Cursor {
+            seen_seq: 53,
+            ..stored.clone()
+        }))
+    );
+    // Another epoch: start over with it, whatever the numbers say.
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&other), Some(90), Some(91)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 91,
+            epoch: Some(b64(2)),
+            resets: vec![now],
+        })
+    );
+    // The same epoch but fewer rows than seen: start over.
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&same), Some(49), Some(49)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 49,
+            epoch: Some(b64(1)),
+            resets: vec![now],
+        })
+    );
+    // A relay from before the epoch (0.4.2): no epoch in its answers. A pull says nothing; a
+    // push answer's highest number does (what `send` derives `before` from).
+    assert_eq!(
+        judge_vault(&stored, seen(None, None, None), now),
+        VaultVerdict::Same(None)
+    );
+    assert_eq!(
+        judge_vault(&stored, seen(None, Some(60), Some(62)), now),
+        VaultVerdict::Same(Some(Cursor {
+            seen_seq: 62,
+            ..stored.clone()
+        }))
+    );
+    assert_eq!(
+        judge_vault(&stored, seen(None, Some(10), Some(12)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 12,
+            epoch: Some(b64(1)),
+            resets: vec![now],
+        })
+    );
+    // Never seen an epoch: the first is taken in without starting over,
+    let fresh = Cursor {
+        pull_seq: 40,
+        seen_seq: 0,
+        ..Cursor::default()
+    };
+    assert_eq!(
+        judge_vault(&fresh, seen(Some(&other), Some(44), Some(44)), now),
+        VaultVerdict::Same(Some(Cursor {
+            pull_seq: 40,
+            seen_seq: 44,
+            epoch: Some(b64(2)),
+            resets: Vec::new(),
+        }))
+    );
+    // unless the numbers already say rows were lost. A record from before the epoch holds only
+    // its cursor, and the cursor is itself a number this device has seen.
+    let upgraded = Cursor {
+        pull_seq: 40,
+        ..Cursor::default()
+    };
+    assert_eq!(upgraded.seen(), 40);
+    assert_eq!(
+        judge_vault(&upgraded, seen(Some(&other), Some(20), Some(40)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 40,
+            epoch: Some(b64(2)),
+            resets: vec![now],
+        })
+    );
+    // Three resets inside a day are the limit; older ones, and ones dated after now (the clock
+    // was set back), do not count.
+    let day = VAULT_RESET_WINDOW_MS;
+    let busy = Cursor {
+        resets: vec![now + day - 3, now + day - 2, now + day - 1],
+        ..stored.clone()
+    };
+    assert_eq!(
+        judge_vault(&busy, seen(Some(&other), Some(90), Some(91)), now + day),
+        VaultVerdict::TooOften
+    );
+    let VaultVerdict::Reset(next) = judge_vault(
+        &busy,
+        seen(Some(&other), Some(90), Some(91)),
+        now + 2 * day - 3,
+    ) else {
+        panic!("a day after the first of three, one more is allowed");
+    };
+    assert_eq!(
+        next.resets,
+        vec![now + day - 2, now + day - 1, now + 2 * day - 3]
+    );
+    let VaultVerdict::Reset(next) = judge_vault(&busy, seen(Some(&other), Some(90), Some(91)), now)
+    else {
+        panic!("resets dated after now do not count");
+    };
+    assert_eq!(next.resets, vec![now]);
+    assert_eq!(MAX_VAULT_RESETS, 3);
+}
+
 #[path = "sync_edit_tests.rs"]
 mod edits;

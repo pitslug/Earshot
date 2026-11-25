@@ -23,10 +23,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use earshot_sync::wire::{
-    B64, ErrorBody, ErrorWord, FORMAT_HEADER, HealthResponse, MAX_PRESENCE, MAX_REQUEST,
-    MAX_ROW_BODY, MAX_STAMP_AHEAD_MS, PULL_DEFAULT, PULL_MAX, PairingRequest, PairingResponse,
-    PresenceRequest, PresenceResponse, PullResponse, PushRequest, PushResponse, RegisterRequest,
-    RegisterResponse, RevokeRequest, SLOT_TTL_S, TakeRequest, TakeResponse, VaultResponse,
+    B64, EPOCH_LEN, ErrorBody, ErrorWord, FORMAT_HEADER, HealthResponse, MAX_PRESENCE, MAX_REQUEST,
+    MAX_ROW_BODY, MAX_SEEN_SEQ, MAX_STAMP_AHEAD_MS, PULL_DEFAULT, PULL_MAX, PairingRequest,
+    PairingResponse, PresenceRequest, PresenceResponse, PullResponse, PushRequest, PushResponse,
+    RegisterRequest, RegisterResponse, RevokeRequest, SLOT_TTL_S, TakeRequest, TakeResponse,
+    VaultResponse,
 };
 use earshot_sync::{KEY_CHECK_LEN, ROW_KEY_LEN, SLOT_LEN};
 use serde::Deserialize;
@@ -586,7 +587,8 @@ async fn push(
             body: &r.body.0,
         });
     }
-    let pushed = relay.db().push(&device, req.format, &rows)?;
+    let claim = claim_of(req.seen_seq, req.epoch.as_ref())?;
+    let pushed = relay.db().push(&device, req.format, &rows, &claim)?;
     Ok(Json(PushResponse {
         accepted: pushed.accepted,
         superseded: pushed
@@ -595,15 +597,32 @@ async fn push(
             .map(|k| B64(k.to_vec()))
             .collect(),
         seq: pushed.seq,
+        epoch: Some(B64(pushed.epoch.to_vec())),
+        max_seq: Some(pushed.max_seq_before),
     }))
 }
 
-/// `GET /v1/rows` parameters.
+/// What a device says it has seen of the vault (T14.45): `bad_request` for a sequence number
+/// past [`MAX_SEEN_SEQ`] or an epoch that is not [`EPOCH_LEN`] bytes.
+fn claim_of(seen: Option<u64>, epoch: Option<&B64>) -> Result<db::Claim, Fail> {
+    if seen.is_some_and(|s| s > MAX_SEEN_SEQ) {
+        return Err(ErrorWord::BadRequest.into());
+    }
+    Ok(db::Claim {
+        seen,
+        epoch: epoch.map(exact::<EPOCH_LEN>).transpose()?,
+    })
+}
+
+/// `GET /v1/rows` parameters. `seen` and `epoch` are the pull's [`PushRequest::seen_seq`] and
+/// [`PushRequest::epoch`] (T14.45); a client from before them sends neither.
 #[derive(Debug, Deserialize)]
 struct PullQuery {
     #[serde(default)]
     after: u64,
     limit: Option<u32>,
+    seen: Option<u64>,
+    epoch: Option<B64>,
 }
 
 async fn pull(
@@ -615,9 +634,18 @@ async fn pull(
     let format = format_header(&headers)?;
     let Query(q) = query.map_err(|_| ErrorWord::BadRequest)?;
     let limit = q.limit.unwrap_or(PULL_DEFAULT).clamp(1, PULL_MAX);
+    // The cursor is itself something the device has seen (a client from before T14.45 sends
+    // nothing else); one past the limit is no claim, and reads as it always did.
+    let mut claim = claim_of(q.seen, q.epoch.as_ref())?;
+    if q.after <= MAX_SEEN_SEQ {
+        claim.seen = Some(claim.seen.map_or(q.after, |s| s.max(q.after)));
+    }
     // The format is checked in the same read as the rows (T12.77b8): a push that raises the
     // vault's format commits with its rows, so a device below it never receives one of them.
-    match relay.db().pull(format, q.after, limit, MAX_REQUEST)? {
+    match relay
+        .db()
+        .pull(format, q.after, limit, MAX_REQUEST, &claim)?
+    {
         Some(page) => Ok(Json(page)),
         None => Err(ErrorWord::UpdateNeeded.into()),
     }
