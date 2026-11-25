@@ -787,23 +787,31 @@ pub fn features_of(out: &ChildOutput) -> Option<Vec<ListedFeature>> {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let listed: Vec<ListedFeature> = text
-        .lines()
-        .filter_map(|line| {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            let (name, last) = (words.first()?, words.last()?);
-            let named = name
+    let mut listed = Vec::new();
+    for line in text.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        // A line that does not end in a state is not a feature (blank lines, warnings).
+        let Some(last) = words.last().filter(|w| matches!(**w, "true" | "false")) else {
+            continue;
+        };
+        // A line that ends in a state but is not `<name> <stage...> <state>` with a name of
+        // the known characters makes the whole list unreadable (T14.30): a feature that may
+        // be on must never be skipped. The charset is never widened: a name starting with `-`
+        // must never become an argument.
+        let name = words[0];
+        let named = !name.is_empty()
+            && name
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.');
-            (words.len() >= 3 && named && matches!(*last, "true" | "false")).then(|| {
-                ListedFeature {
-                    name: (*name).to_owned(),
-                    stage: words[1..words.len() - 1].join(" "),
-                    enabled: *last == "true",
-                }
-            })
-        })
-        .collect();
+        if words.len() < 3 || !named {
+            return None;
+        }
+        listed.push(ListedFeature {
+            name: name.to_owned(),
+            stage: words[1..words.len() - 1].join(" "),
+            enabled: *last == "true",
+        });
+    }
     (!listed.is_empty()).then_some(listed)
 }
 
@@ -1076,6 +1084,11 @@ impl CodexClient {
     fn reply_of(&self, out: &ChildOutput) -> Result<Completion, LlmError> {
         match parse_output(out) {
             Ok(c) => Ok(c),
+            // A newer Codex that refuses a `--disable` for a feature it listed (T14.30) fails
+            // before any event: a Codex this version was not checked with.
+            Err(_) if self.unmeasured_turned_off() > 0 && no_events(out) => {
+                Err(CodexError::UnsupportedVersion.into())
+            }
             Err(Parsed::Known(e)) if e != CodexError::SignInExpired => Err(e.into()),
             Err(Parsed::Known(e) | Parsed::Unexplained(e)) => {
                 if self.config.cli.sign_in(STATUS_TIMEOUT) == CodexSignIn::NotSignedIn {
@@ -1095,6 +1108,13 @@ pub enum Parsed {
     Known(CodexError),
     /// A failure no known message explains (the sign-in may be the reason).
     Unexplained(CodexError),
+}
+
+/// Whether a run printed no JSON event at all on standard output.
+fn no_events(out: &ChildOutput) -> bool {
+    !String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| serde_json::from_str::<Value>(l.trim()).is_ok_and(|v| v.is_object()))
 }
 
 /// The first known message in `texts`.
@@ -1373,6 +1393,17 @@ WARNING: something
             None
         );
         assert_eq!(features_of(&output("", "", true)), None);
+        // A line ending in a state that is not a usable feature line makes the whole list
+        // unreadable, so no feature that may be on is skipped (T14.30 review).
+        for bad in [
+            "new-tool                                 stable             true",
+            "NewTool                                  stable             true",
+            "new_tool true",
+            "-x                                       stable             false",
+        ] {
+            let text = format!("{listed}{bad}\n");
+            assert_eq!(features_of(&output(&text, "", true)), None, "{bad}");
+        }
     }
 
     /// Every name `codex features list` of codex-cli 0.169.0 showed `true` (captured

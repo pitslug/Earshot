@@ -538,6 +538,27 @@ fn codex_an_unmeasured_enabled_feature_is_turned_off() {
     assert_eq!(client.unmeasured_turned_off(), 0);
 }
 
+/// T14.30 review: a newer Codex that refuses the `--disable` of a feature it listed fails
+/// before any event; that is a Codex this version was not checked with.
+fn codex_a_refused_disable_of_an_unmeasured_feature_is_an_unsupported_version() {
+    let s = Scenario::new("feature-disable-refused");
+    s.flag("feature-unknown-on");
+    s.script(None, "stderr error: something new about the flags\nexit 2");
+    let client = s.client(|_| {});
+    let e = summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap_err();
+    assert_eq!(codex_error(&e), &CodexError::UnsupportedVersion, "{e}");
+    assert_eq!(s.read("status-calls"), "", "no sign-in question");
+    // The same failure with only measured features on is still the generic one.
+    let s = Scenario::new("feature-measured-fails");
+    s.script(None, "stderr error: something new about the flags\nexit 2");
+    let e = summarise(&s.client(|_| {}), &meeting(2), &CancelToken::new())
+        .result
+        .unwrap_err();
+    assert!(matches!(codex_error(&e), CodexError::Failed { .. }), "{e}");
+}
+
 /// T14.30: the feature list is read once per client (clones share it); a list that could not
 /// be read is not kept, so the next run asks again.
 fn codex_the_feature_list_is_read_once_per_client() {
@@ -1254,6 +1275,11 @@ const CASES: &[Case] = &[
     (
         "codex_an_unmeasured_enabled_feature_is_turned_off",
         codex_an_unmeasured_enabled_feature_is_turned_off,
+        false,
+    ),
+    (
+        "codex_a_refused_disable_of_an_unmeasured_feature_is_an_unsupported_version",
+        codex_a_refused_disable_of_an_unmeasured_feature_is_an_unsupported_version,
         false,
     ),
     (
