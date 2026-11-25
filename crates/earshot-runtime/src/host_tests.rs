@@ -1057,9 +1057,10 @@ fn host_meeting_queue_live_needs_follow_the_checked_order_and_model() {
     let (svc, _) = services(&dir);
     let build = crate::backends::accelerator_order();
     let needs_of = |model: &str, order: Vec<Accelerator>, live_summaries: bool| {
+        let folder = ModelDir::new(dir.0.join("models"));
         let models = Arc::new(MeetingModels::new(
             &svc,
-            ModelDir::new(dir.0.join("models")),
+            folder.clone(),
             (
                 build.clone(),
                 ResolvedModels {
@@ -1067,6 +1068,7 @@ fn host_meeting_queue_live_needs_follow_the_checked_order_and_model() {
                     order,
                 },
             ),
+            use_model(&folder, model),
             Arc::default(),
             Box::new(|_, _| String::new()),
         ));
@@ -1566,6 +1568,11 @@ fn host_meeting_models_keep_the_model_the_meeting_started_with_in_use() {
     let dir = TempDir::new("host-meeting-in-use");
     let (svc, _) = services(&dir);
     let models = ModelDir::new(dir.0.join("models"));
+    // The pre-flight takes the use when it reads the settings: in use before the meeting's
+    // models exist, with no gap when they take it over.
+    let started_with = use_model(&models, "tiny.en");
+    assert_eq!(started_with.model(), "tiny.en");
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
     let meeting = Arc::new(MeetingModels::new(
         &svc,
         models.clone(),
@@ -1576,6 +1583,7 @@ fn host_meeting_models_keep_the_model_the_meeting_started_with_in_use() {
                 order: vec![Accelerator::Cpu],
             },
         ),
+        started_with,
         Arc::default(),
         Box::new(|_, _| String::new()),
     ));
@@ -1593,5 +1601,62 @@ fn host_meeting_models_keep_the_model_the_meeting_started_with_in_use() {
     drop(meeting);
     assert_eq!(models_in_use(&models), ["tiny.en"]);
     drop(held_by_live_work);
+    assert!(models_in_use(&models).is_empty());
+}
+
+/// T14.12: a meeting with live summaries keeps their local summary model in use beside its
+/// transcription model, for as long as the meeting holds its models.
+#[test]
+fn host_meeting_models_keep_the_live_summaries_model_in_use_too() {
+    let dir = TempDir::new("host-live-summary-in-use");
+    let (svc, _) = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let summary_model = crate::summary_model::SUMMARY_MODELS[0].id;
+    let meeting = MeetingModels::new(
+        &svc,
+        models.clone(),
+        (
+            crate::backends::accelerator_order(),
+            ResolvedModels {
+                model: "tiny.en".to_owned(),
+                order: vec![Accelerator::Cpu],
+            },
+        ),
+        use_model(&models, "tiny.en"),
+        Arc::default(),
+        Box::new(|_, _| String::new()),
+    );
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    meeting.also_using(use_model(&models, summary_model));
+    let mut both = vec![summary_model.to_owned(), "tiny.en".to_owned()];
+    both.sort();
+    assert_eq!(models_in_use(&models), both);
+    drop(meeting);
+    assert!(models_in_use(&models).is_empty());
+}
+
+/// T14.12: a use of another model than the one the meeting checked never leaves the meeting's
+/// own model out: both are in use.
+#[test]
+fn host_meeting_models_given_another_models_use_still_keep_their_own() {
+    let dir = TempDir::new("host-other-use");
+    let (svc, _) = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let meeting = MeetingModels::new(
+        &svc,
+        models.clone(),
+        (
+            crate::backends::accelerator_order(),
+            ResolvedModels {
+                model: "tiny.en".to_owned(),
+                order: vec![Accelerator::Cpu],
+            },
+        ),
+        use_model(&models, "small.en"),
+        Arc::default(),
+        Box::new(|_, _| String::new()),
+    );
+    assert_eq!(models_in_use(&models), ["small.en", "tiny.en"]);
+    drop(meeting);
     assert!(models_in_use(&models).is_empty());
 }

@@ -706,6 +706,7 @@ fn models_remove_is_refused_while_a_meeting_uses_the_model() {
                 order: vec![Accelerator::Cpu],
             },
         ),
+        host::use_model(&models, "tiny.en"),
         Arc::default(),
         Box::new(|_, _| String::new()),
     ));

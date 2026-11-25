@@ -716,3 +716,74 @@ fn jobs_and_the_model_check_exclude_each_other() {
     checks.start_check(&svc).unwrap();
     checks.join();
 }
+
+/// T14.12: a re-transcription keeps the model the settings gave it in use from the read of
+/// the settings until the job lets go of it, also once the settings name another model.
+#[test]
+fn job_retranscription_keeps_its_model_in_use() {
+    use earshot_runtime::backends::{Accelerator, ModelDir};
+    use earshot_runtime::host;
+    use earshot_runtime::model_settings::{ModelPick, model_settings, set_model_settings};
+
+    let dir = TempDir::new("jobs-retranscribe-in-use");
+    let svc = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let choose = |model: &str| {
+        let mut db = svc.store();
+        let (mut settings, _) = model_settings(&db).unwrap();
+        settings.transcription = ModelPick::Named(model.to_owned());
+        set_model_settings(&mut db, &settings).unwrap();
+    };
+    choose("small.en");
+    assert!(host::models_in_use(&models).is_empty());
+    let (setup, model_use) = retranscribe_setup(&svc, &models, &[Accelerator::Cpu]).unwrap();
+    assert_eq!(setup.choice.model, "small.en");
+    assert_eq!(model_use.model(), "small.en");
+    assert_eq!(host::models_in_use(&models), ["small.en"]);
+    // The settings move on while the job runs: its model is still in use.
+    choose("tiny.en");
+    assert_eq!(host::models_in_use(&models), ["small.en"]);
+    drop(model_use);
+    assert!(host::models_in_use(&models).is_empty());
+}
+
+/// T14.12: a re-summary keeps in use the local summary model a removal keeps for summaries,
+/// until the job lets go of it.
+#[test]
+fn job_resummary_keeps_the_local_summary_model_in_use() {
+    use earshot_runtime::backends::ModelDir;
+    use earshot_runtime::host;
+
+    let dir = TempDir::new("jobs-resummary-in-use");
+    let svc = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let hardware = earshot_runtime::hardware();
+    let expected = {
+        let db = svc.store();
+        let placement = host::local_summary_placement(
+            &db,
+            &earshot_runtime::backends::accelerator_order(),
+            &hardware,
+        )
+        .unwrap();
+        host::summary_model_for(&placement, &hardware)
+            .unwrap()
+            .model
+            .id
+            .to_owned()
+    };
+    let model_use = summary_model_use(&svc, &models).expect("a shipped summary model");
+    assert_eq!(model_use.model(), expected);
+    assert_eq!(host::models_in_use(&models), [expected.clone()]);
+    // It is the model the settings' own protection names for summaries.
+    let kept = host::protected_models(
+        &svc.store(),
+        &models,
+        &earshot_runtime::backends::accelerator_order(),
+        &hardware,
+    )
+    .unwrap();
+    assert!(kept.contains(&expected), "{kept:?}");
+    drop(model_use);
+    assert!(host::models_in_use(&models).is_empty());
+}

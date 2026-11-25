@@ -114,17 +114,34 @@ fn models_in_use_lock() -> std::sync::MutexGuard<'static, ModelsInUse> {
 /// One use of a model, held for as long as something may still load or read the model's files
 /// (T14.12); dropping it ends the use.
 #[derive(Debug)]
-pub struct ModelUse(u64);
+pub struct ModelUse {
+    id: u64,
+    model: String,
+}
+
+impl ModelUse {
+    /// The model in use.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+}
 
 impl Drop for ModelUse {
     fn drop(&mut self) {
-        models_in_use_lock().held.retain(|(id, _, _)| *id != self.0);
+        models_in_use_lock()
+            .held
+            .retain(|(id, _, _)| *id != self.id);
     }
 }
 
 /// Says `model` of `models` is in use until the returned [`ModelUse`] is dropped (T14.12): a
 /// removal is refused meanwhile ([`models_in_use`]), whatever the settings say by then. A
 /// meeting holds one for the model it started with, through its [`MeetingModels`].
+///
+/// Whoever reads the settings to choose a model takes its use while it still holds the store
+/// lock of that read: a removal reads what the settings keep under the same lock, so a model is
+/// kept by the settings or by its use at every moment, with no gap between the two.
 #[must_use]
 pub fn use_model(models: &ModelDir, model: &str) -> ModelUse {
     let mut all = models_in_use_lock();
@@ -132,7 +149,10 @@ pub fn use_model(models: &ModelDir, model: &str) -> ModelUse {
     let id = all.next;
     all.held
         .push((id, models.root().to_path_buf(), model.to_owned()));
-    ModelUse(id)
+    ModelUse {
+        id,
+        model: model.to_owned(),
+    }
 }
 
 /// The models of `models` in use now ([`use_model`]), each with its NPU version as the catalogue
@@ -167,9 +187,10 @@ pub fn models_in_use(models: &ModelDir) -> Vec<String> {
 pub struct MeetingModels {
     services: Services,
     models: ModelDir,
-    /// The models in use by this meeting: the one its pre-flight checked, and the one
-    /// [`Self::resolve`] decided on when that is another.
-    uses: std::sync::Mutex<Vec<(String, ModelUse)>>,
+    /// The models in use by this meeting: the one its pre-flight checked, the one
+    /// [`Self::resolve`] decided on when that is another, and any other the meeting loads
+    /// ([`Self::also_using`]).
+    uses: std::sync::Mutex<Vec<ModelUse>>,
     /// The build's order the pre-flight read, and what it checked on that order.
     checked: (Vec<Accelerator>, ResolvedModels),
     /// The meeting's hold: where the notes go.
@@ -199,24 +220,28 @@ pub struct ResolvedModels {
 
 impl MeetingModels {
     /// The models of a meeting in `services`; `checked` is the build's order the pre-flight read and
-    /// what it checked on it; `notes` hears what the loads find.
+    /// what it checked on it; `started_with` is the use of that model, which the pre-flight took
+    /// when it read the settings ([`use_model`]: before the model's files were checked and
+    /// before anything slow, so no removal comes between the choice and the meeting); `notes`
+    /// hears what the loads find.
     #[must_use]
     pub fn new(
         services: &Services,
         models: ModelDir,
         checked: (Vec<Accelerator>, ResolvedModels),
+        started_with: ModelUse,
         notes: crate::live::HoldNotes,
         library_note: LibraryNote,
     ) -> Self {
-        // In use from now: the meeting loads it when its turn comes, which may be much later.
-        let started_with = (
-            checked.1.model.clone(),
-            use_model(&models, &checked.1.model),
-        );
+        let mut uses = vec![started_with];
+        // A use of another model keeps that one; the meeting's own is in use from here at least.
+        if uses[0].model() != checked.1.model {
+            uses.push(use_model(&models, &checked.1.model));
+        }
         Self {
             services: services.clone(),
             models,
-            uses: std::sync::Mutex::new(vec![started_with]),
+            uses: std::sync::Mutex::new(uses),
             checked,
             notes,
             library_note,
@@ -231,9 +256,19 @@ impl MeetingModels {
             .uses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !uses.iter().any(|(m, _)| m == model) {
-            uses.push((model.to_owned(), use_model(&self.models, model)));
+        if !uses.iter().any(|u| u.model() == model) {
+            uses.push(use_model(&self.models, model));
         }
+    }
+
+    /// Holds `also` for the rest of this meeting: a model the meeting loads beside its
+    /// transcription model (the local summary model of its live summaries, loaded for each
+    /// window while it records).
+    pub fn also_using(&self, also: ModelUse) {
+        self.uses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(also);
     }
 
     /// What the pre-flight checked, as a meeting has always kept the model it started with, unless

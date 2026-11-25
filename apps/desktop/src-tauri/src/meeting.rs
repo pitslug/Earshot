@@ -1791,9 +1791,15 @@ mod production {
             // a meeting whose files are missing. What it runs on is read when its turn comes
             // (`MeetingModels`), so it keeps what the start decides.
             let build = earshot_runtime::backends::accelerator_order();
-            let mut setup = {
+            // The model is in use from the read of the settings, under the same store lock
+            // (T14.12): a removal finds it kept by the settings or by this meeting, with no gap,
+            // before its files are checked and before the slower steps below.
+            let (mut setup, model_use) = {
                 let db = svc.store();
-                host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?
+                let setup =
+                    host::transcription_setup(&db, &models, &build, &earshot_runtime::hardware())?;
+                let model_use = host::use_model(&models, &setup.choice.model);
+                (setup, model_use)
             };
             host::require_models(&models, &setup.choice.model, true)?;
             // "Runs on the processor" for want of an NPU version: once until it changes,
@@ -1822,6 +1828,11 @@ mod production {
             // The order's run reads its writers when the summary is due; this prepared one only
             // checked the setup (a missing DLL refuses the meeting) and fed live summaries.
             drop(summary);
+            // Live summaries load their local model for each window while the meeting records:
+            // in use for the meeting's life (T14.12).
+            let live_summary_use = live_summaries
+                .as_ref()
+                .map(|live| host::use_model(&models, live.mapper.model_id()));
             // None in the hidden replay (T12.46).
             let previews = self.live_previews(svc, &models);
             // "Where it runs" not honoured, or a stored setting this version does not know.
@@ -1840,9 +1851,13 @@ mod production {
                 svc,
                 models.clone(),
                 (build, checked),
+                model_use,
                 Arc::clone(&notes),
                 Box::new(super::onnx_fallback_message),
             ));
+            if let Some(live_summary_use) = live_summary_use {
+                meeting_models.also_using(live_summary_use);
+            }
             // What this meeting's summary will hold: the local model whenever any step of its
             // order at the start is the local model (T12.63b, docs/summary-order.md 4.5), and
             // what its live work needs: a newer meeting's transcript waits only for an older
