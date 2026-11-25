@@ -11,8 +11,9 @@
 // name field is one combobox that lists saved people as you type (any part of the name, case
 // and accents ignored), tells persons with one name apart by how many meetings each is in, and
 // offers "New person: <name>". T12.104: a named card holds only its name, the pencil and "Not
-// <name>"; naming a voice after a person who already has another card here makes the two
-// voices one (a merge), and "Manage people" opens Settings on the People page.
+// <name>"; naming a voice after a person who already has another card on its track (the user
+// beside the user's own row included) makes the two voices one (a merge), and "Manage people"
+// opens Settings on the People page.
 
 import {
   Accordion,
@@ -139,24 +140,25 @@ export interface SpeakersPanelProps {
   /** Closes the panel. */
   onClose(): void;
   onPlay(speaker: string): void;
-  /** Links a named voice to the person its changed name means (links only, remembers nothing). */
-  onLink(speaker: string, choice: LinkChoice): Promise<void>;
+  /** Links a named voice to the person its changed name means (links only, remembers nothing).
+   * Resolves whether it was done; a refusal is shown by the host. */
+  onLink(speaker: string, choice: LinkChoice): Promise<boolean>;
   /** "Save": names the voice, links it to that person and remembers the voice (`name`: the
-   * name it is saved as). */
-  onSave(speaker: string, choice: LinkChoice, name: string): Promise<void>;
+   * name it is saved as). Resolves whether it was done. */
+  onSave(speaker: string, choice: LinkChoice, name: string): Promise<boolean>;
   /** "Ignore": the voice no longer needs a name. */
-  onIgnore(speaker: string): Promise<void>;
+  onIgnore(speaker: string): Promise<unknown>;
   /** Undoes "Ignore". */
-  onUnignore(speaker: string): Promise<void>;
+  onUnignore(speaker: string): Promise<unknown>;
   /** "Not <name>": the voice is not that person; back to an ignored "Speaker N". */
-  onNotThisPerson(speaker: string): Promise<void>;
+  onNotThisPerson(speaker: string): Promise<unknown>;
   /** Says this voice is the user's, in this meeting. */
-  onMarkMe(speaker: string): Promise<void>;
+  onMarkMe(speaker: string): Promise<unknown>;
   /** Puts the user's row back as a voice that needs a name. */
-  onUnmarkMe(speaker: string): Promise<void>;
+  onUnmarkMe(speaker: string): Promise<unknown>;
   /** Makes two voices one: `merge` joins `keep` (a name chosen for a voice whose person already
-   * has another card here, [`mergeTarget`]). */
-  onMerge(keep: string, merge: string): Promise<void>;
+   * has another card on the same track here, [`mergeTarget`]). Resolves whether it was done. */
+  onMerge(keep: string, merge: string): Promise<boolean>;
   /** "Manage people": opens Settings on the People page. */
   onManagePeople?(): void;
   /** Called with the name field of the first voice that needs a name (for "Name voices"). */
@@ -171,7 +173,7 @@ export interface SpeakersPanelProps {
    * me" (T12.44); `null` or absent when there is none. */
   mergeOffer?: PersonItem | null;
   /** Merges the offered person into the user. */
-  onMergeIntoMe?(person: string): Promise<void>;
+  onMergeIntoMe?(person: string): Promise<unknown>;
   /** Declines the offer: the person stays separate. */
   onKeepSeparate?(): void;
 }
@@ -205,13 +207,39 @@ export function notThisPersonHint(name: string, savedHere = false): string {
   return `Shows this voice as an unnamed speaker in this meeting and stops asking for its name. Later meetings may still name it ${name}, because ${name}'s saved voice may hold it.`;
 }
 
+/** Whether two speakers share a track, by the runtime's one track rule as the detail sends it
+ * (`MeetingDetail.movable_by_track`, `edit::speakers_on_track`; empty in a draft, where no two
+ * speakers share a track as far as the panel knows). */
+export function sameTrack(a: string, b: string, detail: MeetingDetail): boolean {
+  return Object.values(detail.movable_by_track).some(
+    (list) => list.some((s) => s.id === a) && list.some((s) => s.id === b),
+  );
+}
+
+/** The meeting's Me row when it shares a track with `card` and is linked to the user, so naming
+ * `card` with the user's own name makes the two voices one (T12.104); else null, and the user's
+ * name makes a separate person as before (T12.44). */
+export function userRowBeside(card: SpeakerCard, detail: MeetingDetail, persons: PersonItem[]): SpeakerCard | null {
+  const user = persons.find((p) => p.is_me);
+  const me = detail.speakers.find((s) => s.kind === "Me");
+  if (!user || !me || me.id === card.id || me.person?.id !== user.id) return null;
+  return sameTrack(me.id, card.id, detail) ? me : null;
+}
+
 /** The other card a name makes this voice one with (T12.104): when the person `pick` links to
- * already has another card in this meeting, saving merges this voice into that card instead of
- * linking it. Never for the user's own row, which cannot be merged away (the runtime refuses);
- * it links as before. The other card may be the user's row. */
-export function mergeTarget(card: SpeakerCard, pick: PersonPick, speakers: SpeakerCard[]): SpeakerCard | null {
+ * already has another card on the same track in this meeting, saving merges this voice into
+ * that card instead of linking it. Only within one track: a merge across tracks is undone by
+ * the next re-transcription, so across tracks it links (or saves) as before. The other card may
+ * be the user's row (the user's name picked on a voice of the same track). The first check is a
+ * guard: no name field is ever shown for the user's own row (it has no pencil and never needs a
+ * name), and the runtime refuses merging it away. */
+export function mergeTarget(card: SpeakerCard, pick: PersonPick, detail: MeetingDetail): SpeakerCard | null {
   if (card.kind === "Me" || pick.kind !== "existing") return null;
-  return speakers.find((s) => s.id !== card.id && s.person?.id === pick.person.id) ?? null;
+  return (
+    detail.speakers.find(
+      (s) => s.id !== card.id && s.person?.id === pick.person.id && sameTrack(s.id, card.id, detail),
+    ) ?? null
+  );
 }
 
 /** The line under a name field while the chosen person already has another card here. */
@@ -242,8 +270,9 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
     setFocusAfterMerge(null);
   });
   const onMerge = async (keep: string, merge: string) => {
-    await props.onMerge(keep, merge);
-    setFocusAfterMerge(keep);
+    const done = await props.onMerge(keep, merge);
+    if (done) setFocusAfterMerge(keep);
+    return done;
   };
   return (
     <aside id={props.id} ref={panel} className={styles.panel} aria-label="Speakers">
@@ -405,12 +434,13 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
   const [saving, setSaving] = useState(false);
   // Saving makes a person (or links the one chosen or named) and remembers the voice, so only
   // on Save or Enter: leaving the field keeps the draft.
-  // A person who already has another card here makes the two voices one instead (T12.104).
+  // A person who already has another card on this track makes the two voices one instead
+  // (T12.104). A refusal leaves the row and what was typed as they were.
   const save = async (pick: PersonPick) => {
     if (saving || locked) return;
     const target = linkOf(pick);
     if (target === null) return;
-    const other = mergeTarget(card, pick, props.detail.speakers);
+    const other = mergeTarget(card, pick, props.detail);
     setSaving(true);
     try {
       if (other !== null) await onMerge(other.id, card.id);
@@ -422,7 +452,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
   const field = usePersonField({
     card,
     persons,
-    speakers: props.detail.speakers,
+    detail: props.detail,
     label: `Name of ${card.name}`,
     placeholder: `Name ${card.name.toLowerCase().startsWith("speaker") ? card.name.toLowerCase() : "this voice"}`,
     disabled: locked,
@@ -596,13 +626,17 @@ function NamedRow(props: RowProps) {
 
 /** The pencil's field, mounted only while it is open, so each opening starts from the name:
  * the same person field as a voice that needs a name, then Save (links, remembering nothing,
- * as Link did) or, for a person with another card here, the merge into that card. Escape or
- * Cancel closes it unchanged. */
+ * as Link did) or, for a person with another card on this track, the merge into that card.
+ * Escape or Cancel closes it unchanged; a refused save keeps it open with what was typed (the
+ * host shows why). */
 function NameChange(props: RowProps & { onDone(): void }) {
   const styles = useStyles();
   const { card, persons, detail, onLink, onMerge, onDone, locked = false } = props;
   const [saving, setSaving] = useState(false);
-  const unchanged = (pick: PersonPick) => pick.kind === "existing" && pick.person.id === card.person?.id;
+  // The voice's own person under the person's own name: nothing to do. A card that shows
+  // another name for its person (an older "Rename here" label) re-links, which resets the label.
+  const unchanged = (pick: PersonPick) =>
+    pick.kind === "existing" && pick.person.id === card.person?.id && card.name === card.person.name;
   const save = async (pick: PersonPick) => {
     if (saving || locked) return;
     if (unchanged(pick)) {
@@ -611,20 +645,20 @@ function NameChange(props: RowProps & { onDone(): void }) {
     }
     const target = linkOf(pick);
     if (target === null) return;
-    const other = mergeTarget(card, pick, detail.speakers);
+    const other = mergeTarget(card, pick, detail);
     setSaving(true);
+    let done = false;
     try {
-      if (other !== null) await onMerge(other.id, card.id);
-      else await onLink(card.id, target.choice);
+      done = other !== null ? await onMerge(other.id, card.id) : await onLink(card.id, target.choice);
     } finally {
       setSaving(false);
     }
-    onDone();
+    if (done) onDone();
   };
   const field = usePersonField({
     card,
     persons,
-    speakers: detail.speakers,
+    detail,
     initial: card.person?.name ?? card.name,
     label: `Name of ${card.name}`,
     placeholder: "Type a name",
@@ -663,11 +697,12 @@ const NEW_PERSON = "__new__";
 
 /** What a person field's text and choice mean (T12.80). */
 export type PersonPick =
-  /** Nothing typed, or (on the user's own row) a name that is not the user's. */
+  /** Nothing typed. */
   | { kind: "none" }
-  /** A saved person: chosen from the list, or the only one with the whole typed name. */
+  /** A saved person: chosen from the list, or the only one with the whole typed name (the user
+   * only beside the user's own row on this track, [`userRowBeside`]). */
   | { kind: "existing"; person: PersonItem }
-  /** A new person with this name: chosen, or a name no one other than the user has. */
+  /** A new person with this name: chosen, or a name no one else the field offers has. */
   | { kind: "new"; name: string }
   /** Several people have the whole typed name and none was chosen. */
   | { kind: "several"; name: string; count: number };
@@ -704,7 +739,7 @@ function samePick(a: PersonPick, b: PersonPick): boolean {
 
 /** What Enter or Tab does in a person field: the one rule, decided from the option highlighted
  * in the open list as the user saw it, never from key history.
- * - A highlighted disabled option (the user, on another voice's row): nothing.
+ * - A highlighted disabled option (the user, on a voice not beside the user's row): nothing.
  * - A highlighted option that is not what the hint says: choose it (the hint then says it);
  *   nothing is saved, because Save is the consent to remember the voice (T12.19).
  * - Otherwise (no highlighted option, or the one the hint already says): Enter does what the
@@ -723,17 +758,19 @@ export function keyAction(
 
 /** The person combobox of a voice (T12.80): typing filters saved people by any part of the name,
  * case and accents ignored; each is listed with how many meetings they are in, the user
- * disabled (only the user's own row can be them), and "New person: <name>" for a name no one
- * other than the user has, so a click never makes a second person with a saved name. A click on
- * an option, or Enter or Tab on a highlighted option the hint does not already say, chooses it
- * and shows what Save will do; else the whole typed name decides: the one person with it,
- * several (the user must choose), or a new person ([`keyAction`]). `onEnter` gets the pick an
- * Enter saves; `onEscape`, when given, is Escape with the list closed. A person who already has
- * another of `speakers` here says the two voices become one ([`mergeTarget`]). */
+ * disabled unless the user's own row shares this voice's track ([`userRowBeside`]: then
+ * choosing the user makes the two voices one), and "New person: <name>" for a name no one the
+ * field offers has, so a click never makes a second person with a saved name. A click on an
+ * option, or Enter or Tab on a highlighted option the hint does not already say, chooses it and
+ * shows what Save will do; else the whole typed name decides: the one person with it, several
+ * (the user must choose), or a new person ([`keyAction`]). `onEnter` gets the pick an Enter
+ * saves; `onEscape`, when given, is Escape with the list closed. A person who already has
+ * another card on this track says the two voices become one ([`mergeTarget`]). No field is
+ * shown for the user's own row. */
 function usePersonField({
   card,
   persons,
-  speakers,
+  detail,
   initial = "",
   label,
   placeholder,
@@ -745,7 +782,7 @@ function usePersonField({
 }: {
   card: SpeakerCard;
   persons: PersonItem[];
-  speakers: SpeakerCard[];
+  detail: MeetingDetail;
   initial?: string;
   label: string;
   placeholder: string;
@@ -758,28 +795,27 @@ function usePersonField({
   const styles = useStyles();
   const [value, setValue] = useState(initial);
   const [chosen, setChosen] = useState<PersonPick | null>(null);
-  const own = card.kind === "Me";
   const typed = value.trim();
+  // Beside the user's own row on this track, the user's name makes the two voices one.
+  const userHere = userRowBeside(card, detail, persons) !== null;
+  // Persons with the whole typed name (case, accents and spaces ignored); the user only here.
+  const userMatch = userHere ? userNamed(typed, persons) : null;
+  const named = [...personsNamed(typed, persons), ...(userMatch ? [userMatch] : [])];
 
   const pickOf = (choice: PersonPick | null): PersonPick => {
     if (choice !== null) return choice;
     if (typed === "") return { kind: "none" };
-    if (own) {
-      const user = persons.find((p) => p.is_me && personNameKey(p.name) === personNameKey(typed));
-      return user ? { kind: "existing", person: user } : { kind: "none" };
-    }
-    const named = personsNamed(typed, persons);
     if (named.length === 1) return { kind: "existing", person: named[0] };
     if (named.length > 1) return { kind: "several", name: typed, count: named.length };
     return { kind: "new", name: typed };
   };
   const pick = pickOf(chosen);
 
-  // The pick of an option's value; null for the user on another voice's row (disabled).
+  // The pick of an option's value; null for the user when not offered (disabled).
   const pickOfOption = (optionValue: string): PersonPick | null => {
     if (optionValue === NEW_PERSON) return typed === "" ? null : { kind: "new", name: typed };
     const person = persons.find((p) => p.id === optionValue);
-    if (!person || (person.is_me && !own)) return null;
+    if (!person || (person.is_me && !userHere)) return null;
     return { kind: "existing", person };
   };
   const choose = (choice: PersonPick) => {
@@ -787,10 +823,10 @@ function usePersonField({
     if (choice.kind === "existing") setValue(choice.person.name);
   };
 
-  // The user's own name makes a separate person (only the meeting's own row can be the user,
-  // and the runtime refuses linking any other voice to them).
-  const ownName = !own && pick.kind === "new" ? userNamed(pick.name, persons) : null;
-  const other = mergeTarget(card, pick, speakers);
+  // Elsewhere the user's own name makes a separate person (only the meeting's own row can be
+  // the user, and the runtime refuses linking any other voice to them).
+  const ownName = !userHere && pick.kind === "new" ? userNamed(pick.name, persons) : null;
+  const other = mergeTarget(card, pick, detail);
   const hintText =
     other !== null && pick.kind === "existing"
       ? becomeOneText(pick.person.name, other.name)
@@ -805,22 +841,20 @@ function usePersonField({
             : null;
   const hintId = `${card.id}-links-to`;
 
-  // Persons with the whole typed name (case, accents and spaces ignored) first, so the first
-  // option is the person the typed name means (`OPTION_TEXT_PREFIX`).
-  const named = own ? [] : personsNamed(typed, persons);
-  const listed = personsMatching(typed, own ? persons.filter((p) => p.is_me) : persons);
+  // Persons with the whole typed name first, so the first option is the person the typed name
+  // means (`OPTION_TEXT_PREFIX`).
+  const listed = personsMatching(typed, persons);
   const ordered = [...named, ...listed.filter((p) => !named.includes(p))];
   const personOptions = ordered.map((p) => {
-    const user = p.is_me && !own;
     return (
       <Option
         key={p.id}
         value={p.id}
         text={OPTION_TEXT_PREFIX + p.name}
-        disabled={user}
+        disabled={p.is_me && !userHere}
         {...{ [OPTION_VALUE_ATTRIBUTE]: p.id }}
       >
-        {user ? (
+        {p.is_me ? (
           `${p.name} (you)`
         ) : (
           <>
@@ -838,7 +872,7 @@ function usePersonField({
     );
   });
   const newOption =
-    !own && typed !== "" && named.length === 0 ? (
+    typed !== "" && named.length === 0 ? (
       <Option
         key={NEW_PERSON}
         value={NEW_PERSON}

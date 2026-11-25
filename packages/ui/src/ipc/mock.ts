@@ -1313,7 +1313,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (speakerOf(d, merge).kind === "Me") {
         fail(
           "merge_away_me",
-          "Your own row cannot be merged away. Merge the other speaker into it instead.",
+          "Your own row cannot be merged away. Give the other voice your name to merge it into your row instead.",
         );
       }
       const samples_taken_back = speakerOf(d, merge).voice_saved_here ? 1 : 0;

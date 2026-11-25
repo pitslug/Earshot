@@ -893,14 +893,18 @@ export function MeetingDetailView({
   const choiceName = (choice: LinkChoice): string =>
     choice.kind === "New" ? choice.name.trim() : (persons.find((p) => p.id === choice.person)?.name ?? "");
 
-  const run = async (f: () => Promise<unknown>, failTitle: string) => {
+  /** Runs an edit and reads the meeting again; false when it was refused (the notice says why),
+   * so a caller can keep what the user typed. */
+  const run = async (f: () => Promise<unknown>, failTitle: string): Promise<boolean> => {
     try {
       await f();
-      await reload();
-      onChanged();
     } catch (e) {
       setNotice({ key: "edit", intent: "error", title: failTitle, text: failureText(e) });
+      return false;
     }
+    await reload();
+    onChanged();
+    return true;
   };
 
   /** Saves a typed edit (T12.16); false when it was refused, so the editor stays open. */
