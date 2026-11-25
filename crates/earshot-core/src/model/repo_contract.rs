@@ -335,6 +335,63 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
     repo.put_segment(s_early.clone()).unwrap();
     assert_eq!(answers(&repo), [[true, false], [false, false]]);
 
+    // `shown_lines` answers what `shown_lines_of` over the rows would (T14.24): the final pass
+    // when it has a live row, else the live draft, tombstones never, by start then id.
+    let shown = |repo: &R, id: EntityId| {
+        let got = repo.shown_lines(id).unwrap();
+        let rule = super::repo::shown_lines_of(repo.segments(id).unwrap());
+        assert_eq!(got, rule, "shown lines of {id}: as shown_lines_of");
+        assert_eq!(got.unreadable, 0, "every row here reads");
+        got
+    };
+    let ids = |s: &super::repo::ShownLines| s.lines.iter().map(|l| l.id).collect::<Vec<_>>();
+    assert_eq!(shown(&repo, ghost), super::repo::ShownLines::default());
+    assert_eq!(shown(&repo, other), super::repo::ShownLines::default());
+    let in_m = shown(&repo, m);
+    assert_eq!(in_m.pass, Some(TranscriptPass::Final));
+    assert_eq!(
+        ids(&in_m),
+        vec![s_early.segment.id],
+        "the tombstoned draft row is not shown"
+    );
+    assert_eq!(in_m.lines[0].text, s_early.segment.text);
+    assert_eq!(in_m.lines[0].start, s_early.segment.start);
+    // A draft-only meeting: live rows by start, then id on equal starts; an edited text as
+    // stored; a tombstoned Final row is no final transcript.
+    let draft = f.meeting(3_000);
+    repo.put_meeting(draft.clone()).unwrap();
+    let d_mic = f.track(draft.id, TrackId::Mic);
+    repo.put_track(d_mic.clone()).unwrap();
+    let d_late = f.segment(draft.id, d_mic.id, 4_000);
+    let d_twin_b = f.segment(draft.id, d_mic.id, 1_000);
+    let mut d_twin_a = f.segment(draft.id, d_mic.id, 1_000);
+    low[15] = 3;
+    d_twin_a.segment.id = EntityId::from_bytes(low);
+    d_twin_a.segment.text = "Edited by hand.".into();
+    d_twin_a.text_edited_at = Some(d_twin_a.meta.updated_at);
+    assert_eq!(d_twin_a.segment.start, d_twin_b.segment.start);
+    assert!(d_twin_a.segment.id < d_twin_b.segment.id);
+    let mut d_final_gone = f.segment(draft.id, d_mic.id, 500);
+    d_final_gone.pass = TranscriptPass::Final;
+    d_final_gone.meta.mark_deleted(&mut f.hlc, &f.clock);
+    for row in [&d_late, &d_twin_b, &d_twin_a, &d_final_gone] {
+        repo.put_segment(row.clone()).unwrap();
+    }
+    let in_draft = shown(&repo, draft.id);
+    assert_eq!(in_draft.pass, Some(TranscriptPass::Live));
+    assert_eq!(
+        ids(&in_draft),
+        vec![d_twin_a.segment.id, d_twin_b.segment.id, d_late.segment.id]
+    );
+    assert_eq!(in_draft.lines[0].text, "Edited by hand.");
+    // A live Final row replaces the whole draft.
+    let mut d_final = f.segment(draft.id, d_mic.id, 9_000);
+    d_final.pass = TranscriptPass::Final;
+    repo.put_segment(d_final.clone()).unwrap();
+    let in_draft = shown(&repo, draft.id);
+    assert_eq!(in_draft.pass, Some(TranscriptPass::Final));
+    assert_eq!(ids(&in_draft), vec![d_final.segment.id]);
+
     // Notes: order by anchor.
     missing(
         repo.put_note(f.note(ghost, 0)),

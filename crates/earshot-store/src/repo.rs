@@ -5,8 +5,9 @@ use earshot_core::diar::EmbeddingModelId;
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
     AudioFile, AudioFileRepo, DictionaryRepo, DictionaryWord, ExportRecord, ExportRepo, Folder,
-    FolderRepo, Meeting, MeetingRepo, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
-    SummaryRequest, SummaryRequestRepo, Track, TranscriptPass, VaultPath,
+    FolderRepo, Meeting, MeetingRepo, Note, RepoError, RequestState, SegmentRow, ShownLine,
+    ShownLines, Speaker, Summary, SummaryRequest, SummaryRequestRepo, Track, TranscriptPass,
+    VaultPath,
 };
 use earshot_core::voiceprint::{
     Person, SampleRecord, Voiceprint, VoiceprintError, VoiceprintRepo, VoiceprintSample,
@@ -439,6 +440,51 @@ fn has_live_segment(
         HAS_LIVE_SEGMENT_SQL,
         &[id_value(meeting), enum_name(&pass)?],
     )
+}
+
+/// The query of [`shown_lines`]: `?1` the meeting id, `?2` the pass name. Only id, start and
+/// text: never the words, which a long meeting holds most of its bytes in.
+pub(crate) const SHOWN_LINES_SQL: &str = "SELECT id, start_ms, text FROM segment \
+     WHERE meeting_id = ?1 AND pass = ?2 AND deleted = 0 ORDER BY start_ms, id";
+
+/// The transcript `meeting` shows, without words (T14.24, the rule of
+/// `earshot_core::model::shown_lines_of`): the pass is chosen from the `segment_live` index,
+/// then that pass's live rows are read one by one, and a row whose values do not convert is
+/// left out and counted rather than failing the read.
+fn shown_lines(c: &Connection, meeting: EntityId) -> Result<ShownLines, RepoError> {
+    let mut out = ShownLines::default();
+    for pass in [TranscriptPass::Final, TranscriptPass::Live] {
+        if !has_live_segment(c, meeting, pass)? {
+            continue;
+        }
+        let params = [id_value(meeting), enum_name(&pass)?];
+        let mut st = c.prepare_cached(SHOWN_LINES_SQL).map_err(storage)?;
+        let rows = st
+            .query_map(params_from_iter(params.iter()), |r| {
+                Ok(ShownLine {
+                    id: get_id(r, 0)?,
+                    start: MeetingTime::from_millis(get_u64(r, 1)?),
+                    text: r.get(2)?,
+                })
+            })
+            .map_err(storage)?;
+        for row in rows {
+            match row {
+                Ok(line) => out.lines.push(line),
+                // Text that is not UTF-8 is a damaged value here too.
+                Err(e) if is_damaged(&e) || matches!(e, rusqlite::Error::Utf8Error(..)) => {
+                    out.unreadable += 1;
+                }
+                Err(e) => return Err(storage(e)),
+            }
+        }
+        out.pass = Some(pass);
+        // SQLite orders ids as bytes, as `EntityId` does; sorting again keeps the rule's order
+        // whatever the query plan.
+        out.lines.sort_by_key(|l| (l.start, l.id));
+        return Ok(out);
+    }
+    Ok(out)
 }
 
 fn put_segment(c: &Connection, row: &SegmentRow) -> Result<(), RepoError> {
@@ -1139,13 +1185,20 @@ pub(crate) fn synced_by_id_or_damaged(
 ) -> Result<Result<Option<crate::sync::SyncedRow>, ()>, RepoError> {
     match synced_by_id_raw(c, table, id) {
         Ok(row) => Ok(Ok(row)),
-        Err(
-            rusqlite::Error::FromSqlConversionFailure(..)
-            | rusqlite::Error::IntegralValueOutOfRange(..)
-            | rusqlite::Error::InvalidColumnType(..),
-        ) => Ok(Err(())),
+        Err(e) if is_damaged(&e) => Ok(Err(())),
         Err(e) => Err(storage(e)),
     }
+}
+
+/// Whether `e` says a row's stored values do not convert (a damaged row), not that the store
+/// failed.
+fn is_damaged(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::InvalidColumnType(..)
+    )
 }
 
 fn synced_by_id_raw(
@@ -1240,6 +1293,9 @@ macro_rules! impl_repos {
                 pass: TranscriptPass,
             ) -> Result<bool, RepoError> {
                 has_live_segment(&self.conn, meeting, pass)
+            }
+            fn shown_lines(&self, meeting: EntityId) -> Result<ShownLines, RepoError> {
+                shown_lines(&self.conn, meeting)
             }
             fn put_segment(&mut self, segment: SegmentRow) -> Result<(), RepoError> {
                 put_segment(&self.conn, &segment)
@@ -1418,6 +1474,9 @@ impl MeetingRepo for ReadOnlyStore {
     }
     fn has_live_segment(&self, meeting: EntityId, pass: TranscriptPass) -> Result<bool, RepoError> {
         has_live_segment(&self.conn, meeting, pass)
+    }
+    fn shown_lines(&self, meeting: EntityId) -> Result<ShownLines, RepoError> {
+        shown_lines(&self.conn, meeting)
     }
     fn put_segment(&mut self, _segment: SegmentRow) -> Result<(), RepoError> {
         Err(read_only())

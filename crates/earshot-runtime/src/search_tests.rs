@@ -12,6 +12,7 @@ use rand_core::SeedableRng;
 
 use super::*;
 use crate::testutil::{T0, TempDir, services};
+use crate::view::MeetingView;
 
 /// A meeting with one track and no text, started `started` ms after [`T0`].
 fn meeting_at(svc: &Services, title: &str, started: u64, seed: u64) -> (EntityId, EntityId) {
@@ -535,4 +536,287 @@ fn search_from_a_reloaded_window_replaces_one_still_running_from_before() {
     assert!(older.is_cancelled());
     let newer = searches.begin_sent(9, 2);
     assert!(after_reload.is_cancelled() && !newer.is_cancelled());
+}
+
+/// The search before T14.24, kept here as the reference: every meeting read whole through
+/// `MeetingView::load` (words and all), then matched by the same matcher.
+fn search_through_the_view(svc: &Services, query: &str) -> SearchResults {
+    let query = Query::new(query.trim());
+    let mut results = SearchResults::default();
+    if query.is_empty() {
+        return results;
+    }
+    let mut meetings = svc.store().meetings().unwrap();
+    meetings.retain(|m| !m.meta.deleted);
+    meetings.sort_by_key(|m| std::cmp::Reverse((m.started_unix_ms, m.id)));
+    for meeting in meetings {
+        let Some(view) = MeetingView::load(&**svc.store(), meeting.id).unwrap() else {
+            continue;
+        };
+        let Some(hit) = hit_in(&from_view(view), &query) else {
+            continue;
+        };
+        if results.hits.len() == MAX_RESULTS {
+            results.capped = true;
+            break;
+        }
+        results.hits.push(hit);
+    }
+    results
+}
+
+/// What the meeting view shows, in the shape search reads.
+fn from_view(view: MeetingView) -> Searched {
+    Searched {
+        lines: view
+            .segments
+            .iter()
+            .map(|s| ShownLine {
+                id: s.id,
+                start: s.start,
+                text: s.text.clone(),
+            })
+            .collect(),
+        meeting: view.meeting,
+        unreadable: 0,
+        summary: view.summary.map(|s| s.summary),
+    }
+}
+
+/// Changes the row `id` of `meeting` in one store transaction.
+fn change_line(
+    svc: &Services,
+    meeting: EntityId,
+    id: EntityId,
+    change: impl Fn(&mut SegmentRow, &mut earshot_core::identity::Hlc, &crate::services::SharedClock),
+) {
+    let clock = Arc::clone(&svc.clock);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    for mut row in store.segments(meeting).unwrap() {
+        if row.segment.id == id {
+            change(&mut row, hlc, &clock);
+            store.put_segment(row).unwrap();
+        }
+    }
+}
+
+/// The user's edit of a line (T12.16): new text, no words, the edit mark.
+fn edit_line(svc: &Services, meeting: EntityId, id: EntityId, text: &str) {
+    change_line(svc, meeting, id, |row, hlc, clock| {
+        row.segment.text = text.into();
+        row.segment.words.clear();
+        row.meta.touch(hlc, &**clock);
+        row.text_edited_at = Some(row.meta.updated_at);
+    });
+}
+
+fn tombstone_line(svc: &Services, meeting: EntityId, id: EntityId) {
+    change_line(svc, meeting, id, |row, hlc, clock| {
+        row.meta.mark_deleted(hlc, &**clock);
+    });
+}
+
+/// T14.24: search reads lines' text, not whole meetings, and finds exactly what the read
+/// through the meeting view found, over finals, drafts, tombstones, edits, a replaced summary, a
+/// deleted meeting and an empty one.
+#[test]
+fn search_reading_text_only_finds_exactly_what_the_meeting_view_read_found() {
+    let dir = TempDir::new("search-same-as-view");
+    let (svc, _) = services(&dir);
+    // A final transcript beside a draft, one final line replaced, one edited by hand.
+    let a = meeting_at(&svc, "Lantern planning", 0, 1);
+    line(
+        &svc,
+        a,
+        TranscriptPass::Live,
+        "draft lantern mishearing",
+        500,
+        2,
+    );
+    line(
+        &svc,
+        a,
+        TranscriptPass::Final,
+        "the copper kettle",
+        1_000,
+        3,
+    );
+    let gone = line(
+        &svc,
+        a,
+        TranscriptPass::Final,
+        "a replaced thistle",
+        2_000,
+        4,
+    );
+    let edited = line(
+        &svc,
+        a,
+        TranscriptPass::Final,
+        "a misheard pelican",
+        3_000,
+        5,
+    );
+    line(
+        &svc,
+        a,
+        TranscriptPass::Final,
+        "copper again later",
+        3_000,
+        6,
+    );
+    tombstone_line(&svc, a.0, gone);
+    edit_line(&svc, a.0, edited, "a corrected heron and copper");
+    store_summary(&svc, a.0, &summary_saying("An old walrus summary."), 7);
+    store_summary(&svc, a.0, &summary_saying("A new copper summary."), 8);
+    // Only a draft, one draft line replaced.
+    let b = meeting_at(&svc, "Draft only", 1, 9);
+    line(
+        &svc,
+        b,
+        TranscriptPass::Live,
+        "the draft lantern copper",
+        1_000,
+        10,
+    );
+    let b_gone = line(&svc, b, TranscriptPass::Live, "a gone walrus", 1_500, 11);
+    tombstone_line(&svc, b.0, b_gone);
+    // A final pass whose only line was replaced: the draft shows.
+    let c = meeting_at(&svc, "Fallback", 2, 12);
+    let c_final = line(
+        &svc,
+        c,
+        TranscriptPass::Final,
+        "final pelican gone",
+        1_000,
+        13,
+    );
+    line(
+        &svc,
+        c,
+        TranscriptPass::Live,
+        "draft pelican kept",
+        1_000,
+        14,
+    );
+    tombstone_line(&svc, c.0, c_final);
+    // Empty, and deleted.
+    meeting_at(&svc, "Empty copper room", 3, 15);
+    let d = meeting_at(&svc, "Deleted lantern", 4, 16);
+    line(
+        &svc,
+        d,
+        TranscriptPass::Final,
+        "deleted copper words",
+        1_000,
+        17,
+    );
+    store_summary(&svc, d.0, &summary_saying("A deleted heron summary."), 18);
+    svc.delete_meeting(d.0).unwrap();
+
+    // Per meeting: the lines and summary search reads are the meeting view's.
+    let all = svc.store().meetings().unwrap();
+    assert_eq!(all.len(), 5);
+    for m in all {
+        let read = searched(&**svc.store(), m.id).unwrap();
+        let view = MeetingView::load(&**svc.store(), m.id).unwrap();
+        assert_eq!(read.is_none(), view.is_none(), "{}", m.id);
+        let (Some(read), Some(view)) = (read, view) else {
+            continue;
+        };
+        let want = from_view(view);
+        assert_eq!(read.meeting, want.meeting);
+        assert_eq!(read.lines, want.lines);
+        assert_eq!(read.summary, want.summary);
+        assert_eq!(read.unreadable, 0);
+    }
+
+    // Whole results, for queries hitting every place and every kind of row.
+    let queries = [
+        "copper",
+        "lantern",
+        "mishearing",
+        "thistle",
+        "pelican",
+        "heron",
+        "walrus",
+        "kettle",
+        "draft",
+        "summary",
+        "e",
+        "a",
+        "zzz",
+        "Copper Again",
+        "   ",
+        "",
+    ];
+    let mut some_hits = 0;
+    for q in queries {
+        let now = search_meetings(&svc, q).unwrap();
+        assert_eq!(now, search_through_the_view(&svc, q), "{q:?}");
+        some_hits += usize::from(!now.hits.is_empty());
+    }
+    assert!(
+        some_hits >= 9,
+        "the comparison is not of empty answers: {some_hits}"
+    );
+    // The cases the comparison stands on.
+    assert_eq!(found(&svc, "thistle"), [], "a tombstoned line");
+    assert_eq!(found(&svc, "mishearing"), [], "a draft beside a final");
+    assert_eq!(
+        found(&svc, "walrus"),
+        [],
+        "a replaced summary, a tombstoned draft line"
+    );
+    assert_eq!(
+        found(&svc, "heron"),
+        [a.0],
+        "an edited line, not the deleted meeting"
+    );
+    assert_eq!(
+        found(&svc, "pelican"),
+        [c.0],
+        "the draft where the final is all replaced"
+    );
+}
+
+/// T14.24: a transcript row that cannot be read is left out and counted, never a failed
+/// search; the meeting's other lines are still searched.
+#[test]
+fn search_a_damaged_row_is_left_out_and_counted_never_a_failed_search() {
+    let dir = TempDir::new("search-damaged-row");
+    let (svc, _) = services(&dir);
+    let m = meeting_at(&svc, "Plain", 0, 1);
+    let damaged = line(&svc, m, TranscriptPass::Final, "the lost osprey", 1_000, 2);
+    let words_damaged = line(&svc, m, TranscriptPass::Final, "a kept osprey", 2_000, 3);
+    assert_eq!(search_meetings(&svc, "lost osprey").unwrap().hits.len(), 1);
+
+    let db = earshot_store::DataDir::new(dir.0.join("data")).db_path();
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        for (sql, id) in [
+            ("UPDATE segment SET start_ms = -1 WHERE id = ?1", damaged),
+            (
+                "UPDATE segment SET words = '[broken' WHERE id = ?1",
+                words_damaged,
+            ),
+        ] {
+            let n = c.execute(sql, [id.as_uuid().as_bytes().to_vec()]).unwrap();
+            assert_eq!(n, 1);
+        }
+    }
+    // The read through the meeting view fails on either row.
+    assert!(MeetingView::load(&**svc.store(), m.0).is_err());
+    let results = search_meetings(&svc, "osprey").unwrap();
+    assert_eq!(results.unreadable, 1, "{results:?}");
+    assert_eq!(results.hits.len(), 1);
+    assert_eq!(
+        results.hits[0].snippet, "a kept osprey",
+        "words are never read"
+    );
+    let results = search_meetings(&svc, "lost").unwrap();
+    assert_eq!((results.hits.len(), results.unreadable), (0, 1));
+    // An empty query reads nothing and counts nothing.
+    assert_eq!(search_meetings(&svc, "").unwrap(), SearchResults::default());
 }

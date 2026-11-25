@@ -7,7 +7,7 @@ use super::entities::{
     AudioFile, DictionaryWord, ExportRecord, Folder, Meeting, Note, SegmentRow, Speaker, Summary,
     SummaryRequest, Track, TranscriptPass,
 };
-use crate::asr::Segment;
+use crate::asr::{MeetingTime, Segment};
 use crate::identity::{Clock, DeviceId, EntityId, Hlc};
 use crate::summary::SummaryV1;
 
@@ -94,6 +94,18 @@ pub trait MeetingRepo {
             .segments(meeting)?
             .iter()
             .any(|r| r.pass == pass && !r.meta.deleted))
+    }
+    /// The lines of the transcript `meeting` shows, without their words (T14.24): the answer of
+    /// [`shown_lines_of`] over [`MeetingRepo::segments`], the final pass when it has a live row,
+    /// else the live draft, tombstones never. A repository may answer it without reading or
+    /// parsing any row's words (the SQLite store reads id, start and text of one pass), and may
+    /// skip a row whose stored values it cannot read, counting it in
+    /// [`ShownLines::unreadable`] instead of failing the whole read.
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn shown_lines(&self, meeting: EntityId) -> Result<ShownLines, RepoError> {
+        Ok(shown_lines_of(self.segments(meeting)?))
     }
     /// Inserts or replaces a segment.
     ///
@@ -415,6 +427,56 @@ pub fn live_segments<R: MeetingRepo + ?Sized>(
         .into_iter()
         .filter(|r| r.pass == pass && !r.meta.deleted)
         .collect())
+}
+
+/// One line of the transcript a meeting shows ([`MeetingRepo::shown_lines`]), without its words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShownLine {
+    /// The segment's id.
+    pub id: EntityId,
+    /// When it starts (ms from the meeting's start).
+    pub start: MeetingTime,
+    /// Its text as stored (the user's edit when there is one).
+    pub text: String,
+}
+
+/// The transcript a meeting shows ([`MeetingRepo::shown_lines`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShownLines {
+    /// Which pass the lines came from; `None` without any live line.
+    pub pass: Option<TranscriptPass>,
+    /// The live lines of that pass, by start, then id.
+    pub lines: Vec<ShownLine>,
+    /// Rows of that pass the repository could not read and left out.
+    pub unreadable: usize,
+}
+
+/// The transcript `rows` (one meeting's segment rows, tombstones included) show: the live
+/// [`TranscriptPass::Final`] rows when there is one, else the live [`TranscriptPass::Live`]
+/// rows, by start, then id. The rule of [`MeetingRepo::shown_lines`], and the one the runtime's
+/// meeting view applies to whole rows.
+#[must_use]
+pub fn shown_lines_of(rows: Vec<SegmentRow>) -> ShownLines {
+    for pass in [TranscriptPass::Final, TranscriptPass::Live] {
+        let mut lines: Vec<ShownLine> = rows
+            .iter()
+            .filter(|r| r.pass == pass && !r.meta.deleted)
+            .map(|r| ShownLine {
+                id: r.segment.id,
+                start: r.segment.start,
+                text: r.segment.text.clone(),
+            })
+            .collect();
+        if !lines.is_empty() {
+            lines.sort_by_key(|l| (l.start, l.id));
+            return ShownLines {
+                pass: Some(pass),
+                lines,
+                unreadable: 0,
+            };
+        }
+    }
+    ShownLines::default()
 }
 
 /// Replaces the `pass` transcript of `meeting` with `segments` (final pass at stop, or a
