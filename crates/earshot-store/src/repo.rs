@@ -1534,6 +1534,31 @@ pub(crate) fn row_reads_deleted(
     Ok(rows.first().copied().unwrap_or(false))
 }
 
+/// Whether the summary request `id` reads as withdrawn by `asker`, from its `state` and
+/// `asking_device` columns alone, so a row whose other values do not convert still answers
+/// (the withdrawal rule's `KeepMine` case, T14.26 review). `false` when absent or when either
+/// column itself does not read.
+pub(crate) fn request_reads_withdrawn_by(
+    c: &Connection,
+    id: EntityId,
+    asker: DeviceId,
+) -> Result<bool, RepoError> {
+    let rows = query(
+        c,
+        "SELECT state, asking_device FROM summary_request WHERE id = ?1",
+        &[id_value(id)],
+        |r| {
+            let state = r.get::<_, String>(0).ok();
+            let device = r.get::<_, Vec<u8>>(1).ok();
+            Ok(
+                state.as_deref() == Some(earshot_core::model::RequestState::Withdrawn.name())
+                    && device.as_deref() == Some(&asker.as_uuid().as_bytes()[..]),
+            )
+        },
+    )?;
+    Ok(rows.first().copied().unwrap_or(false))
+}
+
 /// Whether `e` says a row's stored values do not convert (a damaged row), not that the store
 /// failed.
 fn is_damaged(e: &rusqlite::Error) -> bool {
