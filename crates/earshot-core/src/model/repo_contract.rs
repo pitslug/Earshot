@@ -124,8 +124,9 @@ impl Rows {
     }
 
     fn summary(&mut self, meeting: EntityId, cite: EntityId) -> Summary {
+        let id = self.id();
         Summary {
-            id: self.id(),
+            id,
             meta: self.meta(),
             meeting_id: meeting,
             schema_version: 1,
@@ -133,7 +134,8 @@ impl Rows {
             model: Some("local-model".into()),
             summary: SummaryV1 {
                 title: "Plan".into(),
-                tldr: "We planned.".into(),
+                // Each row's own text, so a read of the wrong row's body is seen.
+                tldr: format!("We planned ({id})."),
                 enhanced_notes: vec![NoteSection {
                     heading: "Plan".into(),
                     bullets: vec![NoteBullet {
@@ -424,8 +426,18 @@ pub fn meeting_repo<R: MeetingRepo>(make: impl Fn() -> R) {
     // live row updated last, tombstones never.
     let current = |repo: &R, id: EntityId| {
         let got = repo.current_summary_id(id).unwrap();
-        let rule = super::repo::current_summary(repo.summaries(id).unwrap()).map(|s| s.id);
+        let current = super::repo::current_summary(repo.summaries(id).unwrap());
+        let rule = current.as_ref().map(|s| s.id);
         assert_eq!(got, rule, "current summary of {id}: as current_summary");
+        // `shown_summary` (T14.24) gives that row's body.
+        assert_eq!(
+            repo.shown_summary(id).unwrap(),
+            super::repo::ShownSummary {
+                summary: current.map(|s| s.summary),
+                unreadable: 0
+            },
+            "shown summary of {id}: as current_summary"
+        );
         got
     };
     assert_eq!(current(&repo, m), Some(second.id), "the later one");

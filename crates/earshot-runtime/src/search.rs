@@ -12,7 +12,7 @@ use std::sync::{Mutex, PoisonError};
 
 use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
-use earshot_core::model::{Meeting, MeetingRepo, RepoError, ShownLine, current_summary};
+use earshot_core::model::{Meeting, MeetingRepo, RepoError, ShownLine};
 use earshot_core::summary::SummaryV1;
 
 use crate::RuntimeError;
@@ -66,8 +66,9 @@ pub struct SearchResults {
     pub hits: Vec<SearchHit>,
     /// Whether more meetings matched than `hits` holds.
     pub capped: bool,
-    /// Transcript rows of the meetings read that could not be read and were left out of the
-    /// search (a damaged row); 0 normally.
+    /// Rows of the meetings read that could not be read and were left out of the search (a
+    /// damaged row): transcript lines, and a current summary (searched as if the meeting had
+    /// none). 0 normally.
     pub unreadable: usize,
 }
 
@@ -78,7 +79,7 @@ pub(crate) struct Searched {
     pub(crate) meeting: Meeting,
     /// The transcript's lines (final pass, else the live draft), by start, then id.
     pub(crate) lines: Vec<ShownLine>,
-    /// Transcript rows left out because they could not be read.
+    /// Transcript rows, and a current summary row, left out because they could not be read.
     pub(crate) unreadable: usize,
     /// The current summary's body.
     pub(crate) summary: Option<SummaryV1>,
@@ -93,12 +94,12 @@ pub(crate) fn searched<R: MeetingRepo + ?Sized>(
         return Ok(None);
     };
     let shown = repo.shown_lines(meeting)?;
-    let summary = current_summary(repo.summaries(meeting)?).map(|s| s.summary);
+    let summary = repo.shown_summary(meeting)?;
     Ok(Some(Searched {
         meeting: m,
         lines: shown.lines,
-        unreadable: shown.unreadable,
-        summary,
+        unreadable: shown.unreadable + summary.unreadable,
+        summary: summary.summary,
     }))
 }
 

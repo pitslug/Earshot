@@ -152,6 +152,19 @@ pub trait MeetingRepo {
     fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
         Ok(current_summary(self.summaries(meeting)?).map(|s| s.id))
     }
+    /// The body of `meeting`'s current summary, for reading it (T14.24): the answer of
+    /// [`current_summary`] over [`MeetingRepo::summaries`]. A repository may read that one row
+    /// alone, and may answer a current row whose stored values it cannot read with no body and
+    /// [`ShownSummary::unreadable`] 1 instead of failing (never an older summary in its place).
+    ///
+    /// # Errors
+    /// [`RepoError::Storage`].
+    fn shown_summary(&self, meeting: EntityId) -> Result<ShownSummary, RepoError> {
+        Ok(ShownSummary {
+            summary: current_summary(self.summaries(meeting)?).map(|s| s.summary),
+            unreadable: 0,
+        })
+    }
     /// Inserts or replaces a summary.
     ///
     /// # Errors
@@ -448,6 +461,15 @@ pub struct ShownLines {
     /// The live lines of that pass, by start, then id.
     pub lines: Vec<ShownLine>,
     /// Rows of that pass the repository could not read and left out.
+    pub unreadable: usize,
+}
+
+/// The current summary a meeting shows ([`MeetingRepo::shown_summary`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShownSummary {
+    /// Its body; `None` without a live summary, or when the current row could not be read.
+    pub summary: Option<SummaryV1>,
+    /// 1 when the current summary's row could not be read, else 0.
     pub unreadable: usize,
 }
 

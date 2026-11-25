@@ -6,8 +6,8 @@ use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
     AudioFile, AudioFileRepo, DictionaryRepo, DictionaryWord, ExportRecord, ExportRepo, Folder,
     FolderRepo, Meeting, MeetingRepo, Note, RepoError, RequestState, SegmentRow, ShownLine,
-    ShownLines, Speaker, Summary, SummaryRequest, SummaryRequestRepo, Track, TranscriptPass,
-    VaultPath,
+    ShownLines, ShownSummary, Speaker, Summary, SummaryRequest, SummaryRequestRepo, Track,
+    TranscriptPass, VaultPath,
 };
 use earshot_core::voiceprint::{
     Person, SampleRecord, Voiceprint, VoiceprintError, VoiceprintRepo, VoiceprintSample,
@@ -429,16 +429,32 @@ pub(crate) fn segments_or_damaged(
     c: &Connection,
     meeting: EntityId,
 ) -> Result<(Vec<SegmentRow>, Vec<i64>), RepoError> {
-    let mut cols = synced_cols(&SEGMENT);
+    split_rows(
+        c,
+        "segment",
+        synced_cols(&SEGMENT),
+        "WHERE meeting_id = ?1 ORDER BY start_ms, id",
+        &[id_value(meeting)],
+        segment_row,
+    )
+}
+
+/// The rows of `table` that `tail` selects with `params`, split into those `decode` reads and
+/// the SQLite rowids of those whose stored values do not convert (T14.26). Any other error
+/// fails the read.
+fn split_rows<T>(
+    c: &Connection,
+    table: &str,
+    mut cols: Vec<&'static str>,
+    tail: &str,
+    params: &[Value],
+    decode: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<(Vec<T>, Vec<i64>), RepoError> {
     let rowid_at = cols.len();
     cols.push("rowid");
-    let sql = select_sql(
-        "segment",
-        &cols,
-        "WHERE meeting_id = ?1 ORDER BY start_ms, id",
-    );
-    let rows = query(c, &sql, &[id_value(meeting)], |r| {
-        Ok((segment_row(r), r.get::<_, i64>(rowid_at)?))
+    let sql = select_sql(table, &cols, tail);
+    let rows = query(c, &sql, params, |r| {
+        Ok((decode(r), r.get::<_, i64>(rowid_at)?))
     })?;
     let (mut readable, mut damaged) = (Vec::new(), Vec::new());
     for (row, rowid) in rows {
@@ -449,6 +465,104 @@ pub(crate) fn segments_or_damaged(
         }
     }
     Ok((readable, damaged))
+}
+
+/// What one meeting's deletion reads of each table (T14.26): the rows that read, and the
+/// rowids of the damaged ones. Same orders as the plain readers.
+pub(crate) mod for_deletion {
+    use super::*;
+
+    /// The meeting row: `None` when absent, else the row or the rowid of a damaged one.
+    pub(crate) fn meeting(
+        c: &Connection,
+        id: EntityId,
+    ) -> Result<Option<Result<Meeting, i64>>, RepoError> {
+        let (mut ok, mut bad) = split_rows(
+            c,
+            "meeting",
+            synced_cols(&MEETING),
+            "WHERE id = ?1",
+            &[id_value(id)],
+            meeting_row,
+        )?;
+        Ok(ok.pop().map(Ok).or_else(|| bad.pop().map(Err)))
+    }
+
+    pub(crate) fn segments(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<SegmentRow>, Vec<i64>), RepoError> {
+        super::segments_or_damaged(c, m)
+    }
+
+    pub(crate) fn tracks(c: &Connection, m: EntityId) -> Result<(Vec<Track>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY CASE kind WHEN 'mic' THEN 0 ELSE 1 END, id";
+        split_rows(
+            c,
+            "track",
+            synced_cols(&TRACK),
+            tail,
+            &[id_value(m)],
+            track_row,
+        )
+    }
+
+    pub(crate) fn speakers(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<Speaker>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY created_wall, created_logical, created_node, id";
+        split_rows(
+            c,
+            "speaker",
+            synced_cols(&SPEAKER),
+            tail,
+            &[id_value(m)],
+            speaker_row,
+        )
+    }
+
+    pub(crate) fn notes(c: &Connection, m: EntityId) -> Result<(Vec<Note>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY at_ms, id";
+        split_rows(
+            c,
+            "note",
+            synced_cols(&NOTE),
+            tail,
+            &[id_value(m)],
+            note_row,
+        )
+    }
+
+    pub(crate) fn summaries(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<Summary>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY created_wall, created_logical, created_node, id";
+        split_rows(
+            c,
+            "summary",
+            synced_cols(&SUMMARY),
+            tail,
+            &[id_value(m)],
+            summary_row,
+        )
+    }
+
+    pub(crate) fn audio(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<AudioFile>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY id";
+        split_rows(
+            c,
+            "audio_file",
+            AUDIO.to_vec(),
+            tail,
+            &[id_value(m)],
+            audio_row,
+        )
+    }
 }
 
 /// The query of [`has_live_segment`]: `?1` the meeting id, `?2` the pass name.
@@ -677,6 +791,36 @@ pub(crate) fn current_summary_id(
     })?
     .into_iter()
     .next())
+}
+
+/// [`CURRENT_SUMMARY_SQL`] giving the row's rowid, which reads whatever the row's values.
+const CURRENT_SUMMARY_ROWID_SQL: &str = "SELECT rowid FROM summary \
+     WHERE meeting_id = ?1 AND deleted = 0 \
+     ORDER BY updated_wall DESC, updated_logical DESC, updated_node DESC, \
+     created_wall DESC, created_logical DESC, created_node DESC, id DESC LIMIT 1";
+
+/// The body of `meeting`'s current summary (T14.24): that one row, chosen as
+/// [`current_summary_id`] chooses it; a current row that does not read gives no body and
+/// `unreadable` 1, never an older summary.
+fn shown_summary(c: &Connection, meeting: EntityId) -> Result<ShownSummary, RepoError> {
+    let Some(rowid) = query(c, CURRENT_SUMMARY_ROWID_SQL, &[id_value(meeting)], |r| {
+        r.get::<_, i64>(0)
+    })?
+    .pop() else {
+        return Ok(ShownSummary::default());
+    };
+    let (mut ok, bad) = split_rows(
+        c,
+        "summary",
+        synced_cols(&SUMMARY),
+        "WHERE rowid = ?1",
+        &[Value::Integer(rowid)],
+        summary_row,
+    )?;
+    Ok(ShownSummary {
+        summary: ok.pop().map(|s| s.summary),
+        unreadable: bad.len(),
+    })
 }
 
 pub(crate) fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
@@ -1349,6 +1493,9 @@ macro_rules! impl_repos {
             fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
                 current_summary_id(&self.conn, meeting)
             }
+            fn shown_summary(&self, meeting: EntityId) -> Result<ShownSummary, RepoError> {
+                shown_summary(&self.conn, meeting)
+            }
             fn put_summary(&mut self, summary: Summary) -> Result<(), RepoError> {
                 put_summary(&self.conn, &summary)
             }
@@ -1529,6 +1676,9 @@ impl MeetingRepo for ReadOnlyStore {
     }
     fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
         current_summary_id(&self.conn, meeting)
+    }
+    fn shown_summary(&self, meeting: EntityId) -> Result<ShownSummary, RepoError> {
+        shown_summary(&self.conn, meeting)
     }
     fn put_summary(&mut self, _summary: Summary) -> Result<(), RepoError> {
         Err(read_only())

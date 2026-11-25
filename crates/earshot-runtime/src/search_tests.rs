@@ -817,6 +817,35 @@ fn search_a_damaged_row_is_left_out_and_counted_never_a_failed_search() {
     );
     let results = search_meetings(&svc, "lost").unwrap();
     assert_eq!((results.hits.len(), results.unreadable), (0, 1));
+    // A damaged current summary is left out and counted too, never a failed search, and an
+    // older summary is not searched in its place.
+    let other = meeting_at(&svc, "Other", 5, 4);
+    store_summary(&svc, other.0, &summary_saying("The old heron text."), 5);
+    store_summary(&svc, other.0, &summary_saying("The new egret text."), 6);
+    let current = svc.store().current_summary_id(other.0).unwrap().unwrap();
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        let n = c
+            .execute(
+                "UPDATE summary SET body = '{broken' WHERE id = ?1",
+                [current.as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+    assert!(MeetingView::load(&**svc.store(), other.0).is_err());
+    let results = search_meetings(&svc, "egret").unwrap();
+    assert_eq!(
+        (results.hits.len(), results.unreadable),
+        (0, 2),
+        "{results:?}"
+    );
+    assert_eq!(found(&svc, "heron"), [], "never the replaced summary");
+    assert_eq!(
+        found(&svc, "other"),
+        [other.0],
+        "the title is still searched"
+    );
     // An empty query reads nothing and counts nothing.
     assert_eq!(search_meetings(&svc, "").unwrap(), SearchResults::default());
 }
