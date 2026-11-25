@@ -654,6 +654,31 @@ pub fn waiting_for(
     Ok(open_request(store, me, meeting)?.map(|r| r.target_device))
 }
 
+/// The meetings that wait for one of `devices`: those with a request this device asked of it
+/// that is still open (requested or claimed). For a host that has just heard such a device's
+/// name: the window reads these meetings again, so "Waiting for <device>" names it (T14.50).
+///
+/// # Errors
+/// Store errors.
+pub fn meetings_waiting_on(
+    store: &earshot_store::Store,
+    me: DeviceId,
+    devices: &[DeviceId],
+) -> Result<BTreeSet<EntityId>, RuntimeError> {
+    Ok(store
+        .summary_requests()?
+        .into_iter()
+        .filter(|r| {
+            r.asking_device == me
+                && !r.meta.deleted
+                && r.state.is_open()
+                && authored(r)
+                && devices.contains(&r.target_device)
+        })
+        .map(|r| r.meeting_id)
+        .collect())
+}
+
 /// [`waiting_for`] as the meeting's page shows it (T12.81): `None` also once the meeting holds a
 /// summary created after the open request ([`summarised_since`]), which can arrive before the
 /// request's own row does

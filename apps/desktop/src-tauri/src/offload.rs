@@ -344,12 +344,15 @@ pub(crate) fn remember_computer(
     remember_in(all.entry(device).or_default(), name, writer);
 }
 
+/// Returns whether the name is new or another than the one known.
 fn remember_in(
     known: &mut crate::summary_order::Named,
     name: Option<String>,
     writer: Option<WriterKind>,
-) {
+) -> bool {
+    let mut renamed = false;
     if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+        renamed = known.name.as_deref() != Some(n.as_str());
         known.name = Some(n);
     }
     if let Some(w) = writer {
@@ -359,22 +362,45 @@ fn remember_in(
         }
         known.writer = Some(w);
     }
+    renamed
 }
 
-/// Remembers what `device`'s presence said, read from the vault's device list: its name, writer
-/// kind and where its own local model runs, which replaces any place heard before (T11.6a).
+/// Remembers what `device`'s presence said: its name, writer kind and where its own local model
+/// runs, which replaces any place heard before (T11.6a). The one way presence reaches the
+/// cache, whoever read it: the vault's device list (the Sync and Summaries pages) or the sync
+/// thread ([`hear_presence`]). Returns whether the name is new or another than the one known.
 pub(crate) fn remember_presence(
     device: DeviceId,
     name: Option<String>,
     writer: Option<WriterKind>,
     place: Option<ModelPlace>,
-) {
+) -> bool {
     let mut all = COMPUTERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let known = all.entry(device).or_default();
-    remember_in(known, name, writer);
+    let renamed = remember_in(known, name, writer);
     known.place = place.filter(|_| known.writer == Some(WriterKind::Local));
+    renamed
+}
+
+/// What the sync thread heard of the other computers' presence while reading it for its own
+/// work (T14.50; [`earshot_runtime::sync::PresenceListener`], set on every thread
+/// [`SyncHost`] starts): remembered through [`remember_presence`], at no request of its own.
+/// Returns the computers whose name is new here or changed, so the meetings waiting for them
+/// are read again by the window and "Waiting for <computer>" names them. Before this the cache
+/// was fed only by a page that listed the computers or an ask made in this process, so after a
+/// restart a waiting meeting said "your other computer" until one of those ran.
+///
+/// The thread reads presence only while this computer waits for a claimed request, so a
+/// request not yet claimed (its first 90 seconds at most) is not named by this, and the notes
+/// of runs that have ended take a name only when some meeting waits.
+pub(crate) fn hear_presence(heard: &[earshot_runtime::sync::Heard]) -> Vec<DeviceId> {
+    heard
+        .iter()
+        .filter(|h| remember_presence(h.device, h.name.clone(), h.writer_kind, h.model_place))
+        .map(|h| h.device)
+        .collect()
 }
 
 /// What this process has heard of the user's other computers.

@@ -1940,6 +1940,209 @@ fn offload_after_meeting_names_the_device_of_an_open_request() {
     assert!(never.requests().is_empty());
 }
 
+// ---- presence the sync thread reads names the computers (T14.50) ----
+
+#[test]
+fn offload_what_a_presence_says_of_itself_is_its_name_writer_and_model_place() {
+    use crate::sync::{Heard, KIND_SERVER, ModelPlace};
+    let device = DeviceId::from_bytes([0x61; 16]);
+    let heard = |p: Presence| peer(device, Some(p), 10).heard().unwrap();
+    // An app that offers summaries: its name and writer kind, never a place.
+    let mut app = presence("Invented desk", true, Some(WriterKind::Local), false);
+    app.model_place = Some(ModelPlace::GraphicsCard.word().to_owned());
+    assert_eq!(
+        heard(app),
+        Heard {
+            device,
+            name: Some("Invented desk".into()),
+            writer_kind: Some(WriterKind::Local),
+            model_place: None,
+        }
+    );
+    // A summary worker writing with its own local model says where that runs.
+    let mut worker = presence("Invented server", true, Some(WriterKind::Local), false);
+    worker.kind = KIND_SERVER.into();
+    worker.model_place = Some(ModelPlace::Processor.word().to_owned());
+    assert_eq!(
+        heard(worker.clone()).model_place,
+        Some(ModelPlace::Processor)
+    );
+    // Not while its writer is another service, and a word this build does not know is none.
+    let mut remote = worker.clone();
+    remote.writer_kind = Some(WriterKind::OpenaiCompatible.word().to_owned());
+    assert_eq!(
+        (heard(remote.clone()).writer_kind, heard(remote).model_place),
+        (Some(WriterKind::OpenaiCompatible), None)
+    );
+    let mut odd = worker.clone();
+    odd.model_place = Some("an invented place".into());
+    assert_eq!(heard(odd).model_place, None);
+    // A device that does not offer summaries names no writer; an empty name is no name.
+    let quiet = presence("", false, Some(WriterKind::Codex), false);
+    assert_eq!(
+        heard(quiet),
+        Heard {
+            device,
+            name: None,
+            writer_kind: None,
+            model_place: None,
+        }
+    );
+    // A presence that cannot be read says nothing.
+    assert_eq!(peer(device, None, 10).heard(), None);
+}
+
+#[test]
+fn offload_meetings_waiting_on_a_device_are_those_with_an_open_request_asked_of_it() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let elsewhere = DeviceId::from_bytes([0x62; 16]);
+    let waiting = meeting(&a.svc, "Invented planning", 41);
+    let other = meeting(&a.svc, "Invented review", 42);
+    let withdrawn = meeting(&a.svc, "Invented retro", 43);
+    ask(&a.svc, waiting, b.id()).unwrap().unwrap();
+    ask(&a.svc, other, elsewhere).unwrap().unwrap();
+    let gone = ask(&a.svc, withdrawn, b.id()).unwrap().unwrap();
+    assert!(
+        move_request(
+            &a.svc,
+            gone,
+            RequestState::Requested,
+            RequestState::Withdrawn,
+            ""
+        )
+        .unwrap()
+    );
+    // Read before any store guard is taken: a device's id comes from its store.
+    let (asker, helper) = (a.id(), b.id());
+    let on = |devices: &[DeviceId]| {
+        meetings_waiting_on(&a.svc.store(), asker, devices)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(on(&[b.id()]), vec![waiting]);
+    assert_eq!(on(&[elsewhere]), vec![other]);
+    assert_eq!(on(&[]), Vec::<EntityId>::new());
+    let mut both = on(&[b.id(), elsewhere]);
+    both.sort();
+    let mut want = vec![waiting, other];
+    want.sort();
+    assert_eq!(both, want);
+    // Only what this device asked: the helper waits for nothing.
+    assert!(
+        meetings_waiting_on(&a.svc.store(), helper, &[helper])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// After a restart nothing in the process knows the other computers' names. The sync thread
+/// reads presence for a claimed request it waits on; the host's listener hears the names from
+/// that same read, and the meeting that waits is named to the window once, so its banner can
+/// show the name. No request is made for it.
+#[test]
+fn offload_presence_the_sync_thread_reads_names_the_computer_a_meeting_waits_for() {
+    use crate::sync::{Heard, SyncChanges};
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    crate::sync::set_device_name(&b.svc, "Invented laptop").unwrap();
+    cb.send_presence(false).unwrap();
+    ca.send_presence(false).unwrap();
+    let m = meeting(&a.svc, "Invented planning", 44);
+    let other = meeting(&a.svc, "Invented review", 45);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    sync(&ca, &cb);
+    b.step(None, &Recorder::default());
+    sync(&cb, &ca);
+    assert_eq!(a.request(request).state, RequestState::Claimed);
+
+    // The host's side, as the app's: names kept by device, a device answered only when its
+    // name is new or changed.
+    let heard: Arc<Mutex<Vec<Heard>>> = Arc::default();
+    let told: Arc<Mutex<Vec<SyncChanges>>> = Arc::default();
+    let client = {
+        let (heard, told) = (Arc::clone(&heard), Arc::clone(&told));
+        let known: Mutex<std::collections::BTreeMap<DeviceId, String>> = Mutex::default();
+        a.client()
+            .with_presence(Arc::new(move |said: &[Heard]| {
+                heard.lock().unwrap().extend(said.iter().cloned());
+                let mut known = known.lock().unwrap();
+                said.iter()
+                    .filter(|h| {
+                        h.name
+                            .as_ref()
+                            .is_some_and(|n| known.insert(h.device, n.clone()).as_ref() != Some(n))
+                    })
+                    .map(|h| h.device)
+                    .collect()
+            }))
+            .with_changes(Arc::new(move |c: &SyncChanges| {
+                told.lock().unwrap().push(c.clone());
+            }))
+    };
+    let requests = client.audit_log();
+    assert!(requests.entries().is_empty());
+    let thread = crate::sync::SyncThread::start_offloading(
+        client,
+        crate::sync::SyncTiming {
+            tick: std::time::Duration::from_millis(20),
+            poll: std::time::Duration::from_millis(5),
+            presence: std::time::Duration::from_secs(3600),
+        },
+        Arc::new(Recorder::default()) as Arc<dyn OffloadHost>,
+    )
+    .unwrap();
+    let named = |told: &Mutex<Vec<SyncChanges>>| {
+        told.lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.meetings.contains(&m))
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while named(&told) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the waiting meeting was never named to the window"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // A few more passes: the name is the same, so the meeting is not named again.
+    let passes = heard.lock().unwrap().len();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while heard.lock().unwrap().len() < passes + 3 {
+        assert!(std::time::Instant::now() < deadline, "the thread stopped");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    thread.stop();
+    assert_eq!(named(&told), 1, "{:?}", told.lock().unwrap());
+    assert!(
+        told.lock()
+            .unwrap()
+            .iter()
+            .all(|c| !c.meetings.contains(&other)),
+        "a meeting that waits for nobody is not named"
+    );
+    let heard = heard.lock().unwrap();
+    assert!(!heard.is_empty());
+    for h in heard.iter() {
+        assert_eq!(h.device, b.id(), "this device's own presence is left out");
+        assert_eq!(h.name.as_deref(), Some("Invented laptop"));
+    }
+    // Each hearing is a read of presence the step made for its own work (one a step, while it
+    // waits on the claimed request): no request was made to hear the names.
+    let presence_reads = requests
+        .entries()
+        .iter()
+        .filter(|e| e.method == "GET" && e.path == "/v1/presence" && e.status == Some(200))
+        .count();
+    assert_eq!(presence_reads, heard.len());
+    // Still waiting: hearing a name changes nothing of the request.
+    assert_eq!(a.request(request).state, RequestState::Claimed);
+}
+
 // ---- computer steps of the order of summary writers (T12.63a, docs/summary-order.md 4.3) ----
 
 mod order_steps {

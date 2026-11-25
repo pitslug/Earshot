@@ -335,6 +335,10 @@ impl SyncHost {
             Some(l) => client.with_changes(l),
             None => client,
         };
+        // The names the other computers give themselves, whenever the thread reads presence
+        // for its own work (T14.50): a meeting waiting for another computer names it after a
+        // restart without anyone opening the Sync page.
+        let client = client.with_presence(Arc::new(crate::offload::hear_presence));
         let Some(new) = self.spawn_held(client, offload) else {
             // No thread could be started. Nothing was told and nothing was stopped, so
             // whatever runs keeps what it owns: the running thread stays in the slot and goes
