@@ -379,17 +379,24 @@ pub fn audit_check(stdout: &str, host: &str, port: u16, expected: usize) -> Chec
         .collect();
     let want = format!("POST http://{host}:{port}/v1/chat/completions status Some(200) (");
     let bad: Vec<&&str> = entries.iter().filter(|e| !e.starts_with(&want)).collect();
-    let pass = !entries.is_empty() && bad.is_empty() && entries.len() == expected;
+    // T14.32: a log that dropped entries is not the whole record of where the run went.
+    let dropped = stdout.lines().any(|l| l.starts_with("network dropped: "));
+    let pass = !entries.is_empty() && bad.is_empty() && entries.len() == expected && !dropped;
     Check::new(
         "network",
         pass,
         format!(
-            "{} audit entries, {expected} requests at the mock, {} not a successful POST to {host}:{port}/v1/chat/completions{}",
+            "{} audit entries, {expected} requests at the mock, {} not a successful POST to {host}:{port}/v1/chat/completions{}{}",
             entries.len(),
             bad.len(),
             bad.first()
                 .map(|b| format!(" (first: {b})"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            if dropped {
+                ", and older audit entries were dropped"
+            } else {
+                ""
+            }
         ),
     )
 }
@@ -987,6 +994,10 @@ mod tests {
         );
         let failed = "network: POST http://127.0.0.1:5000/v1/chat/completions status Some(500) (Completed)\n";
         assert!(!audit_check(failed, "127.0.0.1", 5000, 1).pass);
+        // T14.32: a log that dropped older entries is not the whole record.
+        let dropped = format!("{ok}network dropped: 3 older audit entries\n");
+        let c = audit_check(&dropped, "127.0.0.1", 5000, 1);
+        assert!(!c.pass, "{:?}", c.detail);
     }
 
     fn request(body: Value) -> RecordedRequest {

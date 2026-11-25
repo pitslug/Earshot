@@ -580,6 +580,8 @@ pub struct RunOutcome {
     pub steps: Vec<RunStepView>,
     /// Every network request any step made (the audit is their union).
     pub network: Vec<AuditEntry>,
+    /// Audit entries the steps' logs dropped (T14.32; [`crate::host::HostOutcome::network_dropped`]).
+    pub network_dropped: u64,
     /// Every handover to an agent CLI any step made.
     pub handovers: Vec<crate::claude_code::HandoverEntry>,
     /// Handover records that could not be stored (store error text).
@@ -600,6 +602,7 @@ impl RunOutcome {
             summary,
             steps: Vec::new(),
             network: Vec::new(),
+            network_dropped: 0,
             handovers: Vec::new(),
             handover_record_failures: Vec::new(),
             claude_effort_unread: false,
@@ -922,6 +925,9 @@ fn run_steps(
                             cancel,
                         );
                         out.network.extend(service.audit_log().entries());
+                        out.network_dropped = out
+                            .network_dropped
+                            .saturating_add(service.audit_log().dropped());
                         out.handovers.extend(service.handovers());
                         out.handover_record_failures
                             .extend(service.handover_record_failures());

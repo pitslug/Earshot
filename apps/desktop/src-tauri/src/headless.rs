@@ -325,6 +325,13 @@ fn network_line(host: &HostOutcome) -> Vec<String> {
                 e.method, e.scheme, e.host, e.port, e.path, e.status, e.outcome
             )
         })
+        // T14.32: the log is not the whole record (`accept m7` fails on this line).
+        .chain((host.network_dropped > 0).then(|| {
+            format!(
+                "network dropped: {} older audit entries",
+                host.network_dropped
+            )
+        }))
         .collect()
 }
 

@@ -199,6 +199,7 @@ fn summary_vocabulary_reaches_the_summary_request_and_a_resummarise_uses_the_cur
     assert!(bodies[0].contains("| Quillmarsh"));
     assert!(!bodies[1].contains("Quillmarsh"));
     assert!(bodies[1].contains("| Ostrelby Ridge"));
+    assert_eq!(service.audit_log().dropped(), 0, "the whole record");
     for e in service.audit_log().entries() {
         assert_eq!(
             (e.host.as_str(), e.port),

@@ -1248,6 +1248,14 @@ pub fn run_meeting(
                 e.method, e.scheme, e.host, e.port, e.path, e.status, e.outcome
             )?;
         }
+        // T14.32: the log above is not the whole record (xtask `m6` fails on this line).
+        if host.network_dropped > 0 {
+            writeln!(
+                out,
+                "network dropped: {} older audit entries",
+                host.network_dropped
+            )?;
+        }
     }
     match host.summary {
         SummaryResult::Stored { model, outcome, .. } => {

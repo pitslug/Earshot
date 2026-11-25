@@ -50,6 +50,7 @@ fn summary_goes_only_to_the_configured_endpoint_and_is_stored() {
 
     // Privacy: every network attempt went to the configured endpoint and nowhere else.
     let audit = service.audit_log().entries();
+    assert_eq!(service.audit_log().dropped(), 0, "the whole record");
     assert!(!audit.is_empty());
     for e in &audit {
         assert_eq!(
@@ -173,6 +174,7 @@ fn summary_own_model_endpoint_writes_a_kept_local_meeting() {
     assert_eq!(server.requests().len(), 1);
     // It is an ordinary remote client otherwise: every hop is in its audit log.
     let endpoint = server.endpoint();
+    assert_eq!(own.audit_log().dropped(), 0, "the whole record");
     for e in own.audit_log().entries() {
         assert_eq!(
             (e.host.as_str(), e.port),
@@ -1015,6 +1017,7 @@ fn summary_through_anthropic_goes_only_to_the_configured_host_and_is_stored() {
 
     // Privacy: every attempt went to the configured host, the key only in its header.
     let audit = service.audit_log().entries();
+    assert_eq!(service.audit_log().dropped(), 0, "the whole record");
     assert_eq!(audit.len(), 1);
     for e in &audit {
         assert_eq!(
