@@ -66,6 +66,7 @@ import {
 import type { FolderListItem } from "./folders";
 import { type SampleMachine, createModelsMock } from "./mockModels";
 import { searchSample } from "./mockSearch";
+import { createSentRecord } from "./mockSnapshot";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
 import { LIVE_NEEDS_LOCAL, NOT_A_WORD, type SummariesMockData, createSummariesMock } from "./mockSummaries";
 import { createSummaryOrderMock, liveAllowed } from "./mockSummaryOrder";
@@ -317,6 +318,9 @@ export interface MockIpcData {
   /** The data folder could not be opened at the start: the meeting and folder lists reject with
    * `data_folder` (the preview's `?dataFolder=1`). */
   dataFolderFails?: boolean;
+  /** A call was recording this many ms when the window loaded (T14.51, the preview's
+   * `?reloaded=1`): what it sent before went to no window, and `meetingSnapshot` tells. */
+  recordingBeforeLoad?: number;
 }
 
 /** A 0.1 s silent 16 kHz mono WAV file, base64 (the mock's speaker sample). */
@@ -406,9 +410,16 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     return persons.filter((p) => !p.is_me && p.name.trim().toLowerCase() === name);
   };
   const call = (...args: unknown[]) => data.onCall?.(args);
+  // What was sent, for a window that subscribes late (T14.51): folded in before it goes out, as
+  // the app does. `pastMs` back-dates what a meeting sent before the window loaded.
+  const sent = createSentRecord();
+  let pastMs = 0;
   const emit = (event: MeetingEvent) => {
+    sent.apply(event, timer.now() - pastMs);
     for (const l of [...listeners]) l(event);
   };
+  // How long the meeting the mock starts at once had recorded when the window loaded.
+  let loadedLate = data.recordingBeforeLoad ?? 0;
   let seq = 0;
   // The running meeting: its row and the timers to cancel at stop.
   let live: { row: MeetingListItem; cancel: (() => void)[] } | null = null;
@@ -466,7 +477,17 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     return null;
   };
 
-  const record = (row: MeetingListItem, mode: CaptureMode, held: boolean) => {
+  const record = (row: MeetingListItem, mode: CaptureMode, held: boolean, already = 0) => {
+    // `ms` into the meeting: at once (dated in the past) for what came before the window loaded.
+    const later = (fn: () => void, ms: number): (() => void) => {
+      if (already > 0 && ms <= already) {
+        pastMs = already - ms;
+        fn();
+        pastMs = 0;
+        return () => {};
+      }
+      return timer.setTimeout(fn, ms - already);
+    };
     const call = mode === "Call";
     const tracks: LiveTrack[] = call ? ["You", "Them"] : ["You"];
     const cancel: (() => void)[] = [];
@@ -487,7 +508,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       emit({ type: "VoiceActivity", track, speaking: on });
     };
     cancel.push(
-      timer.setTimeout(() => {
+      later(() => {
         emit({ type: "Started", meeting: row.id, mode, tracks });
         if (held) {
           emit({ type: "Transcript", state: "WaitingForPreviousMeeting" });
@@ -506,7 +527,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     );
     if (data.provisionalWords === "waiting") {
       cancel.push(
-        timer.setTimeout(() => {
+        later(() => {
           emit({ type: "WarningCleared", key: "provisional-words" });
         }, PROVISIONAL_WORDS_START_AT),
       );
@@ -542,7 +563,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       // Its first words as a provisional guess while it is being said (T9.1m).
       if (provisionalAt(line.at - PROVISIONAL_BEFORE)) {
         cancel.push(
-          timer.setTimeout(() => {
+          later(() => {
             if (holding) return;
             emit({
               type: "Provisional",
@@ -565,9 +586,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         });
         emit({ type: "Words", total: words });
       };
-      cancel.push(timer.setTimeout(() => (holding ? waiting.push(land) : land()), line.at));    }
+      cancel.push(later(() => (holding ? waiting.push(land) : land()), line.at));    }
     cancel.push(
-      timer.setTimeout(() => {
+      later(() => {
         emit({
           type: "Warning",
           key: "bluetooth",
@@ -849,11 +870,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (data.startError) throw new IpcFailure(data.startError);
       if (live) fail("busy", "a meeting is already recording", true);
       const held = processing;
+      const already = loadedLate;
+      loadedLate = 0;
       seq += 1;
       const row: MeetingListItem = {
         id: `0190f1a2-0000-7000-8000-1000000000${String(seq).padStart(2, "0")}`,
         title: title ?? "",
-        started_at_ms: timer.now(),
+        started_at_ms: timer.now() - already,
         duration_ms: null,
         state: "Recording",
         folder_id: null,
@@ -861,7 +884,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       };
       meetings.push(row);
       if (keepLocal) keptLocal.add(row.id);
-      const { cancel, speaking, tracks, release } = record(row, mode, held);
+      const { cancel, speaking, tracks, release } = record(row, mode, held, already);
       if (data.callEndOfferAfterMs !== undefined && mode === "Call") {
         cancel.push(
           timer.setTimeout(
@@ -887,6 +910,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     keepRecording: async () => {
       // The offer closes on the screen; the mock has nothing else to do.
     },
+    meetingSnapshot: async () =>
+      sent.snapshot(live !== null && !sent.started(live.row.id), timer.now()),
     stopMeeting: async () => {
       if (!live) return fail("not_recording", "no meeting is recording");
       const { row, cancel } = live;
@@ -1644,5 +1669,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       };
     },
   };
+  // A meeting that was recording before the window loaded (T14.51): what it sent until now went
+  // to no window, and only the snapshot tells.
+  if (data.recordingBeforeLoad !== undefined) {
+    ipc.startMeeting("Call", "Weekly planning", false).catch(() => {});
+  }
   return ipc;
 }

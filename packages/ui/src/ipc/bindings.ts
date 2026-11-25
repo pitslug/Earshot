@@ -45,6 +45,14 @@ export const commands = {
 	cancelFinishing: (meeting: string) => __TAURI_INVOKE<void>("cancel_finishing", { meeting }),
 	/**  The user answered "Keep recording" to the offer to stop when a call ends (T9.4). */
 	keepRecording: () => __TAURI_INVOKE<void>("keep_recording"),
+	/**
+	 *  What a window that has just loaded needs to rebuild the meeting screen (T14.51): the meeting
+	 *  the screen follows, recording or finishing, the older ones finishing behind it, and whether a
+	 *  start is under way. A window subscribes to `MeetingEvent`s first, then reads this, then applies
+	 *  every event it heard meanwhile on top ([`MeetingDriver::snapshot`]). No transcript text: lines
+	 *  already shown are not kept.
+	 */
+	meetingSnapshot: () => typedError<MeetingSnapshot, IpcError>(__TAURI_INVOKE("meeting_snapshot")),
 	/**  Shows the main window as the compact listening card (`true`) or the full app (`false`). */
 	setCompact: (compact: boolean) => typedError<null, IpcError>(__TAURI_INVOKE("set_compact", { compact })),
 	/**
@@ -633,6 +641,29 @@ export type AudioSettingsValue = {
 	mic_signal: MicSignal,
 };
 
+/**  A banner in force, as [`MeetingSnapshot`] gives it (T14.51). */
+export type BannerSnapshot = {
+	/**  The banner's key ([`MeetingEvent::Warning`]). */
+	key: string,
+	/**  What kind of condition. */
+	kind: WarningKind,
+	/**  Plain copy, as it was sent. */
+	message: string,
+	/**
+	 *  Whether its latest warning came after the recording was saved: the screen after a meeting
+	 *  shows only those.
+	 */
+	after_end: boolean,
+};
+
+/**  An older meeting finishing behind the one the screen follows. */
+export type BehindSnapshot = {
+	/**  Meeting id. */
+	meeting: string,
+	/**  How its finishing goes, once a step was said. */
+	progress: ProgressSnapshot | null,
+};
+
 /**  Progress and the end of a benchmark run. */
 export type BenchmarkEvent = 
 /**  Where the run is; `heard_ms` of `total_ms` of the meeting replayed so far. */
@@ -1093,6 +1124,40 @@ export type FolderListItem = {
 	name: string,
 };
 
+/**
+ *  The meeting the screen follows (the newest that started), recording or finishing, as the
+ *  events sent so far left it.
+ */
+export type FollowedSnapshot = {
+	/**  Meeting id. */
+	meeting: string,
+	/**  What it records. */
+	mode: CaptureMode,
+	/**  Its tracks (You first). */
+	tracks: LiveTrack[],
+	/**
+	 *  How long it has recorded (ms on the app's clock): until now while it records, until its
+	 *  end once it ended.
+	 */
+	elapsed_ms: number,
+	/**  Why its recording ended; `None` while it records. */
+	ended: EndedReason | null,
+	/**  The banners in force, oldest first. */
+	banners: BannerSnapshot[],
+	/**  Each track's backend label. */
+	backends: TrackBackend[],
+	/**  Words transcribed so far. */
+	words: number,
+	/**  How far the transcript is behind the audio, once said. */
+	lag_seconds: number | null,
+	/**  Where the live transcript is. */
+	transcript: TranscriptState,
+	/**  Whether the question "the call seems to have ended" is open. */
+	call_end_offer: boolean,
+	/**  How its finishing goes, once a step was said. */
+	progress: ProgressSnapshot | null,
+};
+
 /**  The General page. */
 export type GeneralView = {
 	/**  Earshot starts with Windows (`null` when it cannot be read). */
@@ -1545,6 +1610,20 @@ export type MeetingListItem = {
 	new_summary: boolean,
 };
 
+/**
+ *  What a window that has just loaded needs to show the meetings in progress (T14.51): built only
+ *  from the [`MeetingEvent`]s the driver has sent ([`SentRecord`]), so it says nothing those events
+ *  did not. Transcript text is not in it: lines already shown are not kept.
+ */
+export type MeetingSnapshot = {
+	/**  A start is under way and its `Started` has not gone out: pre-flight or the capture's start. */
+	starting: boolean,
+	/**  The meeting the screen follows. */
+	followed: FollowedSnapshot | null,
+	/**  Older meetings finishing behind it, oldest first. */
+	behind: BehindSnapshot[],
+};
+
 /**  Where a meeting is in its life ([`Services::meeting_activity`]). */
 export type MeetingState = 
 /**  Being recorded. */
@@ -1880,6 +1959,16 @@ export type PreviewsView = {
 	 *  when it does: the wizard disables it with this beside it.
 	 */
 	everyone_refused: string | null,
+};
+
+/**  The last [`MeetingEvent::PostProgress`] of a meeting. */
+export type ProgressSnapshot = {
+	/**  The step that last started or finished. */
+	step: PostStep,
+	/**  Final-pass steps done. */
+	done: number,
+	/**  Final-pass steps in all, once known. */
+	total: number | null,
 };
 
 /**  Which API the endpoint speaks. */
@@ -2612,6 +2701,14 @@ export type TermsLink = {
 	title: string,
 	/**  The address, shown in full. */
 	url: string,
+};
+
+/**  The backend a track's transcription runs on, as [`MeetingEvent::Backend`] said. */
+export type TrackBackend = {
+	/**  The track. */
+	track: LiveTrack,
+	/**  The label. */
+	label: string,
 };
 
 /**  Which transcript the meeting shows. */

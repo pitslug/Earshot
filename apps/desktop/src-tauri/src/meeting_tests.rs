@@ -3527,3 +3527,181 @@ fn meeting_delete_between_the_recording_saved_and_its_cancel_opening_stops_it() 
     d.join();
     assert!(!d.owns(&meeting));
 }
+
+/// A driver whose clock is a number of seconds the test sets, for the snapshot's clock (T14.51).
+fn snapshot_driver(
+    prepare: Arc<dyn Prepare>,
+) -> (
+    MeetingDriver,
+    Receiver<MeetingEvent>,
+    Arc<std::sync::atomic::AtomicU64>,
+) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let sink: Sink = Arc::new(move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let seconds = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let clock = Arc::clone(&seconds);
+    let t0 = Instant::now();
+    let now: Now = Arc::new(move || t0 + Duration::from_secs(clock.load(Ordering::SeqCst)));
+    (
+        MeetingDriver::new(
+            prepare,
+            sink,
+            now,
+            crate::activity::WorkGate::new(),
+            &crate::cuda_settings::CudaLatch::resolved_off(),
+        ),
+        rx,
+        seconds,
+    )
+}
+
+/// The snapshot once `pred` holds of it, bounded: the meeting thread sends on its own time.
+fn snapshot_when(
+    d: &MeetingDriver,
+    pred: impl Fn(&crate::meeting_events::MeetingSnapshot) -> bool,
+) -> crate::meeting_events::MeetingSnapshot {
+    let deadline = Instant::now() + MEET_GUARD;
+    loop {
+        let s = d.snapshot();
+        if pred(&s) {
+            return s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the snapshot never got there: {s:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn banner_keys(s: &crate::meeting_events::MeetingSnapshot) -> Vec<String> {
+    s.followed
+        .as_ref()
+        .map(|f| f.banners.iter().map(|b| b.key.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn meeting_snapshot_with_nothing_running_has_no_meeting() {
+    let (d, _rx, _clock) = snapshot_driver(FakePrepare::new(Script::Ends));
+    let s = d.snapshot();
+    assert!(!s.starting);
+    assert_eq!(s.followed, None);
+    assert!(s.behind.is_empty());
+}
+
+#[test]
+fn meeting_snapshot_during_the_preflight_says_starting_and_names_no_meeting() {
+    let dir = TempDir::new("snapshot-preflight");
+    let svc = services(&dir);
+    let (prepare, entered, let_through) = GatedPrepare::new(Script::UntilStopped);
+    let (d, rx, _clock) = snapshot_driver(prepare);
+    let starter = start_on_a_thread(&d, &svc);
+    entered
+        .recv_timeout(MEET_GUARD)
+        .expect("the pre-flight began");
+    let s = d.snapshot();
+    assert!(s.starting, "{s:?}");
+    assert_eq!(s.followed, None);
+    let_through.send(()).unwrap();
+    let meeting = starter.join().unwrap().unwrap();
+    let s = snapshot_when(&d, |s| !s.starting && s.followed.is_some());
+    assert_eq!(s.followed.unwrap().meeting, meeting);
+    d.stop().unwrap();
+    until_summary(&rx);
+    d.join();
+}
+
+#[test]
+fn meeting_snapshot_of_a_recording_keeps_its_banners_in_force_and_its_clock() {
+    let dir = TempDir::new("snapshot-recording");
+    let svc = services(&dir);
+    let (d, rx, clock) = snapshot_driver(FakePrepare::new(Script::UntilStopped));
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    // The pre-flight's notices follow `Started`.
+    let s = snapshot_when(&d, |s| banner_keys(s) == ["onnx", "settings-0"]);
+    assert_eq!(s.followed.as_ref().unwrap().elapsed_ms, 0);
+    let f = s.followed.as_ref().unwrap();
+    assert_eq!(f.meeting, meeting);
+    assert_eq!(f.mode, CaptureMode::Call);
+    assert_eq!(f.tracks, [LiveTrack::You, LiveTrack::Them]);
+    assert_eq!(f.ended, None);
+    assert!(!s.starting);
+    // Its condition is over: the banner goes, through the driver's own sending.
+    let seq = d.0.shown.load(Ordering::SeqCst);
+    d.0.send(seq, MeetingEvent::WarningCleared { key: "onnx".into() });
+    assert_eq!(banner_keys(&d.snapshot()), ["settings-0"]);
+    // The banner that stays is the copy the window was sent.
+    assert_eq!(
+        d.snapshot().followed.unwrap().banners[0].message,
+        PLACEMENT_NOTE
+    );
+    // The clock runs from `Started` on the app's clock.
+    clock.store(95, Ordering::SeqCst);
+    assert_eq!(d.snapshot().followed.unwrap().elapsed_ms, 95_000);
+    d.stop().unwrap();
+    until_summary(&rx);
+    d.join();
+    assert_eq!(d.snapshot().followed, None, "its result ends it");
+}
+
+#[test]
+fn meeting_snapshot_finishing_and_then_behind_a_newer_recording() {
+    let dir = TempDir::new("snapshot-queue");
+    let svc = services(&dir);
+    let (first_done, first_gate) = mpsc::channel();
+    let prepare = QueuePrepare::new(vec![first_gate]);
+    let (d, rx, clock) = snapshot_driver(prepare);
+    let first = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    // Its `Started` goes out on the meeting thread, after the start returns.
+    snapshot_when(&d, |s| s.followed.is_some());
+    clock.store(30, Ordering::SeqCst);
+    d.stop().unwrap();
+    events_until(&rx, |e| saved_is(&first, e));
+    // After `RecordingSaved`: it finishes, its clock stopped at the end.
+    clock.store(500, Ordering::SeqCst);
+    let s = d.snapshot();
+    let f = s.followed.as_ref().expect("the finishing meeting");
+    assert_eq!(f.meeting, first);
+    assert_eq!(f.ended, Some(EndedReason::Stopped));
+    assert_eq!(f.elapsed_ms, 30_000);
+    assert!(s.behind.is_empty());
+    assert!(!s.starting);
+
+    // A newer meeting records while the first finishes: the first is behind it.
+    let second = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    let s = snapshot_when(&d, |s| {
+        s.followed.as_ref().is_some_and(|f| f.meeting == second)
+    });
+    let f = s.followed.as_ref().unwrap();
+    assert_eq!(f.ended, None);
+    assert_eq!(f.elapsed_ms, 0);
+    assert_eq!(
+        s.behind
+            .iter()
+            .map(|b| b.meeting.as_str())
+            .collect::<Vec<_>>(),
+        [first.as_str()]
+    );
+    // Held behind the first: what the screen said of its transcript is in it.
+    let s = snapshot_when(&d, |s| {
+        s.followed.as_ref().is_some_and(|f| {
+            f.transcript == crate::meeting_events::TranscriptState::WaitingForPreviousMeeting
+        })
+    });
+    assert_eq!(s.behind.len(), 1);
+
+    first_done.send(()).unwrap();
+    d.stop().unwrap();
+    events_until(
+        &rx,
+        |e| matches!(e, MeetingEvent::Summary { meeting, .. } if *meeting == second),
+    );
+    d.join();
+    let s = d.snapshot();
+    assert_eq!(s.followed, None);
+    assert!(s.behind.is_empty());
+}
