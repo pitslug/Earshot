@@ -328,6 +328,130 @@ fn download_part_larger_than_the_file_is_deleted_and_restarted() {
     assert_eq!(s.ranges(), [None]);
 }
 
+/// Bytes this thread read back from disk to hash since the last call (`take_hashed_from_disk`).
+fn disk_hashed() -> u64 {
+    take_hashed_from_disk()
+}
+
+#[test]
+fn download_a_fresh_transfer_hashes_while_it_writes_and_reads_nothing_back() {
+    let b = body();
+    let s = serve(b.clone(), Behaviour::default());
+    let d = downloader(local(&[s.port]));
+    let dir = TempDir::new("dl-hash-once");
+    let dest = dir.0.join("file.bin");
+    let sum = sha(&b);
+    let exp = Expected {
+        sha256: &sum,
+        size: b.len() as u64,
+    };
+    disk_hashed();
+    let (out, last) = fetch(&d, &s.url("/file.bin"), &dest, &exp);
+    assert_eq!(out.unwrap(), Outcome::Downloaded { resumed_from: 0 });
+    assert_eq!(last, Some((200_000, 200_000)));
+    assert_eq!(
+        disk_hashed(),
+        0,
+        "verified from the bytes as they were written"
+    );
+    assert_eq!(fs::read(&dest).unwrap(), b);
+    // The control: a file already in place is read once to be verified.
+    let (out, _) = fetch(&d, &s.url("/file.bin"), &dest, &exp);
+    assert_eq!(out.unwrap(), Outcome::Present);
+    assert_eq!(disk_hashed(), 200_000);
+}
+
+#[test]
+fn download_a_resumed_transfer_hashes_the_kept_part_once() {
+    let b = body();
+    let s = serve(
+        b.clone(),
+        Behaviour {
+            cut_first_after: Some(70_000),
+            ..Behaviour::default()
+        },
+    );
+    let d = downloader(local(&[s.port]));
+    let dir = TempDir::new("dl-hash-resume");
+    let dest = dir.0.join("file.bin");
+    let sum = sha(&b);
+    let exp = Expected {
+        sha256: &sum,
+        size: b.len() as u64,
+    };
+    let url = s.url("/file.bin");
+    disk_hashed();
+    assert!(fetch(&d, &url, &dest, &exp).0.unwrap_err().resumable());
+    assert_eq!(disk_hashed(), 0, "a cut transfer reads nothing back");
+    let (out, last) = fetch(&d, &url, &dest, &exp);
+    assert_eq!(
+        out.unwrap(),
+        Outcome::Downloaded {
+            resumed_from: 70_000
+        }
+    );
+    assert_eq!(last, Some((200_000, 200_000)));
+    assert_eq!(disk_hashed(), 70_000, "the kept part, once");
+    assert_eq!(fs::read(&dest).unwrap(), b);
+}
+
+#[test]
+fn download_a_200_answer_to_a_range_request_reads_nothing_back() {
+    let b = body();
+    let s = serve(
+        b.clone(),
+        Behaviour {
+            ignore_range: true,
+            ..Behaviour::default()
+        },
+    );
+    let d = downloader(local(&[s.port]));
+    let dir = TempDir::new("dl-hash-norange");
+    let dest = dir.0.join("file.bin");
+    fs::write(part_path(&dest), vec![0xAAu8; 150_000]).unwrap();
+    let sum = sha(&b);
+    let exp = Expected {
+        sha256: &sum,
+        size: b.len() as u64,
+    };
+    disk_hashed();
+    let (out, _) = fetch(&d, &s.url("/file.bin"), &dest, &exp);
+    assert_eq!(out.unwrap(), Outcome::Downloaded { resumed_from: 0 });
+    assert_eq!(disk_hashed(), 0, "the kept bytes were not kept");
+    assert_eq!(fs::read(&dest).unwrap(), b);
+}
+
+#[test]
+fn download_a_wrong_kept_part_fails_verification_on_resume_and_is_deleted() {
+    let b = body();
+    let s = serve(b.clone(), Behaviour::default());
+    let d = downloader(local(&[s.port]));
+    let dir = TempDir::new("dl-hash-badkept");
+    let dest = dir.0.join("file.bin");
+    // The right length but the wrong bytes: the server's tail completes the size, not the file.
+    fs::write(part_path(&dest), vec![0xAAu8; 70_000]).unwrap();
+    let sum = sha(&b);
+    let exp = Expected {
+        sha256: &sum,
+        size: b.len() as u64,
+    };
+    let err = fetch(&d, &s.url("/file.bin"), &dest, &exp).0.unwrap_err();
+    assert!(matches!(err, DownloadError::Verification { .. }), "{err:?}");
+    let mut whole = vec![0xAAu8; 70_000];
+    whole.extend_from_slice(&b[70_000..]);
+    assert!(
+        err.to_string()
+            .contains(&format!("sha256 {}, manifest says {sum}", sha(&whole))),
+        "{err}"
+    );
+    assert!(!dest.exists());
+    assert!(
+        !part_path(&dest).exists(),
+        "only a complete file failing deletes the part"
+    );
+    assert_eq!(s.ranges(), [Some("bytes=70000-".to_string())]);
+}
+
 #[test]
 fn download_with_a_wrong_sha256_deletes_the_part() {
     let b = body();

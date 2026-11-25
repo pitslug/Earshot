@@ -5,7 +5,10 @@
 //!   `models/manifest.toml` ([`manifest_allowlist`]): its `hosts` for the first request,
 //!   those or its `redirect_hosts` (the hosts' CDNs) on every redirect hop.
 //! - The body streams into `<dest>.part` ([`NetClient::open`], no `max_body` buffering).
-//!   The file is renamed to `dest` only after its size and SHA-256 match.
+//!   The file is renamed to `dest` only after its size and SHA-256 match. The SHA-256 of a
+//!   transfer is computed as its bytes are written (a resume reads its kept bytes once
+//!   first), so a downloaded file is not read back to be verified (T14.36); a file or a
+//!   whole `.part` already on disk is read to be verified.
 //! - A leftover `.part` is resumed with `Range: bytes=<have>-`. A 206 is trusted only when
 //!   its `Content-Range` starts at exactly `have`; a 200 restarts the file; any other
 //!   status fails. A `.part` larger than the expected size is deleted first.
@@ -25,6 +28,7 @@ use earshot_core::asr::CancelToken;
 pub use earshot_net::{Allowlist, Url};
 use earshot_net::{AuditLog, NetClient, NetConfig, NetError, NetRequest, UrlError, redact};
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 
 use crate::SharedClock;
 
@@ -351,8 +355,42 @@ pub fn part_path(dest: &Path) -> PathBuf {
 /// Lower-case hex SHA-256 of a file (the workspace's one file hasher).
 pub(crate) use earshot_onnx::file_sha256 as sha256_file;
 
-/// Checks size and SHA-256 of `path`: `Ok(None)` when they match, else what differs.
+// A test seam: the bytes this thread read back from disk to hash them, so the tests can show
+// that a transfer is hashed once (T14.36).
+#[cfg(test)]
+thread_local!(static HASHED_FROM_DISK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
+
+/// Counts `n` bytes read back from disk to be hashed (tests only).
+#[cfg(test)]
+fn count_hashed_from_disk(n: u64) {
+    HASHED_FROM_DISK.with(|b| b.set(b.get() + n));
+}
+
+/// The bytes this thread read back from disk to hash since the last call (tests only).
+#[cfg(test)]
+fn take_hashed_from_disk() -> u64 {
+    HASHED_FROM_DISK.with(|b| b.replace(0))
+}
+
+/// Size and SHA-256 of `path`, its digest read from disk: `Ok(None)` when they match, else
+/// what differs.
 fn verify_file(path: &Path, exp: &Expected) -> Result<Option<String>, DownloadError> {
+    verify_against(path, exp, || {
+        let got = sha256_file(path).map_err(io_err(|| format!("read {}", path.display())))?;
+        #[cfg(test)]
+        count_hashed_from_disk(exp.size);
+        Ok(got)
+    })
+}
+
+/// Size of `path` and a SHA-256 from `digest`, asked only when the size matches: `Ok(None)`
+/// when they match, else what differs. One rule and one wording whether the digest was read
+/// back from disk or computed as the bytes were written.
+fn verify_against(
+    path: &Path,
+    exp: &Expected,
+    digest: impl FnOnce() -> Result<String, DownloadError>,
+) -> Result<Option<String>, DownloadError> {
     let len = fs::metadata(path)
         .map_err(io_err(|| format!("stat {}", path.display())))?
         .len();
@@ -362,11 +400,45 @@ fn verify_file(path: &Path, exp: &Expected) -> Result<Option<String>, DownloadEr
             exp.size
         )));
     }
-    let got = sha256_file(path).map_err(io_err(|| format!("read {}", path.display())))?;
+    let got = digest()?;
     if !got.eq_ignore_ascii_case(exp.sha256) {
         return Ok(Some(format!("sha256 {got}, manifest says {}", exp.sha256)));
     }
     Ok(None)
+}
+
+/// Lower-case hex of a finished digest, as [`sha256_file`] writes it.
+fn hex_digest(hasher: Sha256) -> String {
+    use std::fmt::Write as _;
+    hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// A hasher holding the first `have` bytes of `part`, the bytes a resume keeps: they are read
+/// once here, and the transfer adds what it writes after them.
+fn hash_kept(part: &Path, have: u64) -> Result<Sha256, DownloadError> {
+    use std::io::Read as _;
+    let read = io_err(|| format!("read {}", part.display()));
+    let mut kept = File::open(part).map_err(read)?.take(have);
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let n = kept
+            .read(&mut buffer)
+            .map_err(io_err(|| format!("read {}", part.display())))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+        #[cfg(test)]
+        count_hashed_from_disk(n as u64);
+    }
+    Ok(hasher)
 }
 
 /// First byte offset of a `Content-Range: bytes <first>-<last>/<len>` value.
@@ -447,10 +519,19 @@ async fn download_each_chunk(
     }
     let requested = have < exp.size;
     let mut resumed_from = have;
+    // A transfer hashes as it writes (T14.36), so its file is not read back; a `.part` that
+    // needed no request is verified from disk.
+    let mut written_digest = None;
     if requested {
-        resumed_from = transfer(client, url, &part, have, exp.size, cancel, progress).await?;
+        let (from, digest) = transfer(client, url, &part, have, exp.size, cancel, progress).await?;
+        resumed_from = from;
+        written_digest = Some(digest);
     }
-    if let Some(detail) = verify_file(&part, exp)? {
+    let wrong = match written_digest {
+        Some(digest) => verify_against(&part, exp, || Ok(digest))?,
+        None => verify_file(&part, exp)?,
+    };
+    if let Some(detail) = wrong {
         let _ = fs::remove_file(&part);
         return Err(DownloadError::Verification {
             url: redact(url),
@@ -468,7 +549,8 @@ async fn download_each_chunk(
 }
 
 /// One request into `part`, which holds `have` of `total` bytes. Returns the offset the
-/// body started at.
+/// body started at and the lower-case hex SHA-256 of the whole `part` it leaves: hashed as
+/// it is written, after the kept bytes of a resume, which are read once ([`hash_kept`]).
 async fn transfer(
     client: &NetClient,
     url: &Url,
@@ -477,7 +559,7 @@ async fn transfer(
     total: u64,
     cancel: &CancelToken,
     progress: &mut dyn FnMut(u64, u64),
-) -> Result<u64, DownloadError> {
+) -> Result<(u64, String), DownloadError> {
     let shown = redact(url);
     let mut req = NetRequest::get(url.clone()).timeout(transfer_deadline(total));
     if have > 0 {
@@ -512,6 +594,11 @@ async fn transfer(
         206 => have,
         200 => 0,
         _ => return Err(DownloadError::Status { url: shown, status }),
+    };
+    let mut hasher = if start > 0 {
+        hash_kept(part, start)?
+    } else {
+        Sha256::new()
     };
     let file = if start > 0 {
         OpenOptions::new().append(true).open(part)
@@ -548,6 +635,7 @@ async fn transfer(
         };
         file.write_all(&piece)
             .map_err(io_err(|| format!("write {}", part.display())))?;
+        hasher.update(&piece);
         done += piece.len() as u64;
         if done > total {
             keep(&mut file)?;
@@ -564,7 +652,7 @@ async fn transfer(
             reason: "connection closed".into(),
         });
     }
-    Ok(start)
+    Ok((start, hex_digest(hasher)))
 }
 
 /// A blocking downloader: an `earshot-net` client over an allowlist and a current-thread
