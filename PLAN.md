@@ -1529,7 +1529,8 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - decided (the owner, 2026-11-12): clear them. The notice option below is not built; a company gateway would be a later, explicit setting.
   - do: the owner's decision first (privacy invariant 3.9): either clear `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and the Bedrock and Vertex switches so the CLI talks only to its signed-in default, or keep them (a company gateway is a legitimate setup) and show on the Summaries card, from the variable's presence only and never its value, that this computer sends Claude Code traffic to a custom address. Whichever is chosen applies to both CLIs the same way and is written into PRIVACY.md. Prefer the known install folders over PATH when both exist. Reviewer required (privacy).
   - accept: `cargo test -p earshot-llm claude_code`; `cargo test -p earshot-llm codex`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] GATE-04 v1 sign-off
+- [x] GATE-04 v1 sign-off
+  - status (2026-11-26): passed by the owner on the 0.4.2 hand tests on both machines.
   - deps: T9.2, T9.17, T9.18, T9.19, T9.20, T9.21, T9.22, T9.23, T9.24, T9.25
 
 ### Post-release v1 updates
@@ -1982,6 +1983,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [~] T12.36a A raw mic stays raw when Windows' default recording device changes
   - status (2026-11-25): built and merged after review: a fallen-back raw mic tries raw again every 10 s doubling to 60 s (open before close, banner cleared on return), kept across a chosen-device give-up, off for the audio check; `record-raw` prints the stream error's and the refused re-open's codes. The desktop's mic does not support raw, so the conversion hypothesis is untested (docs/echo-fragments.md). Owed before [x]: the Surface reproduction with `record-raw --mic-raw` and the owner's default-device switch in a raw meeting.
+  - status (2026-11-26): the Surface reproduction is done (docs/echo-fragments.md): a Bluetooth headset refuses raw before any open call (lasting, so no retry within the grace), and the built-in mic re-opens raw straight after the switch back. Owed before [x]: the owner's default-device switch in a raw meeting on the next build.
   - deps: T12.36
   - found (the owner, 2026-11-19, Surface, raw mic on with the Surface mic chosen by name): changing Windows' default recording device to a Bluetooth headset mid-meeting showed the `raw-mic` banner. The chosen mic correctly did not follow the default (no hands-free banner), but its stream was re-opened and the re-open was refused raw, so the rest of the meeting recorded the processed stream. Raw had been accepted at the start.
   - found (the owner, 2026-11-20, Surface, 0.4.0, raw mic on with the default mic, a call on the built-in speakers): the `raw-mic` banner showed partway through, with no device change the owner noticed; the canceller's delay lock moved up by about the processed stream's known extra latency at the same point and stayed there, so the rest of the call was processed. The trigger is unknown: the reproduction also covers a stream error with no device change (for example a call app or Windows changing the endpoint's format or effects), and the refused raw re-open's HRESULT says which.
