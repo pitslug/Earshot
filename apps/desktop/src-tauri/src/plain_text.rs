@@ -217,6 +217,56 @@ pub const NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this ti
 pub const CHECK_NPU_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the NPU this time, so the \
      model check tests Parakeet models on the processor only.";
 
+/// The banner when the graphics card's speech library could not load (T14.9): fixed copy, as
+/// [`NPU_LIBRARY_UNAVAILABLE`], with no library name, internal name or error text. The graphics
+/// card stays out of every order for the rest of the process, so a restart tries again.
+pub const GRAPHICS_SPEECH_UNAVAILABLE: &str = "Earshot could not use the graphics card for \
+     speech models this time, so they run on the processor. Restart Earshot to try again.";
+
+/// The same when the library's files are not on this computer: a restart would change nothing.
+pub const GRAPHICS_SPEECH_NOT_DOWNLOADED: &str = "The files that run speech models on the \
+     graphics card are not on this computer, so speech models run on the processor.";
+
+/// The banner when a speech library could not load and the processor's is used (T12.64, T14.9):
+/// chosen by the part of the computer and by whether its files are missing, never the error's
+/// text. Only the NPU and the graphics card have a library of their own; any other part reads as
+/// the graphics card's, which says nothing more than that the processor is used.
+#[must_use]
+pub fn library_fallback_copy(
+    library: earshot_runtime::backends::Accelerator,
+    e: &RuntimeError,
+) -> &'static str {
+    use earshot_runtime::backends::Accelerator;
+    match library {
+        Accelerator::Qnn => NPU_LIBRARY_UNAVAILABLE,
+        Accelerator::Cuda | Accelerator::Vulkan | Accelerator::Cpu => {
+            if model_file_missing(e) || names_developer_tool(&e.to_string()) {
+                GRAPHICS_SPEECH_NOT_DOWNLOADED
+            } else {
+                GRAPHICS_SPEECH_UNAVAILABLE
+            }
+        }
+    }
+}
+
+/// What a start is told while a meeting records (T14.9).
+pub const ALREADY_RECORDING: &str =
+    "A meeting is already recording. Stop it before you start another.";
+
+/// What a stop is told when nothing records (the meeting has just ended by itself).
+pub const NOT_RECORDING: &str = "No meeting is recording.";
+
+/// A summary on this computer was asked for and program files it needs are missing beside
+/// Earshot (T14.9): fixed copy, never the files' names.
+pub const SUMMARY_FILES_MISSING: &str = "Earshot cannot write a summary on this computer because \
+     some of its own files are missing. Install Earshot again, or choose another way to summarise \
+     in Settings, Summaries.";
+
+/// The same for the files a summary on the graphics card needs.
+pub const SUMMARY_GRAPHICS_FILES_MISSING: &str = "Earshot cannot write a summary on the graphics \
+     card because files it needs are missing. Install Earshot again, or choose another way to \
+     summarise in Settings, Summaries.";
+
 /// The banner while a meeting's live transcription waits for, or does, an NPU compile (T12.69,
 /// `RuntimeWarning::NpuPreparing`): fixed copy, cleared when the load goes on. No duration: a
 /// compile on a busy machine can take longer than the usual half minute.
@@ -1434,9 +1484,12 @@ mod tests {
             Accelerator::Cpu,
         )
         .unwrap_err();
+        // T14.9: fixed copy for the missing files, saying what runs instead.
         let banner = crate::meeting::onnx_fallback_message(Accelerator::Cuda, &missing);
         no_developer_text(&banner);
-        assert!(banner.contains("it is not downloaded"), "{banner}");
+        assert_eq!(banner, GRAPHICS_SPEECH_NOT_DOWNLOADED);
+        assert!(banner.contains("are not on this computer"), "{banner}");
+        assert!(banner.contains("run on the processor"), "{banner}");
         let check = crate::model_jobs::check_fallback_message(Accelerator::Cuda, &missing);
         no_developer_text(&check);
         assert!(check.contains("it is not downloaded"), "{check}");
@@ -1734,6 +1787,12 @@ mod every_variant_tests {
             crate::meeting::MEETING_PANIC_MESSAGE,
             NPU_LIBRARY_UNAVAILABLE,
             CHECK_NPU_LIBRARY_UNAVAILABLE,
+            GRAPHICS_SPEECH_UNAVAILABLE,
+            GRAPHICS_SPEECH_NOT_DOWNLOADED,
+            ALREADY_RECORDING,
+            NOT_RECORDING,
+            SUMMARY_FILES_MISSING,
+            SUMMARY_GRAPHICS_FILES_MISSING,
             NPU_PREPARING,
             earshot_runtime::npu_compiled::NOTE,
             earshot_runtime::npu_compiled::NOTE_PREPARED_AGAIN,

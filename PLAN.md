@@ -2611,19 +2611,19 @@ Lane docs (no build):
 
 Lane shell (desktop: `shell.rs`, `meeting.rs`, `meeting_events.rs`, `general.rs`, `tauri.conf.json`; runtime `summary_child.rs`, the summary load watches; `earshot-proc`):
 
-- [ ] T14.5 The tray never deadlocks and never sticks on "Starting"
+- [x] T14.5 The tray never deadlocks and never sticks on "Starting"
   - do: `refresh_tray` and every other holder release the tray lock before any Tauri call (tray and menu calls block on the main thread, tauri 2.12 `run_item_main_thread!`); the tracker records the meeting id from `driver.start`'s `Ok` so a start with no `Started` still ends.
   - accept: `cargo test -p earshot-desktop --bin earshot shell` with a test that a refresh from another thread while the main-thread path wants the lock cannot block (a fake tray seam); existing shell tests
-- [ ] T14.6 A second press while a meeting is starting does nothing
+- [x] T14.6 A second press while a meeting is starting does nothing
   - do: the tray item and the shortcut read a meeting in pre-flight as starting, not recording: no Stop is sent until `Started` has gone out. The window's own Stop is unchanged.
   - accept: `cargo test -p earshot-desktop --bin earshot shell` and `meeting` with a double toggle during a gated pre-flight (the meeting records)
-- [ ] T14.7 A failed start never joins another meeting's thread
+- [x] T14.7 A failed start never joins another meeting's thread
   - do: `MeetingDriver::start` keeps its own thread's handle until the start result is known (or matches by `seq`) and joins outside the `threads` lock.
   - accept: `cargo test -p earshot-desktop --bin earshot meeting` with a failing start racing a second start through a rendezvous
-- [ ] T14.8 Stall watches do not count sleep
+- [x] T14.8 Stall watches do not count sleep
   - do: `AfterWatch`, the GPU summary child's watch, the summary load watches and `earshot-proc`'s `run_with` deadlines read `earshot_proc::awake_time()` (falling back to `Instant` where it is unavailable), each with a clock-free test whose fake keeps awake and asleep time apart (the T12.62 rule).
   - accept: `cargo test -p earshot-desktop --bin earshot meeting`; `cargo test -p earshot-runtime summary_child`; `cargo test -p earshot-proc`
-- [ ] T14.9 Small host fixes
+- [x] T14.9 Small host fixes
   - do: `recording` clears when `Ended` goes out (gap banners still follow it); "Start with Windows" reads its value without depending on the console code page (no new `unsafe` outside the listed files); a store that failed to open at an autostart says so once in a notification (fixed copy); the call-start watch reads its setting from a cached value that `set_offer_on` updates; the CSP gains `base-uri`, `form-action` and `object-src`; developer words in `meeting.rs` messages go through `plain_text`.
   - accept: `cargo test -p earshot-desktop --bin earshot`
 

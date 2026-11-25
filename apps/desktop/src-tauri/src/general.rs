@@ -7,7 +7,9 @@
 //! the setting: nothing is stored in Earshot's database. It is read and written with the
 //! system's `reg.exe` through `earshot_proc` (kill-on-close job, deadline, complete output),
 //! so the app needs no new `unsafe` and no new dependency; the command line holds only
-//! fixed text and the exe path. Earshot is "on" only when the value names this exe (a value
+//! fixed text and the exe path. The value is read from the file `reg export` writes, which is
+//! UTF-16 whatever the console's code page (T14.9, [`parse_export`]); `reg query`'s text is
+//! never parsed. Earshot is "on" only when the value names this exe (a value
 //! left by an older copy elsewhere reads as off; turning it on replaces it and turning it
 //! off removes it). Tests use
 //! [`Autostart`] fakes; the real key is touched only by the ignored round-trip test.
@@ -94,27 +96,110 @@ pub fn run_command(exe: &Path) -> String {
     format!("\"{}\" {}", exe.display(), crate::shell::AUTOSTART_ARG)
 }
 
-/// The data of value `name` in `reg query` output, if it is listed as a string.
-#[must_use]
-pub fn parse_query(output: &str, name: &str) -> Option<String> {
-    output.lines().find_map(|line| {
-        // Registry value names are case-insensitive.
-        let line = line.trim_start();
-        let head = line.get(..name.len())?;
-        if !head.eq_ignore_ascii_case(name) {
-            return None;
+/// The first line of a registration file `reg export` writes (version 5: UTF-16).
+const EXPORT_HEADER: &str = "Windows Registry Editor Version 5.00";
+
+/// `bytes` is not a version 5 registration file.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NotAnExport;
+
+/// The data of string value `name` directly under the exported key in a registration file
+/// (`reg export`), `None` when the key has no such string value.
+///
+/// This is how the `Run` value is read (T14.9): `reg query` prints the data in the console's
+/// code page, so a path with a letter outside it (a profile folder with an accent) came back
+/// changed and the setting read as off. The file is UTF-16 whatever the code page: a byte order
+/// mark, [`EXPORT_HEADER`], then `[key]` and its values as `"name"="data"` with `\` and `"`
+/// escaped by `\`; data of another type follows `=` unquoted (`dword:`, `hex(2):`, ...), and the
+/// key's subkeys follow as further `[key]` sections, which are not this key's values.
+///
+/// # Errors
+/// [`NotAnExport`] for anything else: never a guess.
+pub fn parse_export(bytes: &[u8], name: &str) -> Result<Option<String>, NotAnExport> {
+    let (units, odd) = bytes.as_chunks::<2>();
+    let Some((bom, units)) = units.split_first() else {
+        return Err(NotAnExport);
+    };
+    if *bom != [0xFF, 0xFE] || !odd.is_empty() {
+        return Err(NotAnExport);
+    }
+    let units: Vec<u16> = units.iter().map(|u| u16::from_le_bytes(*u)).collect();
+    // The whole key is in the file, and Windows lets a value hold half of a surrogate pair:
+    // another program's such value must not make this one unreadable. It decodes to U+FFFD
+    // there; the value compared with this exe's command is still compared exactly.
+    let text = String::from_utf16_lossy(&units);
+    let rest = text
+        .trim_start()
+        .strip_prefix(EXPORT_HEADER)
+        .ok_or(NotAnExport)?;
+    let mut chars = rest.chars().peekable();
+    let mut sections = 0;
+    loop {
+        // The start of a line.
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        match chars.peek() {
+            None => return Ok(None),
+            Some('[') => {
+                sections += 1;
+                if sections > 1 {
+                    // A subkey: the key's own values are over.
+                    return Ok(None);
+                }
+                skip_line(&mut chars);
+            }
+            Some('"') => {
+                let value = quoted(&mut chars).ok_or(NotAnExport)?;
+                if chars.next() != Some('=') {
+                    return Err(NotAnExport);
+                }
+                // Registry value names are case-insensitive.
+                let ours = value.eq_ignore_ascii_case(name);
+                if chars.peek() == Some(&'"') {
+                    let data = quoted(&mut chars).ok_or(NotAnExport)?;
+                    if ours {
+                        return Ok(Some(data));
+                    }
+                } else if ours {
+                    // Not a plain string: not what Earshot writes.
+                    return Ok(None);
+                } else {
+                    skip_line(&mut chars);
+                }
+            }
+            // The key's default value (`@=`) or anything else: not a named value.
+            Some(_) => skip_line(&mut chars),
         }
-        let rest = &line[name.len()..];
-        // The name is followed by whitespace, the type, whitespace and the data.
-        if !rest.starts_with([' ', '\t']) {
-            return None;
+    }
+}
+
+/// Skips to the end of the line, and over the lines a trailing `\` continues it on (long binary
+/// data is written that way).
+fn skip_line(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    let mut last = ' ';
+    for c in chars.by_ref() {
+        if c == '\n' && last != '\\' {
+            return;
         }
-        let rest = rest.trim_start();
-        let rest = rest
-            .strip_prefix("REG_SZ")
-            .or_else(|| rest.strip_prefix("REG_EXPAND_SZ"))?;
-        Some(rest.trim().to_owned())
-    })
+        if c != '\r' {
+            last = c;
+        }
+    }
+}
+
+/// A quoted name or string at the cursor, with its escapes undone; `None` when it never ends.
+/// It may hold line breaks: only the closing quote ends it.
+fn quoted(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    if chars.next() != Some('"') {
+        return None;
+    }
+    let mut out = String::new();
+    loop {
+        match chars.next()? {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
 }
 
 /// The per-user `Run` key through `reg.exe` (module docs).
@@ -219,15 +304,27 @@ fn system_reg_exe(windows: Option<OsString>) -> Result<PathBuf, IpcError> {
     Ok(PathBuf::from(windows).join("System32").join("reg.exe"))
 }
 
+/// A file removed when this goes, whatever happened to it meanwhile.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// A file name of this process's own in the temp folder for one `reg export`.
+fn export_file() -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("earshot-run-{}-{n}.reg", std::process::id()))
+}
+
 impl Autostart for RunKey {
     fn enabled(&self) -> Result<bool, IpcError> {
-        let out = self.reg(&["query", &self.key, "/v", &self.name], READ_FAILED)?;
-        if !out.status.success() {
-            // `reg query` fails when the value does not exist.
-            return Ok(false);
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        Ok(parse_query(&text, &self.name).is_some_and(|d| d.eq_ignore_ascii_case(&self.command)))
+        Ok(self
+            .value()?
+            .is_some_and(|d| d.eq_ignore_ascii_case(&self.command)))
     }
 
     fn set(&self, on: bool) -> Result<(), IpcError> {
@@ -251,7 +348,7 @@ impl Autostart for RunKey {
                     "Windows refused to start Earshot at sign-in.",
                 ));
             }
-        } else if self.enabled_any()? {
+        } else if self.exists(CHANGE_FAILED)? {
             let out = self.reg(
                 &["delete", &self.key, "/v", &self.name, "/f"],
                 CHANGE_FAILED,
@@ -267,12 +364,33 @@ impl Autostart for RunKey {
 }
 
 impl RunKey {
-    /// Whether the value exists at all (whatever it names).
-    fn enabled_any(&self) -> Result<bool, IpcError> {
+    /// Whether the value exists at all (whatever it names): `reg query` fails when it does not.
+    /// Only its exit code is read; its text is in the console's code page.
+    fn exists(&self, failure: &'static str) -> Result<bool, IpcError> {
         Ok(self
-            .reg(&["query", &self.key, "/v", &self.name], CHANGE_FAILED)?
+            .reg(&["query", &self.key, "/v", &self.name], failure)?
             .status
             .success())
+    }
+
+    /// The value's data as Windows stores it, `None` when there is no such string value. Read
+    /// from `reg export`'s file ([`parse_export`]): the whole key goes to a file of this
+    /// process's own in the temp folder for the moment of the read (the other programs' values
+    /// under it stay on this computer and the file is removed at once), and only this value is
+    /// taken from it.
+    fn value(&self) -> Result<Option<String>, IpcError> {
+        let unreadable = || autostart_error(READ_FAILED);
+        if !self.exists(READ_FAILED)? {
+            return Ok(None);
+        }
+        let file = RemoveOnDrop(export_file());
+        let path = file.0.to_str().ok_or_else(unreadable)?;
+        let out = self.reg(&["export", &self.key, path, "/y"], READ_FAILED)?;
+        if !out.status.success() {
+            return Err(unreadable());
+        }
+        let bytes = std::fs::read(&file.0).map_err(|_| unreadable())?;
+        parse_export(&bytes, &self.name).map_err(|_| unreadable())
     }
 }
 
@@ -516,15 +634,35 @@ pub async fn call_start_offer(
 #[specta::specta]
 pub async fn set_call_start_offer(
     state: tauri::State<'_, crate::ipc::AppState>,
+    shell: tauri::State<'_, std::sync::Arc<crate::shell::Shell>>,
     on: bool,
 ) -> Result<bool, IpcError> {
     let services = state.services()?;
+    let shell = std::sync::Arc::clone(shell.inner());
     crate::ipc::blocking(move || {
-        let mut db = services.store();
-        earshot_runtime::call_start::set_offer_on(&mut db, on)?;
-        Ok(earshot_runtime::call_start::offer_on(&db)?)
+        // The call-start watch reads the setting from the shell's copy (T14.9).
+        store_call_start_offer(&services, on, &|stored| {
+            shell.call_start_offer_stored(stored);
+        })
     })
     .await
+}
+
+/// Stores the offer and returns it as stored. `tell` hears the stored value while the store's
+/// lock is still held, so two of these overlapping tell in the order they stored and whoever is
+/// told (the call-start watch's copy) ends on what the store holds. `tell` must not take the
+/// store.
+fn store_call_start_offer(
+    services: &earshot_runtime::Services,
+    on: bool,
+    tell: &dyn Fn(bool),
+) -> Result<bool, IpcError> {
+    let mut db = services.store();
+    earshot_runtime::call_start::set_offer_on(&mut db, on)?;
+    let stored = earshot_runtime::call_start::offer_on(&db)?;
+    tell(stored);
+    drop(db);
+    Ok(stored)
 }
 
 /// Turns "start Earshot with Windows" on or off (`autostart` when Windows refuses).
@@ -631,31 +769,227 @@ mod tests {
         );
     }
 
+    /// A registration file as `reg export` writes one: a byte order mark, then UTF-16.
+    fn exported(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    }
+
+    /// `data` as a registration file writes a string: `\` and `"` escaped.
+    fn reg_string(data: &str) -> String {
+        format!("\"{}\"", data.replace('\\', r"\\").replace('"', "\\\""))
+    }
+
+    /// The `Run` key's export with these value lines.
+    fn run_export(values: &[String]) -> Vec<u8> {
+        let mut text = format!(
+            "{EXPORT_HEADER}\r\n\r\n\
+             [HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run]\r\n"
+        );
+        for value in values {
+            text.push_str(value);
+            text.push_str("\r\n");
+        }
+        text.push_str("\r\n");
+        exported(&text)
+    }
+
     #[test]
-    fn general_run_value_is_this_exe_in_quotes_in_the_tray_and_is_read_back_from_reg_output() {
+    fn general_run_value_is_this_exe_in_quotes_in_the_tray_and_is_read_back_from_the_export() {
         let exe = Path::new(r"C:\Program Files\Earshot\earshot.exe");
         let cmd = run_command(exe);
         assert_eq!(cmd, r#""C:\Program Files\Earshot\earshot.exe" --autostart"#);
-        let out = format!(
-            "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n    \
-             Earshot    REG_SZ    {cmd}\r\n\r\n"
+        let ours = format!("\"Earshot\"={}", reg_string(&cmd));
+        assert_eq!(
+            ours,
+            r#""Earshot"="\"C:\\Program Files\\Earshot\\earshot.exe\" --autostart""#
         );
-        assert_eq!(parse_query(&out, "Earshot").as_deref(), Some(cmd.as_str()));
+        // Among other programs' values, of every type a `Run` key holds.
+        let others = [
+            format!("\"Zq Updater\"={}", reg_string(r"C:\zq\updater.exe /quiet")),
+            "\"ZqExpand\"=hex(2):25,00,4c,00,4f,00,43,00,41,00,4c,00,\\".to_owned(),
+            "  41,00,50,00,50,00,00,00".to_owned(),
+            "\"ZqNumber\"=dword:00000001".to_owned(),
+            "@=\"a default value\"".to_owned(),
+        ];
+        let mut values = others.to_vec();
+        // After the binary value's second line.
+        values.insert(3, ours.clone());
+        assert_eq!(
+            parse_export(&run_export(&values), "Earshot"),
+            Ok(Some(cmd.clone()))
+        );
         // Another value whose name starts the same is not ours.
-        let other = "    EarshotOld    REG_SZ    \"C:\\old.exe\"\r\n";
+        let old = format!("\"EarshotOld\"={}", reg_string(r"C:\old.exe"));
+        assert_eq!(parse_export(&run_export(&[old]), "Earshot"), Ok(None));
         // Windows keeps the case a value was written with, and matches names in any case.
-        let lower = format!("    earshot    REG_SZ    {cmd}\r\n");
+        let lower = format!("\"earshot\"={}", reg_string(&cmd));
         assert_eq!(
-            parse_query(&lower, "Earshot").as_deref(),
-            Some(cmd.as_str())
+            parse_export(&run_export(&[lower]), "Earshot"),
+            Ok(Some(cmd.clone()))
         );
-        assert_eq!(parse_query(other, "Earshot"), None);
-        assert_eq!(parse_query("", "Earshot"), None);
-        let expand = "    Earshot    REG_EXPAND_SZ    \"%LOCALAPPDATA%\\e.exe\"";
-        assert_eq!(
-            parse_query(expand, "Earshot").as_deref(),
-            Some("\"%LOCALAPPDATA%\\e.exe\"")
+        // No such value, with or without others.
+        assert_eq!(parse_export(&run_export(&[]), "Earshot"), Ok(None));
+        assert_eq!(parse_export(&run_export(&others), "Earshot"), Ok(None));
+        // A value of another type under the name is not what Earshot writes (a plain string):
+        // it reads as off, and turning the setting on replaces it.
+        let expand = "\"Earshot\"=hex(2):25,00,4c,00,00,00".to_owned();
+        assert_eq!(parse_export(&run_export(&[expand]), "Earshot"), Ok(None));
+    }
+
+    #[test]
+    fn general_run_value_is_read_whole_whatever_letters_the_path_holds() {
+        // T14.9: `reg query` printed the path in the console's code page, so a profile folder
+        // with a letter outside it came back changed and the setting read as off.
+        for folder in [
+            r"C:\Users\Zqë Ærø\AppData\Local\Earshot",
+            r"C:\Users\Zqł Ęż\AppData\Local\Earshot",
+            r"C:\Users\Ωzq 試験\AppData\Local\Earshot",
+            r"C:\Users\zq 🎧\AppData\Local\Earshot",
+        ] {
+            let cmd = run_command(&Path::new(folder).join("earshot.exe"));
+            assert!(cmd.contains(folder), "{cmd}");
+            let export = run_export(&[format!("\"Earshot\"={}", reg_string(&cmd))]);
+            assert_eq!(
+                parse_export(&export, "Earshot"),
+                Ok(Some(cmd.clone())),
+                "{folder}"
+            );
+        }
+    }
+
+    #[test]
+    fn general_run_value_is_read_beside_a_value_holding_half_a_surrogate_pair() {
+        // T14.9 review: the file holds the whole key, and Windows lets a value hold a lone
+        // surrogate. Another program's such value made the strict decode refuse the file, and
+        // "Start with Windows" could not be read at all.
+        let cmd = run_command(Path::new(r"C:\Earshot\earshot.exe"));
+        let ours = format!("\"Earshot\"={}", reg_string(&cmd));
+        let head = format!("{EXPORT_HEADER}\r\n\r\n[HKEY_CURRENT_USER\\Zq\\Run]\r\n");
+        let broken = ("\"ZqBroken\"=\"C:\\\\zq", "x.exe\"\r\n");
+        for ours_first in [false, true] {
+            let mut units: Vec<u16> = head.encode_utf16().collect();
+            if ours_first {
+                units.extend(format!("{ours}\r\n").encode_utf16());
+            }
+            units.extend(broken.0.encode_utf16());
+            // A lead surrogate with nothing after it.
+            units.push(0xD800);
+            units.extend(broken.1.encode_utf16());
+            if !ours_first {
+                units.extend(format!("{ours}\r\n").encode_utf16());
+            }
+            assert!(String::from_utf16(&units).is_err(), "the file holds one");
+            let mut bytes = vec![0xFF, 0xFE];
+            bytes.extend(units.iter().flat_map(|u| u.to_le_bytes()));
+            assert_eq!(parse_export(&bytes, "Earshot"), Ok(Some(cmd.clone())));
+            // The other program's value reads with a replacement character where the half
+            // pair was: never this exe's command.
+            assert_eq!(
+                parse_export(&bytes, "ZqBroken"),
+                Ok(Some("C:\\zq\u{FFFD}x.exe".to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn general_call_start_offer_is_told_while_the_store_is_still_held() {
+        // T14.9 review: the watch's copy was updated after the store's lock was released, so two
+        // overlapping changes could leave it opposite to what is stored. It is told under the
+        // lock: here another reader of the store cannot get in until the telling is over.
+        use std::sync::mpsc;
+        let guard = std::time::Duration::from_secs(60);
+        let dir = crate::testutil::TempDir::new("offer-told");
+        let services = crate::testutil::services(&dir);
+        let told = Mutex::new(Vec::new());
+        let (started_tx, started) = mpsc::channel();
+        let (read_tx, read) = mpsc::channel();
+        let stored = store_call_start_offer(&services, false, &|on| {
+            told.lock().unwrap().push(on);
+            let (svc, started_tx, read_tx) =
+                (services.clone(), started_tx.clone(), read_tx.clone());
+            std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let on = earshot_runtime::call_start::offer_on(&svc.store()).unwrap();
+                read_tx.send(on).unwrap();
+            });
+            started.recv_timeout(guard).expect("the other reader runs");
+            assert_eq!(
+                read.recv_timeout(std::time::Duration::from_millis(200)),
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "the store was free while the listener was told"
+            );
+        })
+        .unwrap();
+        assert!(!stored);
+        assert_eq!(*told.lock().unwrap(), [false]);
+        // The command is over: the other reader gets the store and reads what was stored.
+        assert_eq!(read.recv_timeout(guard), Ok(false));
+
+        // Through the watch's own copy: it ends on what the store holds, change after change.
+        let copy = crate::shell::OfferSetting::default();
+        for on in [true, false, true] {
+            let stored = store_call_start_offer(&services, on, &|stored| copy.set(stored)).unwrap();
+            assert_eq!(stored, on);
+            assert_eq!(copy.get(|| None), on);
+        }
+    }
+
+    #[test]
+    fn general_run_export_only_the_keys_own_string_value_counts() {
+        let cmd = run_command(Path::new(r"C:\Earshot\earshot.exe"));
+        let ours = format!("\"Earshot\"={}", reg_string(&cmd));
+        // A subkey's value of the same name is not the key's.
+        let subkey = exported(&format!(
+            "{EXPORT_HEADER}\r\n\r\n[HKEY_CURRENT_USER\\Zq\\Run]\r\n\"ZqOther\"=\"x\"\r\n\r\n\
+             [HKEY_CURRENT_USER\\Zq\\Run\\Sub]\r\n{ours}\r\n\r\n"
+        ));
+        assert_eq!(parse_export(&subkey, "Earshot"), Ok(None));
+        // Another program's string that holds a line break and then text shaped like our value
+        // is still that program's string.
+        let spoof = format!(
+            "\"ZqOther\"=\"first line\r\n{}\"",
+            ours.replace('\\', r"\\").replace('"', "\\\"")
         );
+        assert_eq!(parse_export(&run_export(&[spoof]), "Earshot"), Ok(None));
+        // Anything that is not such a file is refused, never guessed at.
+        let text = format!("{EXPORT_HEADER}\r\n\r\n[HKEY_CURRENT_USER\\Zq\\Run]\r\n{ours}\r\n");
+        let utf16 = exported(&text);
+        assert_eq!(parse_export(&utf16, "Earshot"), Ok(Some(cmd)));
+        for bad in [
+            Vec::new(),
+            vec![0xFF, 0xFE],
+            text.as_bytes().to_vec(),
+            utf16[2..].to_vec(),
+            utf16[..utf16.len() - 1].to_vec(),
+            exported(&text.replace("Version 5.00", "Version 4.00")),
+            exported(&format!(
+                "{EXPORT_HEADER}\r\n\r\n[HKEY\\Zq]\r\n\"Earshot\"=\"cut off"
+            )),
+            exported(&format!(
+                "{EXPORT_HEADER}\r\n\r\n[HKEY\\Zq]\r\n\"Earshot\" \"x\"\r\n"
+            )),
+        ] {
+            assert_eq!(parse_export(&bad, "Earshot"), Err(NotAnExport), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn general_run_export_files_are_this_processes_own_and_removed() {
+        let (a, b) = (export_file(), export_file());
+        assert_ne!(a, b);
+        for file in [&a, &b] {
+            assert!(file.starts_with(std::env::temp_dir()));
+            let name = file.file_name().unwrap().to_str().unwrap();
+            assert!(name.starts_with(&format!("earshot-run-{}-", std::process::id())));
+            assert!(name.ends_with(".reg"));
+        }
+        std::fs::write(&a, b"x").unwrap();
+        drop(RemoveOnDrop(a.clone()));
+        assert!(!a.exists());
+        // A file that was never made is no error.
+        drop(RemoveOnDrop(b));
     }
 
     /// Writes and removes a test value under the real `Run` key (never `Earshot`).

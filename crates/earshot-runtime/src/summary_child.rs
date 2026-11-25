@@ -733,7 +733,7 @@ fn run_windows(child: &GpuChild, bytes: Vec<u8>, watch: Watch, cancel: &CancelTo
         let _ = process.kill();
         exited_within(process, KILL_WAIT).is_some()
     };
-    match watch_lines(&heard, watch, cancel) {
+    match watch_lines(&heard, watch, cancel, &earshot_proc::AwakeClock::system()) {
         Heading::Exit(last) => {
             let status = exited_within(&mut process, KILL_WAIT);
             if status.is_none() {
@@ -769,11 +769,18 @@ enum Heading {
     Bad(&'static str),
 }
 
-/// Follows the child's lines until its output ends or it must be killed.
+/// Follows the child's lines until its output ends or it must be killed. Its limits are time
+/// awake on `awake` (T14.8): a child that was loading or running when the computer went to sleep
+/// has not stalled for the hours it slept.
 #[cfg(windows)]
-fn watch_lines(heard: &Receiver<Heard>, watch: Watch, cancel: &CancelToken) -> Heading {
+fn watch_lines(
+    heard: &Receiver<Heard>,
+    watch: Watch,
+    cancel: &CancelToken,
+    awake: &earshot_proc::AwakeClock,
+) -> Heading {
     let mut limit = watch.load_limit;
-    let mut since = Instant::now();
+    let mut since = awake.now();
     let mut last = None;
     loop {
         if cancel.is_cancelled() {
@@ -781,7 +788,7 @@ fn watch_lines(heard: &Receiver<Heard>, watch: Watch, cancel: &CancelToken) -> H
         }
         match heard.recv_timeout(POLL) {
             Ok(Heard::Line(line)) => {
-                since = Instant::now();
+                since = awake.now();
                 if line.is_final() {
                     // Only its exit is left.
                     limit = KILL_WAIT;
@@ -794,7 +801,7 @@ fn watch_lines(heard: &Receiver<Heard>, watch: Watch, cancel: &CancelToken) -> H
             Ok(Heard::End) | Err(RecvTimeoutError::Disconnected) => return Heading::Exit(last),
             Err(RecvTimeoutError::Timeout) => {}
         }
-        if since.elapsed() >= limit {
+        if awake.since(since) >= limit {
             return match last {
                 Some(l) if l.is_final() => Heading::Bad("it did not exit after its last line"),
                 _ => Heading::Stall,

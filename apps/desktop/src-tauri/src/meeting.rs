@@ -143,12 +143,17 @@ pub type Sink = Arc<dyn Fn(MeetingEvent) + Send + Sync>;
 pub type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 struct Running {
+    /// Which start made it ([`Inner::started`]'s count), so a start that failed takes back only
+    /// its own thread (T14.7).
+    seq: u64,
     /// Set by `stop`; read by the meeting thread before every event.
     stop: Arc<AtomicBool>,
     /// Set by `keep_recording`; taken by the meeting thread.
     keep: Arc<AtomicBool>,
     /// True from the start request until the recording is saved.
     recording: Arc<AtomicBool>,
+    /// Set once the meeting's `Started` has gone out: until then it is starting (T14.6).
+    started: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -174,6 +179,16 @@ impl Threads {
             .as_ref()
             .is_some_and(|r| r.recording.load(Ordering::SeqCst) && !r.thread.is_finished())
     }
+
+    /// Whether the newest meeting is still starting: its pre-flight or its capture's start runs,
+    /// or its `Started` has not gone out yet.
+    fn starting(&self) -> bool {
+        self.recording()
+            && self
+                .newest
+                .as_ref()
+                .is_some_and(|r| !r.started.load(Ordering::SeqCst))
+    }
 }
 
 struct Inner {
@@ -195,7 +210,17 @@ struct Inner {
     stop_ceiling: Duration,
     /// When the work after a meeting is given up ([`AfterBounds`]).
     after_bounds: AfterBounds,
+    /// The clock those bounds are read on: time awake (T14.8).
+    awake: earshot_proc::AwakeClock,
+    /// Runs in a start that failed, after its result is known and before it takes its thread
+    /// back: where a test lets another start in (T14.7).
+    #[cfg(test)]
+    failed_start_hook: Option<FailedStartHook>,
 }
+
+/// [`Inner::failed_start_hook`].
+#[cfg(test)]
+type FailedStartHook = Arc<dyn Fn(&MeetingDriver) + Send + Sync>;
 
 impl Inner {
     /// Sends `event` of meeting number `seq` (module docs).
@@ -273,6 +298,9 @@ impl MeetingDriver {
             owned: Mutex::default(),
             stop_ceiling: STOP_CEILING,
             after_bounds: AfterBounds::default(),
+            awake: earshot_proc::AwakeClock::system(),
+            #[cfg(test)]
+            failed_start_hook: None,
         }))
     }
 
@@ -306,10 +334,11 @@ impl MeetingDriver {
     /// failure, with nothing recorded.
     pub fn start(&self, services: &Services, request: StartRequest) -> Result<String, IpcError> {
         let (tx, rx) = mpsc::sync_channel::<Result<String, IpcError>>(1);
+        let seq;
         {
             let mut threads = self.threads();
             if threads.recording() {
-                return Err(IpcError::busy("a meeting is already recording"));
+                return Err(IpcError::busy(crate::plain_text::ALREADY_RECORDING));
             }
             let pass = self.0.gate.enter_meeting()?;
             if let Some(old) = threads.newest.take() {
@@ -328,13 +357,15 @@ impl MeetingDriver {
             let inner = Arc::clone(&self.0);
             let svc = services.clone();
             let keep = Arc::new(AtomicBool::new(false));
+            let started_flag = Arc::new(AtomicBool::new(false));
             let flags = RunFlags {
                 pass,
                 stop: Arc::clone(&stop),
                 keep: Arc::clone(&keep),
                 recording: Arc::clone(&recording),
+                started: Arc::clone(&started_flag),
             };
-            let seq = self.0.started.fetch_add(1, Ordering::SeqCst) + 1;
+            seq = self.0.started.fetch_add(1, Ordering::SeqCst) + 1;
             let thread = std::thread::Builder::new()
                 .name("earshot-meeting".into())
                 .spawn(move || {
@@ -343,23 +374,36 @@ impl MeetingDriver {
                 })
                 .map_err(|_| IpcError::internal())?;
             threads.newest = Some(Running {
+                seq,
                 stop,
                 keep,
                 recording,
+                started: started_flag,
                 thread,
             });
         }
-        let started = rx.recv().unwrap_or_else(|_| {
-            Err(IpcError::new(
-                "internal",
-                "the meeting thread stopped before the meeting started",
-            ))
-        });
+        // The meeting thread ended without an answer: fixed copy, as every internal error.
+        let started = rx.recv().unwrap_or_else(|_| Err(IpcError::internal()));
         if started.is_err() {
-            // The thread ends right after reporting a failed start; join it so the next
-            // start is not refused as busy.
-            let mut threads = self.threads();
-            if let Some(r) = threads.newest.take() {
+            #[cfg(test)]
+            if let Some(hook) = &self.0.failed_start_hook {
+                hook(self);
+            }
+            // The thread ends right after reporting a failed start; join it so the driver reads
+            // idle at once. Only this start's own thread, and with the lock free (T14.7): the
+            // failing thread clears `recording` before it reports, so another start may have put
+            // its meeting in `newest` by now, and joining that one here would hold `stop` and
+            // `phase` up for that meeting's whole life. A thread such a start moved aside is
+            // joined by a later start, as every thread that ended is.
+            let own = {
+                let mut threads = self.threads();
+                if threads.newest.as_ref().is_some_and(|r| r.seq == seq) {
+                    threads.newest.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(r) = own {
                 let _ = r.thread.join();
             }
         }
@@ -378,7 +422,10 @@ impl MeetingDriver {
                 r.stop.store(true, Ordering::SeqCst);
                 Ok(())
             }
-            _ => Err(IpcError::new("not_recording", "no meeting is recording")),
+            _ => Err(IpcError::new(
+                "not_recording",
+                crate::plain_text::NOT_RECORDING,
+            )),
         }
     }
 
@@ -434,14 +481,33 @@ impl MeetingDriver {
     /// Where the meetings are.
     #[must_use]
     pub fn phase(&self) -> DriverPhase {
+        self.phase_with_starting().0
+    }
+
+    /// [`MeetingDriver::phase`], and whether the meeting it calls recording is still starting
+    /// (T14.6): from the start request until its `Started` has gone out, so through its pre-flight
+    /// and its capture's start, which can take seconds with no window showing it. Read together,
+    /// for the tray's item and the shortcut: a press then is not a Stop.
+    #[must_use]
+    pub fn phase_with_starting(&self) -> (DriverPhase, bool) {
         let threads = self.threads();
         if threads.recording() {
-            DriverPhase::Recording
+            (DriverPhase::Recording, threads.starting())
         } else if threads.any_unfinished() {
-            DriverPhase::Processing
+            (DriverPhase::Processing, false)
         } else {
-            DriverPhase::Idle
+            (DriverPhase::Idle, false)
         }
+    }
+
+    /// Whether a stop was asked of the newest meeting.
+    #[cfg(test)]
+    #[must_use]
+    pub fn stop_requested(&self) -> bool {
+        self.threads()
+            .newest
+            .as_ref()
+            .is_some_and(|r| r.stop.load(Ordering::SeqCst))
     }
 
     /// Stops a recording meeting and returns once its recording is saved (at once when
@@ -477,6 +543,34 @@ impl MeetingDriver {
         Arc::get_mut(&mut self.0)
             .expect("set before the driver is shared")
             .after_bounds = bounds;
+        self
+    }
+
+    /// The same driver reading the bounds of the work after a meeting on `awake` (tests; call it
+    /// before the driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_awake_clock(mut self, awake: earshot_proc::AwakeClock) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .awake = awake;
+        self
+    }
+
+    /// The same driver running `hook` in every start that failed, once its result is known and
+    /// before it takes its thread back (tests; call it before the driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    fn with_failed_start_hook(mut self, hook: FailedStartHook) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .failed_start_hook = Some(hook);
         self
     }
 
@@ -596,7 +690,8 @@ fn left_unprocessed(outcome: &LiveOutcome) -> Option<&'static str> {
 
 /// When the work after a meeting is given up (T9.22b): no sign of life (a [`HostStep`], or a poll
 /// of the meeting's cancel token, which every shipped decode makes between engine calls) for the
-/// bound of the phase it is in. Then the meeting's turn passes to the next, the meeting is left
+/// bound of the phase it is in, counted in time awake (T14.8, `earshot_proc::AwakeClock`): work
+/// that was going when the computer went to sleep has not stalled for the hours it slept. Then the meeting's turn passes to the next, the meeting is left
 /// unprocessed with a banner, and the thread is left to end on its own, never joined, as a stalled
 /// GPU summary is (T8.4ab). Nothing here cuts work that is merely slow. The summary is not watched
 /// here: a local model's load and run have their own watch (`summary::attempt_local`, the GPU
@@ -758,7 +853,7 @@ fn run_after_watched(
     outcome: &LiveOutcome,
     meeting_cancel: &MeetingCancel,
     ticket: &Arc<QueueTicket>,
-    bounds: AfterBounds,
+    (bounds, awake): (AfterBounds, &earshot_proc::AwakeClock),
     send: &dyn Fn(MeetingEvent),
 ) -> Option<HostOutcome> {
     let cancel = &meeting_cancel.token;
@@ -785,7 +880,7 @@ fn run_after_watched(
         Err(e) => return Some(HostOutcome::not_started(RuntimeError::Spawn(e))),
     };
     let mut watch = AfterWatch::new(bounds);
-    let started = Instant::now();
+    let started = awake.now();
     let (mut phase, mut steps) = (AfterPhase::Loading, 0u64);
     loop {
         match rx.recv_timeout(AFTER_WATCH_POLL) {
@@ -812,7 +907,8 @@ fn run_after_watched(
             }
         }
         let at_cancel = meeting_cancel.polls_at_cancel.get().copied();
-        if watch.stalled(phase, steps, cancel.polls(), started.elapsed(), at_cancel) {
+        let now = awake.since(started);
+        if watch.stalled(phase, steps, cancel.polls(), now, at_cancel) {
             cancel.cancel();
             drop(worker);
             return None;
@@ -838,6 +934,8 @@ struct RunFlags {
     stop: Arc<AtomicBool>,
     keep: Arc<AtomicBool>,
     recording: Arc<AtomicBool>,
+    /// Set once `Started` has gone out ([`Running::started`]).
+    started: Arc<AtomicBool>,
 }
 
 /// A meeting's entry in [`Inner::finishing`], taken out on every way off its thread, a panic's unwind
@@ -945,6 +1043,30 @@ impl CallEndOffer {
             CallEndChange::Withdraw => MeetingEvent::CallEndOffer { open: false },
             CallEndChange::Stop => MeetingEvent::CallEndStopped,
         })
+    }
+}
+
+/// Sends the UI events of one runtime event, in order. For the saved recording (`saved`),
+/// `recording` clears right before `Ended` goes out (T14.9): what the UI hears then can start a
+/// new meeting at once, so the driver must already read as free; the banners told with the save
+/// go before the flag, so a newer meeting cannot start before they are out, and the banners that
+/// follow `Ended` (a gap in the recording: the screen after a meeting shows only what follows
+/// it) no longer hold the flag up.
+fn send_mapped(
+    mapped: Vec<MeetingEvent>,
+    saved: bool,
+    recording: &AtomicBool,
+    send: &dyn Fn(MeetingEvent),
+) {
+    for event in mapped {
+        if saved && matches!(event, MeetingEvent::Ended { .. }) {
+            recording.store(false, Ordering::SeqCst);
+        }
+        send(event);
+    }
+    if saved {
+        // Whatever the mapper sent for it.
+        recording.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1085,23 +1207,16 @@ fn run(
                         // Before the UI hears of the end, so its Cancel always finds this.
                         finishing.open();
                     }
-                    let mut mapped = mapper.map(&event, (inner.now)());
-                    // The UI's "saved" event goes last, so what it hears can start a new meeting at
-                    // once; the banners go before the flag, so a newer meeting cannot start before
-                    // they are out.
-                    let last = mapped.pop();
-                    for e in mapped {
-                        send(e);
-                    }
-                    if saved {
-                        recording.store(false, Ordering::SeqCst);
-                    }
-                    if let Some(e) = last {
-                        send(e);
-                    }
+                    let mapped = mapper.map(&event, (inner.now)());
+                    send_mapped(mapped, saved, recording, &send);
                     // After the end, so it shows with the work after the recording.
                     if saved && stopped_by_call_end {
                         send(crate::meeting_events::call_end_stopped_warning());
+                    }
+                    if matches!(event, RuntimeEvent::Started { .. }) {
+                        // `Started` is out: from here a press of the tray's item or the shortcut
+                        // is a Stop (T14.6).
+                        flags.started.store(true, Ordering::SeqCst);
                     }
                     if matches!(event, RuntimeEvent::Started { .. })
                         && let Some(n) = notices.take()
@@ -1160,7 +1275,7 @@ fn run(
             &outcome,
             &meeting_cancel,
             &ticket,
-            inner.after_bounds,
+            (inner.after_bounds, &inner.awake),
             &send,
         );
         let Some(host) = watched else {
@@ -1235,44 +1350,28 @@ fn run(
     drop(waiting);
 }
 
-fn setup_err(kind: &str, message: String) -> IpcError {
-    IpcError::new(kind, message)
-}
-
-/// The banner text of an ONNX Runtime library that could not load (the CPU one is used). The NPU's
-/// is fixed copy, with no library name or error text (T12.64).
+/// The banner text of a speech library that could not load (the processor's is used): fixed
+/// copy by the part of the computer and by whether its files are missing, with no library name,
+/// internal name or error text (T12.64 for the NPU, T14.9 for the rest).
 #[must_use]
 pub(crate) fn onnx_fallback_message(
     library: earshot_runtime::backends::Accelerator,
     e: &RuntimeError,
 ) -> String {
-    if library == earshot_runtime::backends::Accelerator::Qnn {
-        return crate::plain_text::NPU_LIBRARY_UNAVAILABLE.to_owned();
-    }
-    let why = crate::plain_text::library_problem(e);
-    format!(
-        "The {library:?} library of ONNX Runtime is unavailable, so speech models run on the CPU \
-         ({why})."
-    )
+    crate::plain_text::library_fallback_copy(library, e).to_owned()
 }
 
-/// The UI error of a summary setup failure.
+/// The UI error of a summary setup failure. Missing program files are fixed copy (T14.9): the
+/// files' names mean nothing to the user and are not shown.
 #[must_use]
 pub(crate) fn summary_setup_error(e: SummarySetupError) -> IpcError {
     match e {
-        SummarySetupError::LlamaDllsMissing(missing) => setup_err(
+        SummarySetupError::LlamaDllsMissing(_) => {
+            IpcError::new("summary_dlls", crate::plain_text::SUMMARY_FILES_MISSING)
+        }
+        SummarySetupError::CudaDllsMissing(_) => IpcError::new(
             "summary_dlls",
-            format!(
-                "A summary on this computer needs llama.cpp's DLLs next to Earshot; not found: {}",
-                missing.join(", ")
-            ),
-        ),
-        SummarySetupError::CudaDllsMissing(missing) => setup_err(
-            "summary_dlls",
-            format!(
-                "A summary on this computer needs the CUDA runtime's DLLs on PATH; not found: {}",
-                missing.join(", ")
-            ),
+            crate::plain_text::SUMMARY_GRAPHICS_FILES_MISSING,
         ),
         SummarySetupError::Runtime(e) => IpcError::from(e),
     }

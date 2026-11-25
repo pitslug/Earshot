@@ -213,7 +213,8 @@ pub const LOCAL_CHUNK_SECONDS: u32 = 600;
 
 /// No progress from the GPU for this long moves a summary to the CPU (T8.4ab, a judgement: an
 /// hour of meeting takes about 94 s in all on the RTX 5080, and every prompt batch and reply
-/// token counts as progress).
+/// token counts as progress). This and the load limits below are time awake (T14.8,
+/// `earshot_proc::AwakeClock`): time the computer slept is not silence.
 pub const GPU_STALL_LIMIT: Duration = Duration::from_secs(180);
 
 /// The limit for a GPU load, a judgement: it reports nothing until it ends and may first read
@@ -1492,6 +1493,18 @@ fn limit_after_load(
 /// [`LocalSummaryConfig::cpu_load_limit`] is left behind the same way and the summary fails with
 /// [`LocalSummaryError::LoadStalled`] (or is cancelled, when it was).
 fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, RuntimeError> {
+    attempt_local_on(job, cancel, &earshot_proc::AwakeClock::system())
+}
+
+#[cfg(feature = "engines")]
+/// [`attempt_local`] reading its limits from `awake`: they are time awake (T14.8), so a load or
+/// a GPU run that was going when the computer went to sleep has not stalled for the hours it
+/// slept.
+fn attempt_local_on(
+    job: LocalJob,
+    cancel: &CancelToken,
+    awake: &earshot_proc::AwakeClock,
+) -> Result<Attempt, RuntimeError> {
     let (tx, rx) = std::sync::mpsc::channel();
     let token = CancelToken::new();
     let options = options_of(&job.config, &token);
@@ -1526,7 +1539,7 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
         .map_err(RuntimeError::Spawn)?;
     let mut heartbeat: Option<Heartbeat> = None;
     let mut last_count = 0;
-    let mut since = std::time::Instant::now();
+    let mut since = awake.now();
     loop {
         if cancel.is_cancelled() {
             token.cancel();
@@ -1537,7 +1550,7 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
                 limit = limit_after_load(gpu_watched, backend, run_limit);
                 last_count = beat.count();
                 heartbeat = Some(beat);
-                since = std::time::Instant::now();
+                since = awake.now();
             }
             Ok(Progress::Finished(finished)) => {
                 let _ = worker.join();
@@ -1555,10 +1568,10 @@ fn attempt_local(job: LocalJob, cancel: &CancelToken) -> Result<Attempt, Runtime
             && count != last_count
         {
             last_count = count;
-            since = std::time::Instant::now();
+            since = awake.now();
         }
         if let Some(limit) = limit
-            && has_stalled(since.elapsed(), limit, cancel.is_cancelled())
+            && has_stalled(awake.since(since), limit, cancel.is_cancelled())
         {
             token.cancel();
             if gpu_watched {
