@@ -64,13 +64,31 @@ const useStyles = makeStyles({
   },
 });
 
+// The widths of Settings and the first-run wizard (T12.95), as `maxWidth`s: every page and part
+// takes them from here, never a number of its own (`widths.test.ts`).
+
+/** The page column every section lays out in. */
+export const PAGE_WIDTH = "860px";
+/** A paragraph of text (explanations, notes, captions): a readable line length. 70ch of body
+ * text (14 px Segoe UI, 528 px measured in the preview), in rem rather than ch because ch follows
+ * each element's own font and would wrap a 12 px caption narrower than the body text above it. */
+export const TEXT_WIDTH = "33rem";
+/** A box drawn with a border (a result, a card, a list of bordered rows that carry text): the
+ * page's whole width, like the model and CUDA cards. */
+export const BOX_WIDTH = "none";
+/** A column of fields or a field on its own (text fields, a dropdown with long choices, a
+ * progress bar with its label), and a list of short items whose buttons sit beside them. */
+export const FIELD_WIDTH = "520px";
+/** A narrow control: a dropdown or field whose choices are a few words. */
+export const NARROW_WIDTH = "240px";
+
 /** The column every Settings page (and the first-run wizard) lays its sections out in. */
 export const usePageStyles = makeStyles({
   page: {
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalXL,
-    maxWidth: "860px",
+    maxWidth: PAGE_WIDTH,
   },
 });
 

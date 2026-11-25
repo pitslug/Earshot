@@ -5,14 +5,15 @@ import { Caption1, Input, makeStyles, tokens } from "@fluentui/react-components"
 import { useEffect, useState } from "react";
 
 import { useIpc } from "../ipc";
+import { FIELD_WIDTH, TEXT_WIDTH } from "./parts";
 
 const useStyles = makeStyles({
   muted: {
     color: tokens.colorNeutralForeground3,
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   path: {
-    maxWidth: "70ch",
+    maxWidth: FIELD_WIDTH,
   },
 });
 

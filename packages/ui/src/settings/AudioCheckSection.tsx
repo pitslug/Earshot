@@ -19,14 +19,15 @@ import {
 import type { AudioCheckResultView } from "../ipc";
 import { clockTime } from "../shell/meetings";
 import { type AudioCheckState, checkRunning } from "./useAudioCheck";
+import { BOX_WIDTH, FIELD_WIDTH, TEXT_WIDTH } from "./parts";
 
 const useStyles = makeStyles({
   text: {
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground2,
-    maxWidth: "62ch",
+    maxWidth: TEXT_WIDTH,
   },
   row: {
     display: "flex",
@@ -42,7 +43,7 @@ const useStyles = makeStyles({
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke1}`,
     borderRadius: tokens.borderRadiusMedium,
     backgroundColor: tokens.colorNeutralBackground1,
-    maxWidth: "70ch",
+    maxWidth: BOX_WIDTH,
   },
   lines: {
     margin: 0,
@@ -51,7 +52,7 @@ const useStyles = makeStyles({
   listening: {
     display: "grid",
     gap: tokens.spacingVerticalXS,
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
 });
 

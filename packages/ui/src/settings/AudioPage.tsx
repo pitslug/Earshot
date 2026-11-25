@@ -26,7 +26,7 @@ import { useId } from "react";
 import type { AudioPageView, CaptureMode, ChosenDevice, DeviceItem, MicSignal } from "../ipc";
 import { MODE_LABEL } from "../meeting/liveMeeting";
 import { AudioCheckSection } from "./AudioCheckSection";
-import { NotLoaded, NoticeBar, Section, UnknownSettings, usePageStyles } from "./parts";
+import { FIELD_WIDTH, NotLoaded, NoticeBar, Section, TEXT_WIDTH, UnknownSettings, usePageStyles } from "./parts";
 import { type AudioPageState, useAudio } from "./useAudio";
 import { checkRunning, useAudioCheck } from "./useAudioCheck";
 
@@ -37,11 +37,11 @@ const useStyles = makeStyles({
   fields: {
     display: "grid",
     gap: tokens.spacingVerticalM,
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground2,
-    maxWidth: "62ch",
+    maxWidth: TEXT_WIDTH,
   },
   row: {
     display: "flex",

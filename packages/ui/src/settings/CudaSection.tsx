@@ -24,7 +24,7 @@ import { useState } from "react";
 import type { CudaPartView, CudaView } from "../ipc";
 import { Notices } from "./ModelsParts";
 import { formatSize } from "./copy";
-import { UnknownSettings } from "./parts";
+import { TEXT_WIDTH, UnknownSettings } from "./parts";
 import type { CudaState } from "./useCuda";
 
 /** What the libraries are, for the card that earned the offer. */
@@ -88,11 +88,11 @@ const useStyles = makeStyles({
   },
   why: {
     color: tokens.colorNeutralForeground2,
-    maxWidth: "62ch",
+    maxWidth: TEXT_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
-    maxWidth: "62ch",
+    maxWidth: TEXT_WIDTH,
   },
   actions: {
     display: "flex",

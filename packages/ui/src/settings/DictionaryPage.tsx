@@ -22,7 +22,7 @@ import {
 } from "@fluentui/react-components";
 import { useId } from "react";
 
-import { NotLoaded, UnknownSettings, usePageStyles } from "./parts";
+import { FIELD_WIDTH, NotLoaded, TEXT_WIDTH, UnknownSettings, usePageStyles } from "./parts";
 import { useDictionary } from "./useDictionary";
 
 const useStyles = makeStyles({
@@ -30,13 +30,12 @@ const useStyles = makeStyles({
     margin: 0,
   },
   text: {
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   section: {
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalS,
-    maxWidth: "520px",
   },
   list: {
     listStyle: "none",
@@ -45,6 +44,8 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalXS,
+    // Short words: at the page's width each Remove button would sit far from its word.
+    maxWidth: FIELD_WIDTH,
   },
   word: {
     display: "flex",
@@ -61,12 +62,14 @@ const useStyles = makeStyles({
     display: "flex",
     alignItems: "center",
     gap: tokens.spacingHorizontalS,
+    maxWidth: FIELD_WIDTH,
   },
   field: {
     flexGrow: 1,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
 });
 

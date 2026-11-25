@@ -22,7 +22,7 @@ import {
 } from "@fluentui/react-components";
 import { useId } from "react";
 
-import { NotLoaded, NoticeBar, UnknownSettings } from "./parts";
+import { NARROW_WIDTH, NotLoaded, NoticeBar, TEXT_WIDTH, UnknownSettings } from "./parts";
 import { deleteText, useStorage } from "./useStorage";
 
 /** What the page says the setting does. */
@@ -43,14 +43,14 @@ const useStyles = makeStyles({
     margin: 0,
   },
   text: {
-    maxWidth: "62ch",
+    maxWidth: TEXT_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
-    maxWidth: "62ch",
+    maxWidth: TEXT_WIDTH,
   },
   field: {
-    maxWidth: "240px",
+    maxWidth: NARROW_WIDTH,
   },
 });
 

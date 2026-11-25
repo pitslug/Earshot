@@ -32,7 +32,16 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 
 import { type PersonItem, type SpeakerTimingChoice, type VoiceView, useIpc } from "../ipc";
-import { NotLoaded, NoticeBar, Section, UnknownSettings, usePageStyles } from "./parts";
+import {
+  BOX_WIDTH,
+  FIELD_WIDTH,
+  NotLoaded,
+  NoticeBar,
+  Section,
+  TEXT_WIDTH,
+  UnknownSettings,
+  usePageStyles,
+} from "./parts";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type SpeakersNotice, type SpeakersPageState, sampleRunning, useSpeakers } from "./useSpeakers";
 
@@ -60,13 +69,14 @@ const useStyles = makeStyles({
   why: {
     color: tokens.colorNeutralForeground2,
     paddingLeft: "32px",
-    maxWidth: "62ch",
+    maxWidth: TEXT_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
   text: {
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   row: {
     display: "flex",
@@ -82,7 +92,7 @@ const useStyles = makeStyles({
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
     borderRadius: tokens.borderRadiusMedium,
     backgroundColor: tokens.colorNeutralBackground2,
-    maxWidth: "70ch",
+    maxWidth: BOX_WIDTH,
   },
   person: {
     display: "flex",
@@ -103,7 +113,7 @@ const useStyles = makeStyles({
     overflowWrap: "anywhere",
   },
   name: {
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   nameField: {
     display: "flex",

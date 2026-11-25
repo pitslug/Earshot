@@ -13,7 +13,7 @@ import {
   tokens,
 } from "@fluentui/react-components";
 
-import { NotLoaded, UnknownSettings } from "./parts";
+import { FIELD_WIDTH, NotLoaded, TEXT_WIDTH, UnknownSettings } from "./parts";
 import { useSummaryStyle } from "./useSummaryStyle";
 
 const useStyles = makeStyles({
@@ -21,7 +21,7 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalS,
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   row: {
     display: "flex",
@@ -31,6 +31,7 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
 });
 
