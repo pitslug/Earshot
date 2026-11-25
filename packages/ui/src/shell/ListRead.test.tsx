@@ -130,6 +130,61 @@ describe("a meeting list that could not be read", () => {
     expect(rowNames()).toHaveLength(2);
   });
 
+  it("is announced as the app's other error bars are, and hands focus to the row of the meeting shown once Try again worked", async () => {
+    const failing = { meetings: false, folders: false };
+    const s = open(failing);
+    await screen.findByRole("heading", { level: 1, name: SHOWN.title });
+    failing.meetings = true;
+    await s.readAgain();
+    const bar = (await screen.findByText(STALE_TITLE)).closest<HTMLElement>(".fui-MessageBar");
+    if (bar === null) throw new Error("the failure is not in a message bar");
+    expect(bar).toHaveAttribute("role", "alert");
+    const again = within(bar).getByRole("button", { name: "Try again" });
+    // While it still fails the bar stays, and so does focus on its button.
+    again.focus();
+    let before = s.reads.n;
+    await s.user.keyboard("{Enter}");
+    await waitFor(() => expect(s.reads.n).toBe(before + 1));
+    await act(async () => {});
+    expect(screen.getByText(STALE_TITLE)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toHaveFocus();
+    // Once it reads, the bar goes and focus is on the row of the meeting shown.
+    failing.meetings = false;
+    before = s.reads.n;
+    await s.user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByText(STALE_TITLE)).toBeNull());
+    expect(within(list()).getByRole("button", { name: new RegExp(`^${SHOWN.title}`) })).toHaveFocus();
+  });
+
+  it("leaves focus where it is when the bar goes by itself", async () => {
+    const failing = { meetings: false, folders: false };
+    const s = open(failing);
+    await screen.findByRole("heading", { level: 1, name: SHOWN.title });
+    failing.meetings = true;
+    await s.readAgain();
+    await screen.findByText(STALE_TITLE);
+    const search = screen.getByRole("searchbox", { name: "Search meetings" });
+    await s.user.click(search);
+    failing.meetings = false;
+    await s.readAgain();
+    await waitFor(() => expect(screen.queryByText(STALE_TITLE)).toBeNull());
+    expect(search).toHaveFocus();
+  });
+
+  it("hands focus to New meeting once Try again worked after a first read that failed", async () => {
+    const failing = { meetings: true, folders: false };
+    const s = open(failing);
+    const bar = (await screen.findByText(FAILED_TITLE)).closest<HTMLElement>(".fui-MessageBar");
+    if (bar === null) throw new Error("the failure is not in a message bar");
+    expect(bar).toHaveAttribute("role", "alert");
+    failing.meetings = false;
+    within(bar).getByRole("button", { name: "Try again" }).focus();
+    await s.user.keyboard("{Enter}");
+    expect(await screen.findByRole("heading", { level: 1, name: SHOWN.title })).toBeInTheDocument();
+    // No row was on screen when the bar went: New meeting, by the same rule.
+    expect(screen.getByRole("button", { name: "New meeting" })).toHaveFocus();
+  });
+
   it("offers Try again when the very first read failed, and then shows the meetings", async () => {
     const failing = { meetings: true, folders: false };
     const s = open(failing);

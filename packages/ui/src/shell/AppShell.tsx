@@ -1430,17 +1430,17 @@ export function AppShell({
         )}
         {callStartBar}
         {load.status === "loaded" && load.stale !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The meeting list could not be updated</MessageBarTitle>
-              {load.stale}
-            </MessageBarBody>
-            <MessageBarActions>
+          <ErrorBar
+            title="The meeting list could not be updated"
+            onGoneWithFocus={focusAfterBar}
+            actions={
               <Button size="small" onClick={refresh}>
                 Try again
               </Button>
-            </MessageBarActions>
-          </MessageBar>
+            }
+          >
+            {load.stale}
+          </ErrorBar>
         )}
         {startErrorBar}
         {stopError !== null && (
@@ -1521,6 +1521,7 @@ export function AppShell({
           <Detail
             load={load}
             onRetry={refresh}
+            onBarGone={focusAfterBar}
             selected={selected}
             ended={ended}
             behind={selected !== null && behindIds.includes(selected.id)}
@@ -1946,6 +1947,7 @@ interface EndedMeeting {
 function Detail({
   load,
   onRetry,
+  onBarGone,
   selected,
   ended,
   behind,
@@ -1965,6 +1967,8 @@ function Detail({
   load: Load;
   /** Reads the meeting list again, after a first read that failed (T14.16). */
   onRetry: () => void;
+  /** Puts focus back on the screen when the failed-read bar goes while it holds focus. */
+  onBarGone: () => void;
   selected: MeetingListItem | null;
   ended: EndedMeeting | null;
   /** The selected meeting is still finishing behind a newer one the screen follows (T14.15). */
@@ -1994,17 +1998,17 @@ function Detail({
   if (load.status === "newer" || load.status === "dataFolder") return null;
   if (load.status === "failed") {
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>Meetings could not be loaded</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-        <MessageBarActions>
+      <ErrorBar
+        title="Meetings could not be loaded"
+        onGoneWithFocus={onBarGone}
+        actions={
           <Button size="small" onClick={onRetry}>
             Try again
           </Button>
-        </MessageBarActions>
-      </MessageBar>
+        }
+      >
+        {load.message}
+      </ErrorBar>
     );
   }
   if (load.meetings.length === 0 || selected === null) {
