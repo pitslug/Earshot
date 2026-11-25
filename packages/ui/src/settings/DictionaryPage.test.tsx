@@ -62,7 +62,7 @@ describe("Dictionary", () => {
   it("says how many saved names it left out, and why, without naming them (T12.91a)", async () => {
     const { ipc } = setup({
       persons: [
-        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p1", name: "Nim\u200ca Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
         { id: "p2", name: "Vantrel Oskarine", is_me: false, has_voiceprint: false, meetings: 2 },
       ],
     });
@@ -79,8 +79,8 @@ describe("Dictionary", () => {
   it("counts every saved name left out (T12.91a)", async () => {
     setup({
       persons: [
-        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
-        { id: "p2", name: "Kam‍Pellory Vane", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p1", name: "Nim\u200ca Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p2", name: "Kam\u200dPellory Vane", is_me: false, has_voiceprint: false, meetings: 1 },
       ],
     });
     expect(
