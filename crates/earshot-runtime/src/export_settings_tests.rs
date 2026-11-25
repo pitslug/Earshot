@@ -59,7 +59,7 @@ fn export_settings_refuse_unusable_vaults_and_folders_and_store_nothing() {
     let good = vault.display().to_string();
     let missing = dir.0.join("missing").display().to_string();
     let long = "x".repeat(MAX_PATH_CHARS + 1);
-    let cases: [(String, &str, &str); 8] = [
+    let cases: [(String, &str, &str); 11] = [
         ("Notes".into(), "Meetings", "absolute"),
         (missing, "Meetings", "missing"),
         (file.display().to_string(), "Meetings", "not a folder"),
@@ -68,6 +68,9 @@ fn export_settings_refuse_unusable_vaults_and_folders_and_store_nothing() {
         (good.clone(), "C:\\Elsewhere", "folder"),
         (good.clone(), "a\u{7}b", "folder"),
         (good.clone(), &long, "too long"),
+        (good.clone(), "Work/why?", "folder name"),
+        (good.clone(), "Notes.", "folder name"),
+        (good.clone(), "Work/CON", "folder name"),
     ];
     let kind = |e: &ObsidianSettingsError| match e {
         ObsidianSettingsError::VaultNotAbsolute => "absolute",
@@ -75,6 +78,7 @@ fn export_settings_refuse_unusable_vaults_and_folders_and_store_nothing() {
         ObsidianSettingsError::Vault(VaultError::NotADirectory(_)) => "not a folder",
         ObsidianSettingsError::Vault(VaultError::NotWritable(..)) => "not writable",
         ObsidianSettingsError::Folder(_) => "folder",
+        ObsidianSettingsError::FolderName(_) => "folder name",
         ObsidianSettingsError::TooLong => "too long",
         ObsidianSettingsError::Store(_) => "store",
     };
@@ -115,6 +119,60 @@ fn export_settings_report_stored_values_they_cannot_use() {
     let (s, unknown) = obsidian_settings(&svc.store()).unwrap();
     assert_eq!(s, ObsidianSettings::default());
     assert_eq!(unknown.len(), 2);
+}
+
+#[test]
+fn export_settings_subfolder_follows_the_shared_case_table() {
+    let table: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/ui/vault_folder_cases.json")).unwrap();
+    let cases = table["cases"].as_array().unwrap();
+    assert!(cases.len() >= 30);
+    let mut refused_by_windows = 0;
+    for case in cases {
+        let folder = case["folder"].as_str().unwrap();
+        match (case["stored"].as_str(), case["refused"].as_str()) {
+            (Some(stored), None) => {
+                assert_eq!(check_folder(folder).unwrap(), stored, "{folder:?}");
+            }
+            (None, Some(refused)) => {
+                let e = check_folder(folder).unwrap_err();
+                assert_eq!(e.to_string(), refused, "{folder:?}");
+                if matches!(e, ObsidianSettingsError::FolderName(_)) {
+                    refused_by_windows += 1;
+                    // Each of these was a vault path before T14.29: only the Windows rule
+                    // refuses it.
+                    assert!(
+                        VaultPath::new(folder.trim().trim_matches(['/', '\\'])).is_ok(),
+                        "{folder:?}"
+                    );
+                }
+            }
+            _ => panic!("case {folder:?} needs exactly one of stored and refused"),
+        }
+    }
+    assert!(refused_by_windows >= 20, "{refused_by_windows}");
+}
+
+#[test]
+fn export_settings_a_stored_subfolder_windows_refuses_is_reported_not_fatal() {
+    // Stored by a version from before T14.29.
+    let dir = TempDir::new("export-settings-windows");
+    let (svc, _) = services(&dir);
+    svc.store()
+        .set_local_value(FOLDER_KEY, b"Work/Notes.")
+        .unwrap();
+    let (s, unknown) = obsidian_settings(&svc.store()).unwrap();
+    assert_eq!(s.folder, DEFAULT_FOLDER);
+    assert_eq!(unknown.len(), 1);
+    assert_eq!(unknown[0].key, FOLDER_KEY);
+    assert_eq!(unknown[0].stored, "Work/Notes.");
+    // Saving a usable subfolder replaces it.
+    let vault = dir.0.join("vault");
+    std::fs::create_dir_all(&vault).unwrap();
+    set_obsidian_settings(&svc, &vault.display().to_string(), "Work/Notes").unwrap();
+    let (s, unknown) = obsidian_settings(&svc.store()).unwrap();
+    assert_eq!(s.folder, "Work/Notes");
+    assert!(unknown.is_empty());
 }
 
 #[test]

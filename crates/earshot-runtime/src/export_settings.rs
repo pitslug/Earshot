@@ -10,7 +10,11 @@
 //! - **The subfolder** ([`FOLDER_KEY`]): vault-relative, the rule of the export itself
 //!   (`VaultPath::new`: no absolute path, drive, `.` or `..` component or control
 //!   character; backslashes become `/`), with leading and trailing separators dropped;
-//!   empty is the vault's own top folder. Default [`DEFAULT_FOLDER`] (the export default).
+//!   empty is the vault's own top folder. Each folder name must also be one Windows can
+//!   create (T14.29: no `< > " | ? *`, no trailing dot or space, no device name such as
+//!   CON or COM1). Default [`DEFAULT_FOLDER`] (the export default). The rule is pinned to
+//!   the UI mock's `checkFolder` by `fixtures/ui/vault_folder_cases.json`, which both
+//!   suites run: a rule or copy change edits both and the table.
 //!
 //! A stored value this build cannot use (not text, a relative vault, a subfolder the rule
 //! refuses) reads as the default and is reported ([`UnknownSetting`]), as the other
@@ -80,6 +84,8 @@ pub enum ObsidianSettingsError {
     Vault(VaultError),
     /// The subfolder is not a path inside the vault.
     Folder(&'static str),
+    /// A folder name in the subfolder is one Windows refuses (fixed copy, the whole reason).
+    FolderName(&'static str),
     /// The store failed.
     Store(RuntimeError),
 }
@@ -99,6 +105,7 @@ impl fmt::Display for ObsidianSettingsError {
             Self::Folder(why) => {
                 write!(f, "the subfolder must be a folder inside the vault ({why})")
             }
+            Self::FolderName(why) => f.write_str(why),
             Self::Store(e) => write!(f, "{e}"),
         }
     }
@@ -109,7 +116,8 @@ impl std::error::Error for ObsidianSettingsError {}
 /// The subfolder rule (module docs): `Ok` with the normalised subfolder.
 ///
 /// # Errors
-/// [`ObsidianSettingsError::TooLong`], [`ObsidianSettingsError::Folder`].
+/// [`ObsidianSettingsError::TooLong`], [`ObsidianSettingsError::Folder`],
+/// [`ObsidianSettingsError::FolderName`].
 pub fn check_folder(folder: &str) -> Result<String, ObsidianSettingsError> {
     let trimmed = folder.trim().trim_matches(['/', '\\']);
     if trimmed.chars().count() > MAX_PATH_CHARS {
@@ -118,10 +126,59 @@ pub fn check_folder(folder: &str) -> Result<String, ObsidianSettingsError> {
     if trimmed.is_empty() {
         return Ok(String::new());
     }
-    VaultPath::new(trimmed)
-        .map(|p| p.as_str().to_owned())
-        .map_err(|e| ObsidianSettingsError::Folder(e.reason))
+    let path = VaultPath::new(trimmed).map_err(|e| ObsidianSettingsError::Folder(e.reason))?;
+    for name in path.components() {
+        if let Some(why) = windows_refuses(name) {
+            return Err(ObsidianSettingsError::FolderName(why));
+        }
+    }
+    Ok(path.as_str().to_owned())
 }
+
+/// Characters Windows refuses in a file or folder name, beyond the separators and `:`
+/// that `VaultPath::new` already handles.
+pub const WINDOWS_RESERVED_CHARS: [char; 6] = ['<', '>', '"', '|', '?', '*'];
+
+/// Why Windows cannot create a folder called `name` (one component, already through
+/// `VaultPath::new`, so no separator, `:` or control character), or `None`. The rules of
+/// Microsoft's "Naming Files, Paths, and Namespaces": no reserved character, no trailing
+/// dot or space (Windows would drop them and use another folder), and not a device name
+/// (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, also with the superscript digits ¹ ² ³,
+/// in any case, with or without an extension).
+fn windows_refuses(name: &str) -> Option<&'static str> {
+    if name.contains(WINDOWS_RESERVED_CHARS) {
+        return Some(RESERVED_CHARACTER);
+    }
+    if name.ends_with(['.', ' ']) {
+        return Some(TRAILING_DOT_OR_SPACE);
+    }
+    let base = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    // COM or LPT and then exactly one digit 1 to 9 or a superscript 1, 2 or 3.
+    let numbered = |prefix: &str| {
+        base.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+            && {
+                let mut rest = base[prefix.len()..].chars();
+                matches!(
+                    (rest.next(), rest.next()),
+                    (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+                )
+            }
+    };
+    let reserved = ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|d| base.eq_ignore_ascii_case(d))
+        || ["COM", "LPT"].iter().any(|d| numbered(d));
+    reserved.then_some(DEVICE_NAME)
+}
+
+/// The refusal for a reserved character in the subfolder.
+pub const RESERVED_CHARACTER: &str = "a folder name cannot contain < > \" | ? or *";
+/// The refusal for a folder name ending with a dot or a space.
+pub const TRAILING_DOT_OR_SPACE: &str = "a folder name cannot end with a dot or a space";
+/// The refusal for a Windows device name.
+pub const DEVICE_NAME: &str =
+    "CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9 are names Windows keeps for itself";
 
 /// The vault path's shape (absolute, not too long); `None` for an empty one. Does not
 /// touch the disk.

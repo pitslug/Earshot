@@ -137,8 +137,24 @@ export function voiceMessage(result: VoiceResult, speechMs: number): string {
 
 const MAX_PATH_CHARS = 1024;
 
-/** `export_settings::check_folder` and its messages. */
-function checkFolder(folder: string): string {
+/** `export_settings::RESERVED_CHARACTER`, `TRAILING_DOT_OR_SPACE` and `DEVICE_NAME`, as the
+ * desktop sends them (sentences). */
+const RESERVED_CHARACTER = 'A folder name cannot contain < > " | ? or *.';
+const TRAILING_DOT_OR_SPACE = "A folder name cannot end with a dot or a space.";
+const DEVICE_NAME =
+  "CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9 are names Windows keeps for itself.";
+
+/** `export_settings::windows_refuses`: why Windows cannot create a folder called `name`. */
+function windowsRefuses(name: string): string | null {
+  if (/[<>"|?*]/.test(name)) return RESERVED_CHARACTER;
+  if (/[. ]$/.test(name)) return TRAILING_DOT_OR_SPACE;
+  const base = name.split(".")[0].replace(/ +$/, "");
+  if (/^(CON|PRN|AUX|NUL|(COM|LPT)[1-9¹²³])$/i.test(base)) return DEVICE_NAME;
+  return null;
+}
+
+/** `export_settings::check_folder` and its messages (pinned by `fixtures/ui/vault_folder_cases.json`). */
+export function checkFolder(folder: string): string {
   const t = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
   if ([...t].length > MAX_PATH_CHARS) fail("invalid_setting", `The path is longer than ${MAX_PATH_CHARS} characters.`);
   if (t === "") return "";
@@ -152,6 +168,10 @@ function checkFolder(folder: string): string {
   for (const c of norm.split("/")) {
     if (c === "") bad("empty component");
     if (c === "." || c === "..") bad("dot component");
+  }
+  for (const c of norm.split("/")) {
+    const why = windowsRefuses(c);
+    if (why) fail("invalid_setting", why);
   }
   return norm;
 }
