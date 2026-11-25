@@ -335,6 +335,58 @@ fn edit_retranscribe_keeps_edited_lines_and_warns() {
     assert_eq!(texts, ["me", "first, corrected by hand", "second"]);
 }
 
+/// T12.92: every final row one run of the final pass writes carries that run's one id; an
+/// edited line keeps the run it had; the next run writes a new id.
+#[test]
+fn edit_retranscribe_post_rows_of_one_run_share_one_id_and_an_edit_keeps_its_own() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 412);
+    let finals = |svc: &Services| -> Vec<SegmentRow> {
+        svc.store()
+            .segments(m)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
+            .collect()
+    };
+    let runs = |rows: &[SegmentRow]| -> std::collections::BTreeSet<Option<EntityId>> {
+        rows.iter().map(|r| r.pass_run).collect()
+    };
+    let cancel = CancelToken::new();
+    let once = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    assert!(matches!(once.post, HostPost::Done(_)));
+    let first_rows = finals(&svc);
+    let first_runs = runs(&first_rows);
+    assert_eq!(first_runs.len(), 1, "{first_runs:?}");
+    let run = *first_runs.iter().next().unwrap();
+    assert!(run.is_some(), "a pass gives its rows a run");
+    let line = first_rows
+        .iter()
+        .find(|r| r.segment.text == "first")
+        .unwrap();
+    assert!(edit_segment(&svc, m, line.segment.id, "first, by hand").unwrap());
+    assert_eq!(segment_row(&svc, m, line.segment.id).pass_run, run, "kept");
+    let again = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    assert!(matches!(again.post, HostPost::Done(_)));
+    let rows = finals(&svc);
+    let kept = rows
+        .iter()
+        .find(|r| r.segment.id == line.segment.id)
+        .unwrap();
+    assert_eq!(kept.pass_run, run, "the edited line keeps its run");
+    let new: std::collections::BTreeSet<Option<EntityId>> = rows
+        .iter()
+        .filter(|r| r.text_edited_at.is_none())
+        .map(|r| r.pass_run)
+        .collect();
+    assert_eq!(new.len(), 1, "{new:?}");
+    assert!(
+        !new.contains(&run) && !new.contains(&None),
+        "a new run: {new:?}"
+    );
+}
+
 #[test]
 fn edit_retranscribe_counts_kept_lines_and_gives_their_speaker_this_runs_role() {
     let dir = TempDir::new("edit");

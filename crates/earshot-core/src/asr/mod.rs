@@ -11,6 +11,7 @@
 //! - [`dedupe_echo`]: removes far-end speech that leaked into the mic transcript (T2.4e).
 //! - [`transcribe_in_pieces`]: batch decoding in VAD speech pieces with a repetition check
 //!   (the final pass, T6.16).
+//! - [`drop_words_under_edits`]: the words a user's edited line covers (T12.16, T12.92).
 //! - [`drop_non_speech`]: removes Whisper's `[BLANK_AUDIO]`-style annotations (T6.7).
 //! - [`Vocab`], [`ctc_greedy`], [`words_from_tokens`]: CTC decoding for Parakeet (T6.10e1).
 //! - [`tdt_greedy`] over a [`TdtModel`]: greedy TDT decoding for Parakeet (T6.10e2).
@@ -23,6 +24,7 @@ mod agreement;
 mod chunker;
 mod ctc;
 mod echo;
+mod edit_span;
 mod fake;
 mod nonspeech;
 mod pieces;
@@ -43,6 +45,7 @@ pub use agreement::{LocalAgreement, normalize_token};
 pub use chunker::{ChunkerConfig, MAX_WINDOW_LIMIT, SegmentIds, StreamingChunker};
 pub use ctc::{BLANK, CtcToken, Vocab, WORD_START, ctc_greedy, words_from_tokens};
 pub use echo::{EchoDedup, EchoDedupConfig, dedupe_echo, dedupe_echo_segments};
+pub use edit_span::{drop_masked, drop_words_under_edits, under_edit};
 pub use fake::{FakeCall, FakeTranscriber};
 pub use nonspeech::{MAX_ANNOTATION_WORDS, drop_non_speech, is_non_speech};
 pub use pieces::{

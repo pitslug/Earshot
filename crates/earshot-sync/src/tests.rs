@@ -386,14 +386,14 @@ fn sync_debug_never_shows_key_material() {
     }
 }
 
-/// T12.77b8 and T12.93: rows of formats 1 and 2, written before a raise, still open under
-/// format 3; a format-2 speaker row reads as not ignored.
+/// T12.77b8, T12.93 and T12.92: rows of formats 1 to 3, written before a raise, still open
+/// under format 4; a format-2 speaker row reads as not ignored.
 #[test]
 fn sync_format_one_rows_still_open_after_the_raise() {
-    assert_eq!(ENVELOPE_FORMAT, 3);
+    assert_eq!(ENVELOPE_FORMAT, 4);
     let keys = key(1).keys();
     let m = meeting(1, "Invented review");
-    for format in [1, 2] {
+    for format in [1, 2, 3] {
         let mut plain = serde_json::to_value(earshot_core::identity::sync_envelope(&m)).unwrap();
         plain["format"] = format.into();
         let bytes = serde_json::to_vec(&plain).unwrap();
@@ -488,4 +488,47 @@ fn sync_voice_sample_of_the_largest_dimension_seals_within_the_plaintext_limit()
 
 fn keys_for_samples() -> Keys {
     key(2).keys()
+}
+
+/// T12.92: a final segment row carries its final-pass run at format 4; a row sealed by a
+/// format-3 build (no `pass_run`) opens and reads as having no run, which sync never drops.
+#[test]
+fn sync_segment_row_carries_its_pass_run_and_a_format_three_row_reads_none() {
+    use earshot_core::asr::{MeetingTime, Segment, Word};
+    use earshot_core::model::{SegmentRow, TranscriptPass};
+    let keys = key(1).keys();
+    let mut segment = Segment::from_words(
+        id(8),
+        id(2),
+        vec![Word::new("Invented", 0, 400, 0.9)],
+        MeetingTime::ZERO,
+    );
+    segment.speaker_id = Some(id(7));
+    let mut s = SegmentRow {
+        meta: meeting(1, "x").meta,
+        meeting_id: id(1),
+        pass: TranscriptPass::Final,
+        segment,
+        text_edited_at: None,
+        pass_run: Some(id(9)),
+    };
+    let sealed = seal_row(&keys, &s).unwrap();
+    let row = opened(open_row(&keys, sealed.key, sealed.stamp, &sealed.body).unwrap());
+    assert_eq!(row.format, ENVELOPE_FORMAT);
+    assert!(row.record.get("pass_run").is_some());
+    let back: SegmentRow = serde_json::from_value(row.record).unwrap();
+    assert_eq!(back, s);
+    let mut plain = serde_json::to_value(earshot_core::identity::sync_envelope(&s)).unwrap();
+    plain["format"] = 3.into();
+    plain["record"].as_object_mut().unwrap().remove("pass_run");
+    let bytes = serde_json::to_vec(&plain).unwrap();
+    let sealed = seal_plaintext(&keys, keys.row_key(id(8)), s.meta.updated_at, &bytes).unwrap();
+    let row = opened(open_row(&keys, sealed.key, sealed.stamp, &sealed.body).unwrap());
+    assert_eq!(row.format, 3);
+    let back: SegmentRow = serde_json::from_value(row.record).unwrap();
+    s.pass_run = None;
+    assert_eq!(back, s);
+    // A row with no run leaves the field out, so its bytes are a format-3 row's.
+    let plain = serde_json::to_value(earshot_core::identity::sync_envelope(&s)).unwrap();
+    assert!(plain["record"].get("pass_run").is_none());
 }

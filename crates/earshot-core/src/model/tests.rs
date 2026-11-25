@@ -406,3 +406,98 @@ fn model_replace_segments_rejects_a_segment_of_another_meetings_track() {
     .unwrap_err();
     assert!(matches!(err, RepoError::MissingParent { .. }), "{err:?}");
 }
+
+/// T12.92: two copies of one final line are ordered by the user's edit first (absent lowest),
+/// then by `updated_at`; the order is total and antisymmetric, and copies that are not both
+/// final have none (plain `updated_at` order applies).
+#[test]
+fn model_segment_edit_order_puts_the_edit_first_then_the_stamp() {
+    use crate::identity::{HlcTimestamp, SyncMeta};
+    use core::cmp::Ordering::{Equal, Greater, Less};
+    let node = |b: u8| DeviceId::from_bytes([b; 16]);
+    let ts = |wall_ms: u64, logical: u32, n: u8| HlcTimestamp {
+        wall_ms,
+        logical,
+        node: node(n),
+    };
+    let row = |updated: HlcTimestamp, edited: Option<HlcTimestamp>| {
+        let seg = Segment::from_words(
+            EntityId::from_bytes([1; 16]),
+            EntityId::from_bytes([2; 16]),
+            vec![Word::new("invented", 0, 300, 0.9)],
+            crate::asr::MeetingTime::ZERO,
+        );
+        let mut r = SegmentRow {
+            meta: SyncMeta {
+                created_at: ts(1, 0, 1),
+                updated_at: updated,
+                deleted: false,
+                origin_device_id: node(1),
+            },
+            meeting_id: EntityId::from_bytes([3; 16]),
+            pass: TranscriptPass::Final,
+            segment: seg,
+            text_edited_at: edited,
+            pass_run: None,
+        };
+        r.meta.deleted = edited.is_none();
+        r
+    };
+    let edit = row(ts(100, 0, 1), Some(ts(100, 0, 1)));
+    let later_tomb = row(ts(200, 0, 2), None);
+    // The edit wins over a later tombstone, from either side.
+    assert_eq!(SegmentRow::edit_order(&later_tomb, &edit), Some(Greater));
+    assert_eq!(SegmentRow::edit_order(&edit, &later_tomb), Some(Less));
+    // Of two edits the later wins; ties on the edit go to `updated_at`, then the node.
+    let later_edit = row(ts(150, 0, 3), Some(ts(150, 0, 3)));
+    assert_eq!(SegmentRow::edit_order(&edit, &later_edit), Some(Greater));
+    let same_edit_later_write = row(ts(300, 0, 4), Some(ts(100, 0, 1)));
+    assert_eq!(
+        SegmentRow::edit_order(&edit, &same_edit_later_write),
+        Some(Greater)
+    );
+    let tie_a = row(ts(300, 0, 4), Some(ts(100, 0, 1)));
+    let tie_b = row(ts(300, 0, 5), Some(ts(100, 0, 1)));
+    assert_eq!(SegmentRow::edit_order(&tie_a, &tie_b), Some(Greater));
+    assert_eq!(SegmentRow::edit_order(&tie_b, &tie_a), Some(Less));
+    assert_eq!(SegmentRow::edit_order(&tie_a, &tie_a.clone()), Some(Equal));
+    // Without edits it is `updated_at` order.
+    let older_tomb = row(ts(50, 0, 2), None);
+    assert_eq!(
+        SegmentRow::edit_order(&older_tomb, &later_tomb),
+        Some(Greater)
+    );
+    // Antisymmetric over every pair.
+    let all = [
+        &edit,
+        &later_tomb,
+        &later_edit,
+        &same_edit_later_write,
+        &tie_a,
+        &tie_b,
+        &older_tomb,
+    ];
+    for a in all {
+        for b in all {
+            assert_eq!(
+                SegmentRow::edit_order(a, b).map(core::cmp::Ordering::reverse),
+                SegmentRow::edit_order(b, a)
+            );
+        }
+    }
+    // A meeting deletion's erasure (no text, words, confidence or speaker) has no edit order
+    // with any copy, so plain stamp order decides; a pass tombstone keeps its text and has one.
+    let mut erasure = later_tomb.clone();
+    erasure.segment.text.clear();
+    erasure.segment.words.clear();
+    erasure.segment.confidence = 0.0;
+    erasure.segment.speaker_id = None;
+    assert!(erasure.is_erasure() && !later_tomb.is_erasure() && !edit.is_erasure());
+    assert_eq!(SegmentRow::edit_order(&edit, &erasure), None);
+    assert_eq!(SegmentRow::edit_order(&erasure, &edit), None);
+    // Not both final: no edit order.
+    let mut live = edit.clone();
+    live.pass = TranscriptPass::Live;
+    assert_eq!(SegmentRow::edit_order(&live, &later_tomb), None);
+    assert_eq!(SegmentRow::edit_order(&later_tomb, &live), None);
+}

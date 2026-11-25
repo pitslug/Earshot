@@ -3448,3 +3448,6 @@ fn sync_ignore_legacy_flag_is_honoured_before_the_copy_and_travels_after_it() {
     trade(&a, &b);
     assert!(!ignored_on(&b, m, v));
 }
+
+#[path = "sync_edit_tests.rs"]
+mod edits;

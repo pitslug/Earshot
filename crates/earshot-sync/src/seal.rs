@@ -25,8 +25,11 @@ use crate::{SealError, Unreadable, check_plaintext};
 /// worker in that vault must update. 2: voice samples (T12.77b8, docs/voice-samples.md 7.3; a
 /// build of format 1 would misread a voiceprint whose voice lives in samples). 3: a speaker
 /// row carries the user's ignore (T12.93; a build of format 2 would write a speaker row back
-/// without it and undo the ignore on every computer). Rows of formats 1 and 2 still open.
-pub const ENVELOPE_FORMAT: u32 = 3;
+/// without it and undo the ignore on every computer). 4: a final segment row carries its
+/// final-pass run (`pass_run`, T12.92, docs/sync-spec.md section 7 rule 4; a build of format 3
+/// would write a line back without it and keep no edit order). Rows of formats 1 to 3 still
+/// open.
+pub const ENVELOPE_FORMAT: u32 = 4;
 
 /// The leading byte of every sealed value this build writes.
 const SEAL_VERSION: u8 = 0x01;

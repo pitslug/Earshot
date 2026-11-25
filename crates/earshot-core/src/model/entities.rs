@@ -420,6 +420,14 @@ pub struct SegmentRow {
     /// re-transcription keeps an edited segment (`earshot_runtime::post`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_edited_at: Option<HlcTimestamp>,
+    /// The final-pass run that wrote this row (T12.92): one fresh id per run of the final pass,
+    /// given to every row it writes; an edit, move or split keeps its row's value (a split's
+    /// second part copies the first's). `None` for live rows and rows written before it
+    /// existed. Sync compares lines of different runs only (docs/sync-spec.md section 7 rule
+    /// 4b), so a meeting with no clash is never changed. Synced since
+    /// `earshot_sync::ENVELOPE_FORMAT` 4; rows of older formats read `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_run: Option<EntityId>,
 }
 
 impl SyncClass for SegmentRow {
@@ -451,7 +459,44 @@ impl SegmentRow {
             pass,
             segment,
             text_edited_at: None,
+            pass_run: None,
         }
+    }
+
+    /// Whether this row is a meeting deletion's erasure, as `model::delete_meeting` leaves it:
+    /// a tombstone with no text, words, confidence or speaker (its edit stamp is kept). A final
+    /// pass's tombstone keeps its text, so it is never one.
+    #[must_use]
+    pub fn is_erasure(&self) -> bool {
+        self.meta.deleted
+            && self.segment.text.is_empty()
+            && self.segment.words.is_empty()
+            && self.segment.confidence == 0.0
+            && self.segment.speaker_id.is_none()
+    }
+
+    /// Which of two copies of one final segment row sync keeps (docs/sync-spec.md section 7
+    /// rule 4a): `Some(Greater)` when `there` wins over `here`, `Some(Less)` when `here` wins,
+    /// `Some(Equal)` for the same copy. Copies are compared by `text_edited_at` first (absent is
+    /// lowest), then `updated_at`, so a user's edit is never replaced by a re-transcription that
+    /// did not see it, and of two edits the later wins. `None` unless both copies are
+    /// [`TranscriptPass::Final`] and neither is a meeting deletion's erasure
+    /// ([`SegmentRow::is_erasure`]): other copies keep plain `updated_at` order, so a deletion
+    /// whose rows arrive over several pull pages never brings an edit's text back. A total
+    /// order: `updated_at` holds the writing device, so two different copies never tie.
+    #[must_use]
+    pub fn edit_order(here: &SegmentRow, there: &SegmentRow) -> Option<std::cmp::Ordering> {
+        if here.pass != TranscriptPass::Final
+            || there.pass != TranscriptPass::Final
+            || here.is_erasure()
+            || there.is_erasure()
+        {
+            return None;
+        }
+        Some(
+            (there.text_edited_at, there.meta.updated_at)
+                .cmp(&(here.text_edited_at, here.meta.updated_at)),
+        )
     }
 }
 
