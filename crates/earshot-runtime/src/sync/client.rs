@@ -30,6 +30,9 @@ pub(crate) struct Relay {
     net: NetClient,
     runtime: tokio::runtime::Runtime,
     base: Url,
+    /// The envelope format every call announces: [`ENVELOPE_FORMAT`], except in a test that
+    /// stands in for an older build.
+    format: u32,
 }
 
 fn problem_of_net(e: &NetError) -> SyncProblem {
@@ -89,7 +92,20 @@ impl Relay {
             .enable_all()
             .build()
             .map_err(|_| SyncProblem::Internal)?;
-        Ok(Self { net, runtime, base })
+        Ok(Self {
+            net,
+            runtime,
+            base,
+            format: ENVELOPE_FORMAT,
+        })
+    }
+
+    /// This client announcing `format` on every call, as a build that writes that envelope
+    /// format does (0.4.2: 2).
+    #[cfg(test)]
+    pub(crate) fn announcing(mut self, format: u32) -> Self {
+        self.format = format;
+        self
     }
 
     /// Every request made, one entry per hop.
@@ -120,7 +136,7 @@ impl Relay {
         timeout: Duration,
     ) -> Result<Resp, SyncProblem> {
         let mut req = NetRequest::new(method, url)
-            .header(FORMAT_HEADER, ENVELOPE_FORMAT.to_string())
+            .header(FORMAT_HEADER, self.format.to_string())
             .timeout(timeout);
         if let Some(token) = token {
             req = req.header("Authorization", format!("Bearer {}", token.as_str()));

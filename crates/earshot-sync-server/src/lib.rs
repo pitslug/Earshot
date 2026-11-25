@@ -32,7 +32,7 @@ use earshot_sync::{KEY_CHECK_LEN, ROW_KEY_LEN, SLOT_LEN};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
-pub use db::{CLAIM_EVERY_S, DbError, MAX_CLAIM_JUMP, REFILE_MAX};
+pub use db::{CLAIM_EVERY_S, DbError, MAX_CLAIM_JUMP};
 
 /// The shortest setup secret the relay starts with.
 pub const MIN_SECRET_CHARS: usize = 24;
@@ -666,7 +666,7 @@ async fn push(
             body: &r.body.0,
         });
     }
-    let claim = claim_of(&relay, device, req.seen_seq, req.epoch.as_ref())?;
+    let claim = claim_of(&relay, req.seen_seq, req.epoch.as_ref())?;
     let Some(pushed) = relay.db().push(&device, req.format, &rows, &claim)? else {
         return Err(ErrorWord::UpdateNeeded.into());
     };
@@ -687,17 +687,11 @@ async fn push(
 /// [`EPOCH_LEN`] bytes. Any number is taken, however large: the relay never follows one further
 /// than [`MAX_CLAIM_JUMP`] above its own rows, and refusing a large one would turn a device
 /// that once stored it into one that can never call again.
-fn claim_of(
-    relay: &Relay,
-    device: [u8; 16],
-    seen: Option<u64>,
-    epoch: Option<&B64>,
-) -> Result<db::Claim, Fail> {
+fn claim_of(relay: &Relay, seen: Option<u64>, epoch: Option<&B64>) -> Result<db::Claim, Fail> {
     Ok(db::Claim {
         seen,
         epoch: epoch.map(exact::<EPOCH_LEN>).transpose()?,
         now_s: relay.now(),
-        device,
     })
 }
 
@@ -714,16 +708,16 @@ struct PullQuery {
 
 async fn pull(
     State(relay): State<Relay>,
-    Extension(Caller(device)): Extension<Caller>,
+    Extension(Caller(_)): Extension<Caller>,
     headers: HeaderMap,
     query: Result<Query<PullQuery>, QueryRejection>,
 ) -> Answer<PullResponse> {
     let format = format_header(&headers)?;
     let Query(q) = query.map_err(|_| ErrorWord::BadRequest)?;
     let limit = q.limit.unwrap_or(PULL_DEFAULT).clamp(1, PULL_MAX);
-    // The cursor is itself something the device has seen (a client from before T14.45 sends
-    // nothing else).
-    let mut claim = claim_of(&relay, device, q.seen, q.epoch.as_ref())?;
+    // The cursor is itself something the device has seen. It is heard only with the epoch it
+    // belongs to (`hear_claim`): a client from before T14.45 sends the cursor alone.
+    let mut claim = claim_of(&relay, q.seen, q.epoch.as_ref())?;
     claim.seen = Some(claim.seen.map_or(q.after, |s| s.max(q.after)));
     // The format is checked in the same read as the rows (T12.77b8): a push that raises the
     // vault's format commits with its rows, so a device below it never receives one of them.

@@ -175,7 +175,8 @@ pub struct PushRequest {
     /// older copy (T14.45).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_seq: Option<u64>,
-    /// The vault epoch the device last saw, when it has seen one.
+    /// The vault epoch the device last saw, when it has seen one. The relay hears
+    /// [`Self::seen_seq`] only together with the vault's own epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<B64>,
 }

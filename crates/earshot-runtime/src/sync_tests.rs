@@ -4411,303 +4411,76 @@ fn sync_a_relay_restored_from_an_older_copy_is_noticed_and_filled_again() {
     assert_eq!(c.rows(), before);
 }
 
-/// One pull-only tick as a 0.4.2 client makes it (`v0.4.2:crates/earshot-runtime/src/sync/
-/// engine.rs`, `pull`): the request names its cursor and a limit and nothing else, its record
-/// holds the cursor alone, and the cursor moves only forward, to the highest number pulled.
-/// Rows are opened and applied as this build does. Returns how many rows it was sent.
-fn old_client_pull(dev: &Device) -> usize {
-    let client = dev.client();
-    let secrets = dev.vault.load().unwrap().unwrap();
-    let keys = secrets.key.keys();
-    let mut pulled = 0;
-    for _ in 0..50 {
-        let after = pull_cursor(&dev.svc.store()).unwrap();
-        // The whole of what a 0.4.2 client knows of the vault.
-        let record = Cursor {
-            pull_seq: after,
-            ..Cursor::default()
-        };
-        assert_eq!(
-            client::pull_query(after, 200, &record),
-            vec![("after", after.to_string()), ("limit", "200".to_owned())],
-            "the request a 0.4.2 client sends"
-        );
-        let resp = client
-            .relay()
-            .pull(&secrets.token, after, 200, &record)
-            .unwrap();
-        let last = resp.rows.iter().map(|r| r.seq).max();
-        let page: Vec<earshot_store::Incoming> = resp
-            .rows
-            .into_iter()
-            .filter_map(|r| {
-                let node: [u8; 16] = r.node.0.as_slice().try_into().ok()?;
-                let stamp = earshot_core::identity::HlcTimestamp {
-                    wall_ms: r.wall_ms,
-                    logical: r.logical,
-                    node: earshot_core::identity::DeviceId::from_bytes(node),
-                };
-                super::engine::open(&keys, r.seq, &r.key.0, stamp, r.body.0).ok()
-            })
-            .collect();
-        pulled += page.len();
-        {
-            let never = |_: earshot_core::identity::EntityId| false;
-            let rules = earshot_store::ApplyRules {
-                kinds: earshot_store::SyncKinds {
-                    voiceprints: false,
-                    dictionary: true,
-                },
-                leased: &never,
-                now_ms: dev.svc.clock.now_unix_ms(),
-                after: None,
-            };
-            let clock = Arc::clone(&dev.svc.clock);
-            let mut db = dev.svc.store();
-            let (store, hlc) = db.parts();
-            store.apply_remote(&page, &rules, hlc, &*clock).unwrap();
-            if let Some(last) = last
-                && last > after
-            {
-                crate::local::set(
-                    &mut db,
-                    &DeviceRecord::SyncCursor.key(),
-                    &encode_cursor(last),
-                )
-                .unwrap();
-            }
-        }
-        if !resp.more || last.is_none() {
-            return pulled;
-        }
-    }
-    panic!("an old client's pull never ended");
-}
-
-/// A vault with two computers of this build (A and B) and two on 0.4.2 (C and D), its relay
-/// just restored from a backup, and A having noticed.
-struct RestoredWithOldClients {
-    relay: RestorableRelay,
-    a: Device,
-    b: Device,
-    c: Device,
-    d: Device,
-    /// The epoch A took when it noticed the restore.
-    second: earshot_sync::wire::B64,
-    /// The meeting A recorded after the restore.
-    newest: earshot_core::identity::EntityId,
-    /// The meetings B recorded after the copy of the relay was made, which the restore lost: the
-    /// first reached A, C and D, the next three C and D, the last three D alone.
-    lost: Vec<earshot_core::identity::EntityId>,
-}
-
-/// B records while A, then C, then D stop pulling, so the four cursors differ (D's highest);
-/// the relay is restored to a copy made before all of it; A records one more meeting and
-/// ticks: it notices, starts over and sends its rows again, which the relay files above A's old
-/// cursor and partly below C's and D's.
-fn restored_with_old_clients() -> RestoredWithOldClients {
+/// The relay takes a new epoch at most once in ten minutes, and a restore inside that time is
+/// still filled again: each computer that saw more than the relay now holds starts over by
+/// itself, in the epoch it has. Past the ten minutes a restore is a new epoch again.
+#[test]
+fn sync_a_restore_soon_after_another_is_filled_again_without_a_new_epoch() {
     let mut relay = RestorableRelay::start();
     let (a, b) = pair_on(&relay);
-    let (c, d) = (
-        Device::new("sync-restore-old-c"),
-        Device::new("sync-restore-old-d"),
-    );
-    for old in [&c, &d] {
-        let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
-        join_with_code(&old.svc, &*old.vault, &relay.url(), offer.code()).unwrap();
-        assert_eq!(old.svc.store().outbox_len().unwrap(), 0);
-    }
-    // B records; everyone has the first meeting when the copy of the relay is made.
-    meeting(&b.svc, "Before the backup", 1);
-    b.client().tick().unwrap();
-    a.client().tick().unwrap();
-    assert_eq!((old_client_pull(&c), old_client_pull(&d)), (8, 8));
-    let backup = relay.backup();
-    // B goes on recording. A stops pulling first, then C, then D: their cursors differ.
-    let mut lost = Vec::new();
-    for (seeds, pullers) in [
-        (10..11u64, &[&a, &c, &d][..]),
-        (20..23, &[&c, &d][..]),
-        (30..33, &[&d][..]),
-    ] {
-        for seed in seeds {
-            lost.push(meeting(&b.svc, "After the backup", seed));
-        }
-        b.client().tick().unwrap();
-        for dev in pullers {
-            if std::ptr::eq(*dev, &a) {
-                a.client().tick().unwrap();
-            } else {
-                old_client_pull(dev);
-            }
-        }
-    }
-    let cursor = |dev: &Device| pull_cursor(&dev.svc.store()).unwrap();
-    let (at_a, at_c, at_d) = (cursor(&a), cursor(&c), cursor(&d));
-    assert_eq!((at_c - at_a, at_d - at_c), (24, 24));
-    let epoch = stored_cursor(&a).epoch.expect("A holds the vault's epoch");
-
-    relay.restore(&backup);
-    // A records one more meeting and ticks: it notices, starts over and sends its rows again.
-    let newest = meeting(&a.svc, "Recorded after the restore", 40);
-    let r = a.client().tick().unwrap();
-    assert!(r.vault_reset, "{r:?}");
-    settle(&a);
-    let second = stored_cursor(&a).epoch.expect("the new epoch");
-    assert_ne!(second, epoch);
-    assert_eq!(stored_cursor(&a).resets.len(), 1);
-    assert_eq!(c.title(newest), None, "C has not heard of it yet");
-    RestoredWithOldClients {
-        relay,
-        a,
-        b,
-        c,
-        d,
-        second,
-        newest,
-        lost,
-    }
-}
-
-/// One restore is one epoch, with computers on 0.4.2 in the vault (the review's sequence). The
-/// relay is restored; a computer of this build notices, starts over and sends its rows again,
-/// which the relay files above that computer's old cursor. Two 0.4.2 computers whose cursors
-/// are higher still would never pull those rows, and each used to make the relay take yet
-/// another epoch. Now each of them is sent every row filed since the restore, and the computer
-/// of this build starts over exactly once.
-#[test]
-fn sync_old_clients_after_a_restore_get_every_row_and_cost_no_further_epoch() {
-    let RestoredWithOldClients {
-        relay,
-        a,
-        b,
-        c,
-        d,
-        second,
-        newest,
-        ..
-    } = restored_with_old_clients();
-
-    // C, a 0.4.2 computer whose cursor is above everything A sent again: it is sent all of it
-    // (the meeting lost with the restore and the new one), and no epoch is taken for it.
-    relay.advance(earshot_sync_server::CLAIM_EVERY_S + 1);
-    assert_eq!(old_client_pull(&c), 16, "every row filed since the restore");
-    assert_eq!(
-        c.title(newest).as_deref(),
-        Some("Recorded after the restore")
-    );
-    let r = a.client().tick().unwrap();
-    assert!(!r.vault_reset, "A does not start over for it: {r:?}");
-    assert_eq!(stored_cursor(&a).epoch.as_ref(), Some(&second));
-
-    // D, another 0.4.2 computer with a higher cursor still: the same.
-    relay.advance(earshot_sync_server::CLAIM_EVERY_S + 1);
-    assert_eq!(old_client_pull(&d), 16);
-    assert_eq!(
-        d.title(newest).as_deref(),
-        Some("Recorded after the restore")
-    );
-    let reports = settle(&a);
-    assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
-    let now = stored_cursor(&a);
-    assert_eq!(now.epoch.as_ref(), Some(&second), "one restore, one epoch");
-    assert_eq!(now.resets.len(), 1, "A started over exactly once");
-    assert!(now.resets[0] <= a.svc.clock.now_unix_ms());
-
-    // B, which holds the rest, comes back: it starts over by itself (it holds the old epoch),
-    // sends what the relay lost, and everyone ends with the same rows, old clients too.
-    let r = b.client().tick().unwrap();
-    assert!(r.vault_reset, "{r:?}");
-    settle(&b);
-    settle(&a);
-    old_client_pull(&c);
-    old_client_pull(&d);
-    settle(&b);
-    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&second));
-    assert_eq!(stored_cursor(&a).resets.len(), 1);
-    let rows = a.rows();
-    assert_eq!(b.rows(), rows);
-    assert_eq!(c.rows(), rows, "the first old client holds everything");
-    assert_eq!(d.rows(), rows, "the second old client holds everything");
-}
-
-/// The same restore with the computers coming back in the other order, all inside ten minutes
-/// of the relay taking its epoch (the second review's sequence). B, of this build, ticks
-/// before either 0.4.2 computer pulls: it starts over and sends what the relay lost, some of
-/// which the relay files at or below C's cursor and more below D's. C and D each pull once,
-/// moments later, and each is still sent every row it lacks: the relay's limit on how often it
-/// takes an epoch holds back no old client's rows, and serving the first leaves the second
-/// served at its own first pull.
-#[test]
-fn sync_old_clients_are_served_when_a_new_one_came_back_first_within_ten_minutes() {
-    let RestoredWithOldClients {
-        relay,
-        a,
-        b,
-        c,
-        d,
-        second,
-        newest,
-        lost,
-    } = restored_with_old_clients();
-    let (at_c, at_d) = (
-        pull_cursor(&c.svc.store()).unwrap(),
-        pull_cursor(&d.svc.store()).unwrap(),
-    );
-
-    // B comes back first: it holds the old epoch, so it starts over and sends everything.
-    let r = b.client().tick().unwrap();
-    assert!(r.vault_reset, "{r:?}");
-    settle(&b);
-    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&second));
-    // The relay filed B's rows from A's old cursor up, so some sit at or below the old
-    // clients' cursors, where a 0.4.2 pull never looks.
-    let highest = stored_cursor(&b).seen();
-    assert!(at_c < highest, "{at_c} {highest}");
-    let missing = |dev: &Device| lost.iter().filter(|m| dev.title(**m).is_none()).count();
-    assert_eq!((missing(&c), missing(&d)), (3, 0), "what each lacks of B's");
-
-    // C pulls once, seconds after the epoch was taken: it is sent the rows filed at or below
-    // its cursor as well as those above.
-    relay.advance(5);
-    let sent_c = old_client_pull(&c);
-    assert_eq!(missing(&c), 0, "C holds every meeting the relay lost");
-    assert_eq!(
-        c.title(newest).as_deref(),
-        Some("Recorded after the restore")
-    );
-    // D, whose cursor is higher still, pulls once a few seconds later: the same.
-    relay.advance(5);
-    assert_eq!(d.title(newest), None, "D has not heard of it yet");
-    let sent_d = old_client_pull(&d);
-    assert_eq!(
-        d.title(newest).as_deref(),
-        Some("Recorded after the restore")
-    );
-    assert_eq!(missing(&d), 0);
-    assert!(pull_cursor(&d.svc.store()).unwrap() > at_d);
-    // Every row filed since the restore is 64: A's lost meeting and its new one (16) and the six
-    // meetings only B still held (48). Each old client is sent all 64 once, whatever its cursor.
-    assert_eq!((sent_c, sent_d), (64, 64));
-    // Serving D gave new numbers to the 24 rows between the two cursors, so C is sent those
-    // once more: copies of rows it holds, which change nothing. After that nothing moves.
-    let held = c.rows();
-    assert_eq!((old_client_pull(&c), old_client_pull(&d)), (24, 0));
-    assert_eq!(c.rows(), held);
-    assert_eq!((old_client_pull(&c), old_client_pull(&d)), (0, 0));
-
-    // Nobody started over for it, and everyone holds the same rows.
-    let reports = [settle(&a), settle(&b)].concat();
-    assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
+    meeting(&a.svc, "Before the first copy", 1);
+    trade(&a, &b);
+    let first_copy = relay.backup();
+    meeting(&a.svc, "After the first copy", 2);
+    trade(&a, &b);
+    // The first restore: one new epoch, both start over.
+    relay.restore(&first_copy);
     for dev in [&a, &b] {
-        let now = stored_cursor(dev);
-        assert_eq!(now.epoch.as_ref(), Some(&second), "one restore, one epoch");
-        assert_eq!(now.resets.len(), 1, "each started over exactly once");
+        let r = dev.client().tick().unwrap();
+        assert!(r.vault_reset, "{r:?}");
     }
-    let rows = a.rows();
-    assert_eq!(b.rows(), rows);
-    assert_eq!(c.rows(), rows, "the first old client holds everything");
-    assert_eq!(d.rows(), rows, "the second old client holds everything");
+    for dev in [&a, &b, &a] {
+        settle(dev);
+    }
+    let second = stored_cursor(&a)
+        .epoch
+        .expect("the epoch taken for the restore");
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&second));
+
+    // A copy made now, more rows, and a minute later the relay is put back to it.
+    let second_copy = relay.backup();
+    b.clock.advance_ms(5_000);
+    meeting(&b.svc, "After the second copy", 3);
+    trade(&b, &a);
+    let before = a.rows();
+    assert_eq!(b.rows(), before);
+    relay.advance(60);
+    relay.restore(&second_copy);
+    for dev in [&a, &b] {
+        let r = dev.client().tick().unwrap();
+        assert!(r.vault_reset, "by the numbers alone: {r:?}");
+        assert_eq!(
+            stored_cursor(dev).epoch.as_ref(),
+            Some(&second),
+            "no further epoch inside the ten minutes"
+        );
+    }
+    for dev in [&a, &b, &a] {
+        let reports = settle(dev);
+        assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
+    }
+    assert_eq!((a.rows(), b.rows()), (before.clone(), before.clone()));
+    let c = Device::new("sync-restore-twice-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.rows(), before, "the relay holds everything again");
+
+    // The same copy put back once the ten minutes are over: a new epoch.
+    relay.advance(earshot_sync_server::CLAIM_EVERY_S);
+    relay.restore(&second_copy);
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    let third = stored_cursor(&a).epoch.expect("an epoch");
+    assert_ne!(third, second);
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&third));
+    for dev in [&a, &b, &a] {
+        settle(dev);
+    }
+    assert_eq!((a.rows(), b.rows()), (before.clone(), before));
+    assert_eq!(stored_cursor(&a).resets.len(), MAX_VAULT_RESETS);
 }
 
 /// A computer updated from a build before the epoch, whose record holds only its cursor, still
@@ -4745,6 +4518,116 @@ fn sync_a_computer_from_before_the_epoch_notices_a_restored_relay_by_its_cursor(
     settle(&c);
     assert_eq!(c.title(second).as_deref(), Some("After the backup"));
     assert_eq!(c.rows(), before);
+}
+
+/// What the restore handling rests on (T14.45, third review), through the real relay: a 0.4.2
+/// client announces envelope format 2, and this release pushes format 4. From the first push of
+/// a device of this release the 0.4.2 client is refused `update_needed` on every pull and
+/// push, wherever its cursor is, and nothing it says is heard: the devices of this release see
+/// the same epoch and the same numbering afterwards. The same holds after the relay is put back
+/// to a copy from before that push: a device of this release notices, starts over and pushes,
+/// which raises the format again, and the 0.4.2 client is refused as before. So no row a device
+/// of this release files after a restore is ever owed to a 0.4.2 client.
+#[test]
+fn sync_a_0_4_2_client_is_locked_out_once_this_release_has_pushed_restore_or_not() {
+    use earshot_sync::wire::{B64, PushRequest, WireRow};
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    let c = Device::new("sync-locked-out-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    // C's calls as 0.4.2 makes them (`v0.4.2:crates/earshot-runtime/src/sync/client.rs` and
+    // `engine.rs`): format 2 in the header and in a push, a pull that names its cursor and a
+    // limit and nothing else, a push that names no epoch and nothing seen. A client for each
+    // call, as each tick has (the relay is stopped and started between them here).
+    let url = relay.url();
+    let old = || {
+        client::Relay::new(check_address(&url).unwrap(), Arc::clone(&c.svc.clock))
+            .unwrap()
+            .announcing(2)
+    };
+    let token = c.vault.load().unwrap().unwrap().token;
+    let old_pull = |after: u64| {
+        let record = Cursor {
+            pull_seq: after,
+            ..Cursor::default()
+        };
+        assert_eq!(client::pull_query(after, 200, &record).len(), 2);
+        old().pull(&token, after, 200, &record)
+    };
+    let old_push = || {
+        old().push(
+            &token,
+            &PushRequest {
+                format: 2,
+                rows: vec![WireRow {
+                    key: B64(vec![0x42; 16]),
+                    wall_ms: crate::testutil::T0,
+                    logical: 0,
+                    node: B64(vec![9; 16]),
+                    body: B64(b"an invented sealed row".to_vec()),
+                }],
+                seen_seq: None,
+                epoch: None,
+            },
+        )
+    };
+    let refused = |what: &str| {
+        for after in [0, 1, 8, 16, 17, 10_000, u64::MAX] {
+            assert_eq!(
+                old_pull(after).err(),
+                Some(SyncProblem::UpdateNeeded),
+                "{what}: a pull after {after}"
+            );
+        }
+        assert_eq!(
+            old_push().err(),
+            Some(SyncProblem::UpdateNeeded),
+            "{what}: a push"
+        );
+    };
+
+    // No device of this release has pushed a row: the 0.4.2 client is let in.
+    let answer = old_pull(0).expect("let in while the vault's format is its own");
+    assert!(answer.vault_format <= 2, "{}", answer.vault_format);
+    let backup = relay.backup();
+
+    // A, of this release, records and syncs: the vault's format is 4.
+    meeting(&a.svc, "Recorded on this release", 1);
+    trade(&a, &b);
+    let before = a.rows();
+    assert_eq!(b.rows(), before);
+    let settled = (stored_cursor(&a), stored_cursor(&b));
+    refused("after the first push of this release");
+    // Nothing it said was heard: the same epoch and the same numbering for A and B.
+    for dev in [&a, &b] {
+        let r = dev.client().tick().unwrap();
+        assert!(!r.vault_reset, "{r:?}");
+        assert_eq!((r.pushed, r.written), (0, 0), "{r:?}");
+    }
+    assert_eq!((stored_cursor(&a), stored_cursor(&b)), settled);
+
+    // The relay is put back to the copy from before that push. A notices and starts over; its
+    // push raises the format again.
+    relay.restore(&backup);
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    settle(&a);
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    settle(&b);
+    settle(&a);
+    let settled = (stored_cursor(&a), stored_cursor(&b));
+    assert_ne!(settled.0.epoch, None);
+    assert_eq!(settled.0.epoch, settled.1.epoch, "one restore, one epoch");
+    refused("after the restore and the next push of this release");
+    for dev in [&a, &b] {
+        let r = dev.client().tick().unwrap();
+        assert!(!r.vault_reset, "{r:?}");
+        assert_eq!((r.pushed, r.written), (0, 0), "{r:?}");
+    }
+    assert_eq!((stored_cursor(&a), stored_cursor(&b)), settled);
+    assert_eq!((a.rows(), b.rows()), (before.clone(), before));
 }
 
 /// Reading the vault again from a restored relay never brings back what was deleted here: the
