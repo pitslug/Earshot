@@ -1520,3 +1520,78 @@ fn host_npu_compiled_a_wait_for_the_start_up_compile_reaches_the_hold_notes() {
         ]
     );
 }
+
+/// T14.12: a model is in use from the moment something says so until its guard is dropped, per
+/// models folder, counted per use; an NPU version is in use with its model.
+#[test]
+fn host_models_in_use_are_the_models_whose_uses_are_held() {
+    let dir = TempDir::new("host-in-use");
+    let here = ModelDir::new(dir.0.join("models"));
+    let elsewhere = ModelDir::new(dir.0.join("other-models"));
+    assert!(models_in_use(&here).is_empty());
+    let first = use_model(&here, "small.en");
+    let second = use_model(&here, "small.en");
+    let other = use_model(&here, "tiny.en");
+    assert_eq!(models_in_use(&here), ["small.en", "tiny.en"]);
+    assert!(
+        models_in_use(&elsewhere).is_empty(),
+        "another folder's models are its own"
+    );
+    drop(first);
+    assert_eq!(
+        models_in_use(&here),
+        ["small.en", "tiny.en"],
+        "one use of two is left"
+    );
+    drop(second);
+    assert_eq!(models_in_use(&here), ["tiny.en"]);
+    drop(other);
+    assert!(models_in_use(&here).is_empty());
+    // A model's NPU version is in use with it, as the catalogue lists them (the removal
+    // protection's own rule).
+    let catalogue = crate::catalogue::Catalogue::embedded().unwrap();
+    let model = "parakeet-tdt-0.6b-v2";
+    let used = use_model(&here, model);
+    assert_eq!(
+        models_in_use(&here),
+        with_npu_versions(catalogue, vec![model.to_owned()])
+    );
+    drop(used);
+}
+
+/// T14.12: a meeting keeps the model it started with in use for as long as anything of the
+/// meeting can still load it, whatever the settings say meanwhile.
+#[test]
+fn host_meeting_models_keep_the_model_the_meeting_started_with_in_use() {
+    let dir = TempDir::new("host-meeting-in-use");
+    let (svc, _) = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let meeting = Arc::new(MeetingModels::new(
+        &svc,
+        models.clone(),
+        (
+            crate::backends::accelerator_order(),
+            ResolvedModels {
+                model: "tiny.en".to_owned(),
+                order: vec![Accelerator::Cpu],
+            },
+        ),
+        Arc::default(),
+        Box::new(|_, _| String::new()),
+    ));
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    // The settings now name another model: the meeting still has the one it started with.
+    {
+        let mut db = svc.store();
+        let (mut settings, _) = crate::model_settings::model_settings(&db).unwrap();
+        settings.transcription = crate::model_settings::ModelPick::Named("small.en".to_owned());
+        crate::model_settings::set_model_settings(&mut db, &settings).unwrap();
+    }
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    // What the meeting hands out (its live work, the work after it) keeps it in use.
+    let held_by_live_work = meeting.live_needs(false);
+    drop(meeting);
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    drop(held_by_live_work);
+    assert!(models_in_use(&models).is_empty());
+}

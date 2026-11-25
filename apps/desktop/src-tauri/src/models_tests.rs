@@ -671,3 +671,87 @@ fn models_copy_matches_the_shared_case_table() {
         template("chosen")
     );
 }
+
+/// A file of `model` in `models` (a download begun), for a removal to free.
+fn part_of(models: &ModelDir, model: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let catalogue = Catalogue::embedded().unwrap();
+    let a = &catalogue.artefacts_of(model).unwrap()[0];
+    let part = earshot_runtime::download::part_path(&a.file(models).unwrap());
+    std::fs::create_dir_all(part.parent().unwrap()).unwrap();
+    std::fs::write(&part, bytes).unwrap();
+    part
+}
+
+/// T14.12: a meeting that records, is held or finishes keeps the model it started with: its
+/// removal is refused `busy` and touches nothing, also once the settings name another model,
+/// until the meeting has let go of it. Other models are removed as before.
+#[test]
+fn models_remove_is_refused_while_a_meeting_uses_the_model() {
+    use earshot_runtime::host::{MeetingModels, ResolvedModels};
+
+    let dir = TempDir::new("models-in-use");
+    let svc = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let jobs = idle_jobs();
+    let used = part_of(&models, "tiny.en", b"12345");
+    let unused = part_of(&models, "small.en", b"123");
+    // A meeting started with tiny.en: what its live work and the work after it hold.
+    let meeting = Arc::new(MeetingModels::new(
+        &svc,
+        models.clone(),
+        (
+            SURFACE.to_vec(),
+            ResolvedModels {
+                model: "tiny.en".into(),
+                order: vec![Accelerator::Cpu],
+            },
+        ),
+        Arc::default(),
+        Box::new(|_, _| String::new()),
+    ));
+    // The settings do not keep it: only the meeting does.
+    let kept = host::protected_models(&svc.store(), &models, SURFACE, &surface()).unwrap();
+    assert!(!kept.iter().any(|m| m == "tiny.en"), "{kept:?}");
+    let e = remove(&svc, &models, &surface(), SURFACE, &jobs, "tiny.en").unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str(), e.retryable),
+        ("busy", MODEL_IN_USE_BY_A_MEETING, true)
+    );
+    assert!(used.exists(), "nothing was removed");
+    // A model no meeting uses goes as before.
+    let freed = remove(&svc, &models, &surface(), SURFACE, &jobs, "small.en").unwrap();
+    assert_eq!(freed.bytes_freed, 3);
+    assert!(!unused.exists());
+    // A model the settings keep says so, in use or not: that refusal does not pass with time.
+    let in_use_and_kept = host::use_model(&models, host::FALLBACK_MODEL);
+    let e = remove(
+        &svc,
+        &models,
+        &surface(),
+        SURFACE,
+        &jobs,
+        host::FALLBACK_MODEL,
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, "model_in_use");
+    drop(in_use_and_kept);
+    // The meeting ended: the model can go.
+    drop(meeting);
+    let freed = remove(&svc, &models, &surface(), SURFACE, &jobs, "tiny.en").unwrap();
+    assert_eq!(freed.bytes_freed, 5);
+    assert!(!used.exists());
+}
+
+/// The refusal's copy is plain and names no model id or developer word.
+#[test]
+fn models_in_use_by_a_meeting_copy_is_plain() {
+    assert!(MODEL_IN_USE_BY_A_MEETING.ends_with('.'));
+    assert!(!MODEL_IN_USE_BY_A_MEETING.contains("  "));
+    assert!(!crate::plain_text::names_developer_tool(
+        MODEL_IN_USE_BY_A_MEETING
+    ));
+    assert!(
+        earshot_runtime::catalogue::manifest_id_in(MODEL_IN_USE_BY_A_MEETING).is_none(),
+        "{MODEL_IN_USE_BY_A_MEETING}"
+    );
+}
