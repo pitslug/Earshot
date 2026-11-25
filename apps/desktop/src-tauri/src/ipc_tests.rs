@@ -83,17 +83,33 @@ struct DeclaredCommand {
     signature: String,
 }
 
-/// The attribute that makes a function a command, split so this file holds no such line.
+/// How the attribute that makes a function a command begins, in every form of it (bare, or
+/// with arguments such as `(async)` or `(rename_all = ...)`); split so this file holds no such
+/// line.
+const COMMAND_ATTRIBUTE_START: &str = concat!("#[tauri", "::command");
+
+/// The bare attribute.
 const COMMAND_ATTRIBUTE: &str = concat!("#[tauri", "::command]");
 
-/// Every command `text` declares: a line that is [`COMMAND_ATTRIBUTE`], then the next `fn`.
+/// Every command `text` declares: a line that begins [`COMMAND_ATTRIBUTE_START`], then the next
+/// `fn`. A command is `async` when its function is, or when its attribute says so
+/// (`(async)` runs a plain function off the main thread too).
 fn declared_commands(text: &str) -> Vec<DeclaredCommand> {
     let lines: Vec<&str> = text.lines().collect();
     let mut found = Vec::new();
     for (at, line) in lines.iter().enumerate() {
-        if line.trim() != COMMAND_ATTRIBUTE {
+        let attribute = line.trim();
+        let Some(arguments) = attribute.strip_prefix(COMMAND_ATTRIBUTE_START) else {
             continue;
-        }
+        };
+        // `#[tauri::command]`, `#[tauri::command(...)]`: nothing else begins this way.
+        assert!(
+            arguments.starts_with(']') || arguments.starts_with('('),
+            "an attribute the scan does not know (line {at}): {attribute}"
+        );
+        let async_by_attribute = arguments
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|word| word == "async");
         let Some(start) = (at + 1..lines.len()).find(|&i| {
             let l = lines[i].trim_start();
             !l.starts_with("#[") && !l.starts_with("//") && l.contains("fn ")
@@ -121,7 +137,7 @@ fn declared_commands(text: &str) -> Vec<DeclaredCommand> {
         }
         found.push(DeclaredCommand {
             name,
-            is_async: head[..head.find("fn ").unwrap()].contains("async"),
+            is_async: async_by_attribute || head[..head.find("fn ").unwrap()].contains("async"),
             signature,
         });
     }
@@ -225,10 +241,33 @@ fn ipc_command_scan_tells_async_commands_from_the_others() {
         "fn second_one(jobs: State<'_, ModelJobs>) -> bool {",
         "    true",
         "}",
+        // With arguments: still a command; `async` in them counts, anything else does not.
+        &format!("{COMMAND_ATTRIBUTE_START}(async)]"),
+        "fn third_one() -> bool {",
+        "    true",
+        "}",
+        &format!("    {COMMAND_ATTRIBUTE_START}(rename_all = \"snake_case\")]"),
+        "    pub(crate) fn fourth_one(async_name: bool) -> bool {",
+        "        async_name",
+        "    }",
+        &format!("{COMMAND_ATTRIBUTE_START}(async, rename_all = \"snake_case\")]"),
+        "fn fifth_one() {}",
     ]
     .join("\n");
     let found = declared_commands(&text);
-    assert_eq!(found.len(), 2);
+    assert_eq!(
+        found
+            .iter()
+            .map(|c| (c.name.as_str(), c.is_async))
+            .collect::<Vec<_>>(),
+        [
+            ("first_one", true),
+            ("second_one", false),
+            ("third_one", true),
+            ("fourth_one", false),
+            ("fifth_one", true),
+        ]
+    );
     assert_eq!(
         (found[0].name.as_str(), found[0].is_async),
         ("first_one", true)
