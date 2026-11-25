@@ -286,8 +286,8 @@ export const RELOADED_NOTE =
 
 /** What "Keep this meeting on this computer" means, under the box. */
 export const KEEP_LOCAL_HINT =
-  "Its summary is written only by a model on one of your own computers, never by a server or " +
-  "online service. If you sync, the meeting still goes to your other computers, encrypted.";
+  "Its summary is written only by a model running on one of your own computers, never sent to your " +
+  "own server, the Anthropic API, Claude Code or Codex. This can only be chosen now.";
 
 /** The longest title the start view accepts. */
 export const MAX_TITLE = 120;
