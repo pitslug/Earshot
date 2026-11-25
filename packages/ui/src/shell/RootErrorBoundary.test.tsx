@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Ipc, IpcFailure, type MeetingEvent, type MeetingListItem, createMockIpc } from "../ipc";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
-import { CRASH_COPY, RootErrorBoundary } from "./RootErrorBoundary";
+import { createManualTimer } from "../time";
+import { CRASH_COPY, RootErrorBoundary, STOP_ENDED_WAIT_MS } from "./RootErrorBoundary";
 
 /** Every shipped source of the UI and of the desktop page. */
 const SOURCES = import.meta.glob(
@@ -91,16 +92,19 @@ function setup(over: Partial<Ipc> = {}, meetings: MeetingListItem[] = []) {
     });
   const onReload = vi.fn();
   const renders = { n: 0 };
+  const timer = createManualTimer(1_000);
   render(
     <EarshotThemeProvider>
-      <RootErrorBoundary ipc={ipc} onReload={onReload}>
+      <RootErrorBoundary ipc={ipc} onReload={onReload} timer={timer}>
         <Screen renders={renders} />
       </RootErrorBoundary>
     </EarshotThemeProvider>,
   );
   const user = userEvent.setup();
   const crash = () => user.click(screen.getByRole("button", { name: "Break" }));
-  return { ipc, emit, onReload, renders, user, crash, stopMeeting, setCompact, listMeetings, listeners };
+  /** Moves the injected clock on, as time passing does. */
+  const advance = (ms: number) => act(() => timer.advance(ms));
+  return { ipc, emit, onReload, renders, user, crash, advance, stopMeeting, setCompact, listMeetings, listeners };
 }
 
 const started = (meeting: string): MeetingEvent => ({ type: "Started", meeting, mode: "Call", tracks: ["You", "Them"] });
@@ -158,6 +162,55 @@ describe("root error boundary", () => {
     expect(screen.getByRole("button", { name: CRASH_COPY.reload })).toBeInTheDocument();
   });
 
+  it("error boundary: a stop the app took but whose end never arrives does not say Stopping for good", async () => {
+    const s = setup();
+    await act(async () => {});
+    s.emit(started("m-live"));
+    await s.crash();
+    await s.user.click(await screen.findByRole("button", { name: CRASH_COPY.stop }));
+    await act(async () => {});
+    expect(screen.getByText(CRASH_COPY.stopping)).toBeInTheDocument();
+    // Just short of the wait it still says it is stopping, and takes no second press.
+    s.advance(STOP_ENDED_WAIT_MS - 1);
+    expect(screen.getByText(CRASH_COPY.stopping)).toBeInTheDocument();
+    expect(screen.queryByText(CRASH_COPY.saving)).toBeNull();
+    s.advance(1);
+    expect(screen.getByText(CRASH_COPY.saving)).toBeInTheDocument();
+    expect(screen.queryByText(CRASH_COPY.stopping)).toBeNull();
+    expect(screen.getByRole("button", { name: CRASH_COPY.reload })).toBeEnabled();
+    // Stop can be pressed again, and the wait starts over.
+    await s.user.click(screen.getByRole("button", { name: CRASH_COPY.stop }));
+    expect(s.stopMeeting).toHaveBeenCalledTimes(2);
+    await act(async () => {});
+    expect(screen.getByText(CRASH_COPY.stopping)).toBeInTheDocument();
+    s.advance(STOP_ENDED_WAIT_MS);
+    expect(screen.getByText(CRASH_COPY.saving)).toBeInTheDocument();
+    // The end, when it does arrive, says so.
+    s.emit(ended("m-live"));
+    expect(screen.getByText(CRASH_COPY.stopped)).toBeInTheDocument();
+    expect(screen.queryByText(CRASH_COPY.saving)).toBeNull();
+  });
+
+  it("error boundary: an end that arrives in time is never followed by the saving words", async () => {
+    const s = setup();
+    await act(async () => {});
+    s.emit(started("m-live"));
+    await s.crash();
+    await s.user.click(await screen.findByRole("button", { name: CRASH_COPY.stop }));
+    await act(async () => {});
+    s.advance(2_000);
+    s.emit(ended("m-live"));
+    expect(screen.getByText(CRASH_COPY.stopped)).toBeInTheDocument();
+    s.advance(STOP_ENDED_WAIT_MS * 2);
+    expect(screen.getByText(CRASH_COPY.stopped)).toBeInTheDocument();
+    expect(screen.queryByText(CRASH_COPY.saving)).toBeNull();
+    // Nor does the wait of the meeting before reach a meeting that starts later.
+    s.emit(started("m-next"));
+    s.advance(STOP_ENDED_WAIT_MS * 2);
+    expect(screen.queryByText(CRASH_COPY.saving)).toBeNull();
+    expect(screen.getByRole("button", { name: CRASH_COPY.stop })).toBeEnabled();
+  });
+
   it("error boundary: a stop the app refuses says where else to stop, in fixed words", async () => {
     const refusal = "internal words of the refusal 0x80070005";
     const stopMeeting = vi.fn(async () => {
@@ -170,6 +223,10 @@ describe("root error boundary", () => {
     await s.user.click(await screen.findByRole("button", { name: CRASH_COPY.stop }));
     expect(await screen.findByText(CRASH_COPY.stopFailed)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("0x80070005");
+    // A refusal starts no wait: the words stay what they are.
+    s.advance(STOP_ENDED_WAIT_MS * 2);
+    expect(screen.getByText(CRASH_COPY.stopFailed)).toBeInTheDocument();
+    expect(screen.queryByText(CRASH_COPY.saving)).toBeNull();
     // It can be tried again.
     await s.user.click(screen.getByRole("button", { name: CRASH_COPY.stop }));
     expect(stopMeeting).toHaveBeenCalledTimes(2);

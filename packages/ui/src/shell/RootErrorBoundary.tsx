@@ -1,16 +1,19 @@
 // What the window shows when a screen throws while rendering (T14.14). Without it React takes
 // the whole tree down and the window goes blank, Stop included, while the app keeps recording.
 //
-// The words are fixed: the error's own text and stack are never shown, kept or logged here (they
-// can hold meeting content). The boundary sits outside the app's tree and reaches the app
-// itself, never through that tree: it hears the meeting events from the moment the window
-// opens, so it knows whether a meeting records without asking the screen that broke, and its
-// Stop calls the app directly.
+// The words are fixed. The boundary itself never reads the error it is handed: it shows none of
+// its text or stack and keeps and sends nothing of it (it can hold meeting content). React
+// writes a caught error to the webview's console by itself; that console is not kept anywhere and
+// the app has no way to read it. The boundary sits outside the app's tree and reaches the app
+// itself, never through that tree: it hears the meeting events from the moment the window opens,
+// so it knows whether a meeting records without asking the screen that broke, and its Stop calls
+// the app directly.
 
 import { Body1, Button, Title2, makeStyles, tokens, useFocusFinders } from "@fluentui/react-components";
 import { Component, type ReactNode, useEffect, useRef } from "react";
 
 import type { Ipc, MeetingEvent } from "../ipc";
+import { type Timer, realTimer } from "../time";
 
 /** Every word the screen can show. */
 export const CRASH_COPY = {
@@ -19,21 +22,31 @@ export const CRASH_COPY = {
   recording: "A meeting is still recording. It keeps recording until you stop it, also if you reload.",
   stop: "Stop recording",
   stopping: "Stopping the recording",
+  saving: "Earshot has been asked to stop and is saving the recording. It is safe to reload.",
   stopped: "The recording has stopped.",
   stopFailed:
     "The recording could not be stopped from here. Right-click the Earshot icon near the clock and choose Stop meeting.",
   reload: "Reload",
 } as const;
 
+/** How long after the app took a stop its `Ended` event is waited for before the words change
+ * from "Stopping" to "saving" (a judgement: a little over the 15 s the app itself gives a stop,
+ * `MeetingDriver`'s `STOP_CEILING`). The event may never arrive, and "Stopping" must not stay. */
+export const STOP_ENDED_WAIT_MS = 20_000;
+
 export interface RootErrorBoundaryProps {
   /** The app, reached directly: the tree under the boundary may be gone. */
   ipc: Ipc;
   /** Loads the window's page again (default: the webview's own reload). */
   onReload?: () => void;
+  /** The timer of the wait after a stop (injected so tests never use real time). */
+  timer?: Timer;
   children: ReactNode;
 }
 
-type StopState = "idle" | "stopping" | "failed";
+/** `stopping`: asked, no answer yet, or answered and its `Ended` is waited for. `saving`: the
+ * app took the stop and no `Ended` arrived in `STOP_ENDED_WAIT_MS`. `failed`: the app refused. */
+type StopState = "idle" | "stopping" | "saving" | "failed";
 
 interface State {
   /** A screen threw: the fixed words show in place of the app. */
@@ -70,10 +83,17 @@ class Boundary extends Component<RootErrorBoundaryProps, State> {
   private subscription = 0;
   private unsubscribe: (() => void) | null = null;
   private mounted = false;
+  /** Cancels the wait for `Ended` after a stop the app took. */
+  private cancelStopWait: (() => void) | null = null;
 
   static getDerivedStateFromError(): Partial<State> {
-    // Only that it failed: the error itself is not kept.
+    // Only that it failed: the error it is handed is not read or kept.
     return { failed: true };
+  }
+
+  private endStopWait() {
+    this.cancelStopWait?.();
+    this.cancelStopWait = null;
   }
 
   componentDidMount() {
@@ -91,10 +111,11 @@ class Boundary extends Component<RootErrorBoundaryProps, State> {
     this.subscription += 1;
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.endStopWait();
   }
 
   componentDidCatch() {
-    // The error is not read: nothing of it is shown or logged.
+    // The error is not read here: the boundary shows, keeps and sends nothing of it.
     this.setState({ recordingId: this.recordingId });
     // The compact card is too small for the words; repeating the full window changes nothing.
     this.props.ipc.setCompact(false).catch(noop);
@@ -118,6 +139,7 @@ class Boundary extends Component<RootErrorBoundaryProps, State> {
   private onEvent = (event: MeetingEvent) => {
     if (event.type === "Started") {
       this.heard += 1;
+      this.endStopWait();
       this.recordingId = event.meeting;
       if (this.state.failed) this.setState({ recordingId: event.meeting, stop: "idle", stopped: false });
       return;
@@ -128,6 +150,7 @@ class Boundary extends Component<RootErrorBoundaryProps, State> {
     this.heard += 1;
     // An older meeting's end can follow a newer one's start: only the recording one's counts.
     if (event.meeting === this.recordingId) {
+      this.endStopWait();
       this.recordingId = null;
       if (this.state.failed) this.setState({ recordingId: null, stop: "idle", stopped: true });
     }
@@ -135,11 +158,26 @@ class Boundary extends Component<RootErrorBoundaryProps, State> {
 
   private stop = () => {
     if (this.state.stop === "stopping") return;
+    this.endStopWait();
     this.setState({ stop: "stopping" });
-    // Its `Ended` event says it stopped. A refusal's own words are not shown: fixed copy.
-    this.props.ipc.stopMeeting().catch(() => {
-      if (this.mounted) this.setState((s) => (s.stop === "stopping" ? { ...s, stop: "failed" } : s));
-    });
+    const timer = this.props.timer ?? realTimer;
+    this.props.ipc.stopMeeting().then(
+      () => {
+        // The app took the stop, and its `Ended` event says when it has stopped. That event can
+        // fail to arrive (the event was lost, or the stop hangs): "Stopping" must not stay for
+        // good, so after a wait the words say what is known and Stop can be pressed again.
+        if (!this.mounted || this.state.stop !== "stopping") return;
+        this.endStopWait();
+        this.cancelStopWait = timer.setTimeout(() => {
+          this.cancelStopWait = null;
+          if (this.mounted) this.setState((s) => (s.stop === "stopping" ? { ...s, stop: "saving" } : s));
+        }, STOP_ENDED_WAIT_MS);
+      },
+      // A refusal's own words are not shown: fixed copy.
+      () => {
+        if (this.mounted) this.setState((s) => (s.stop === "stopping" ? { ...s, stop: "failed" } : s));
+      },
+    );
   };
 
   private reload = () => {
@@ -241,6 +279,7 @@ function CrashScreen({
       {/* Under the buttons, with its line kept while empty: words that arrive move no button. */}
       <Body1 align="center" className={styles.status} role="status">
         {recording && stop === "stopping" && CRASH_COPY.stopping}
+        {recording && stop === "saving" && CRASH_COPY.saving}
         {recording && stop === "failed" && CRASH_COPY.stopFailed}
         {!recording && stopped && CRASH_COPY.stopped}
       </Body1>

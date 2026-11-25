@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createMockIpc } from "../ipc";
 import { openSettings, renderApp } from "../test/app";
 import { ITEM, setup } from "../test/meetingDetail";
-import { suppressBrowserKeys } from "./browserKeys";
+import { BROWSER_KEYS, suppressBrowserKeys } from "./browserKeys";
 
 let remove: (() => void) | null = null;
 afterEach(() => {
@@ -21,49 +21,120 @@ function press(target: EventTarget, init: KeyboardEventInit): boolean {
   return event.defaultPrevented;
 }
 
-const RELOADS: [string, KeyboardEventInit][] = [
-  ["F5", { key: "F5" }],
-  ["Ctrl+F5", { key: "F5", ctrlKey: true }],
-  ["Shift+F5", { key: "F5", shiftKey: true }],
-  ["Ctrl+R", { key: "r", ctrlKey: true }],
-  ["Ctrl+Shift+R", { key: "R", ctrlKey: true, shiftKey: true }],
-  ["the keyboard's refresh key", { key: "BrowserRefresh" }],
+/** Every key the webview would act on and the app swallows, written out (never read from the
+ * guard's own table): what the webview does with it, and the press. */
+const SWALLOWED: [string, string, KeyboardEventInit][] = [
+  ["F5", "reload", { key: "F5" }],
+  ["Ctrl+F5", "reload", { key: "F5", ctrlKey: true }],
+  ["Shift+F5", "reload", { key: "F5", shiftKey: true }],
+  ["Ctrl+R", "reload", { key: "r", ctrlKey: true }],
+  ["Ctrl+Shift+R", "reload", { key: "R", ctrlKey: true, shiftKey: true }],
+  ["the keyboard's refresh key", "reload", { key: "BrowserRefresh" }],
+  ["F3", "find again", { key: "F3" }],
+  ["Shift+F3", "find again", { key: "F3", shiftKey: true }],
+  ["Ctrl+G", "find again", { key: "g", ctrlKey: true }],
+  ["Ctrl+Shift+G", "find again", { key: "G", ctrlKey: true, shiftKey: true }],
+  ["Ctrl+P", "print", { key: "p", ctrlKey: true }],
+  ["Ctrl+Shift+P", "print", { key: "P", ctrlKey: true, shiftKey: true }],
+  ["F7", "caret browsing", { key: "F7" }],
+  ["Ctrl+U", "view source", { key: "u", ctrlKey: true }],
+  ["Ctrl+J", "downloads", { key: "j", ctrlKey: true }],
+  ["Alt+Left", "back", { key: "ArrowLeft", altKey: true }],
+  ["Alt+Right", "forward", { key: "ArrowRight", altKey: true }],
+  ["the keyboard's back key", "back", { key: "BrowserBack" }],
+  ["the keyboard's forward key", "forward", { key: "BrowserForward" }],
+];
+
+/** Keys a text field or the app's own controls use: none may be touched, anywhere. */
+const LEFT_ALONE: [string, KeyboardEventInit][] = [
+  ["r", { key: "r" }],
+  ["Shift+R", { key: "R", shiftKey: true }],
+  ["f", { key: "f" }],
+  ["g", { key: "g" }],
+  ["p", { key: "p" }],
+  ["u", { key: "u" }],
+  ["j", { key: "j" }],
+  // AltGr arrives as Ctrl+Alt on some layouts: a letter, not a shortcut.
+  ["AltGr+R", { key: "r", ctrlKey: true, altKey: true }],
+  ["AltGr+F", { key: "f", ctrlKey: true, altKey: true }],
+  ["AltGr+G", { key: "g", ctrlKey: true, altKey: true }],
+  ["AltGr+P", { key: "p", ctrlKey: true, altKey: true }],
+  ["AltGr+U", { key: "u", ctrlKey: true, altKey: true }],
+  ["AltGr+J", { key: "j", ctrlKey: true, altKey: true }],
+  ["Ctrl+Shift+F", { key: "f", ctrlKey: true, shiftKey: true }],
+  ["Left", { key: "ArrowLeft" }],
+  ["Right", { key: "ArrowRight" }],
+  ["Shift+Left", { key: "ArrowLeft", shiftKey: true }],
+  ["Ctrl+Left", { key: "ArrowLeft", ctrlKey: true }],
+  ["Ctrl+Right", { key: "ArrowRight", ctrlKey: true }],
+  ["Ctrl+Shift+Right", { key: "ArrowRight", ctrlKey: true, shiftKey: true }],
+  ["Alt+Shift+Left", { key: "ArrowLeft", altKey: true, shiftKey: true }],
+  ["Alt+Down", { key: "ArrowDown", altKey: true }],
+  ["Alt+Up", { key: "ArrowUp", altKey: true }],
+  ["Home", { key: "Home" }],
+  ["End", { key: "End" }],
+  ["Backspace", { key: "Backspace" }],
+  ["Ctrl+Backspace", { key: "Backspace", ctrlKey: true }],
+  ["Delete", { key: "Delete" }],
+  ["Ctrl+A", { key: "a", ctrlKey: true }],
+  ["Ctrl+C", { key: "c", ctrlKey: true }],
+  ["Ctrl+V", { key: "v", ctrlKey: true }],
+  ["Ctrl+X", { key: "x", ctrlKey: true }],
+  ["Ctrl+Z", { key: "z", ctrlKey: true }],
+  ["Ctrl+Y", { key: "y", ctrlKey: true }],
+  ["Tab", { key: "Tab" }],
+  ["Enter", { key: "Enter" }],
+  ["Escape", { key: "Escape" }],
+  ["F2", { key: "F2" }],
+  ["F4", { key: "F4" }],
+  ["F6", { key: "F6" }],
+  ["F10", { key: "F10" }],
+  ["Shift+F10", { key: "F10", shiftKey: true }],
+  ["the Menu key", { key: "ContextMenu" }],
 ];
 
 describe("browser keys", () => {
-  it.each(RELOADS)("browser keys: %s reloads nothing", (_name, init) => {
+  it.each(SWALLOWED)("browser keys: %s does nothing (the webview's %s)", (_name, _does, init) => {
     remove = suppressBrowserKeys(window);
     expect(press(document.body, init)).toBe(true);
   });
 
-  it("browser keys: reload keys are swallowed in a text field too, and before any other listener", () => {
+  it.each(SWALLOWED)("browser keys: %s is swallowed in a text field too, before any other listener", (_name, _does, init) => {
     remove = suppressBrowserKeys(window);
     const input = document.createElement("input");
     document.body.append(input);
-    let seen: boolean | null = null;
-    const onKey = (e: KeyboardEvent) => {
-      seen = e.defaultPrevented;
-    };
-    input.addEventListener("keydown", onKey);
-    expect(press(input, { key: "F5" })).toBe(true);
-    expect(seen).toBe(true);
-    input.remove();
+    try {
+      let seen: boolean | null = null;
+      input.addEventListener("keydown", (e) => {
+        seen = e.defaultPrevented;
+      });
+      expect(press(input, init)).toBe(true);
+      expect(seen).toBe(true);
+    } finally {
+      input.remove();
+    }
   });
 
-  it("browser keys: ordinary typing is left alone", () => {
+  it.each(LEFT_ALONE)("browser keys: %s is left alone, in a text field and outside one", (_name, init) => {
     remove = suppressBrowserKeys(window);
-    for (const init of [
-      { key: "r" },
-      { key: "R", shiftKey: true },
-      { key: "f" },
-      { key: "F4" },
-      // AltGr arrives as Ctrl+Alt on some layouts: a letter, not a shortcut.
-      { key: "r", ctrlKey: true, altKey: true },
-      { key: "f", ctrlKey: true, altKey: true },
-      { key: "f", ctrlKey: true, shiftKey: true },
-    ]) {
+    const input = document.createElement("input");
+    document.body.append(input);
+    try {
+      expect(press(input, init)).toBe(false);
       expect(press(document.body, init)).toBe(false);
+    } finally {
+      input.remove();
     }
+  });
+
+  it("browser keys: every key in the guard's table has a press written out here, with what it does", () => {
+    const pressed = new Set(SWALLOWED.map(([, does, init]) => `${does}:${String(init.key).toLowerCase()}`));
+    for (const k of BROWSER_KEYS) expect(pressed).toContain(`${k.does}:${k.key}`);
+    // And nothing is written out here that the table does not hold.
+    const held = new Set(BROWSER_KEYS.map((k) => `${k.does}:${k.key}`));
+    for (const p of pressed) expect(held).toContain(p);
+    // Ctrl+F is not a table key: the meeting page must hear it first.
+    expect(BROWSER_KEYS.some((k) => k.key === "f")).toBe(false);
   });
 
   it("browser keys: Ctrl+F with nothing else listening opens nothing", () => {

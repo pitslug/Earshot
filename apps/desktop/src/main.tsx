@@ -1,9 +1,6 @@
 import {
-  AppShell,
-  EarshotThemeProvider,
+  AppRoot,
   type Ipc,
-  IpcProvider,
-  RootErrorBoundary,
   createTauriIpc,
   isTauri,
   suppressBrowserKeys,
@@ -144,20 +141,15 @@ const boundaryIpc: Ipc =
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root");
 
+// The whole tree is `AppRoot` (T14.14): the theme, then the error boundary, then the app's
+// provider and the app window under it, so a screen that throws leaves fixed words, Stop
+// recording and Reload instead of a blank window. Only `StrictMode`, which draws nothing, and
+// the theme the boundary's own words need sit above the boundary; nothing else may be put
+// there, because what throws above it blanks the window. The order is pinned by `AppRoot`'s test.
 createRoot(root).render(
   <StrictMode>
-    <EarshotThemeProvider>
-      {/* Outside the app's tree and given the app directly: a screen that throws leaves fixed
-          words, Stop recording and Reload instead of a blank window (T14.14). */}
-      <RootErrorBoundary ipc={boundaryIpc}>
-        {crash !== null ? (
-          <PreviewCrash />
-        ) : (
-          <IpcProvider ipc={ipc}>
-            <AppShell notice={inTauri ? undefined : "Preview: sample data"} />
-          </IpcProvider>
-        )}
-      </RootErrorBoundary>
-    </EarshotThemeProvider>
+    <AppRoot ipc={boundaryIpc} notice={inTauri ? undefined : "Preview: sample data"}>
+      {crash !== null ? <PreviewCrash /> : undefined}
+    </AppRoot>
   </StrictMode>,
 );
