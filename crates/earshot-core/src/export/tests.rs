@@ -729,6 +729,31 @@ fn export_merge_carries_marks_of_repeated_task_lines_in_order() {
 }
 
 #[test]
+fn export_merge_keeps_a_tick_on_a_line_written_before_the_escaping_rule() {
+    let mut f = fixture();
+    f.summary.action_items[1].task = "Check the <b>bold</b> ![chart] text".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    let escaped = "**Me**: Check the &lt;b>bold&lt;/b> !&#91;chart] text";
+    assert!(doc.contains(&format!("- [ ] {escaped}\n")), "{doc}");
+    // As a version from before T14.28 wrote it, raw, and the user ticked it.
+    let old = doc.replace(
+        &format!("- [ ] {escaped}"),
+        "- [x] **Me**: Check the <b>bold</b> ![chart] text",
+    );
+    let merged = merge(&old, &r).unwrap();
+    assert!(merged.contains(&format!("- [x] {escaped}\n")), "{merged}");
+    // Already escaped text is not escaped again: the ticked new form is a fixed point.
+    assert_eq!(merge(&merged, &r).unwrap(), merged);
+    // The control: other text still does not match.
+    let other = doc.replace(
+        &format!("- [ ] {escaped}"),
+        "- [x] **Me**: Check the <i>bold</i>",
+    );
+    assert!(!merge(&other, &r).unwrap().contains("- [x]"));
+}
+
+#[test]
 fn export_merge_never_carries_a_mark_from_outside_the_region() {
     let f = fixture();
     let r = render(&input(&f), &opts()).unwrap();

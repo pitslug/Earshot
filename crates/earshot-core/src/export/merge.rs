@@ -6,6 +6,7 @@
 //! separators) uses the note's dominant line ending.
 
 use super::render::{RenderedExport, tags_block, union_tags};
+use super::text::neutralise_generated;
 use super::{BEGIN_MARKER, END_MARKER, ExportError, OWNED_KEYS};
 use crate::identity::EntityId;
 
@@ -190,15 +191,18 @@ fn task_line(line: &str) -> Option<(char, &str)> {
 /// the user left it (`x`, `X` or any other single character a task plugin uses). Old
 /// lines are used once each, in order, so repeated identical lines carry their marks in
 /// order; a reworded item matches nothing and stays unticked. Only text between the old
-/// markers is read. Every other byte of the new region is unchanged, so with no marks
+/// markers is read. Both texts are compared after `neutralise_generated`, which leaves
+/// already neutralised text as it is, so a line written before T14.28 (a raw `<` or `![`)
+/// matches its escaped re-render and keeps its mark. Every other byte of the new region is unchanged, so with no marks
 /// set the result is the new region itself.
 fn carry_task_marks(old_region: &str, new_region: &str) -> String {
-    let mut old: Vec<Option<(char, &str)>> = old_region
+    let mut old: Vec<Option<(char, String)>> = old_region
         .split_inclusive('\n')
         .filter_map(task_line)
-        .map(Some)
+        .map(|(m, t)| Some((m, neutralise_generated(t))))
         .collect();
     if old.iter().flatten().all(|(m, _)| *m == ' ') {
+        // Nothing marked: the new region as rendered.
         return new_region.to_owned();
     }
     let mut out = String::with_capacity(new_region.len());
@@ -206,7 +210,10 @@ fn carry_task_marks(old_region: &str, new_region: &str) -> String {
         let carried = task_line(line)
             .filter(|(m, _)| *m == ' ')
             .and_then(|(_, text)| {
-                let slot = old.iter_mut().find(|o| o.is_some_and(|(_, t)| t == text))?;
+                let text = neutralise_generated(text);
+                let slot = old
+                    .iter_mut()
+                    .find(|o| o.as_ref().is_some_and(|(_, t)| *t == text))?;
                 slot.take().map(|(m, _)| m)
             });
         match carried {
