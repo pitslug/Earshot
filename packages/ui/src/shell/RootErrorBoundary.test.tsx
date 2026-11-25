@@ -213,6 +213,21 @@ describe("root error boundary", () => {
     expect(screen.getByText(CRASH_COPY.recording)).toBeInTheDocument();
   });
 
+  it("error boundary: an end heard while the list is being read is believed over the list", async () => {
+    let answer: (meetings: MeetingListItem[]) => void = () => {};
+    const listMeetings = vi.fn(() => new Promise<MeetingListItem[]>((resolve) => (answer = resolve)));
+    const s = setup({ listMeetings });
+    await act(async () => {});
+    await s.crash();
+    await waitFor(() => expect(listMeetings).toHaveBeenCalledTimes(1));
+    // The recording this window never heard start ends (the tray stopped it) before the list,
+    // read while it still recorded, arrives.
+    s.emit(ended(RECORDING.id));
+    await act(async () => answer([RECORDING]));
+    expect(screen.queryByRole("button", { name: CRASH_COPY.stop })).toBeNull();
+    expect(screen.getByRole("button", { name: CRASH_COPY.reload })).toBeInTheDocument();
+  });
+
   it("error boundary: a meeting list that cannot be read still leaves Reload", async () => {
     const listMeetings = vi.fn(async (): Promise<MeetingListItem[]> => {
       throw new IpcFailure({ kind: "store", message: "internal store words", retryable: false });

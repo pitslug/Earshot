@@ -122,9 +122,12 @@ class Boundary extends Component<RootErrorBoundaryProps, State> {
       if (this.state.failed) this.setState({ recordingId: event.meeting, stop: "idle", stopped: false });
       return;
     }
+    if (event.type !== "Ended") return;
+    // Any end is newer than a list read before it, also the end of a recording this window
+    // never heard start.
+    this.heard += 1;
     // An older meeting's end can follow a newer one's start: only the recording one's counts.
-    if (event.type === "Ended" && event.meeting === this.recordingId) {
-      this.heard += 1;
+    if (event.meeting === this.recordingId) {
       this.recordingId = null;
       if (this.state.failed) this.setState({ recordingId: null, stop: "idle", stopped: true });
     }

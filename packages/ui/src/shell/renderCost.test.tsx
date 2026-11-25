@@ -2,13 +2,20 @@
 // they change, and transcript rows that did not change are not rendered again. Rows are counted
 // through the time formatters each row calls (`clock` for a live line, `rowTime` for a line of
 // the meeting's page), wrapped below.
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as detailModule from "../detail/detail";
-import { type Ipc, IpcProvider, type MeetingEvent, type MeetingListItem, createMockIpc } from "../ipc";
+import {
+  type Ipc,
+  IpcProvider,
+  type MeetingEvent,
+  type MeetingListItem,
+  type SyncEvent,
+  createMockIpc,
+} from "../ipc";
 import { sampleDetail } from "../ipc/mockDetail";
 import * as liveModule from "../meeting/liveMeeting";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
@@ -49,16 +56,32 @@ function setup(start = NOW, meetings = MEETINGS) {
   const timer = createManualTimer(start);
   const base = createMockIpc({ timer, now: start, meetings });
   const listeners = new Set<(e: MeetingEvent) => void>();
+  const syncListeners = new Set<(e: SyncEvent) => void>();
+  /** How often the meeting list was read. */
+  const lists = { n: 0 };
   const ipc: Ipc = {
     ...base,
+    listMeetings: async () => {
+      lists.n += 1;
+      return base.listMeetings();
+    },
     onMeetingEvent: async (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onSyncEvent: async (listener) => {
+      syncListeners.add(listener);
+      return () => syncListeners.delete(listener);
     },
   };
   const emit = (event: MeetingEvent) =>
     act(() => {
       for (const l of [...listeners]) l(event);
+    });
+  /** What a sync pass tells the window (T12.81). */
+  const sync = (event: SyncEvent) =>
+    act(() => {
+      for (const l of [...syncListeners]) l(event);
     });
   const commits = { n: 0 };
   render(
@@ -70,7 +93,7 @@ function setup(start = NOW, meetings = MEETINGS) {
       </IpcProvider>
     </EarshotThemeProvider>,
   );
-  return { timer, emit, commits, user: userEvent.setup() };
+  return { timer, emit, sync, lists, ipc, commits, user: userEvent.setup() };
 }
 
 /** When invented line `i` starts. */
@@ -169,6 +192,41 @@ describe("render cost", () => {
     for (let i = 1; i < 4; i += 1) s.emit(landed(i));
     expect(screen.getByText("Invented line number 3 about the gravel.")).toBeInTheDocument();
     expect(listRowSpy).not.toHaveBeenCalled();
+  });
+
+  it("render cost: a list read again with nothing changed renders no row, and a changed meeting only its own", async () => {
+    const s = setup();
+    await screen.findByRole("heading", { level: 1, name: "Hedge trimming plan" });
+    const list = await screen.findByRole("list", { name: "Meetings" });
+    await act(async () => {});
+    expect(listRowSpy).toHaveBeenCalled();
+
+    // A sync pass that changed nothing here: the list is read again, as after every pass, and
+    // says the same (T14.16).
+    for (let pass = 0; pass < 3; pass += 1) {
+      const reads = s.lists.n;
+      listRowSpy.mockClear();
+      s.sync({ meetings: [], people: false });
+      await waitFor(() => expect(s.lists.n).toBe(reads + 1));
+      await act(async () => {});
+      expect(listRowSpy).not.toHaveBeenCalled();
+    }
+
+    // The end of another meeting's work reads the list again too.
+    const reads = s.lists.n;
+    listRowSpy.mockClear();
+    s.emit({ type: "Summary", meeting: "m-elsewhere", result: { kind: "Skipped", reason: "Invented reason." } });
+    await waitFor(() => expect(s.lists.n).toBe(reads + 1));
+    await act(async () => {});
+    expect(listRowSpy).not.toHaveBeenCalled();
+
+    // A pass that renamed one meeting renders that meeting's row and no other.
+    await s.ipc.renameMeeting("m1", "Gravel order, second load");
+    listRowSpy.mockClear();
+    s.sync({ meetings: ["m1"], people: false });
+    expect(await within(list).findByRole("button", { name: /^Gravel order, second load/ })).toBeInTheDocument();
+    await act(async () => {});
+    expect(listRowSpy.mock.calls.map(([m]) => m.id)).toEqual(["m1"]);
   });
 
   it("render cost: typing a search does not render the open transcript's lines again", async () => {

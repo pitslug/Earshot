@@ -88,6 +88,7 @@ import {
   type RowDot,
   displayTitle,
   groupByDay,
+  keepUnchanged,
   recoveredText,
   rowDot,
   secondaryLine,
@@ -322,7 +323,9 @@ type Load =
   | { status: "newer" }
   // The data folder could not be opened at the start (T9.23): Try again restarts Earshot.
   | { status: "dataFolder"; message: string }
-  | { status: "loaded"; meetings: MeetingListItem[]; folders: FolderListItem[] };
+  // `stale`: why the latest read failed, in the app's words (T14.16). The meetings and folders
+  // are then the last ones read: a read that fails takes nothing off the screen.
+  | { status: "loaded"; meetings: MeetingListItem[]; folders: FolderListItem[]; stale: string | null };
 
 /** A problem with a folder change, shown above the meeting pane until dismissed. */
 interface FolderNotice {
@@ -672,7 +675,17 @@ export function AppShell({
     Promise.all([ipc.listMeetings(), ipc.listFolders()]).then(
       ([meetings, folders]) => {
         if (!current) return;
-        setLoad({ status: "loaded", meetings, folders });
+        // Rows that say what they said before stay the objects they were, and a read that
+        // changed nothing changes no state: the rows are memoised on them (T9.24), and the list
+        // is read again after every sync pass (T14.16).
+        setLoad((was) => {
+          if (was.status !== "loaded") return { status: "loaded", meetings, folders, stale: null };
+          const keptMeetings = keepUnchanged(was.meetings, meetings);
+          const keptFolders = keepUnchanged(was.folders, folders);
+          return keptMeetings === was.meetings && keptFolders === was.folders && was.stale === null
+            ? was
+            : { status: "loaded", meetings: keptMeetings, folders: keptFolders, stale: null };
+        });
         setSelectedId((sel) =>
           sel !== null && meetings.some((m) => m.id === sel) ? sel : (meetings[0]?.id ?? null),
         );
@@ -689,7 +702,10 @@ export function AppShell({
           setLoad({ status: "dataFolder", message: error.error.message });
           return;
         }
-        setLoad({ status: "failed", message: errorText(error) });
+        // The last list read stays, with the meeting that is open (T14.16); only a first read
+        // that failed has nothing to keep.
+        const message = errorText(error);
+        setLoad((was) => (was.status === "loaded" ? { ...was, stale: message } : { status: "failed", message }));
       },
     );
     return () => {
@@ -1345,6 +1361,19 @@ export function AppShell({
           </MessageBar>
         )}
         {callStartBar}
+        {load.status === "loaded" && load.stale !== null && (
+          <MessageBar intent="error">
+            <MessageBarBody>
+              <MessageBarTitle>The meeting list could not be updated</MessageBarTitle>
+              {load.stale}
+            </MessageBarBody>
+            <MessageBarActions>
+              <Button size="small" onClick={refresh}>
+                Try again
+              </Button>
+            </MessageBarActions>
+          </MessageBar>
+        )}
         {startErrorBar}
         {stopError !== null && (
           <MessageBar intent="error">
@@ -1423,6 +1452,7 @@ export function AppShell({
         {view === "detail" && (
           <Detail
             load={load}
+            onRetry={refresh}
             selected={selected}
             ended={ended}
             behind={selected !== null && behindIds.includes(selected.id)}
@@ -1847,6 +1877,7 @@ interface EndedMeeting {
 
 function Detail({
   load,
+  onRetry,
   selected,
   ended,
   behind,
@@ -1864,6 +1895,8 @@ function Detail({
   onManagePeople,
 }: {
   load: Load;
+  /** Reads the meeting list again, after a first read that failed (T14.16). */
+  onRetry: () => void;
   selected: MeetingListItem | null;
   ended: EndedMeeting | null;
   /** The selected meeting is still finishing behind a newer one the screen follows (T14.15). */
@@ -1898,6 +1931,11 @@ function Detail({
           <MessageBarTitle>Meetings could not be loaded</MessageBarTitle>
           {load.message}
         </MessageBarBody>
+        <MessageBarActions>
+          <Button size="small" onClick={onRetry}>
+            Try again
+          </Button>
+        </MessageBarActions>
       </MessageBar>
     );
   }

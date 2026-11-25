@@ -104,30 +104,44 @@ describe("browser keys", () => {
 
   it("browser keys: on the meeting page Ctrl+F still opens find, as without the guard (T12.98)", async () => {
     remove = suppressBrowserKeys(window);
-    const s = await setup();
+    await setup();
     await screen.findByRole("tab", { name: "Transcript" });
     expect(press(document.body, { key: "f", ctrlKey: true })).toBe(true);
     const box = await screen.findByRole("textbox", { name: "Text to find" });
     expect(box).toHaveFocus();
-    // In another text field it does nothing at all: no second bar, focus stays.
+    // Pressed again in the find box, it is still the page's own key.
+    expect(press(box, { key: "f", ctrlKey: true })).toBe(true);
+    expect(screen.getAllByRole("textbox", { name: "Text to find" })).toHaveLength(1);
+  });
+
+  it("browser keys: on the meeting page Ctrl+F in another text field still does nothing at all (T12.98)", async () => {
+    remove = suppressBrowserKeys(window);
+    const s = await setup();
+    await screen.findByRole("tab", { name: "Transcript" });
     const search = screen.getByRole("searchbox", { name: "Search meetings" });
     await s.user.click(search);
     expect(press(search, { key: "f", ctrlKey: true })).toBe(true);
     expect(search).toHaveFocus();
-    expect(screen.getAllByRole("textbox", { name: "Text to find" })).toHaveLength(1);
+    expect(screen.queryByRole("textbox", { name: "Text to find" })).toBeNull();
   });
 
-  it("browser keys: away from a meeting page Ctrl+F does nothing", async () => {
+  it("browser keys: on the new-meeting screen Ctrl+F does nothing, and the meeting page has it back", async () => {
     remove = suppressBrowserKeys(window);
     const s = await setup();
-    // The new-meeting screen.
     await s.user.click(screen.getByRole("button", { name: "New meeting" }));
     await screen.findByRole("button", { name: "Start" });
     expect(press(document.body, { key: "f", ctrlKey: true })).toBe(true);
     expect(screen.queryByRole("textbox", { name: "Text to find" })).toBeNull();
     await s.user.click(screen.getByRole("button", { name: "Cancel" }));
     await screen.findByRole("heading", { level: 1, name: ITEM.title });
-    // Settings.
+    await screen.findByRole("tab", { name: "Transcript" });
+    expect(press(document.body, { key: "f", ctrlKey: true })).toBe(true);
+    expect(await screen.findByRole("textbox", { name: "Text to find" })).toHaveFocus();
+  });
+
+  it("browser keys: in Settings Ctrl+F and the reload keys do nothing", async () => {
+    remove = suppressBrowserKeys(window);
+    const s = await setup();
     await openSettings(s.user, "General");
     expect(press(document.body, { key: "f", ctrlKey: true })).toBe(true);
     expect(screen.queryByRole("textbox", { name: "Text to find" })).toBeNull();
