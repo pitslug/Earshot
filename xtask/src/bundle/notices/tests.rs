@@ -454,6 +454,152 @@ fn bundle_notices_quote_vendored_licences_and_fail_when_one_moves() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn write_json(dir: &Path, json: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("package.json"), json).unwrap();
+}
+
+#[test]
+fn bundle_notices_read_every_form_of_an_npm_licence() {
+    let of = |json: &str| serde_json::from_str::<PackageJson>(json).unwrap().licence();
+    assert_eq!(of(r#"{"license": "MIT"}"#).as_deref(), Some("MIT"));
+    assert_eq!(
+        of(r#"{"license": {"type": "ISC", "url": "u"}}"#).as_deref(),
+        Some("ISC")
+    );
+    assert_eq!(
+        of(r#"{"licenses": [{"type": "MIT"}, {"type": "Apache-2.0"}]}"#).as_deref(),
+        Some("MIT OR Apache-2.0")
+    );
+    assert_eq!(of(r"{}"), None);
+    assert_eq!(of(r#"{"license": 3}"#), None);
+}
+
+#[test]
+fn bundle_notices_follow_npm_production_dependencies_as_node_resolves_them() {
+    let root = tmp("npm");
+    write_json(
+        &root.join("apps").join("desktop"),
+        r#"{"name": "@earshot/desktop", "dependencies": {"a": "1"},
+            "devDependencies": {"dev-only": "1"}}"#,
+    );
+    write_json(
+        &root.join("packages").join("ui"),
+        r#"{"name": "@earshot/ui", "dependencies": {"@scope/c": "1"},
+            "peerDependencies": {"a": "1", "absent-peer": "1"}}"#,
+    );
+    let modules = root.join("node_modules");
+    write_json(
+        &modules.join("a"),
+        r#"{"name": "a", "version": "1.0.0", "license": "MIT",
+            "dependencies": {"b": "1"}, "optionalDependencies": {"not-installed": "1"}}"#,
+    );
+    std::fs::write(modules.join("a").join("LICENSE"), "a's licence").unwrap();
+    // Nested, as an older layout or a second version puts it: found from `a` first.
+    write_json(
+        &modules.join("a").join("node_modules").join("b"),
+        r#"{"name": "b", "version": "2.0.0", "license": "MIT"}"#,
+    );
+    write_json(
+        &modules.join("b"),
+        r#"{"name": "b", "version": "1.0.0", "license": "MIT"}"#,
+    );
+    write_json(
+        &modules.join("@scope").join("c"),
+        r#"{"name": "@scope/c", "version": "3.0.0", "license": "Apache-2.0"}"#,
+    );
+    write_json(
+        &modules.join("dev-only"),
+        r#"{"name": "dev-only", "version": "1.0.0", "license": "GPL-3.0-only"}"#,
+    );
+    let found = npm_packages(&root).unwrap();
+    let names: Vec<(String, String)> = found
+        .iter()
+        .map(|p| (p.name.clone(), p.version.clone()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("@scope/c".to_owned(), "3.0.0".to_owned()),
+            ("a".to_owned(), "1.0.0".to_owned()),
+            ("b".to_owned(), "2.0.0".to_owned()),
+        ]
+    );
+    assert_eq!(found[1].url, "https://www.npmjs.com/package/a/v/1.0.0");
+    // Entries follow the crates' rules: own files, else the standard text and a note.
+    let a = package_entry(&found[1]).unwrap();
+    assert_eq!(a.texts, ["a's licence"]);
+    let b = package_entry(&found[2]).unwrap();
+    assert!(
+        b.notes
+            .iter()
+            .any(|n| n.contains("names its copyright holder"))
+    );
+    // A production dependency that is not installed stops the build.
+    write_json(
+        &modules.join("@scope").join("c"),
+        r#"{"name": "@scope/c", "version": "3.0.0", "license": "Apache-2.0",
+            "dependencies": {"gone": "1"}}"#,
+    );
+    let err = format!("{:#}", npm_packages(&root).unwrap_err());
+    assert!(
+        err.contains("gone") && err.contains("pnpm install"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn bundle_notices_name_the_other_files_from_their_manifests() {
+    let root = crate::repo_root();
+    let tools = tmp("other");
+    std::fs::create_dir_all(tools.join("NSIS")).unwrap();
+    std::fs::write(
+        tools.join("NSIS").join("COPYING"),
+        "Invented NSIS terms\r\n",
+    )
+    .unwrap();
+    let x64 = other_entries(
+        &root,
+        crate::accept::m7::X64_WINDOWS,
+        &["vulkan-summaries".to_owned()],
+        &tools,
+    )
+    .unwrap();
+    let lines: Vec<&str> = x64.iter().map(|e| e.line.as_str()).collect();
+    let has = |entries: &[Entry], s: &str| entries.iter().any(|e| e.line.contains(s));
+    for want in [
+        "vcruntime140_1.dll",
+        "vulkan-1.dll",
+        "uninstall.exe",
+        "nsis_tauri_utils.dll",
+        "onnxruntime.dll",
+    ] {
+        assert!(has(&x64, want), "{want}: {lines:?}");
+    }
+    assert!(!has(&x64, "onnxruntime_providers_qnn"), "{lines:?}");
+    let uninstall = x64
+        .iter()
+        .find(|e| e.line.starts_with("uninstall.exe"))
+        .unwrap();
+    assert_eq!(uninstall.texts, ["Invented NSIS terms"]);
+    let arm = other_entries(
+        &root,
+        crate::build::ARM64_WINDOWS,
+        &["qnn".to_owned()],
+        &tools,
+    )
+    .unwrap();
+    assert!(has(&arm, "onnxruntime_providers_qnn"));
+    assert!(!has(&arm, "vulkan-1.dll"));
+    assert!(!has(&arm, "vcruntime140_1.dll"));
+    // Without the placed NSIS there is nothing to quote: the build stops.
+    let empty = tmp("other-empty");
+    assert!(other_entries(&root, crate::accept::m7::X64_WINDOWS, &[], &empty).is_err());
+    let _ = std::fs::remove_dir_all(&tools);
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
 /// The real shipped tree of this host's architecture: every crate allowed and given a text, every
 /// vendored licence found, the same text twice, no path of this machine, every crate named. Needs
 /// the release build's crates in [`cargo_home`] (any earlier `cargo xtask build`, or `cargo xtask
@@ -463,12 +609,36 @@ fn bundle_notices_the_real_shipped_tree_passes_and_is_named_whole() {
     let root = crate::repo_root();
     let target = super::super::effective_target(None);
     let features = crate::build::shipped_features(Some(target), &[]);
-    let (text, copyleft) = notices(&root, target, &features).unwrap();
-    let (again, _) = notices(&root, target, &features).unwrap();
+    // The bundle's placed NSIS stands in: only its COPYING is read.
+    let tools = tmp("tools");
+    std::fs::create_dir_all(tools.join("NSIS")).unwrap();
+    std::fs::write(tools.join("NSIS").join("COPYING"), "Invented NSIS terms").unwrap();
+    let (text, copyleft) = notices(&root, target, &features, &tools).unwrap();
+    let (again, _) = notices(&root, target, &features, &tools).unwrap();
     assert_eq!(text, again, "the notices are deterministic");
     let names = expected_names(&root, target, &features).unwrap();
     assert!(names.len() > 100, "{}", names.len());
     assert_eq!(missing_names(&text, &names), Vec::<String>::new());
+    // The window's packages are among them.
+    for npm in [
+        "react",
+        "react-dom",
+        "@fluentui/react-components",
+        "@tauri-apps/api",
+    ] {
+        assert!(names.iter().any(|(n, _)| n == npm), "{npm}");
+    }
+    assert!(!names.iter().any(|(n, _)| n.starts_with("@earshot/")));
+    for file in [
+        "uninstall.exe",
+        "onnxruntime.dll",
+        "nsis_tauri_utils.dll",
+        "msvcp140.dll",
+    ] {
+        assert!(text.contains(file), "{file}");
+    }
+    assert!(text.contains("Invented NSIS terms"));
+    let _ = std::fs::remove_dir_all(&tools);
     for v in VENDORED {
         assert!(
             names.iter().any(|(n, _)| n == v.krate),

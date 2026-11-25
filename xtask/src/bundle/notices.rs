@@ -10,7 +10,14 @@
 //!   it needs every workspace package, dev-dependencies included, downloaded, and the build's
 //!   `CARGO_HOME` holds only what the build needed (measured 2026-11-26), so offline it fails.
 //! - **Native libraries** compiled from sources a crate carries ([`VENDORED`], [`DISCLAIMERS`]).
-//! - **Earshot's own `LICENSE`**, first.
+//! - **JavaScript packages** the window is built from: the production dependency closure of
+//!   [`NPM_ROOTS`], read from the installed `node_modules` as Node resolves it ([`npm_packages`]),
+//!   with the same licence rules as crates.
+//! - **Other files** ([`other_entries`]): the Visual C++ runtime, the Vulkan loader (its licence
+//!   ships beside it), the QNN files on ARM64 (their notice ships beside them), NSIS's code in the
+//!   uninstaller and its plugin, and ONNX Runtime, which the app downloads with its own licence
+//!   files; facts from `xtask/bundler-tools.toml` and `models/manifest.toml`.
+//! - **Earshot's own `LICENSE`**, first ([`own_licence`]).
 //!
 //! A package whose licence expression is missing, or satisfies neither [`PERMISSIVE`] nor
 //! [`FILE_COPYLEFT_ACCEPTED`], fails the build by name, and so does one that ships no licence
@@ -371,17 +378,12 @@ pub fn package_line_start(name: &str, version: &str) -> String {
     format!("{name} {version} |")
 }
 
-/// The entry of `p`: its licence expression checked against the allow-lists, its licence files,
-/// or the standard texts of the licences chosen when it ships none.
+/// `licence` of `who`, trimmed, with the licences chosen from it within the allow-lists.
 ///
 /// # Errors
-/// By the package's name and version: no licence expression, one not allowed, or no licence file
-/// and no standard text to use.
-pub fn package_entry(p: &Package) -> Result<Entry> {
-    let who = format!("{} {}", p.name, p.version);
-    let expr = p
-        .licence
-        .as_deref()
+/// By `who`: no licence, one that does not parse, or one no allowed licence satisfies.
+pub fn checked_licence(who: &str, licence: Option<&str>) -> Result<(String, Vec<Term>)> {
+    let expr = licence
         .map(str::trim)
         .filter(|e| !e.is_empty())
         .with_context(|| {
@@ -395,32 +397,61 @@ pub fn package_entry(p: &Package) -> Result<Entry> {
              (AGENTS.md ground rule 11); ask the owner"
         )
     })?;
-    let mut notes = Vec::new();
-    let files = licence_files(&p.dir).with_context(|| format!("{who}'s licence files"))?;
-    let texts = if files.is_empty() {
-        let mut texts = Vec::new();
-        for term in &chosen {
-            let text = canonical(&term.id).with_context(|| {
+    Ok((expr.to_owned(), chosen))
+}
+
+/// The standard texts of `chosen`, for `who`, which ships no licence file.
+///
+/// # Errors
+/// By `who`: a licence xtask holds no standard text of.
+fn standard_texts(who: &str, chosen: &[Term]) -> Result<Vec<String>> {
+    chosen
+        .iter()
+        .map(|term| {
+            canonical(&term.id).map(normalise).with_context(|| {
                 format!(
                     "{who} ships no licence file and xtask holds no standard text of {} \
                      (bundle::notices::CANONICAL)",
                     term.id
                 )
-            })?;
-            texts.push(normalise(text));
-        }
-        let ids: Vec<String> = chosen.iter().map(Term::text).collect();
-        notes.push(format!(
-            "The package ships no licence file: the standard text of {} is used.",
-            ids.join(" and ")
-        ));
-        if chosen.iter().any(|t| NEEDS_HOLDER.contains(&t.id.as_str())) {
-            notes.push("No file in the package names its copyright holder.".to_owned());
-        }
+            })
+        })
+        .collect()
+}
+
+/// What an entry using [`standard_texts`] says about them; `what` names the thing that ships no
+/// file.
+fn standard_text_notes(what: &str, chosen: &[Term]) -> Vec<String> {
+    let ids: Vec<String> = chosen.iter().map(Term::text).collect();
+    let mut notes = vec![format!(
+        "The {what} ships no licence file: the standard text of {} is used.",
+        ids.join(" and ")
+    )];
+    if chosen.iter().any(|t| NEEDS_HOLDER.contains(&t.id.as_str())) {
+        notes.push(format!("No file in the {what} names its copyright holder."));
+    }
+    notes
+}
+
+/// The entry of `p`: its licence expression checked against the allow-lists, its licence files,
+/// or the standard texts of the licences chosen when it ships none.
+///
+/// # Errors
+/// By the package's name and version: no licence expression, one not allowed, or no licence file
+/// and no standard text to use.
+pub fn package_entry(p: &Package) -> Result<Entry> {
+    let who = format!("{} {}", p.name, p.version);
+    let (expr, chosen) = checked_licence(&who, p.licence.as_deref())?;
+    let mut notes = Vec::new();
+    let files = licence_files(&p.dir).with_context(|| format!("{who}'s licence files"))?;
+    let texts = if files.is_empty() {
+        let texts = standard_texts(&who, &chosen)?;
+        notes.extend(standard_text_notes("package", &chosen));
         texts
     } else {
         files.into_iter().map(|(_, t)| t).collect()
     };
+    let expr = expr.as_str();
     let copyleft: Vec<String> = chosen
         .iter()
         .filter(|t| FILE_COPYLEFT_ACCEPTED.contains(&t.id.as_str()))
@@ -770,19 +801,145 @@ pub fn missing_names(text: &str, expected: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
-/// The notices of the app for `target` built with `features`, and the packages under file-level
-/// copyleft (by `name version`), for the owner.
+/// The folders whose production dependencies make the app's window (`vite build` of
+/// `apps/desktop`, which imports `packages/ui`).
+pub const NPM_ROOTS: &[&str] = &["apps/desktop", "packages/ui"];
+
+/// A `package.json`, as far as the notices read it.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct PackageJson {
+    /// Its name.
+    #[serde(default)]
+    pub name: String,
+    /// Its version.
+    #[serde(default)]
+    pub version: String,
+    /// Its licence: an SPDX string, or the older `{ "type": ... }` object.
+    #[serde(default)]
+    pub license: Option<serde_json::Value>,
+    /// The oldest form: a list of `{ "type": ... }` objects, any of which may be chosen.
+    #[serde(default)]
+    pub licenses: Option<Vec<serde_json::Value>>,
+    /// Needed at run time.
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, String>,
+    /// Needed when installed.
+    #[serde(default, rename = "optionalDependencies")]
+    pub optional: BTreeMap<String, String>,
+    /// Provided by whoever depends on it.
+    #[serde(default, rename = "peerDependencies")]
+    pub peer: BTreeMap<String, String>,
+}
+
+impl PackageJson {
+    /// Its licence expression, from whichever form it uses.
+    #[must_use]
+    pub fn licence(&self) -> Option<String> {
+        let of = |v: &serde_json::Value| -> Option<String> {
+            v.as_str()
+                .or_else(|| v.get("type").and_then(|t| t.as_str()))
+                .map(str::to_owned)
+        };
+        if let Some(l) = self.license.as_ref().and_then(of) {
+            return Some(l);
+        }
+        let all: Vec<String> = self.licenses.iter().flatten().filter_map(of).collect();
+        (!all.is_empty()).then(|| all.join(" OR "))
+    }
+}
+
+/// Reads `<dir>/package.json`.
 ///
 /// # Errors
-/// As [`shipped_crates`], [`crate_packages`], [`package_entry`] and [`vendored_entries`]; an
-/// unreadable `LICENSE`.
-pub fn notices(root: &Path, target: &str, features: &[String]) -> Result<(String, Vec<String>)> {
-    let home = cargo_home();
-    let tree = shipped_crates(root, target, features, &home)?;
-    let packages = crate_packages(&tree, &home)?;
+/// An unreadable or malformed file.
+pub fn read_package_json(dir: &Path) -> Result<PackageJson> {
+    let path = dir.join("package.json");
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+}
+
+/// Where Node finds `name` from the package in `from`: `node_modules/<name>` in `from` or the
+/// nearest folder above it that has one, followed to the real folder (pnpm links each package's
+/// dependencies beside it in its own `node_modules`).
+#[must_use]
+pub fn node_resolve(from: &Path, name: &str) -> Option<PathBuf> {
+    from.ancestors().find_map(|dir| {
+        let mut path = dir.join("node_modules");
+        path.extend(name.split('/'));
+        path.join("package.json")
+            .is_file()
+            .then(|| path.canonicalize().ok())
+            .flatten()
+    })
+}
+
+/// Whether the real folder `dir` is a package installed from the registry, rather than one of the
+/// workspace's own (whose licence is Earshot's).
+fn installed(dir: &Path) -> bool {
+    dir.components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case("node_modules"))
+}
+
+/// The packages the app's window is built from: the production dependency closure of
+/// [`NPM_ROOTS`] (`dependencies`, and `optionalDependencies` and `peerDependencies` that are
+/// installed), each once, sorted, without the workspace's own.
+///
+/// # Errors
+/// A root or package that cannot be read, or a dependency that is not installed (run
+/// `pnpm install`).
+pub fn npm_packages(root: &Path) -> Result<Vec<Package>> {
+    let mut pending: Vec<PathBuf> = Vec::new();
+    for r in NPM_ROOTS {
+        let dir = root.join(r);
+        pending.push(
+            dir.canonicalize()
+                .with_context(|| format!("find {}", dir.display()))?,
+        );
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found: BTreeMap<(String, String), Package> = BTreeMap::new();
+    while let Some(dir) = pending.pop() {
+        if !seen.insert(dir.clone()) {
+            continue;
+        }
+        let json = read_package_json(&dir)?;
+        for name in json.dependencies.keys() {
+            pending.push(node_resolve(&dir, name).with_context(|| {
+                format!(
+                    "{} needs {name}, which is not installed: run `pnpm install --frozen-lockfile`",
+                    json.name
+                )
+            })?);
+        }
+        for name in json.optional.keys().chain(json.peer.keys()) {
+            pending.extend(node_resolve(&dir, name));
+        }
+        if installed(&dir) {
+            found
+                .entry((json.name.clone(), json.version.clone()))
+                .or_insert_with(|| Package {
+                    licence: json.licence(),
+                    url: format!(
+                        "https://www.npmjs.com/package/{}/v/{}",
+                        json.name, json.version
+                    ),
+                    name: json.name,
+                    version: json.version,
+                    dir,
+                });
+        }
+    }
+    Ok(found.into_values().collect())
+}
+
+/// The entries of `packages`, and the file-level copyleft among them (by `name version`).
+///
+/// # Errors
+/// As [`package_entry`].
+fn entries_of(packages: &[Package], copyleft: &mut Vec<String>) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
-    let mut copyleft = Vec::new();
-    for p in &packages {
+    for p in packages {
         let e = package_entry(p)?;
         if !e.copyleft.is_empty() {
             copyleft.push(format!(
@@ -794,13 +951,173 @@ pub fn notices(root: &Path, target: &str, features: &[String]) -> Result<(String
         }
         entries.push(e);
     }
+    Ok(entries)
+}
+
+/// An artefact of `manifest` by id.
+fn artefact<'a>(
+    manifest: &'a crate::manifest::Manifest,
+    id: &str,
+) -> Result<&'a crate::manifest::Artefact> {
+    manifest
+        .artefacts
+        .iter()
+        .find(|a| a.id == id)
+        .with_context(|| format!("no artefact {id} in its manifest"))
+}
+
+/// The entries for the files an install holds that no package above made, and for what the app
+/// downloads beside it, from the manifests that pin them: the Vulkan loader (x64), the Visual C++
+/// runtime, the QNN files (ARM64), the uninstaller's NSIS code and plugin (NSIS's `COPYING` from
+/// `tools`, the bundle's placed NSIS) and ONNX Runtime.
+///
+/// # Errors
+/// An unreadable manifest, an artefact missing from it, a licence not allowed or with no text, or
+/// an ONNX Runtime whose licence files are not pinned members.
+pub fn other_entries(
+    root: &Path,
+    target: &str,
+    features: &[String],
+    tools: &Path,
+) -> Result<Vec<Entry>> {
+    let bundler = crate::manifest::Manifest::load(&root.join(super::TOOLS_MANIFEST))?;
+    let models = crate::manifest::Manifest::load(&crate::models::manifest_path(root))?;
+    let mut entries = Vec::new();
+    let vc = super::vc_runtime_dlls(target);
+    entries.push(Entry {
+        line: format!(
+            "{} | Microsoft Visual C++ runtime, copied from Visual Studio's VC\\Redist folder",
+            vc.join(", ")
+        ),
+        texts: Vec::new(),
+        notes: vec![
+            "Redistributed under the Microsoft Visual Studio licence terms, which list these \
+             files as redistributable."
+                .to_owned(),
+        ],
+        copyleft: Vec::new(),
+    });
+    if super::has_vulkan_summaries(features) {
+        let a = artefact(&bundler, "vulkan-runtime")?;
+        checked_licence(&a.attribution, Some(&a.licence))?;
+        entries.push(Entry {
+            line: format!(
+                "{} | {} | {}",
+                super::VULKAN_LOADER,
+                a.licence,
+                a.attribution
+            ),
+            texts: Vec::new(),
+            notes: vec![format!(
+                "Its licence text is {} beside earshot.exe.",
+                super::VULKAN_LICENCE
+            )],
+            copyleft: Vec::new(),
+        });
+    }
+    if target == crate::build::ARM64_WINDOWS {
+        let a = artefact(&models, super::QNN_ARTEFACT)?;
+        entries.push(Entry {
+            line: format!(
+                "onnxruntime_providers_qnn.dll and the Qualcomm AI Runtime libraries | {} | {}",
+                a.licence, a.attribution
+            ),
+            texts: Vec::new(),
+            notes: vec![format!(
+                "Their notice is {} beside earshot.exe, with {}, {} and Qualcomm_LICENSE.pdf.",
+                super::QNN_NOTICE,
+                super::QNN_LICENSE_IN_INSTALL,
+                super::QNN_NOTICES_IN_INSTALL
+            )],
+            copyleft: Vec::new(),
+        });
+    }
+    // NSIS is not judged by the allow-list: its terms (zlib/libpng, with bzip2 and CPL-1.0 for
+    // the compression modules, the LZMA stub in every installer) were read for the installer's
+    // approval (`xtask/bundler-tools.toml`), and the uninstaller carries its code unmodified.
+    let nsis = artefact(&bundler, "nsis")?;
+    let copying = tools.join("NSIS").join("COPYING");
+    entries.push(Entry {
+        line: format!("uninstall.exe | {} | {}", nsis.licence, nsis.attribution),
+        texts: vec![read_text(&copying)?],
+        notes: vec![
+            "The installer and uninstaller are made with NSIS and carry its code.".to_owned(),
+        ],
+        copyleft: Vec::new(),
+    });
+    let utils = artefact(&bundler, "nsis-tauri-utils")?;
+    let (_, chosen) = checked_licence(&utils.attribution, Some(&utils.licence))?;
+    let mut notes = vec!["A plugin of the installer and uninstaller.".to_owned()];
+    notes.extend(standard_text_notes("plugin", &chosen));
+    entries.push(Entry {
+        line: format!(
+            "nsis_tauri_utils.dll | {} | {}",
+            utils.licence, utils.attribution
+        ),
+        texts: standard_texts(&utils.attribution, &chosen)?,
+        notes,
+        copyleft: Vec::new(),
+    });
+    let arch = if target == crate::build::ARM64_WINDOWS {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let ort = artefact(&models, &format!("onnxruntime-win-{arch}"))?;
+    let members: Vec<&str> = ort
+        .extract
+        .iter()
+        .flat_map(|e| e.members.iter().map(|m| m.path.as_str()))
+        .collect();
+    for file in ["LICENSE", "ThirdPartyNotices.txt"] {
+        ensure!(
+            members.iter().any(|m| m.ends_with(&format!("/{file}"))),
+            "{} no longer pins its {file} (models/manifest.toml)",
+            ort.id
+        );
+    }
+    entries.push(Entry {
+        line: format!(
+            "onnxruntime.dll, downloaded after installation | {} | {}",
+            ort.licence, ort.attribution
+        ),
+        texts: Vec::new(),
+        notes: vec![
+            "Downloaded into the models folder with the speech helpers, together with its LICENSE \
+             and ThirdPartyNotices.txt."
+                .to_owned(),
+        ],
+        copyleft: Vec::new(),
+    });
+    Ok(entries)
+}
+
+/// The notices of the app for `target` built with `features`, and the packages under file-level
+/// copyleft (by `name version`), for the owner. `tools` is the bundle's tools folder
+/// (`<target-dir>\.tauri`), whose NSIS the installer is made with.
+///
+/// # Errors
+/// As [`shipped_crates`], [`crate_packages`], [`npm_packages`], [`package_entry`],
+/// [`vendored_entries`] and [`other_entries`]; an unreadable `LICENSE`.
+pub fn notices(
+    root: &Path,
+    target: &str,
+    features: &[String],
+    tools: &Path,
+) -> Result<(String, Vec<String>)> {
+    let home = cargo_home();
+    let tree = shipped_crates(root, target, features, &home)?;
+    let packages = crate_packages(&tree, &home)?;
+    let mut copyleft = Vec::new();
+    let crates = entries_of(&packages, &mut copyleft)?;
+    let npm = entries_of(&npm_packages(root)?, &mut copyleft)?;
     let sections = vec![
         Section {
             heading: "Rust crates compiled into earshot.exe".to_owned(),
             intro: "Each crate's licence files as it publishes them; where it publishes none, \
                     the standard text of its licence."
                 .to_owned(),
-            entries,
+            entries: crates,
         },
         Section {
             heading: "Native libraries built from source".to_owned(),
@@ -808,6 +1125,21 @@ pub fn notices(root: &Path, target: &str, features: &[String]) -> Result<(String
                     files those sources hold."
                 .to_owned(),
             entries: vendored_entries(&packages)?,
+        },
+        Section {
+            heading: "JavaScript packages in the app's window".to_owned(),
+            intro: "The packages the window's page is built from, each with its licence files \
+                    as it publishes them; where it publishes none, the standard text of its \
+                    licence."
+                .to_owned(),
+            entries: npm,
+        },
+        Section {
+            heading: "Other files".to_owned(),
+            intro: "Files beside earshot.exe that no package above made, and ONNX Runtime, which \
+                    the app downloads."
+                .to_owned(),
+            entries: other_entries(root, target, features, tools)?,
         },
     ];
     let own = own_licence(&std::fs::read_to_string(root.join("LICENSE")).context("read LICENSE")?);
@@ -832,8 +1164,9 @@ pub fn write_notices(
     exe_dir: &Path,
     target: &str,
     features: &[String],
+    tools: &Path,
 ) -> Result<PathBuf> {
-    let (text, copyleft) = notices(root, target, features)?;
+    let (text, copyleft) = notices(root, target, features, tools)?;
     for p in &copyleft {
         println!("xtask build: {NOTICES_FILE}: under file-level copyleft, used unmodified: {p}");
     }
@@ -846,14 +1179,16 @@ pub fn write_notices(
 /// [`notices`]: what `bundle-check` requires of an installed file.
 ///
 /// # Errors
-/// As [`shipped_crates`].
+/// As [`shipped_crates`] and [`npm_packages`].
 pub fn expected_names(
     root: &Path,
     target: &str,
     features: &[String],
 ) -> Result<Vec<(String, String)>> {
     let tree = shipped_crates(root, target, features, &cargo_home())?;
-    Ok(tree.into_iter().map(|c| (c.name, c.version)).collect())
+    let mut names: Vec<(String, String)> = tree.into_iter().map(|c| (c.name, c.version)).collect();
+    names.extend(npm_packages(root)?.into_iter().map(|p| (p.name, p.version)));
+    Ok(names)
 }
 
 #[cfg(test)]

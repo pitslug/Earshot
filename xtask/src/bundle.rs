@@ -1083,7 +1083,7 @@ pub fn run(
         check_binary(name, &read_pe(&exe_dir.join(name))?, &triple, features)?;
     }
     let notice = write_install_notice(root, exe_dir)?;
-    notices::write_notices(root, exe_dir, &triple, features)?;
+    notices::write_notices(root, exe_dir, &triple, features, &dir.join(".tauri"))?;
     let config = dir.join(format!("earshot-bundle-{triple}.json"));
     let overlay = bundle_config(
         exe_dir,
