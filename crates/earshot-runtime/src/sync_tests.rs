@@ -3537,6 +3537,50 @@ fn sync_rows_pulled_before_their_parents_in_one_page_apply_in_the_same_tick() {
     assert_filled_in_one_tick(&a, &b, &b.client());
 }
 
+/// The retries cost work in proportion to the rows, not to the pages: a new computer pulling
+/// several meetings filed children first, two rows a page, opens each held row at most three
+/// times in the tick (a line waits for its track, which waits for its meeting), however many
+/// pages bring a parent. Twice the meetings is about twice the work, not four times.
+#[test]
+fn sync_rows_held_for_a_parent_are_opened_again_in_proportion_to_their_number() {
+    let filled = |meetings: u64| {
+        let relay = relay();
+        let a = Device::new("sync-parents-linear-a");
+        set_up_first_device(&a.svc, &*a.vault, &relay.relay.url(), SECRET).unwrap();
+        let ids: Vec<_> = (0..meetings)
+            .map(|n| meeting(&a.svc, "Invented meeting", 300 + n))
+            .collect();
+        a.client().tick().unwrap();
+        for m in ids {
+            file_children_before_parents(&a, m);
+        }
+        let b = Device::new("sync-parents-linear-b");
+        let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+        join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+        let client = b.client().with_pull_pages(500, 2);
+        let (report, outcome) = client.tick_reporting();
+        assert!(outcome.is_ok() && report.pull_complete, "{report:?}");
+        assert_eq!(report.held, 0, "{report:?}");
+        assert_eq!(a.rows(), b.rows());
+        assert_eq!(report.pulled as u64, meetings * 8, "{report:?}");
+        report
+    };
+    let four = filled(4);
+    let eight = filled(8);
+    for r in [&four, &eight] {
+        assert!(
+            r.retried <= 3 * r.pulled,
+            "each held row is opened at most once per level: {r:?}"
+        );
+    }
+    assert!(
+        eight.retried <= 2 * four.retried + 8,
+        "twice the rows, about twice the work: {} then {}",
+        four.retried,
+        eight.retried
+    );
+}
+
 /// A row whose parent never arrives stays held and is counted; rows held for other reasons
 /// are not touched by the retries a new parent sets off.
 #[test]
