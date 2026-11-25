@@ -2734,15 +2734,15 @@ Lane update (`earshot-update`, runtime `update.rs`, `download.rs`, desktop `upda
 
 Lane bundle (`xtask` bundle, runtime `cuda.rs`, desktop `cuda_settings.rs`):
 
-- [ ] T14.37 The installer carries third-party licence notices
+- [x] T14.37 The installer carries third-party licence notices
   - do: `cargo xtask build --bundle` writes a notices file from the shipped app's dependency graph for the target (crate licence texts from the registry sources, npm production packages, llama.cpp, whisper.cpp and ONNX Runtime from their vendored or pinned licences, Earshot's own LICENSE), installs it and adds it to `expected_files`; a missing licence text fails the build by name.
   - accept: `cargo test -p xtask bundle`; `cargo xtask build --bundle` and `cargo xtask bundle-check` on main
-- [ ] T14.38 CUDA transcription loads without Microsoft's redistributable
+- [x] T14.38 CUDA transcription loads without Microsoft's redistributable
   - do: confirm from the installed provider's imports which C++ runtime files it needs beyond the four shipped; ship them beside the exe (x64), load them the way the provider's folder rule needs, and have bundle-check read the pinned CUDA files' imports against what an install holds.
   - accept: `cargo test -p xtask bundle`; `cargo test -p earshot-runtime cuda`; bundle-check on main
-- [ ] T14.39 The CUDA start reads each file once
-  - do: remove verification passes that repeat one already made in the same start with nothing loaded between, keeping "every load goes through `verify_part` or `load_verified`"; no cache by time or size.
-  - accept: `cargo test -p earshot-runtime cuda`; `cargo test -p earshot-desktop --bin earshot cuda_settings`
+- [x] T14.39 The CUDA start reads each file once
+  - result (2026-11-26): nothing removed. The lane mapped every hashing pass of the start: the only repeat inside one process is the summaries files (about 0.6 GB), verified by the parent before the trial and again inside `verify_part(Transcription)`; a CUDA download is not refused while the start is checking, so an extraction can land between the two and the second pass is not redundant under the rule. Left as it is: saving about a second per start is not worth weakening "every load goes through `verify_part`".
+  - accept: `cargo test -p earshot-desktop --bin earshot cuda_settings` (unchanged)
 
 Lane engines (runtime `model_settings.rs`, `cuda_switch.rs`, `lib.rs`, `model_bench.rs`, `earshot-llm-local` `log.rs`):
 

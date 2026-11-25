@@ -21,7 +21,8 @@
 //!
 //! What an install holds: the exe (the benchmark meeting is compiled into it), llama.cpp's DLLs,
 //! the exe's public symbols for crash logs ([`APP_SYMBOLS`]) and one notice crediting the meeting
-//! and the common words compiled into the exe ([`install_notice`], T12.15ee). Nothing
+//! and the common words compiled into the exe ([`install_notice`], T12.15ee), and the third-party
+//! notices written from the shipped dependency graph ([`notices`], T14.37). Nothing
 //! in it names the build user ([`paths`]). No model, no ONNX Runtime (it lives in the models folder), no
 //! CUDA library, no QNN library on x64 ([`refused_in_install`]), no updater. The ARM64 install also
 //! holds Qualcomm's QNN execution provider and the libraries the manifest pins for it, with their
@@ -44,8 +45,10 @@ use crate::llama_dlls;
 use crate::manifest::{self, Manifest};
 use crate::proc::run_with_timeout;
 
+pub mod notices;
 pub mod paths;
 pub mod registry;
+use notices::NOTICES_FILE;
 use registry::{Reg, RegistryGuard};
 
 /// The `@tauri-apps/cli` the pins below belong to (tauri-bundler 2.10.3 inside it).
@@ -238,19 +241,26 @@ fn has_vulkan_summaries(features: &[String]) -> bool {
 /// The Visual C++ runtime an install holds beside the exe (T9.1w, the owner), because a PC without
 /// Microsoft's redistributable could not start the app or load ONNX Runtime, and installing that
 /// needs an admin prompt and a download. Exactly what the exe, llama.cpp, ggml and ONNX Runtime
-/// import; the Universal CRT comes with Windows. Microsoft's terms allow these files for licensed
-/// Visual Studio users (`VC\Redist` in its redistribution list). A new release carries a new copy,
-/// because Windows Update does not service these.
-pub const VC_RUNTIME_DLLS: [&str; 4] = [
+/// import, and what the opt-in CUDA files import ([`cuda_imports_unheld`], T14.38):
+/// `onnxruntime_providers_cuda.dll` imports `msvcp140_atomic_wait.dll`, which the app preloads
+/// from beside the exe before the provider loads, because the provider's imports are looked for
+/// beside it, not certainly in the exe's folder. The Universal CRT comes with Windows.
+/// Microsoft's terms allow these files for licensed Visual Studio users (`VC\Redist` in its
+/// redistribution list). A new release carries a new copy, because Windows Update does not
+/// service these.
+pub const VC_RUNTIME_DLLS: [&str; 5] = [
     "msvcp140.dll",
     "msvcp140_1.dll",
     "vcruntime140.dll",
     "vcruntime140_1.dll",
+    "msvcp140_atomic_wait.dll",
 ];
 
 /// [`VC_RUNTIME_DLLS`] for `target`. On ARM64 without `vcruntime140_1.dll`: that helper exists for
 /// x64 code only, and the copy in Visual Studio's `arm64\Microsoft.VC*.CRT` folder is an x64 binary
-/// (seen with 14.44.35112), which no ARM64 binary imports.
+/// (seen with 14.44.35112), which no ARM64 binary imports. Nor `msvcp140_atomic_wait.dll`: only
+/// the x64 CUDA provider imports it, and nothing an ARM64 install holds or downloads does (the
+/// ARM64 ONNX Runtime and QNN files, read 2026-11-26).
 #[must_use]
 pub fn vc_runtime_dlls(target: &str) -> &'static [&'static str] {
     if target == ARM64_WINDOWS {
@@ -611,6 +621,24 @@ pub fn notice_check(installed: &str, expected: &str) -> (bool, String) {
     )
 }
 
+/// `bundle-check`'s verdict on the installed [`NOTICES_FILE`] `text`: there, and naming every
+/// package of `shipped` ([`notices::expected_names`], the rule the bundle wrote it by), with the
+/// detail to print. The file must also be whole by itself ([`notices::installed_file_problems`]).
+#[must_use]
+pub fn notices_check(text: &str, shipped: &[(String, String)]) -> (bool, String) {
+    let missing = notices::missing_names(text, shipped);
+    let problems = notices::installed_file_problems(text);
+    let pass = !shipped.is_empty() && missing.is_empty() && problems.is_empty();
+    (
+        pass,
+        format!(
+            "{} bytes, {} packages expected, missing: {missing:?}, problems: {problems:?}",
+            text.len(),
+            shipped.len()
+        ),
+    )
+}
+
 /// The settings laid over `tauri.conf.json` for one bundle run. Every path is a whole one: the CLI
 /// canonicalises `installerHooks` from its own working folder, not from this file's.
 #[must_use]
@@ -642,6 +670,10 @@ pub fn bundle_config(
     resources.insert(
         notice.display().to_string(),
         json!(MEETING_NOTICE_IN_INSTALL),
+    );
+    resources.insert(
+        exe_dir.join(NOTICES_FILE).display().to_string(),
+        json!(NOTICES_FILE),
     );
     json!({
         "bundle": {
@@ -977,6 +1009,161 @@ pub fn check_binary(name: &str, pe: &Pe, target: &str, features: &[String]) -> R
     Ok(())
 }
 
+/// Whether `name` is a library Windows itself provides: an API set, or a file of `system32` that
+/// is not part of the Visual C++ runtime (which System32 holds only where Microsoft's
+/// redistributable was installed: T14.38).
+#[must_use]
+pub fn is_windows_library(name: &str, system32: &Path) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("api-ms-win-") || lower.starts_with("ext-ms-") {
+        return true;
+    }
+    !is_vc_runtime_library(name) && system32.join(name).is_file()
+}
+
+/// The imports of a pinned CUDA library (`pe`) that nothing holds where the app loads it: not
+/// another file of the CUDA folder (`cuda_names`), not a file an install for `target` holds
+/// ([`expected_files`]), not a Windows library (`windows`, [`is_windows_library`] in production).
+#[must_use]
+pub fn cuda_imports_unheld(
+    pe: &Pe,
+    cuda_names: &[String],
+    target: &str,
+    windows: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    cuda_imports_unheld_in(pe, cuda_names, &expected_files(target), windows)
+}
+
+/// [`cuda_imports_unheld`] against the install's files `installed`.
+#[must_use]
+pub fn cuda_imports_unheld_in(
+    pe: &Pe,
+    cuda_names: &[String],
+    installed: &[PathBuf],
+    windows: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    pe.imports
+        .iter()
+        .filter(|i| {
+            !cuda_names.iter().any(|n| n.eq_ignore_ascii_case(i))
+                && !installed
+                    .iter()
+                    .any(|f| f.to_string_lossy().eq_ignore_ascii_case(i))
+                && !windows(i)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Every file of the opt-in CUDA folder, as `models/manifest.toml`'s `[[cuda_archive]]` pins it.
+///
+/// # Errors
+/// An unreadable manifest.
+pub fn cuda_pins(root: &Path) -> Result<Vec<manifest::CudaFile>> {
+    let m = Manifest::load(&crate::models::manifest_path(root))?;
+    Ok(m.cuda_archives.into_iter().flat_map(|a| a.files).collect())
+}
+
+/// The CUDA files' imports, judged against what an install for `target` holds (T14.38): every
+/// pinned library in `folder` with its pinned bytes is read; one missing or with other bytes is
+/// listed as skipped, so a machine without the files says what it did not check. x64 only: ARM64
+/// has no CUDA files.
+fn check_cuda_imports(
+    all: &mut bool,
+    root: &Path,
+    target: &str,
+    folder: &Path,
+) -> Result<CudaImportsChecked> {
+    if target != X64_WINDOWS {
+        println!("bundle-check: skipped: the CUDA files' imports: {target} has no CUDA files");
+        return Ok(CudaImportsChecked::default());
+    }
+    let pins = cuda_pins(root)?;
+    let names: Vec<String> = pins.iter().map(|p| p.name.clone()).collect();
+    let system32 = PathBuf::from(std::env::var_os("SystemRoot").context("SystemRoot is not set")?)
+        .join("System32");
+    let windows = |name: &str| is_windows_library(name, &system32);
+    let mut skipped = Vec::new();
+    let mut checked = 0;
+    for pin in pins
+        .iter()
+        .filter(|p| p.name.to_ascii_lowercase().ends_with(".dll"))
+    {
+        let path = folder.join(&pin.name);
+        let pinned = crate::download::verify_file(
+            &path,
+            &crate::download::Expected {
+                sha256: &pin.sha256,
+                size: pin.size,
+            },
+        );
+        if pinned.is_err() {
+            skipped.push(pin.name.as_str());
+            continue;
+        }
+        checked += 1;
+        let unheld = read_pe(&path).map(|pe| cuda_imports_unheld(&pe, &names, target, &windows));
+        verdict(
+            all,
+            &format!(
+                "cuda: {} imports only what an install, the folder or Windows holds",
+                pin.name
+            ),
+            unheld.as_ref().is_ok_and(Vec::is_empty),
+            &match &unheld {
+                Ok(u) if u.is_empty() => "every import held".to_owned(),
+                Ok(u) => format!("not held: {u:?}"),
+                Err(e) => format!("{e:#}"),
+            },
+        );
+    }
+    if !skipped.is_empty() {
+        println!(
+            "bundle-check: skipped: the imports of {} pinned CUDA libraries not in {} with their \
+             pinned bytes: {skipped:?}",
+            skipped.len(),
+            folder.display()
+        );
+    }
+    let counts = CudaImportsChecked {
+        checked,
+        skipped: skipped.len(),
+    };
+    println!("bundle-check: {}", counts.summary());
+    Ok(counts)
+}
+
+/// How many pinned CUDA libraries [`check_cuda_imports`] read, and how many it could not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CudaImportsChecked {
+    /// Read with their pinned bytes and judged.
+    pub checked: usize,
+    /// Missing, or with other bytes: not judged.
+    pub skipped: usize,
+}
+
+impl CudaImportsChecked {
+    /// The release log's line saying whether the check really ran.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "CUDA imports: {} checked, {} skipped",
+            self.checked, self.skipped
+        )
+    }
+}
+
+/// The pinned CUDA libraries (`.dll` files of [`cuda_pins`]).
+///
+/// # Errors
+/// As [`cuda_pins`].
+pub fn cuda_pinned_libraries(root: &Path) -> Result<usize> {
+    Ok(cuda_pins(root)?
+        .iter()
+        .filter(|p| p.name.to_ascii_lowercase().ends_with(".dll"))
+        .count())
+}
+
 /// The silent NSIS command line. `/D=` must come last and unquoted (NSIS reads to the end of the
 /// line); `/NS` leaves the user's Desktop and Start menu alone.
 #[must_use]
@@ -1059,6 +1246,7 @@ pub fn run(
         check_binary(name, &read_pe(&exe_dir.join(name))?, &triple, features)?;
     }
     let notice = write_install_notice(root, exe_dir)?;
+    notices::write_notices(root, exe_dir, &triple, features, &dir.join(".tauri"))?;
     let config = dir.join(format!("earshot-bundle-{triple}.json"));
     let overlay = bundle_config(
         exe_dir,
@@ -1142,6 +1330,7 @@ pub fn expected_files(target: &str) -> Vec<PathBuf> {
         PathBuf::from(APP_EXE),
         PathBuf::from(APP_SYMBOLS),
         PathBuf::from(MEETING_NOTICE_IN_INSTALL),
+        PathBuf::from(NOTICES_FILE),
         PathBuf::from("uninstall.exe"),
     ];
     let features = build::shipped_features(Some(target), &[]);
@@ -1275,6 +1464,7 @@ fn built_comparisons(target: &str) -> Vec<(&'static str, &'static str)> {
         names.push(VULKAN_LICENCE);
     }
     names.extend(qnn_install_names(target));
+    names.push(NOTICES_FILE);
     let mut pairs: Vec<(&str, &str)> = names.into_iter().map(|n| (n, n)).collect();
     pairs.push((APP_SYMBOLS, APP_SYMBOLS_BUILT));
     pairs
@@ -1289,6 +1479,9 @@ pub enum Instead {
     Notice,
     /// A Windows binary: its machine type and imports ([`check_binary`]).
     Binary,
+    /// The third-party notices: they name every package of the shipped tree
+    /// ([`notices::missing_names`]).
+    Names,
     /// Nothing: no build and no pin to compare it with.
     Skipped,
 }
@@ -1301,6 +1494,8 @@ pub fn instead_of_build(name: &str, target: &str) -> Instead {
         Instead::Pin
     } else if target == ARM64_WINDOWS && name.eq_ignore_ascii_case(QNN_NOTICE) {
         Instead::Notice
+    } else if name.eq_ignore_ascii_case(NOTICES_FILE) {
+        Instead::Names
     } else if lower.ends_with(".dll") || lower.ends_with(".exe") {
         Instead::Binary
     } else {
@@ -1334,6 +1529,7 @@ pub fn skipped_lines(target: &str) -> Vec<String> {
                 Instead::Pin => "checked against its manifest pin (size and SHA-256) instead",
                 Instead::Notice => "checked that it names every QNN file instead",
                 Instead::Binary => "checked by machine type and imports instead",
+                Instead::Names => "checked that it names every shipped package instead",
                 Instead::Skipped => "skipped: no build folder to compare with and no pin for it",
             };
             format!("bundle-check: no build: {name}: same bytes as built not compared; {how}")
@@ -1460,6 +1656,7 @@ fn check_install(
     target: &str,
     qnn: &[QnnPin],
     notice: &str,
+    shipped: Option<&[(String, String)]>,
 ) -> Result<()> {
     let mut found = Vec::new();
     for file in files_under(dir)? {
@@ -1514,6 +1711,27 @@ fn check_install(
         credited,
         &detail,
     );
+    let third_party = std::fs::read_to_string(dir.join(NOTICES_FILE)).unwrap_or_default();
+    match shipped {
+        Some(shipped) => {
+            let (named, detail) = notices_check(&third_party, shipped);
+            verdict(
+                all,
+                &format!("nsis: {NOTICES_FILE} names every package of the shipped tree"),
+                named,
+                &detail,
+            );
+        }
+        None => {
+            let problems = notices::installed_file_problems(&third_party);
+            verdict(
+                all,
+                &format!("nsis: {NOTICES_FILE} is whole by itself (no tree to compare with)"),
+                problems.is_empty(),
+                &format!("{} bytes, problems: {problems:?}", third_party.len()),
+            );
+        }
+    }
     if target == ARM64_WINDOWS {
         for (pin, result) in qnn_pin_results(dir, qnn) {
             let detail = match &result {
@@ -1835,6 +2053,20 @@ pub fn check(
     // After the digest, so a run stopped by an unreadable checkout notice still names the
     // installer it was given; still before anything is touched.
     let notice = install_notice_text(root)?;
+    let names = notices::expected_names(root, triple, &build::shipped_features(Some(triple), &[]));
+    let shipped = match names {
+        Ok(names) => Some(names),
+        // A machine checking only an installer may hold neither the crate sources nor
+        // `node_modules` (the Surface): the file is then judged by itself, and says so.
+        Err(e) if installer.is_some() => {
+            println!(
+                "bundle-check: skipped: {NOTICES_FILE} against the shipped tree, which this \
+                 checkout cannot read ({e:#}); the installed file is judged by itself instead"
+            );
+            None
+        }
+        Err(e) => return Err(e),
+    };
     let reference = exe_dir
         .as_deref()
         .map_or(Reference::Installer, Reference::Built);
@@ -1858,7 +2090,19 @@ pub fn check(
         product,
         vendor,
     };
-    let result = check_saved(root, &nsis, &reference, triple, &qnn, &notice, &names);
+    let expected_notices = Notices {
+        meeting: notice,
+        shipped,
+    };
+    let result = check_saved(
+        root,
+        &nsis,
+        &reference,
+        triple,
+        &qnn,
+        &expected_notices,
+        &names,
+    );
     let restored = guard.finish();
     let mut all = with_restore_error(result, restored.as_ref().err())?;
     match restored {
@@ -1899,6 +2143,14 @@ struct Installed {
     vendor: String,
 }
 
+/// What the installed notices are judged against, worked out before anything is touched.
+struct Notices {
+    /// [`install_notice_text`] of this checkout.
+    meeting: String,
+    /// [`notices::expected_names`] of the shipped tree, `None` when this checkout cannot read it.
+    shipped: Option<Vec<(String, String)>>,
+}
+
 /// The check itself, with the registry saved by the caller.
 fn check_saved(
     root: &Path,
@@ -1906,7 +2158,7 @@ fn check_saved(
     reference: &Reference,
     triple: &str,
     qnn: &[QnnPin],
-    notice: &str,
+    notices: &Notices,
     names: &Installed,
 ) -> Result<bool> {
     let work = root.join("target").join("bundle-check");
@@ -1929,7 +2181,22 @@ fn check_saved(
             Err(e) => format!("{e:#}"),
         },
     );
-    check_install(&mut all, &install, reference, triple, qnn, notice)?;
+    check_install(
+        &mut all,
+        &install,
+        reference,
+        triple,
+        qnn,
+        &notices.meeting,
+        notices.shipped.as_deref(),
+    )?;
+    // The counts are printed as the summary line; the verdicts above already judged what ran.
+    let _counts = check_cuda_imports(
+        &mut all,
+        root,
+        triple,
+        &crate::models::cache_dir()?.join("cuda"),
+    )?;
 
     // The names the guard saved are the ones the installer really used.
     let product_key = format!(r"HKCU\Software\{}\{}", names.vendor, names.product);

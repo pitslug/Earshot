@@ -37,6 +37,8 @@ The models and ONNX Runtime for the replay come from `EARSHOT_MODELS`, never fro
 
 - The first line is `bundle-check: installer <path> sha256 <hex>`.
 - Then one `bundle-check: no build: ...` line per comparison with the build it cannot make, because there is no build folder: the QNN files are checked against their manifest pins instead, `NOTICE.md` for the names of every QNN file, the exe and DLLs by machine type and imports, and `earshot.pdb` is skipped (no build to compare with and no pin).
+- `third-party-notices.txt` (T14.37) is judged against the shipped crate and npm tree when this checkout can read it (the crates' sources in a cargo home and `node_modules`, so after a build or `cargo xtask ci` here). When it cannot, a `bundle-check: skipped: third-party-notices.txt against the shipped tree ...` line says so, and the installed file is judged by itself instead: Earshot's licence as text 1, every section heading in order, entries in the crates and JavaScript sections, and every licence text an entry names present. Its byte comparison with the build is listed among the `no build` lines.
+- `bundle-check: skipped: the CUDA files' imports: aarch64-pc-windows-msvc has no CUDA files`.
 - Every verdict line reads `ok`, including `the installed exe is for the installer's architecture`, each `matches its manifest pin`, `NOTICE.md names every QNN file`, the replay checks and `registry restored`.
 - The last line is `bundle-check: PASS installer <path> sha256 <hex> (...)` and the command exits 0. Any `FAIL` line fails the run and keeps the work folder under `target\bundle-check`.
 
