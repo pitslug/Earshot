@@ -5,12 +5,12 @@
 //! `packages/ui/src/ipc/bindings.ts`, which `bindings_are_up_to_date` keeps in step
 //! (`EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings` rewrites it).
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
 use earshot_core::model::Meeting;
-use earshot_runtime::folders::LiveFolders;
 use earshot_runtime::search::{MatchedIn, Searches};
 use earshot_runtime::{MeetingActivity, RuntimeError, Services, SystemClock};
 use earshot_store::{DataDir, StoreError};
@@ -416,16 +416,16 @@ impl MeetingListItem {
 /// # Errors
 /// Store errors.
 pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcError> {
-    // The live folders, read once with the first meeting, in the same lock.
-    let mut folders: Option<LiveFolders> = None;
+    // Every meeting's folder, read once with the first meeting, in the same lock, by the
+    // one rule (`folders::meeting_folders_in`): never the raw `Meeting::folder_id`, so a
+    // deleted or unknown folder reads as none.
+    let mut folders: Option<BTreeMap<EntityId, EntityId>> = None;
     let read = services.live_meetings(|store, m| {
         let folders = match &mut folders {
             Some(read) => read,
-            None => folders.insert(LiveFolders::read(store)?),
+            None => folders.insert(earshot_runtime::folders::meeting_folders_in(store)?),
         };
-        // Never the raw `Meeting::folder_id`: a deleted or unknown folder reads as none
-        // (`LiveFolders::resolve`, the one resolution `folders::meeting_folders` uses too).
-        let folder = folders.resolve(m.folder_id).map(|f| f.id);
+        let folder = folders.get(&m.id).copied();
         let new_summary = earshot_runtime::summary_seen::has_new_summary(store, m.id)?;
         Ok((folder, new_summary))
     })?;
