@@ -3636,29 +3636,310 @@ fn sync_a_failed_tick_keeps_the_refused_count_of_the_last_completed_one() {
 /// The retry at the start of each tick reads at most a page of held rows and goes on from its
 /// last key next tick, so more held rows than one page are each tried in turn; rows held for a
 /// newer format or a far clock are read too until one pass from the first key has reached the
-/// end, then only rows held for a meeting in use or a parent.
+/// end, then only rows held for a meeting in use or a parent. Rows held for a far clock are
+/// read again by the first pass that starts an hour or more after the last one that read them
+/// began, or after this device's clock was set back (T14.44); rows held for a newer format
+/// never again.
 #[test]
-fn sync_held_row_retries_take_turns_and_read_the_slow_reasons_once() {
+fn sync_held_row_retries_take_turns_read_format_once_and_far_clocks_hourly() {
     use earshot_store::HoldReason;
+    const HOUR: u64 = super::engine::CLOCK_RETRY_MS;
+    assert_eq!(HOUR, 60 * 60 * 1000);
+    let t = 1_792_294_800_000;
     let mut retry = super::engine::HeldRetry::default();
     let quick: &[HoldReason] = &[HoldReason::Busy, HoldReason::Parent];
+    let with_clock: &[HoldReason] = &[HoldReason::Clock, HoldReason::Busy, HoldReason::Parent];
     // The first pass reads every reason from the first key, a full page at a time.
-    assert_eq!(retry.begin(), (&HoldReason::ALL[..], None));
+    assert_eq!(retry.begin(t), (&HoldReason::ALL[..], None));
     retry.read(3, 3, Some([1; 16]));
-    assert_eq!(retry.begin(), (&HoldReason::ALL[..], Some([1; 16])));
+    assert_eq!(retry.begin(t + 1), (&HoldReason::ALL[..], Some([1; 16])));
     retry.read(3, 3, Some([2; 16]));
-    assert_eq!(retry.begin(), (&HoldReason::ALL[..], Some([2; 16])));
+    assert_eq!(retry.begin(t + 2), (&HoldReason::ALL[..], Some([2; 16])));
     // A short page is the end: the slow reasons are done, and the next retry starts over.
     retry.read(1, 3, Some([3; 16]));
-    assert_eq!(retry.begin(), (quick, None));
+    assert_eq!(retry.begin(t + 3), (quick, None));
     retry.read(3, 3, Some([1; 16]));
     assert_eq!(
-        retry.begin(),
+        retry.begin(t + 4),
         (quick, Some([1; 16])),
         "on from the last key"
     );
     retry.read(0, 3, None);
-    assert_eq!(retry.begin(), (quick, None), "and round again");
+    assert_eq!(retry.begin(t + 5), (quick, None), "and round again");
+    retry.read(0, 3, None);
+
+    // Just under an hour after the pass that read them began: not yet.
+    assert_eq!(retry.begin(t + HOUR - 1), (quick, None));
+    retry.read(0, 3, None);
+    // An hour after it began: the rows held for a far clock are read again, format rows not.
+    assert_eq!(retry.begin(t + HOUR), (with_clock, None));
+    // The pass keeps its reasons until it ends, however long that takes.
+    retry.read(3, 3, Some([4; 16]));
+    assert_eq!(retry.begin(t + HOUR + 1), (with_clock, Some([4; 16])));
+    retry.read(2, 3, Some([5; 16]));
+    // The hour counts from when that pass began.
+    assert_eq!(retry.begin(t + 2 * HOUR - 1), (quick, None));
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(t + 2 * HOUR), (with_clock, None));
+    retry.read(0, 3, None);
+    // The clock was set back (it reads earlier than when they were last read): read them now,
+    // since a corrected clock is what clears them.
+    assert_eq!(retry.begin(t + HOUR), (with_clock, None));
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(t + HOUR + 1), (quick, None));
+    // A pass that is under way when the hour comes round is not changed; the next one reads
+    // them.
+    retry.read(3, 3, Some([6; 16]));
+    assert_eq!(retry.begin(t + 3 * HOUR), (quick, Some([6; 16])));
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(t + 3 * HOUR), (with_clock, None));
+}
+
+// ---- T14.44: a clock far ahead cannot poison a vault ----
+
+/// A relay whose clock is the test's own (Unix ms in `now`), so "a day past the relay's clock"
+/// is exact.
+fn relay_on_clock(now: &Arc<std::sync::atomic::AtomicU64>) -> TestRelay {
+    let dir = TempDir::new("sync-relay-clock");
+    let now = Arc::clone(now);
+    let clock: earshot_sync_server::Clock =
+        Arc::new(move || now.load(std::sync::atomic::Ordering::SeqCst) / 1000);
+    let server = RelayServer::open_with_clock(&relay_config(&dir), clock).unwrap();
+    TestRelay {
+        relay: LocalRelay::start(server).unwrap(),
+        _dir: dir,
+    }
+}
+
+const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// The relay's window and the window a device holds pulled rows by are one figure: a row the
+/// relay accepts is one every device with a right clock applies.
+#[test]
+fn sync_the_relay_and_the_devices_hold_far_stamps_by_the_same_window() {
+    assert_eq!(
+        earshot_sync::wire::MAX_STAMP_AHEAD_MS,
+        earshot_store::MAX_CLOCK_AHEAD_MS
+    );
+    assert_eq!(earshot_store::MAX_CLOCK_AHEAD_MS, DAY_MS);
+}
+
+/// A computer whose clock jumped three days ahead and was put right: what it wrote meanwhile,
+/// and everything it writes after (its stamps go on from the jump), is not sent. The tick
+/// still sends the older rows, pulls, counts as a sync and says why rows wait. The vault is
+/// not poisoned: the other computer's later edit of the same meeting is the relay's copy and
+/// reaches a third computer.
+#[test]
+fn sync_rows_stamped_far_ahead_are_not_sent_and_the_vault_keeps_later_edits() {
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(crate::testutil::T0));
+    let relay = relay_on_clock(&now);
+    let (a, b) = pair(&relay);
+    let shared = meeting(&a.svc, "Planning", 1);
+    trade(&a, &b);
+    assert_eq!(b.title(shared).as_deref(), Some("Planning"));
+
+    // A's clock jumps, A renames the meeting and records another, and the clock is put right.
+    a.clock.advance_ms(3 * DAY_MS);
+    a.rename(shared, "Renamed while the clock was wrong");
+    let late = meeting(&a.svc, "Recorded while the clock was wrong", 2);
+    a.clock.set_ms(crate::testutil::T0 + 1_000);
+    // A healthy-looking edit made after the correction is stamped past the jump too.
+    let after = meeting(&a.svc, "Recorded after the clock was put right", 3);
+    let queued = a.svc.store().outbox_len().unwrap();
+    assert!(queued >= 17, "{queued}");
+
+    let ca = a.client();
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "the tick itself did not fail: {r:?}");
+    assert_eq!((r.pushed, r.superseded), (0, 0), "{r:?}");
+    assert_eq!(r.clock_ahead as u64, queued, "{r:?}");
+    assert!(r.pull_complete, "it still pulled: {r:?}");
+    let status = sync_status(&a.svc.store()).unwrap();
+    assert_eq!(status.problem, Some(SyncProblem::ClockAhead));
+    assert_eq!(
+        status.last_success_unix_ms,
+        Some(crate::testutil::T0 + 1_000)
+    );
+    assert!(!SyncProblem::ClockAhead.stops(), "it is retried");
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        queued,
+        "all still queued"
+    );
+
+    // Nothing of it reached the relay: B has the old title and neither new meeting.
+    b.clock.advance_ms(5_000);
+    now.store(
+        crate::testutil::T0 + 5_000,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    b.client().tick().unwrap();
+    assert_eq!(b.title(shared).as_deref(), Some("Planning"));
+    assert_eq!(b.title(late), None);
+    assert_eq!(b.title(after), None);
+
+    // B edits the meeting later, by a right clock: the relay takes it (no far stamp shadows
+    // it) and a third computer gets B's title.
+    b.rename(shared, "Renamed by a computer whose clock is right");
+    let rb = b.client().tick().unwrap();
+    assert_eq!((rb.pushed, rb.superseded), (1, 0), "{rb:?}");
+    let c = Device::new("sync-clock-c");
+    let offer = offer_pairing_code(&b.svc, b.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.relay.url(), offer.code()).unwrap();
+    c.client().tick().unwrap();
+    assert_eq!(
+        c.title(shared).as_deref(),
+        Some("Renamed by a computer whose clock is right")
+    );
+
+    // Once real time has passed the far stamps, A's rows go.
+    a.clock.set_ms(crate::testutil::T0 + 3 * DAY_MS);
+    now.store(
+        crate::testutil::T0 + 3 * DAY_MS,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "{r:?}");
+    assert_eq!((r.clock_ahead, r.pushed as u64), (0, queued), "{r:?}");
+    assert_eq!(sync_status(&a.svc.store()).unwrap().problem, None);
+}
+
+/// A computer whose clock is wrong now (three days ahead) cannot tell by itself: the relay
+/// refuses its push by its own clock, with a word of its own, and stores nothing. The rows stay
+/// queued and are sent once the clocks agree. A row at the edge of the window is accepted.
+#[test]
+fn sync_a_push_the_relay_refuses_for_its_far_stamp_keeps_the_rows_queued() {
+    let t0 = crate::testutil::T0;
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(t0));
+    let relay = relay_on_clock(&now);
+    let (a, b) = pair(&relay);
+    a.clock.advance_ms(3 * DAY_MS);
+    let m = meeting(&a.svc, "Recorded by a clock that is wrong now", 1);
+    let queued = a.svc.store().outbox_len().unwrap();
+    let ca = a.client();
+    let (r, outcome) = ca.tick_reporting();
+    assert_eq!(outcome, Err(SyncProblem::ClockAhead), "{r:?}");
+    assert_eq!((r.pushed, r.clock_ahead), (0, 0), "{r:?}");
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        queued,
+        "nothing was lost"
+    );
+    assert_eq!(
+        sync_status(&a.svc.store()).unwrap().problem,
+        Some(SyncProblem::ClockAhead)
+    );
+    b.client().tick().unwrap();
+    assert_eq!(b.title(m), None, "the relay stored none of it");
+    // The relay's clock at exactly a day behind the stamps: accepted.
+    let newest = {
+        let db = a.svc.store();
+        db.outbox(1_000)
+            .unwrap()
+            .iter()
+            .map(|r| r.meta().updated_at.wall_ms)
+            .max()
+            .unwrap()
+    };
+    assert_eq!(newest % 1000, 0, "the relay's clock counts whole seconds");
+    now.store(newest - DAY_MS - 1_000, std::sync::atomic::Ordering::SeqCst);
+    let (r, outcome) = ca.tick_reporting();
+    assert_eq!(
+        outcome,
+        Err(SyncProblem::ClockAhead),
+        "a second short: {r:?}"
+    );
+    now.store(newest - DAY_MS, std::sync::atomic::Ordering::SeqCst);
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "{r:?}");
+    assert_eq!(r.pushed as u64, queued, "{r:?}");
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
+    assert_eq!(sync_status(&a.svc.store()).unwrap().problem, None);
+}
+
+/// The word the relay refuses a far stamp with is not one a 0.4.2 client knows (its list is
+/// copied here from `v0.4.2:crates/earshot-sync/src/wire.rs`), and that client reads any
+/// answer with an unknown word as `server`: a failed push that it retries with its rows still
+/// queued (`v0.4.2:crates/earshot-runtime/src/sync/client.rs`, `call_within`). This build's
+/// own handling of an unknown word is the same, pinned here.
+#[test]
+fn sync_the_clock_word_is_a_failed_push_to_a_client_from_before_it() {
+    const V042_WORDS: [&str; 11] = [
+        "bad_request",
+        "unknown_device",
+        "bad_secret",
+        "no_slot",
+        "not_found",
+        "key_mismatch",
+        "update_needed",
+        "device_exists",
+        "too_large",
+        "slow_down",
+        "internal",
+    ];
+    let word = earshot_sync::wire::ErrorWord::ClockAhead.word();
+    assert_eq!(word, "clock_ahead");
+    assert!(!V042_WORDS.contains(&word));
+    // Every word 0.4.2 knows is still a word, with the meaning it had.
+    for w in V042_WORDS {
+        assert!(earshot_sync::wire::ErrorWord::from_word(w).is_some(), "{w}");
+    }
+    assert_eq!(
+        earshot_sync::wire::ErrorWord::ALL.len(),
+        V042_WORDS.len() + 1
+    );
+    assert_eq!(
+        earshot_sync::wire::ErrorWord::from_word("a_word_from_a_later_relay"),
+        None
+    );
+    assert_eq!(
+        client::problem_of_word(earshot_sync::wire::ErrorWord::ClockAhead),
+        SyncProblem::ClockAhead
+    );
+    assert!(!SyncProblem::Server.stops() && !SyncProblem::ClockAhead.stops());
+}
+
+/// Rows a computer holds because their stamps are far ahead of its clock (here its own clock is
+/// days behind) are applied by the same running client once its clock is right, not only after
+/// a restart: they are tried again when an hour has passed by its clock.
+#[test]
+fn sync_rows_held_for_a_far_clock_apply_once_this_clock_is_right() {
+    let t0 = crate::testutil::T0;
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(t0 + 3 * DAY_MS));
+    let relay = relay_on_clock(&now);
+    let (a, b) = pair(&relay);
+    // A's clock is right (the relay's); B's is three days behind.
+    a.clock.set_ms(t0 + 3 * DAY_MS);
+    let m = meeting(&a.svc, "Planning", 1);
+    a.client().tick().unwrap();
+    let cb = b.client();
+    let r = cb.tick().unwrap();
+    assert_eq!((r.written, r.held), (0, 8), "all held for the clock: {r:?}");
+    assert_eq!(b.title(m), None);
+    assert_eq!(
+        b.svc
+            .store()
+            .held_count(&[earshot_store::HoldReason::Clock])
+            .unwrap(),
+        8
+    );
+    // Half an hour later by B's clock, still days behind: nothing changes.
+    b.clock.advance_ms(30 * 60 * 1000);
+    let r = cb.tick().unwrap();
+    assert_eq!(r.written, 0, "{r:?}");
+    // B's clock is put right. The same client applies the held rows at its next tick.
+    b.clock.set_ms(t0 + 3 * DAY_MS + 60_000);
+    let r = cb.tick().unwrap();
+    assert_eq!(r.written, 8, "{r:?}");
+    assert_eq!(b.title(m).as_deref(), Some("Planning"));
+    assert_eq!(
+        b.svc
+            .store()
+            .held_count(&earshot_store::HoldReason::ALL)
+            .unwrap(),
+        0
+    );
+    assert_eq!(a.rows(), b.rows());
 }
 
 #[path = "sync_edit_tests.rs"]

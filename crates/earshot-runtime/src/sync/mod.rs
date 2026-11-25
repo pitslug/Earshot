@@ -98,6 +98,10 @@ pub enum SyncProblem {
     SlowDown,
     /// A request was over the server's size limit.
     TooLarge,
+    /// Rows here are stamped more than a day past the clock (this device's, when it finds
+    /// them before sending; the server's, when it refuses a push), so they were not sent
+    /// (T14.44). Retried: they go once the clocks are right or time has passed them.
+    ClockAhead,
     /// The setup secret is not the server's.
     BadSecret,
     /// The pairing code is not one the server holds (wrong, used or expired).
@@ -118,7 +122,7 @@ pub enum SyncProblem {
 
 impl SyncProblem {
     /// Every problem.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Unreachable,
         Self::Server,
         Self::UnknownDevice,
@@ -126,6 +130,7 @@ impl SyncProblem {
         Self::UpdateNeeded,
         Self::SlowDown,
         Self::TooLarge,
+        Self::ClockAhead,
         Self::BadSecret,
         Self::NoSlot,
         Self::BadCode,
@@ -147,6 +152,7 @@ impl SyncProblem {
             Self::UpdateNeeded => "update_needed",
             Self::SlowDown => "slow_down",
             Self::TooLarge => "too_large",
+            Self::ClockAhead => "clock_ahead",
             Self::BadSecret => "bad_secret",
             Self::NoSlot => "no_slot",
             Self::BadCode => "bad_code",

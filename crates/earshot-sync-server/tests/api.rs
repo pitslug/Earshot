@@ -12,7 +12,9 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use earshot_sync::wire::{FORMAT_HEADER, MAX_PRESENCE, MAX_REQUEST, MAX_ROW_BODY, SLOT_TTL_S};
+use earshot_sync::wire::{
+    FORMAT_HEADER, MAX_PRESENCE, MAX_REQUEST, MAX_ROW_BODY, MAX_STAMP_AHEAD_MS, SLOT_TTL_S,
+};
 use earshot_sync_server::{Clock, Config, Relay, router};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -825,6 +827,81 @@ async fn relay_push_must_announce_the_format_it_carries() {
     assert_eq!((s, error_of(&v)), (StatusCode::BAD_REQUEST, "bad_request"));
     let (_, v) = h.call("GET", "/v1/rows", Some(&t), Some(1), None).await;
     assert_eq!(v["vault_format"], 0, "the vault's format did not move");
+}
+
+/// T14.44: a push carrying a stamp more than a day past the relay's own clock is refused whole
+/// with a fixed word and stores nothing, so a row from a far future never shadows later edits
+/// from computers whose clocks are right. At the limit it is accepted, and so is the same row
+/// once the relay's clock has caught up.
+#[tokio::test]
+async fn relay_refuses_a_push_stamped_more_than_a_day_past_its_clock() {
+    let h = harness("clock-ahead");
+    let t = h.register(1, 0xC1).await;
+    let now_ms = h.now.load(Ordering::SeqCst) * 1000;
+    let limit = now_ms + MAX_STAMP_AHEAD_MS;
+    assert_eq!(MAX_STAMP_AHEAD_MS, 24 * 60 * 60 * 1000);
+    let push = |rows: Vec<Value>| json!({"format": 1, "rows": rows});
+    // One row of the push is too far ahead: none of its rows is stored.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![
+                row(1, now_ms, 0, b"now"),
+                row(2, limit + 1, 0, b"far ahead"),
+            ]),
+        )
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "clock_ahead"));
+    assert_eq!(
+        v,
+        json!({"error": "clock_ahead"}),
+        "the word and nothing else"
+    );
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=0", Some(&t), Some(1), None)
+        .await;
+    assert_eq!(v["rows"].as_array().unwrap().len(), 0, "nothing was stored");
+    // Exactly at the limit, and anything earlier, is accepted.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![
+                row(1, now_ms, 0, b"now"),
+                row(3, limit, 0, b"at the limit"),
+            ]),
+        )
+        .await;
+    assert_eq!(
+        (s, v["accepted"].as_u64()),
+        (StatusCode::OK, Some(2)),
+        "{v}"
+    );
+    // The relay's clock moves on a second: the refused row is now inside the window.
+    h.advance(1);
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(2, limit + 1, 0, b"far ahead")]),
+        )
+        .await;
+    assert_eq!(
+        (s, v["accepted"].as_u64()),
+        (StatusCode::OK, Some(1)),
+        "{v}"
+    );
+    // A stamp at the far end of what the wire can carry is refused the same way, not as a
+    // malformed request (an older client treats either as a failed push and keeps its rows).
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(4, i64::MAX as u64, 0, b"the far end")]),
+        )
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "clock_ahead"));
 }
 
 /// Offers and takes pairing slot `n` from device `token`; returns the slot to register with.

@@ -73,6 +73,9 @@ pub fn problem_copy(problem: SyncProblem) -> &'static str {
         SyncProblem::TooLarge => {
             "Something was too large for the sync server. Earshot will try again."
         }
+        SyncProblem::ClockAhead => {
+            "Some changes on this computer are dated more than a day in the future, so they were not sent. Check the date and time on this computer and on the sync server. Earshot will try again."
+        }
         SyncProblem::BadSecret => "That setup secret is not the server's.",
         SyncProblem::NoSlot => {
             "That pairing code is not one the server holds. It may be used or out of date: show a new one on the other device."
@@ -96,7 +99,7 @@ pub fn problem_copy(problem: SyncProblem) -> &'static str {
 
 /// Fixed copy for a button press that failed (the words in the table's `command_problems`).
 /// [`problem_copy`] is the status line's, which may say Earshot will try again: nothing retries
-/// a button press, so these four say what to do instead.
+/// a button press, so these say what to do instead.
 #[must_use]
 pub fn command_copy(problem: SyncProblem) -> &'static str {
     match problem {
@@ -107,6 +110,9 @@ pub fn command_copy(problem: SyncProblem) -> &'static str {
             "The sync server gave an answer Earshot does not understand. Check the address and try again."
         }
         SyncProblem::TooLarge => "Something was too large for the sync server. Try again.",
+        SyncProblem::ClockAhead => {
+            "Some changes on this computer are dated more than a day in the future, so they were not sent. Check the date and time on this computer and on the sync server, then try again."
+        }
         SyncProblem::Store => "Earshot could not read or save its own data for sync. Try again.",
         other => problem_copy(other),
     }

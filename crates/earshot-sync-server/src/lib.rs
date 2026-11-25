@@ -24,9 +24,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use earshot_sync::wire::{
     B64, ErrorBody, ErrorWord, FORMAT_HEADER, HealthResponse, MAX_PRESENCE, MAX_REQUEST,
-    MAX_ROW_BODY, PULL_DEFAULT, PULL_MAX, PairingRequest, PairingResponse, PresenceRequest,
-    PresenceResponse, PullResponse, PushRequest, PushResponse, RegisterRequest, RegisterResponse,
-    RevokeRequest, SLOT_TTL_S, TakeRequest, TakeResponse, VaultResponse,
+    MAX_ROW_BODY, MAX_STAMP_AHEAD_MS, PULL_DEFAULT, PULL_MAX, PairingRequest, PairingResponse,
+    PresenceRequest, PresenceResponse, PullResponse, PushRequest, PushResponse, RegisterRequest,
+    RegisterResponse, RevokeRequest, SLOT_TTL_S, TakeRequest, TakeResponse, VaultResponse,
 };
 use earshot_sync::{KEY_CHECK_LEN, ROW_KEY_LEN, SLOT_LEN};
 use serde::Deserialize;
@@ -558,6 +558,13 @@ async fn push(
     if req.format != announced {
         return Err(ErrorWord::BadRequest.into());
     }
+    // A stamp far past the relay's clock would be kept over every later edit of its row from a
+    // computer whose clock is right (the latest stamp wins here), so the push that carries one
+    // is refused whole and nothing of it is stored (T14.44). The device keeps its rows queued.
+    let latest_ms = relay
+        .now()
+        .saturating_mul(1000)
+        .saturating_add(MAX_STAMP_AHEAD_MS);
     let mut rows = Vec::with_capacity(req.rows.len());
     for r in &req.rows {
         if r.body.0.is_empty() {
@@ -565,6 +572,9 @@ async fn push(
         }
         if r.body.0.len() > MAX_ROW_BODY {
             return Err(ErrorWord::TooLarge.into());
+        }
+        if r.wall_ms > latest_ms {
+            return Err(ErrorWord::ClockAhead.into());
         }
         rows.push(db::NewRow {
             key: exact::<ROW_KEY_LEN>(&r.key)?,

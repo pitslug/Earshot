@@ -55,6 +55,7 @@ pub(crate) fn problem_of_word(word: ErrorWord) -> SyncProblem {
         ErrorWord::UpdateNeeded => SyncProblem::UpdateNeeded,
         ErrorWord::DeviceExists => SyncProblem::DeviceExists,
         ErrorWord::TooLarge => SyncProblem::TooLarge,
+        ErrorWord::ClockAhead => SyncProblem::ClockAhead,
         ErrorWord::SlowDown => SyncProblem::SlowDown,
         ErrorWord::BadRequest | ErrorWord::NotFound | ErrorWord::Internal => SyncProblem::Server,
     }
