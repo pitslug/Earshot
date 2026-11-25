@@ -5078,8 +5078,9 @@ fn sync_the_device_list_is_asked_through_a_client_beside_its_ticks() {
 
     // The client's own tick asks for the list from another thread, as a page's command does,
     // while the tick is in progress.
+    type Asked = Result<Vec<SyncDevice>, SyncProblem>;
     let this: Arc<std::sync::OnceLock<std::sync::Weak<SyncClient>>> = Arc::default();
-    let inside: Arc<std::sync::Mutex<Vec<Result<Vec<SyncDevice>, SyncProblem>>>> = Arc::default();
+    let inside: Arc<std::sync::Mutex<Vec<Asked>>> = Arc::default();
     let client = {
         let (this, inside) = (Arc::clone(&this), Arc::clone(&inside));
         Arc::new(a.client().with_in_tick(Arc::new(move || {
