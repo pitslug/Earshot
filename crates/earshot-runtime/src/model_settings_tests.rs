@@ -776,6 +776,129 @@ fn settings_summary_on_vulkan_needs_room_on_the_card() {
     assert!(on_vulkan(&ModelPick::Automatic, Part::Automatic, &hw).gpu);
 }
 
+/// A discrete card of `vendor_id` with `gib` GiB of its own.
+fn discrete(vendor_id: u32, gib: u64) -> Gpu {
+    Gpu {
+        name: "A card".into(),
+        vendor_id,
+        dedicated_memory: Some(gib * GIB),
+        driver_version: None,
+        integrated: Some(false),
+        compute_capability: None,
+    }
+}
+
+const AMD: u32 = 0x1002;
+const NVIDIA: u32 = 0x10de;
+
+fn with_gpus(gpus: Vec<Gpu>) -> Hardware {
+    let mut hw = machine(64 * GIB, None);
+    hw.gpus = gpus;
+    hw
+}
+
+#[test]
+fn settings_cuda_reads_the_nvidia_card_and_vulkan_the_largest_discrete_card() {
+    let cases = [
+        // (gpus, CUDA's card, Vulkan's card)
+        (
+            vec![discrete(AMD, 16), discrete(NVIDIA, 6)],
+            Some(6),
+            Some(16),
+        ),
+        (
+            vec![discrete(NVIDIA, 16), discrete(AMD, 6)],
+            Some(16),
+            Some(16),
+        ),
+        // Which NVIDIA card is CUDA's device 0 cannot be known: the smaller one counts.
+        (
+            vec![discrete(NVIDIA, 16), discrete(NVIDIA, 6)],
+            Some(6),
+            Some(16),
+        ),
+        // An integrated GPU counts for neither.
+        (
+            vec![
+                Gpu {
+                    integrated: Some(true),
+                    ..discrete(AMD, 1)
+                },
+                discrete(NVIDIA, 16),
+            ],
+            Some(16),
+            Some(16),
+        ),
+        // No NVIDIA card: CUDA's card is unknown.
+        (vec![discrete(AMD, 16)], None, Some(16)),
+        (vec![], None, None),
+    ];
+    for (gpus, cuda, vulkan) in cases {
+        let hw = with_gpus(gpus);
+        let gib = |m: Option<u64>| m.map(|m| m / GIB);
+        assert_eq!(gib(card_memory(&hw, Accelerator::Cuda)), cuda, "{hw:?}");
+        assert_eq!(gib(card_memory(&hw, Accelerator::Vulkan)), vulkan, "{hw:?}");
+        assert_eq!(card_memory(&hw, Accelerator::Vulkan), graphics_memory(&hw));
+    }
+}
+
+#[test]
+fn settings_cuda_fit_is_judged_on_the_nvidia_card_beside_a_larger_card() {
+    let v2 = "parakeet-tdt-0.6b-v2";
+    let small_nvidia = with_gpus(vec![discrete(AMD, 16), discrete(NVIDIA, 2)]);
+    let large_nvidia = with_gpus(vec![discrete(NVIDIA, 16), discrete(AMD, 2)]);
+    // Transcription forced onto the graphics card on CUDA.
+    let p = transcription_placement(
+        v2,
+        Part::GraphicsCard,
+        DESKTOP.to_vec(),
+        DESKTOP,
+        &small_nvidia,
+    );
+    assert_eq!(p.order, [Accelerator::Cpu]);
+    assert!(p.note.unwrap().contains("too big"));
+    let p = transcription_placement(
+        v2,
+        Part::GraphicsCard,
+        DESKTOP.to_vec(),
+        DESKTOP,
+        &large_nvidia,
+    );
+    assert_eq!(p.order, [Accelerator::Cuda, Accelerator::Cpu]);
+    // Whisper forced onto the card on Vulkan keeps the largest discrete card's reading.
+    let p = transcription_placement(
+        "small.en",
+        Part::GraphicsCard,
+        VULKAN.to_vec(),
+        VULKAN,
+        &small_nvidia,
+    );
+    assert_eq!(p.order, [Accelerator::Vulkan, Accelerator::Cpu]);
+    // Summaries forced onto the card on CUDA: the 4B needs more than the 2 GiB NVIDIA card.
+    let cuda = &[Accelerator::Cuda, Accelerator::Cpu];
+    let four = named(LOW_MEMORY_SUMMARY_MODEL);
+    let s = placement_when(true, &four, Part::GraphicsCard, cuda, &small_nvidia).unwrap();
+    assert!(!s.gpu);
+    assert!(s.note.unwrap().contains("too big"));
+    let s = placement_when(true, &four, Part::GraphicsCard, cuda, &large_nvidia).unwrap();
+    assert_eq!((s.gpu, s.note), (true, None));
+    // On Vulkan the same machine keeps today's reading: the largest discrete card.
+    let s = on_vulkan(&four, Part::GraphicsCard, &small_nvidia);
+    assert_eq!((s.gpu, s.note), (true, None));
+    // The card memory the run's model choice reads is the card the summary runs on.
+    let s = placement_when(
+        true,
+        &ModelPick::Automatic,
+        Part::GraphicsCard,
+        cuda,
+        &small_nvidia,
+    )
+    .unwrap();
+    assert_eq!(s.card_memory, Some(2 * GIB));
+    let s = on_vulkan(&ModelPick::Automatic, Part::GraphicsCard, &small_nvidia);
+    assert_eq!(s.card_memory, Some(16 * GIB));
+}
+
 #[test]
 fn settings_summary_on_cuda_keeps_its_rule_and_a_processor_choice_always_wins() {
     let cuda = &[Accelerator::Cuda, Accelerator::Cpu];

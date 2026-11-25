@@ -211,3 +211,91 @@ fn cuda_transcription_fits_only_a_card_with_room_for_a_call() {
     assert!(!transcription_fits_card(&card(None)));
     assert!(!transcription_fits_card(&Hardware::default()));
 }
+
+/// A card of `vendor_id` with `gib` GiB of its own (`integrated`: shared memory, as the OS reports).
+fn sized(vendor_id: u32, gib: u64, integrated: bool) -> Gpu {
+    Gpu {
+        name: "A card".into(),
+        vendor_id,
+        dedicated_memory: Some(gib << 30),
+        driver_version: Some(NEW.into()),
+        integrated: Some(integrated),
+        compute_capability: Some(ComputeCapability {
+            major: 12,
+            minor: 0,
+        }),
+    }
+}
+
+const AMD: u32 = 0x1002;
+
+#[test]
+fn cuda_transcription_fits_reads_the_nvidia_card_never_a_larger_card_of_another_vendor() {
+    let nvidia = |gib| sized(NVIDIA_VENDOR_ID, gib, false);
+    let amd = |gib| sized(AMD, gib, false);
+    let cases = [
+        // CUDA runs on the NVIDIA card: a larger AMD card beside it gives it no room.
+        (
+            "AMD 16 GiB beside NVIDIA 6 GiB",
+            vec![amd(16), nvidia(6)],
+            false,
+        ),
+        (
+            "NVIDIA 6 GiB beside AMD 16 GiB",
+            vec![nvidia(6), amd(16)],
+            false,
+        ),
+        (
+            "NVIDIA 16 GiB beside AMD 6 GiB",
+            vec![nvidia(16), amd(6)],
+            true,
+        ),
+        (
+            "AMD 6 GiB beside NVIDIA 16 GiB",
+            vec![amd(6), nvidia(16)],
+            true,
+        ),
+        // Which NVIDIA card is CUDA's device 0 cannot be known here: the smaller one counts.
+        (
+            "NVIDIA 16 GiB and NVIDIA 6 GiB",
+            vec![nvidia(16), nvidia(6)],
+            false,
+        ),
+        (
+            "NVIDIA 6 GiB and NVIDIA 16 GiB",
+            vec![nvidia(6), nvidia(16)],
+            false,
+        ),
+        (
+            "NVIDIA 16 GiB and NVIDIA 8 GiB",
+            vec![nvidia(16), nvidia(8)],
+            true,
+        ),
+        // An integrated GPU is never what CUDA runs on.
+        (
+            "integrated beside NVIDIA 16 GiB",
+            vec![sized(AMD, 1, true), nvidia(16)],
+            true,
+        ),
+        (
+            "integrated beside NVIDIA 6 GiB",
+            vec![sized(AMD, 1, true), nvidia(6)],
+            false,
+        ),
+        // No NVIDIA card: nothing for CUDA to run on, whatever else is there.
+        ("AMD 16 GiB alone", vec![amd(16)], false),
+        ("integrated alone", vec![sized(0x8086, 16, true)], false),
+    ];
+    for (what, gpus, fits) in cases {
+        assert_eq!(transcription_fits_card(&machine(gpus)), fits, "{what}");
+    }
+    // An NVIDIA card whose memory cannot be read does not count, as an unknown card never did; with
+    // no NVIDIA card of known memory there is no offer.
+    let mut unknown = nvidia(16);
+    unknown.dedicated_memory = None;
+    assert!(!transcription_fits_card(&machine(vec![
+        unknown.clone(),
+        amd(16)
+    ])));
+    assert!(transcription_fits_card(&machine(vec![unknown, nvidia(16)])));
+}

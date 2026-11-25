@@ -71,11 +71,13 @@ fn offered_on(hardware: &Hardware, x64: bool) -> bool {
 /// The same model gives the same words on the CPU, in time.
 pub const TRANSCRIPTION_MIN_CARD_MEMORY: u64 = 15 * 512 * 1024 * 1024;
 
-/// Whether this machine's card has room to transcribe a call. A card whose memory cannot be read
-/// gets no offer, as one whose capability cannot be read does.
+/// Whether the card CUDA runs on has room to transcribe a call: the NVIDIA card
+/// ([`crate::model_settings::cuda_card_memory`], the smaller of two), never a larger card of
+/// another vendor beside it. A card whose memory cannot be read gets no offer, as one whose
+/// capability cannot be read does.
 #[must_use]
 pub fn transcription_fits_card(hardware: &Hardware) -> bool {
-    crate::model_settings::graphics_memory(hardware)
+    crate::model_settings::cuda_card_memory(hardware)
         .is_some_and(|m| m >= TRANSCRIPTION_MIN_CARD_MEMORY)
 }
 
