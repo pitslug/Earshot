@@ -798,17 +798,30 @@ pub fn always_shown_toast(event: &MeetingEvent) -> Option<Toast> {
     }
 }
 
-/// The call-end question's notification to show for `event`: an open question while the window
-/// is not watched, and, whatever the window, a question asked again while its notification is still
-/// on screen (`shown`), so the notification never keeps words the question no longer says: turning
-/// stopping by itself off from the window re-sends the open question with `stops: false` (T14.52),
-/// and the notification shown before must stop promising a stop (T14.51).
+/// What the call-end question's notification does for `event` (T14.51).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallEndNotice {
+    /// Show it (replacing one already on screen): the question is asked while the window is not
+    /// watched, in the words it now says.
+    Show(Toast),
+    /// Take one that may be on screen back: the question was asked again while the window is
+    /// watched (turning stopping by itself off from the window re-sends it with `stops: false`,
+    /// T14.52), so a notification shown earlier would keep promising a stop; the window shows the
+    /// question itself. A notification the user closed is not shown again: Windows gives the toast
+    /// code no signal that it was closed, so nothing here can know it is gone.
+    TakeBack,
+}
+
+/// The call-end notification's part in `event`, with `open` whether the question is open after it
+/// ([`call_end_open_after`]) and `watched` whether the window is.
 #[must_use]
-pub fn call_end_notice(event: &MeetingEvent, watched: bool, shown: bool) -> Option<Toast> {
+pub fn call_end_notice(event: &MeetingEvent, open: bool, watched: bool) -> Option<CallEndNotice> {
     match event {
-        MeetingEvent::CallEndOffer { open: true, stops } if !watched || shown => {
-            Some(call_end_toast(*stops))
-        }
+        MeetingEvent::CallEndOffer { open: true, stops } if open => Some(if watched {
+            CallEndNotice::TakeBack
+        } else {
+            CallEndNotice::Show(call_end_toast(*stops))
+        }),
         _ => None,
     }
 }
@@ -967,9 +980,6 @@ pub struct Shell {
     has_tray: AtomicBool,
     /// The call-end question is open ([`call_end_open_after`]).
     call_end_open: AtomicBool,
-    /// The call-end question's notification is on screen: shown while the window was not watched,
-    /// until the question closes ([`call_end_notice`]).
-    call_end_shown: AtomicBool,
     /// The call-start question is open (T12.86).
     call_start_open: AtomicBool,
     /// The call-start rule, fed by [`Shell::spawn_call_start_watch`] and answered by the user.
@@ -994,7 +1004,6 @@ impl Shell {
             latch: Mutex::new(KeyLatch::default()),
             has_tray: AtomicBool::new(false),
             call_end_open: AtomicBool::new(false),
-            call_end_shown: AtomicBool::new(false),
             call_start_open: AtomicBool::new(false),
             call_start: Mutex::new(earshot_runtime::call_start::CallStartWatch::new(
                 earshot_runtime::call_start::CallStartConfig::default(),
@@ -1350,13 +1359,12 @@ impl Shell {
         let open = call_end_open_after(event, self.tracker().phase(), was);
         self.call_end_open.store(open, Ordering::SeqCst);
         if was && !open {
-            self.call_end_shown.store(false, Ordering::SeqCst);
             self.take_back_call_end_toast();
         }
-        let shown = self.call_end_shown.load(Ordering::SeqCst);
-        if let Some(toast) = call_end_notice(event, self.window_watched(), shown) {
-            self.call_end_shown.store(true, Ordering::SeqCst);
-            self.notify(&toast, None);
+        match call_end_notice(event, open, self.window_watched()) {
+            Some(CallEndNotice::Show(toast)) => self.notify(&toast, None),
+            Some(CallEndNotice::TakeBack) => self.take_back_shown_call_end_toast(),
+            None => {}
         }
         // Once per meeting (the banner comes again with the saved recording's problems); its own
         // notification says the recording ended, so the end's is not shown after it.
@@ -1452,6 +1460,20 @@ impl Shell {
 
     #[cfg(not(windows))]
     fn take_back_call_end_toast(self: &Arc<Self>) {}
+
+    /// Takes the call-end notification off the screen while its question stays open: the window,
+    /// watched, shows the question in its current words ([`CallEndNotice::TakeBack`]). Never
+    /// blocks the caller.
+    #[cfg(windows)]
+    fn take_back_shown_call_end_toast(self: &Arc<Self>) {
+        let me = Arc::clone(self);
+        let _ = std::thread::Builder::new()
+            .name("earshot-toast".into())
+            .spawn(move || me.toasts.hide_staying());
+    }
+
+    #[cfg(not(windows))]
+    fn take_back_shown_call_end_toast(self: &Arc<Self>) {}
 
     /// A staying notification's question is open: the call-end or the call-start one (never both:
     /// one asks only while recording, the other only while not).

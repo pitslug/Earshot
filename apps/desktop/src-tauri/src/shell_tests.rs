@@ -382,7 +382,7 @@ fn shell_call_end_toast_copy_is_the_shared_tables() {
 }
 
 #[test]
-fn shell_call_end_notice_replaces_the_shown_words_when_stopping_is_turned_off() {
+fn shell_call_end_notice_shows_only_while_not_watched_and_takes_back_stale_words() {
     // T14.51: shown while the window was not watched, the question promised a stop; the user then
     // turns stopping by itself off from the window, and the open question is sent again.
     let table: serde_json::Value = serde_json::from_str(include_str!(
@@ -390,30 +390,32 @@ fn shell_call_end_notice_replaces_the_shown_words_when_stopping_is_turned_off() 
     ))
     .unwrap();
     let offer = |stops| MeetingEvent::CallEndOffer { open: true, stops };
-    let shown = call_end_notice(&offer(true), false, false).expect("asked while not watched");
+    let Some(CallEndNotice::Show(shown)) = call_end_notice(&offer(true), true, false) else {
+        panic!("asked while not watched: shown");
+    };
     assert_eq!(shown.body, table["will_stop"].as_str().unwrap());
-    // Sent again with `stops: false` while the window is watched: the notification still on
-    // screen gets the off words, through the same toast.
-    let again = call_end_notice(&offer(false), true, true).expect("the words on screen change");
+    // Sent again with `stops: false` while the window is watched: the old words are taken back,
+    // never shown again (a notification the user closed stays closed).
+    assert_eq!(
+        call_end_notice(&offer(false), true, true),
+        Some(CallEndNotice::TakeBack)
+    );
+    // Sent again while the window is not watched: shown in the new words.
+    let Some(CallEndNotice::Show(again)) = call_end_notice(&offer(false), true, false) else {
+        panic!("re-sent while not watched: shown");
+    };
     assert_eq!(again, call_end_toast(false));
     assert_eq!(again.body, table["asks_only"].as_str().unwrap());
-    assert!(again.stays);
-    // And while the window is not watched.
-    assert_eq!(
-        call_end_notice(&offer(false), false, true),
-        Some(call_end_toast(false))
-    );
-    // A watched window with nothing on screen shows nothing, as before.
-    assert_eq!(call_end_notice(&offer(true), true, false), None);
-    assert_eq!(call_end_notice(&offer(false), true, false), None);
-    // Closing the question shows nothing (it is taken back elsewhere).
+    // Only for a question that is open after the event (`call_end_open_after`): an offer the
+    // shell's phase does not count as open shows nothing.
+    assert_eq!(call_end_notice(&offer(true), false, false), None);
+    // Closing the question is the existing take-back's (when it closes), not this.
     let closed = MeetingEvent::CallEndOffer {
         open: false,
         stops: false,
     };
-    assert_eq!(call_end_notice(&closed, false, true), None);
+    assert_eq!(call_end_notice(&closed, false, false), None);
 }
-
 #[test]
 fn call_end_toast_is_fixed_copy_that_stays_and_answers_in_one_click() {
     let t = call_end_toast(true);
