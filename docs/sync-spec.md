@@ -180,7 +180,7 @@ Input: a page of opened envelopes with their `seq` and row key, the device's kin
 3. **Future stamp.** `updated_at.wall_ms` more than 24 h past the device clock: `sync_pending`, reason `clock`.
 4. **Leased.** The row's meeting (its own id for a meeting, `meeting_id` otherwise) is in the leased set: `sync_pending`, reason `busy`.
 5. **Parent missing.** A row with a `meeting_id` (or `track_id`, `speaker_id`) that names no local row and no earlier envelope of this page: `sync_pending`, reason `parent`.
-6. **Compare.** No local row, or the remote `updated_at` is later: write the whole row with the remote metadata unchanged. Otherwise ignore it. Exceptions: a meeting tombstone here is kept (a live meeting row never overwrites it), and two copies of a final transcript segment are compared by `text_edited_at` first, then `updated_at` (section 7, rule 4a).
+6. **Compare.** No local row, or the remote `updated_at` is later: write the whole row with the remote metadata unchanged. Otherwise ignore it. Exceptions: a meeting tombstone here is kept (a live meeting row never overwrites it), and two copies of a final transcript segment are compared by `text_edited_at` first, then `updated_at` (section 7, rule 4a). To come (section 7A, not built yet): a person tombstone and a folder tombstone here are kept in the same way.
 7. **Side effects of what was written** (section 5.4).
 8. Delete `sync_outbox` entries this transaction's own writes created, for the rows it wrote, right after each write; a row re-stamped afterwards (a kept copy, section 7 rule 4a) keeps its new entry and goes out.
 
@@ -193,7 +193,7 @@ Held rows are counted (`Store::held_count`) and read a page at a time (`Store::h
 ### 5.4 Side effects
 
 - **Meeting tombstone** (remote `deleted`, local row live, whatever the two stamps: a meeting row edited here after the deletion must not stay live over the children the deletion cleared; a tombstone stamped more than 24 h ahead deletes nothing and is held): before the page is applied, the client (T11.3) runs the ordinary `Services::delete_meeting` for that meeting, so audio files go before rows, device-local keys are erased and a lease refuses it (the row is then held `busy`) exactly as a local deletion. Its own tombstone, stamped here, is newer than the pulled one, which is then ignored; both say deleted. The rows the other device cleared arrive in the same pull and apply as ordinary rows.
-- **Person tombstone**: `forget_identity_biometrics` for that identity.
+- **Person tombstone**: `forget_identity_biometrics` for that identity. (Section 7A, not built yet, adds: who was merged into them goes too, and speaker rows still linked to them are unlinked.)
 - **Voiceprint tombstone**: the local row's `sum` is zeroed as `forget_voiceprints` does.
 - After a page that erased anything: `Store::flush_erasures`.
 
@@ -287,6 +287,78 @@ Which rules run (T14.50). Rules 1 and 2 and the voice rules (docs/voice-samples.
    - `Repo::replace_segments` (no shipped caller) would tombstone edited rows; a scan test keeps it out of shipped code.
 
 A test delivers the same rows to three simulated devices in every order of two pages and requires identical live rows.
+
+## 7A. A removed person or folder stays removed (T14.49)
+
+Status: the rule only (phase 1 of T14.49). Nothing in this section is built; it is built after its spec review and the owner's answers to 7A.8.
+
+Today `apply_remote` orders person and folder rows by `updated_at` alone. So a rename made on a computer that had not heard of "Remove person" brings the name back everywhere (without the voices, which rule 3a keeps erased), a speaker row on another computer keeps the removed person's name, and an offline rename revives a deleted folder. Meeting, voiceprint and voice sample tombstones are already final (5.3 step 6).
+
+### 7A.1 The rules
+
+- **P1. A person tombstone is final** (5.3 step 6, as for a voiceprint). The copy here is a tombstone and the pulled copy is live: the pulled copy is not written, whatever the stamps. If the pulled copy is the later one, the tombstone here is stamped again after observing the pulled stamp (content unchanged: no name, `is_me` and `merged_into` as stored) and goes out to become the relay's copy (`Applied::deletions_kept`); otherwise the pulled copy is ignored. Tombstone against tombstone and live against live stay plain last writer wins, and a tombstone pulled over a live copy here applies by its stamp as today.
+- **P2. Who was merged into a removed person goes with them.** After the page's writes: every live person row whose `merged_into` chain ends at a tombstoned person is tombstoned with its name cleared (`merged_into` kept), with this device's stamp, and `forget_identity_biometrics` runs for it as for a pulled person tombstone (5.4). A chain that ends at a person not known here, or loops, changes nothing (as rule 3a). This is `Store::remove_person` (the identity is the person and everyone merged into them, `identity_of`) applied to a merge the removing computer had not heard of; rule 3a already erases such a person's voices, P2 removes the name too.
+- **P3. No speaker row stays linked to a removed person.** After P2 and after rule 4c: every speaker row whose `person_id` names a tombstoned person is rewritten as `remove_person` rewrites it: `person_id` cleared, `ignored` false, a live row renamed to the first free "Speaker N" of its meeting (rows in id order), a tombstoned row's name cleared, with this device's stamp. A deleted meeting's rows hold no link already. Leases are not read, as `remove_person` does not read them; a row a final pass writes back linked afterwards is unlinked by the next page that runs P3. After P2 a chain never ends at a tombstone through a live person, so the direct link is the whole test (one join).
+- **F1. A folder tombstone is final**, exactly as P1 (content: no name).
+- **F2. Nothing else changes for folders.** A meeting whose `folder_id` names a tombstoned folder still reads as in no folder (`LiveFolders::resolve`) and its row is not rewritten. Two live folders with one name both stay (rule 3).
+
+Each of P2 and P3 writes content that depends only on synced rows, so every device writes the same row, bar the "Speaker N" a device picks while it holds only part of a meeting's rows: whole-row last writer wins then keeps one copy, and two rows of one meeting may show the same "Speaker N" until one is renamed (accepted, as in rule 4c). Run by kind (T14.50): P2 for a page that wrote a person row; P3 for one that wrote a person or speaker row or after P2 or 4c wrote; both on a client's first page.
+
+### 7A.2 Walks
+
+A removes person P (identity: P and those merged into P as A knows them; their voices erased; A's speaker rows of that identity back to "Speaker N"). B has not synced yet and does one of the following. The outcome is the same whichever of the two pushes first, because P1 does not read the stamps and P2 and P3 read only the rows that result.
+
+| B does, before it hears of the removal | Every device ends with |
+|---|---|
+| Renames P | P a tombstone, no name. B's rename is refused by A (stamped again if it was later) and replaced on B by the tombstone; B's voices of P go (5.4) and B's speaker rows linked to P are unlinked, by A's rewritten rows where A had them and by P3 where A did not or B's copy was later. |
+| Links a new voice to P (and saves it) | The speaker row arrives on A naming a tombstoned person: P3 unlinks it there, and on B once the tombstone applies. The saved sample is erased by rule 3a on both. |
+| "Not P" on a voice | That row is unlinked on both by either write (B's keeps it an ignored "Speaker N" if later, A's a plain one): nothing for these rules to do. |
+| Merges another person X into P | X arrives live with `merged_into = P`: P2 tombstones X, its voices go (3a, 5.4) and P3 unlinks X's speaker rows. The removal takes X, as it would have on A had A known. |
+| Merges P into another person Q | B's copy of P (live, `merged_into = Q`) is refused: P is a tombstone on every device. Q is not part of P's identity and stays as it is, with its own name and voices; the voices that were P's are erased and P's speaker rows are unlinked by P3. The same when Q is the user (`merge_into_me`). |
+| Removes P too | Two tombstones: plain last writer wins, identical content; the speaker rows both rewrote settle by last writer wins. |
+
+Folders: A deletes folder F (its meetings moved out, or deleted with it).
+
+| B does, before it hears of the deletion | Every device ends with |
+|---|---|
+| Renames F | F a tombstone (F1); the rename is gone. |
+| Moves meeting M into F | M live with a `folder_id` naming a tombstone: in no folder (F2). Also when A chose "Delete folder and its meetings": M was not in F on A, so it is not deleted. |
+| Moves M out of F while A deletes F and its meetings | M is deleted everywhere (a meeting tombstone is final, as today). |
+| Makes a folder with F's name | A new id, a live folder; nothing to settle. |
+| Deletes F too | Two tombstones, last writer wins. |
+
+### 7A.3 Versions
+
+A 0.4.2 computer cannot sync with this release at all (the format gate, section 3: `update_needed` from this release's first push), so only computers of this release take part and all of them run these rules. A build of format 4 without them (unreleased) applies plain last writer wins: it takes the tombstone stamped again as a later row and stops sending its live copy. It writes a removed person or folder again only by a user's act on a computer that has not yet pulled the tombstone, and each such write costs each holder of the tombstone at most one new stamp, so the exchange is bounded by the user's acts.
+
+### 7A.4 Stamps, loops and what the relay holds
+
+- A device stamps its tombstone again at most once per pulled live copy that is later, and never for a tombstone or an earlier copy. With N devices each holder may stamp once for the same losing copy; those tombstones hold identical content and settle by last writer wins. Nothing stamps in answer to a tombstone, so there is no loop.
+- Applying a page twice writes nothing more: P1 ignores a copy that is not later, P2 and P3 find nothing left.
+- Afterwards the relay holds one sealed tombstone for that row key (no name) and no live copy; it keeps one body per key.
+- Once a device holds the tombstone, none of its own writers may make the row live again. Read in the code today: `rename_person`, `merge_persons`, `enroll`, `folders::rename` and `move_meeting` re-read the row live inside their transaction, links resolve their person through `live_person`, and rule 1 writes only live "Me" rows. Phase 2 checks every writer of a person or folder row and pins it by a test.
+- Known window: a live copy stamped later than the tombstone shows on the devices that hold no tombstone until any holder syncs (with two devices and the remover offline, until it is back).
+
+### 7A.5 Shape
+
+No row changes shape: no `ENVELOPE_FORMAT` change, no migration, no new entity. Not found: any reason to stop.
+
+### 7A.6 What the client does around the page
+
+- **Names** (T12.82). P3 rewrites speaker names outside the page's own speaker rows, so before the page the client also reads `names_before` for every live speaker row linked to a person the page holds a row for or to a person merged into one through a chain, and, on a page applied with every repair, for every live speaker row already linked to a tombstoned person; `names_changed_tx` then marks a summary that used the name, as on the removing computer.
+- **Window.** `Applied::people` is set by P1's refusal, P2 and P3, and `Applied::meetings` names the meetings whose speaker rows P3 rewrote. Counts only: `Applied::persons_removed_with` (P2), `Applied::speakers_unlinked` (P3), both in `TickReport.repaired`.
+- **Rule 1.** P1 does not meet it: rule 1 reads and writes live "Me" rows only, and no shipped code tombstones an `is_me` person (`edit::remove_person` refuses the user and any identity that holds one). A tombstone of an `is_me` person that arrives all the same is applied like any other (refusing it could not converge, since every holder would refuse the live copy); the next thing that needs the user finds no "Me" and makes one.
+
+### 7A.7 Tests phase 2 must have
+
+Through `LocalRelay` (the relay orders by `updated_at` alone) and as straight `apply_remote` pages, each in both push orders and with the offline write stamped both before and after the removal: every row of both tables in 7A.2; three devices where two hold the tombstone and one sends the live copy (one stamp each, then no further writes); a page applied twice; a tombstone against a tombstone; P2 through a chain of two merges and with a chain that ends at an unknown person or loops (nothing written); P3 on a live row, a tombstoned row, a row of a leased meeting and after rule 4c revived a row; a summary that used the name is marked on the device that did not remove; a person tombstone arriving for the only "Me"; a meeting moved into a deleted folder reads as in no folder on every device; the convergence comparison of T14.50 extended with P2 and P3; the scan test of 7A.4. `accept m11` unchanged.
+
+### 7A.8 For the owner to confirm
+
+1. A removed person cannot be brought back. Naming a voice with the same name afterwards makes a new person with no voices (as today on the removing computer); the old meetings stay "Speaker N" until named again.
+2. A removal wins over anything done to that person on a computer that had not heard of it: a rename, a new link or saved voice, and both merges. Merging X into P offline removes X with P. Merging P into Q offline still removes P: Q keeps its own name and voices, loses the voices that were P's, and P's lines go back to "Speaker N" (also when Q is you).
+3. On the other computers, voices still linked to the removed person lose that name too (today they keep showing it), and a summary that used the name is marked as using an earlier name.
+4. A deleted folder stays deleted: an offline rename is lost, a meeting moved into it elsewhere stays and shows in no folder, and "Delete folder and its meetings" never deletes a meeting that was moved in on another computer after the folder was read.
 
 ## 8. Presence (T11.3c)
 
