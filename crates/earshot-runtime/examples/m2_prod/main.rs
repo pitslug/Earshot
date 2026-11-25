@@ -680,7 +680,7 @@ fn stream_determinism(args: &Args, prod: &mut Prod) -> Value {
         );
         let diff = word_errors_normalized(&fh, &lh);
         // Beside it, informational: the same comparison on the raw tokens, so a flap the
-        // normaliser maps away (case, punctuation, spelling) still shows (TODO 47).
+        // normaliser maps away (case, punctuation, spelling) still shows in the report.
         let raw = word_errors(&fh, &lh);
         raw_differing += raw;
         differing += diff;

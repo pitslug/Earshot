@@ -80,7 +80,8 @@ fn summary_child_fake_child_for_the_tests() {
         .share_mode(0)
         .open(&job.model_path)
         .unwrap();
-    // Says so itself, so a test never has to catch the hold from outside in time (TODO 109).
+    // Says so itself, so a test never has to catch the hold from outside in time (a timing race
+    // when it did).
     std::fs::write(hold_marker(&job.model_path), b"held").unwrap();
     let out = Mutex::new(std::io::stdout());
     let loaded = ChildLine::Loaded {

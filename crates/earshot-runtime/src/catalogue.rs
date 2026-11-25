@@ -1143,7 +1143,8 @@ impl Catalogue {
     /// After a load of model `name`'s files was refused: the full check ([`Self::verify`]), and
     /// each artefact it finds damaged reads as [`FileState::Damaged`] in this process until a
     /// download of it succeeds, so a file of the right size with other bytes is offered for
-    /// download again (TODO 30) while install state stays a size check. True when something
+    /// download again (a same-size damaged file once read as installed, so none was offered)
+    /// while install state stays a size check. True when something
     /// was found.
     ///
     /// # Errors

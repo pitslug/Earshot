@@ -2893,7 +2893,7 @@ fn failing_second_piece(panic: bool) -> (crate::stretches::StretchRecord, Vec<St
     )
 }
 
-/// TODO 51 through a session: a mic worker that crashes (a panicking transcriber) or whose
+/// Through a session: a mic worker that crashes (a panicking transcriber) or whose
 /// live ASR fails stops keeping reference words. The replay keeps its end until the session
 /// has said so (a rendezvous, never a wait on time).
 fn mic_stop_of(panic: bool) -> Vec<super::MicStop> {

@@ -3141,26 +3141,23 @@ pub fn speaker_sample(
     if !path.exists() {
         return Ok(None);
     }
-    let (rate, audio) = earshot_store::read_flac(&path)?;
+    let start_ms = segment.start.as_millis();
+    let end_ms = segment.end.as_millis().min(start_ms.saturating_add(max_ms));
+    // Frames from the row's rate, checked against the file's below: only the sample's span is
+    // decoded and held (T14.25), never the whole track.
+    let frame = |ms: u64| ms.saturating_mul(u64::from(file.sample_rate_hz)) / 1000;
+    let (rate, audio) = earshot_store::read_flac_span(&path, frame(start_ms), frame(end_ms))?;
     if rate != file.sample_rate_hz || rate == 0 {
         return Err(RuntimeError::Internal(
             "a recording's sample rate differs from its AudioFile row",
         ));
     }
-    let start_ms = segment.start.as_millis();
-    let end_ms = segment.end.as_millis().min(start_ms.saturating_add(max_ms));
-    let frame = |ms: u64| {
-        usize::try_from(ms.saturating_mul(u64::from(rate)) / 1000)
-            .unwrap_or(usize::MAX)
-            .min(audio.len())
-    };
-    let (a, b) = (frame(start_ms), frame(end_ms));
-    if a >= b {
+    if audio.is_empty() {
         return Ok(None);
     }
     Ok(Some(SpeakerSample {
         sample_rate_hz: rate,
-        samples: audio[a..b].iter().map(|&x| f32_to_i16(x)).collect(),
+        samples: audio.iter().map(|&x| f32_to_i16(x)).collect(),
         segment_id: segment.id,
         start: MeetingTime::from_millis(start_ms),
         end: MeetingTime::from_millis(end_ms),

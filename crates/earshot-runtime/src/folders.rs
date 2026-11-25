@@ -321,7 +321,9 @@ pub fn delete_keeping_meetings(
 /// Deletes `folder` and its meetings: each meeting through [`Services::delete_meeting`]
 /// (people and voiceprints stay), with no store or activity lock held across the loop. A
 /// deletion that fails (the meeting is busy, [`RuntimeError::MeetingBusy`], or any other
-/// error) is counted and the rest go on. Only when every one was deleted does the folder go,
+/// error) is counted and the rest go on; one whose checkpoint was blocked after its commit
+/// (`Busy`, the meeting reading deleted) counts as deleted, with
+/// [`FolderDeletion::checkpoint_pending`] (T14.26). Only when every one was deleted does the folder go,
 /// in the closing transaction of [`delete_keeping_meetings`] (a meeting moved in during the
 /// loop is unfiled, not deleted); otherwise the folder stays with what is left.
 ///
@@ -341,6 +343,22 @@ pub(crate) fn delete_with_meetings_then(
     folder: EntityId,
     after_each: &mut dyn FnMut(EntityId),
 ) -> Result<FolderDeletion, RuntimeError> {
+    delete_with_meetings_using(
+        services,
+        folder,
+        &mut |m| services.delete_meeting(m).map(drop),
+        after_each,
+    )
+}
+
+/// [`delete_with_meetings_then`] deleting each meeting with `delete` (production:
+/// [`Services::delete_meeting`]; tests: an error the store cannot be made to give).
+pub(crate) fn delete_with_meetings_using(
+    services: &Services,
+    folder: EntityId,
+    delete: &mut dyn FnMut(EntityId) -> Result<(), RuntimeError>,
+    after_each: &mut dyn FnMut(EntityId),
+) -> Result<FolderDeletion, RuntimeError> {
     let filed: Vec<EntityId> = {
         let db = services.store();
         live_folder(&**db, folder)?;
@@ -349,8 +367,14 @@ pub(crate) fn delete_with_meetings_then(
     let mut out = FolderDeletion::default();
     let mut failed = 0;
     for meeting in filed {
-        match services.delete_meeting(meeting) {
+        match delete(meeting) {
             Ok(_) => out.meetings_deleted += 1,
+            // The checkpoint after the deletion's commit was blocked (T14.26): the meeting is
+            // deleted and its erasure leaves the WAL at the next checkpoint.
+            Err(e) if committed_but_busy(services, meeting, &e) => {
+                out.meetings_deleted += 1;
+                out.checkpoint_pending = true;
+            }
             Err(_) => failed += 1,
         }
         after_each(meeting);
@@ -361,8 +385,22 @@ pub(crate) fn delete_with_meetings_then(
     }
     out.meetings_unfiled = write(services, |tx, stamp| close_folder(tx, stamp, folder))?;
     out.folder_deleted = true;
-    out.checkpoint_pending = services.store().flush_erasures().is_err();
+    out.checkpoint_pending |= services.store().flush_erasures().is_err();
     Ok(out)
+}
+
+/// Whether `error` from deleting `meeting` came after the deletion committed: only the
+/// checkpoint after the commit gives [`earshot_store::StoreError::Busy`] there
+/// ([`earshot_store::Store::delete_meeting`]), and the meeting must read deleted. A re-read
+/// that fails is `false`: that meeting counts as left, as any other failure does.
+fn committed_but_busy(services: &Services, meeting: EntityId, error: &RuntimeError) -> bool {
+    matches!(
+        error,
+        RuntimeError::Store(earshot_store::StoreError::Busy(_))
+    ) && services
+        .store()
+        .meeting_reads_deleted(meeting)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

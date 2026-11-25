@@ -611,6 +611,51 @@ fn sync_a_meeting_deleted_on_one_device_is_deleted_on_the_other() {
     assert_eq!(a.rows(), b.rows());
 }
 
+/// T14.26: a meeting whose rows here do not read is still deleted, and its tombstones reach the
+/// other device, which erases its copy; nothing is left unsendable.
+#[test]
+fn sync_a_meeting_with_rows_that_do_not_read_is_deleted_on_the_other_device_too() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let m = meeting(&a.svc, "Damaged here", 6);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    assert!(b.title(m).is_some());
+    let db = earshot_store::DataDir::new(a._dir.0.join("data")).db_path();
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        let key = m.as_uuid().as_bytes().to_vec();
+        c.execute(
+            "UPDATE meeting SET started_unix_ms = -1 WHERE id = ?1",
+            [&key],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE segment SET start_ms = -1 WHERE meeting_id = ?1",
+            [&key],
+        )
+        .unwrap();
+    }
+    a.clock.advance_ms(1_000);
+    a.svc.delete_meeting(m).unwrap();
+    let r = ca.tick().unwrap();
+    assert_eq!(r.unsendable, 0, "{r:?}");
+    let r = cb.tick().unwrap();
+    assert_eq!(r.deleted_meetings, 1, "{r:?}");
+    assert_eq!(b.title(m), None);
+    let row = b.svc.store().meeting(m).unwrap().unwrap();
+    assert!(row.meta.deleted && row.title.is_empty());
+    assert!(
+        b.svc
+            .store()
+            .segments(m)
+            .unwrap()
+            .iter()
+            .all(|s| s.meta.deleted && s.segment.text.is_empty())
+    );
+}
+
 #[test]
 fn sync_a_meeting_in_use_holds_its_pulled_rows_until_it_is_free() {
     let relay = relay();

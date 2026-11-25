@@ -4,7 +4,8 @@
 // user's other computers that would write it now, each labelled as on the Summaries page. A
 // writer chosen there writes it alone, with no next step. On a meeting kept on this computer the
 // writers that would send it elsewhere are disabled with the reason until "Allow". The writers
-// and computers are read when the page opens and again whenever the menu opens.
+// are read when the page opens; writers and computers are read again whenever the menu opens
+// (the computers only then: asking for them reaches the relay, T14.17).
 
 import {
   Caption1,
@@ -41,6 +42,10 @@ export function helperLabel(name: string | null, writer: string | null): string 
 /** What the menu says while it reads the writers and computers. */
 export const LOOKING = ORDER_COPY.resummarise.looking;
 
+/** What the menu says when the user's other computers could not be read (T14.17). UI-only
+ * copy: the reason is never shown, and no Rust text names this state. */
+export const COMPUTERS_UNREAD = "Your other computers could not be checked";
+
 export interface ResummariseControlProps {
   /** The meeting. */
   meeting: string;
@@ -61,17 +66,31 @@ export function ResummariseControl({ meeting, label, disabled, onOrder, onWriter
   const [writers, setWriters] = useState<ResummariseView | null>(null);
   const [helpers, setHelpers] = useState<SummaryHelpersView | null>(null);
   const [loading, setLoading] = useState(false);
+  // The last read of the other computers failed (T14.17): the menu says so.
+  const [helpersFailed, setHelpersFailed] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
     // Each list stands alone: one that cannot be read leaves the other and "Use my order".
     const [w, h] = await Promise.allSettled([ipc.resummariseWriters(meeting), ipc.summaryHelpers()]);
     if (w.status === "fulfilled") setWriters(w.value);
     if (h.status === "fulfilled") setHelpers(h.value);
+    setHelpersFailed(h.status === "rejected");
     setLoading(false);
   }, [ipc, meeting]);
+  // On opening the page only this computer's writers are read: the other computers come from
+  // the relay, which is asked only when the menu opens (T14.17), never for every meeting shown.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let live = true;
+    ipc.resummariseWriters(meeting).then(
+      (w) => {
+        if (live) setWriters(w);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [ipc, meeting]);
 
   const computers = helpers?.helpers.filter((h) => h.available) ?? [];
   const items = writers?.writers ?? [];
@@ -112,7 +131,12 @@ export function ResummariseControl({ meeting, label, disabled, onOrder, onWriter
               {helperLabel(h.name, h.writer)}
             </MenuItem>
           ))}
-          {loading && items.length === 0 && computers.length === 0 && <MenuItem disabled>{LOOKING}</MenuItem>}
+          {/* While no computer is known yet the row stays, writers or not, so "On <device>"
+              entries never appear late under the pointer. */}
+          {loading && helpers === null && <MenuItem disabled>{LOOKING}</MenuItem>}
+          {!loading && helpersFailed && computers.length === 0 && (
+            <MenuItem disabled>{COMPUTERS_UNREAD}</MenuItem>
+          )}
         </MenuList>
       </MenuPopover>
     </Menu>

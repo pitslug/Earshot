@@ -1487,3 +1487,24 @@ fn cuda_a_held_retired_file_stops_the_removal_whole() {
     remove_part(&f.catalogue, &models, CudaPart::Summaries).unwrap();
     assert!(!old.exists());
 }
+
+/// T14.38: the provider's own Visual C++ runtime library comes from beside the exe, by full path,
+/// before the provider loads; with none there the old search is left as it was.
+#[test]
+fn cuda_the_providers_runtime_library_is_preloaded_from_beside_the_exe() {
+    assert_eq!(PROVIDER_RUNTIME_DLLS, ["msvcp140_atomic_wait.dll"]);
+    let dir = TempDir::new("cuda-provider-runtime");
+    // None beside the exe (a developer's build in `target`): nothing to preload.
+    assert!(provider_runtime_beside(Some(&dir.0)).is_empty());
+    assert!(provider_runtime_beside(None).is_empty());
+    let dll = dir.0.join("msvcp140_atomic_wait.dll");
+    std::fs::write(&dll, b"stands in").unwrap();
+    assert_eq!(
+        provider_runtime_beside(Some(&dir.0)),
+        std::slice::from_ref(&dll)
+    );
+    // A folder of that name is not the library.
+    std::fs::remove_file(&dll).unwrap();
+    std::fs::create_dir(&dll).unwrap();
+    assert!(provider_runtime_beside(Some(&dir.0)).is_empty());
+}

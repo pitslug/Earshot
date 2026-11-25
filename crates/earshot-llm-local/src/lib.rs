@@ -433,12 +433,26 @@ impl LocalLlm {
     /// [`LlmError::Load`], [`LlmError::Backend`], or [`LlmError::Input`] when the model has
     /// no chat template.
     pub fn load(path: &Path, options: &LoadOptions) -> Result<(Self, LoadReport), LlmError> {
+        Self::load_with_turn(path, options, || {})
+    }
+
+    /// [`Self::load`], running `on_turn` once this load's turn comes (the load before it, if any,
+    /// has finished) and before llama.cpp starts: a caller that watches a load for a stall starts
+    /// its watch there, so waiting in the queue never counts as a stalled load (T14.41).
+    ///
+    /// # Errors
+    /// As [`Self::load`].
+    pub fn load_with_turn(
+        path: &Path,
+        options: &LoadOptions,
+        on_turn: impl FnOnce(),
+    ) -> Result<(Self, LoadReport), LlmError> {
         let c_path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| LlmError::Input("model path contains NUL".into()))?;
         ffi::init();
         let started = Instant::now();
         // Loads are serialised here, so every caller's log window is its own load's.
-        let (engine, lines) = log::load_window(|| {
+        let (engine, lines) = log::load_window(on_turn, || {
             ffi::Engine::load(
                 &c_path,
                 &ffi::EngineParams {

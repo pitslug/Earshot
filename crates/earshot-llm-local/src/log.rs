@@ -57,28 +57,84 @@ pub fn since(mark: u64) -> Option<Vec<String>> {
 }
 
 /// Serialises [`load_window`] calls.
-static LOADS: Mutex<()> = Mutex::new(());
+static LOADS: LoadLock = LoadLock::new();
 
-/// How long a load waits for the load before it: longer means that one is stuck inside
-/// llama.cpp and never gives the lock back (a stalled GPU, T8.4ab).
-const LOAD_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How old the load holding the lock may be, in time awake, before a load waiting for it calls it
+/// stuck inside llama.cpp, never to give the lock back (a stalled GPU, T8.4ab). An honest load may
+/// take as long as the runtime lets one run before calling it stalled: 600 s, its GPU and CPU load
+/// limits (`earshot_runtime::summary::GPU_LOAD_LIMIT` and `CPU_LOAD_LIMIT`, a judgement for 5 GB
+/// read from a slow disk), plus a minute's margin for its thread to be left behind (T14.41). A
+/// waiting load waits only for the rest of the holder's time, and gives up at once beside a holder
+/// already past it, so after one stuck load every later one fails at once rather than each
+/// waiting the whole limit. This crate cannot see the runtime's constants; the runtime pins the
+/// relation (`model_settings` tests).
+pub const LOAD_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(600 + 60);
 
-/// Takes `lock`, waiting at most `wait`; a poisoned lock is still taken.
-fn lock_within<T>(
-    lock: &Mutex<T>,
-    wait: std::time::Duration,
-) -> Option<std::sync::MutexGuard<'_, T>> {
-    let started = std::time::Instant::now();
-    loop {
-        match lock.try_lock() {
-            Ok(guard) => return Some(guard),
-            Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                if started.elapsed() >= wait {
-                    return None;
+/// What a load says when the load before it is stuck.
+const STUCK_MESSAGE: &str = "an earlier model load is stuck; restart Earshot";
+
+/// A lock that knows when its holder took it, in time awake ([`earshot_proc::AwakeClock`]: the
+/// runtime's load limits are time awake, so a holder going through a sleep is not older for it).
+struct LoadLock {
+    lock: Mutex<()>,
+    /// When the current holder took the lock; `None` while it is free.
+    taken_at: Mutex<Option<std::time::Duration>>,
+}
+
+/// The lock held; clears [`LoadLock::taken_at`] before the lock is given back.
+struct Held<'a> {
+    owner: &'a LoadLock,
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        *self.owner.taken_at() = None;
+    }
+}
+
+impl LoadLock {
+    const fn new() -> Self {
+        Self {
+            lock: Mutex::new(()),
+            taken_at: Mutex::new(None),
+        }
+    }
+
+    fn taken_at(&self) -> std::sync::MutexGuard<'_, Option<std::time::Duration>> {
+        self.taken_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Takes the lock, waiting while its holder is younger than `limit` on `clock`; `None` once
+    /// the holder is that old (at once when it already is). A poisoned lock is still taken.
+    fn take(
+        &self,
+        limit: std::time::Duration,
+        clock: &earshot_proc::AwakeClock,
+    ) -> Option<Held<'_>> {
+        loop {
+            let guard = match self.lock.try_lock() {
+                Ok(guard) => guard,
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    // A holder that has not yet stamped its time has only just taken the lock.
+                    let holder_age = self
+                        .taken_at()
+                        .map_or(std::time::Duration::ZERO, |at| clock.since(at));
+                    if holder_age >= limit {
+                        return None;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
+            };
+            *self.taken_at() = Some(clock.now());
+            return Some(Held {
+                owner: self,
+                _guard: guard,
+            });
         }
     }
 }
@@ -86,12 +142,17 @@ fn lock_within<T>(
 /// Runs `load` with the log to itself among loads: no other `load_window` runs at the same
 /// time, so the lines logged meanwhile are this load's alone (`LocalLlm::load` reads its
 /// backend from them). Returns `load`'s result and those lines, or `None` when some were
-/// already dropped from the ring; `Err` when an earlier load never finished.
+/// already dropped from the ring; `Err` when an earlier load never finished. `on_turn` runs once
+/// the lock is taken, before `load`: a caller that watches its load for a stall starts the watch
+/// there, so time spent queued behind another load is not counted against it.
 pub(crate) fn load_window<T>(
+    on_turn: impl FnOnce(),
     load: impl FnOnce() -> T,
 ) -> Result<(T, Option<Vec<String>>), &'static str> {
-    let _one_load = lock_within(&LOADS, LOAD_LOCK_WAIT)
-        .ok_or("an earlier model load is stuck; restart Earshot")?;
+    static CLOCK: std::sync::OnceLock<earshot_proc::AwakeClock> = std::sync::OnceLock::new();
+    let clock = CLOCK.get_or_init(earshot_proc::AwakeClock::system);
+    let _one_load = LOADS.take(LOAD_LOCK_WAIT, clock).ok_or(STUCK_MESSAGE)?;
+    on_turn();
     let m = mark();
     let r = load();
     Ok((r, since(m)))
@@ -236,20 +297,23 @@ mod tests {
 
     #[test]
     fn log_a_load_lock_held_forever_is_given_up_on() {
-        let lock = Mutex::new(());
+        let lock = LoadLock::new();
+        let clock = earshot_proc::HandClock::default();
+        let awake = clock.awake();
         let short = std::time::Duration::from_millis(50);
         {
-            let held = lock.lock().unwrap();
-            assert!(lock_within(&lock, short).is_none());
+            let held = lock.take(short, &awake).unwrap();
+            clock.advance(short);
+            assert!(lock.take(short, &awake).is_none());
             drop(held);
         }
-        assert!(lock_within(&lock, short).is_some());
+        assert!(lock.take(short, &awake).is_some());
         // A thread that panicked with it does not hold it.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _g = lock.lock().unwrap();
+            let _g = lock.lock.lock().unwrap();
             panic!("poison");
         }));
-        assert!(lock_within(&lock, short).is_some());
+        assert!(lock.take(short, &awake).is_some());
     }
 
     #[test]
@@ -394,24 +458,36 @@ mod tests {
     #[test]
     fn log_load_windows_never_overlap() {
         let _ring = ring_test();
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static A_DONE: AtomicBool = AtomicBool::new(false);
+        static B_TURN_AFTER_A: AtomicBool = AtomicBool::new(false);
+        A_DONE.store(false, Ordering::SeqCst);
         let (inside, entered) = std::sync::mpsc::channel();
         let a = std::thread::spawn(move || {
-            load_window(|| {
-                push("log_window_test a1".into());
-                inside.send(()).unwrap();
-                // Long enough for the second load to log here if it were let in.
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                push("log_window_test a2".into());
-            })
+            load_window(
+                || {},
+                || {
+                    push("log_window_test a1".into());
+                    inside.send(()).unwrap();
+                    // Long enough for the second load to log here if it were let in.
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    push("log_window_test a2".into());
+                    A_DONE.store(true, Ordering::SeqCst);
+                },
+            )
             .unwrap()
             .1
         });
         entered.recv().unwrap();
         let b = std::thread::spawn(|| {
-            load_window(|| {
-                push("log_window_test b1".into());
-                push("log_window_test b2".into());
-            })
+            load_window(
+                // The second load's turn comes only once the first has finished.
+                || B_TURN_AFTER_A.store(A_DONE.load(Ordering::SeqCst), Ordering::SeqCst),
+                || {
+                    push("log_window_test b1".into());
+                    push("log_window_test b2".into());
+                },
+            )
             .unwrap()
             .1
         });
@@ -423,6 +499,61 @@ mod tests {
             b.join().unwrap().unwrap(),
             ["log_window_test b1", "log_window_test b2"]
         );
+        assert!(
+            B_TURN_AFTER_A.load(Ordering::SeqCst),
+            "the turn came while queued"
+        );
+    }
+
+    #[test]
+    fn log_a_second_load_waits_out_a_slow_load_and_gives_up_only_on_a_stuck_one() {
+        // A load that waits gives up only after the one before it would have been called
+        // stalled by the runtime (600 s), plus a margin.
+        use std::time::Duration;
+        assert_eq!(LOAD_LOCK_WAIT, Duration::from_secs(660));
+        // On a lock of its own and a clock moved by hand: a slow honest holder is waited for...
+        let clock = earshot_proc::HandClock::default();
+        let lock: &'static LoadLock = Box::leak(Box::new(LoadLock::new()));
+        let (taken, is_taken) = std::sync::mpsc::channel::<()>();
+        let (go, release) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let awake = clock.awake();
+            std::thread::spawn(move || {
+                let _held = lock.take(LOAD_LOCK_WAIT, &awake).unwrap();
+                taken.send(()).unwrap();
+                release.recv().unwrap();
+            })
+        };
+        is_taken.recv().unwrap();
+        let waiter = {
+            let awake = clock.awake();
+            std::thread::spawn(move || lock.take(LOAD_LOCK_WAIT, &awake).is_some())
+        };
+        // The holder is nearly at its limit, and the waiter keeps waiting.
+        clock.advance(LOAD_LOCK_WAIT - Duration::from_secs(1));
+        clock.read_twice_more();
+        assert!(
+            !waiter.is_finished(),
+            "a waiter beside an honest holder waits"
+        );
+        go.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(waiter.join().unwrap(), "a slow load is waited for");
+        assert_eq!(*lock.taken_at(), None, "given back");
+        // ...and beside a holder already past its limit a load gives up at once, with no clock
+        // moving while it asks.
+        let held = lock.take(LOAD_LOCK_WAIT, &clock.awake()).unwrap();
+        clock.advance(LOAD_LOCK_WAIT);
+        let (asked, answer) = std::sync::mpsc::channel();
+        let late = {
+            let awake = clock.awake();
+            std::thread::spawn(move || asked.send(lock.take(LOAD_LOCK_WAIT, &awake).is_none()))
+        };
+        assert_eq!(answer.recv_timeout(Duration::from_secs(60)), Ok(true));
+        late.join().unwrap().unwrap();
+        drop(held);
+        // The production lock says so with the restart message.
+        assert!(STUCK_MESSAGE.contains("restart Earshot"));
     }
 
     #[test]

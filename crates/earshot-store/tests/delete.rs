@@ -13,11 +13,14 @@ use earshot_core::diar::{Embedding, EmbeddingModelId, SpeakerRole};
 use earshot_core::identity::{DeviceId, EntityId, Hlc, ManualClock};
 use earshot_core::model::{
     AudioFileRepo, ClockDomain, ExportRecord, ExportRepo, Meeting, MeetingRepo, Note, SegmentRow,
-    Speaker, Stamp, Track, TranscriptPass, VaultPath, repo_contract,
+    Speaker, Stamp, Summary, Track, TranscriptPass, VaultPath, repo_contract,
 };
 use earshot_core::prompt::Template;
+use earshot_core::summary::SummaryV1;
 use earshot_core::voiceprint::{EnrolmentConfig, Person, VoiceprintRepo, enroll};
-use earshot_store::{AudioProvenance, DataDir, MeetingDeletion, PersonRemoval, Store, StoreError};
+use earshot_store::{
+    AudioProvenance, DataDir, MeetingDeletion, PersonRemoval, Store, StoreError, SyncKinds,
+};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
@@ -319,6 +322,300 @@ fn store_delete_meeting_tolerates_audio_already_gone() {
     assert_eq!((r.audio_files_deleted, r.audio_files_missing), (0, 1));
     assert!(store.audio_files(m.id).unwrap().is_empty());
     assert!(!data.root().join("audio").join(m.id.to_string()).exists());
+}
+
+/// T14.26: a meeting is always deletable. For each table the deletion reads, one row of it is
+/// damaged (a value that does not convert, its content left in place); the deletion still
+/// erases everything, the damaged row's content included, with another connection open.
+#[test]
+fn store_delete_meeting_erases_a_row_it_cannot_read_in_every_table() {
+    let damage = [
+        (
+            "meeting",
+            "UPDATE meeting SET started_unix_ms = -1 WHERE id = ?1",
+        ),
+        ("track", "UPDATE track SET kind = 'bogus' WHERE id = ?1"),
+        ("speaker", "UPDATE speaker SET role = 'bogus' WHERE id = ?1"),
+        ("note", "UPDATE note SET at_ms = -1 WHERE id = ?1"),
+        (
+            "summary",
+            "UPDATE summary SET template = 'bogus' WHERE id = ?1",
+        ),
+        (
+            "audio_file",
+            "UPDATE audio_file SET frames = -1 WHERE id = ?1",
+        ),
+    ];
+    for (table, sql) in damage {
+        let tmp = TempDir::new("delete-damaged-table");
+        let data = DataDir::new(tmp.path().join("Earshot"));
+        data.create().unwrap();
+        let db = data.db_path();
+        let mut store = Store::open(&db).unwrap();
+        let mut w = World::new();
+        let needles = [
+            "Title-needle-0b7e",
+            "Device-needle-4c21",
+            "Name-needle-9d03",
+            "Said-needle-61fa",
+            "Typed-needle-2e8c",
+            "Summary-needle-c5d7",
+        ];
+        let m = Meeting::new(needles[0], 1, 0, Template::General, &mut w.stamp());
+        store.put_meeting(m.clone()).unwrap();
+        let mut t = track_with_audio(&data, &mut store, &mut w, m.id, TrackId::Mic);
+        t.device_name = Some(needles[1].into());
+        store.put_track(t.clone()).unwrap();
+        let sp = Speaker::new(m.id, SpeakerRole::Remote, needles[2], None, &mut w.stamp());
+        store.put_speaker(sp.clone()).unwrap();
+        let seg = Segment::from_words(
+            EntityId::generate(&w.clock, &mut w.rng),
+            t.id,
+            vec![Word::new(needles[3], 0, 400, 0.9)],
+            MeetingTime::ZERO,
+        );
+        let row = SegmentRow::new(m.id, TranscriptPass::Final, seg, &mut w.hlc, &w.clock);
+        store.put_segment(row).unwrap();
+        let note = Note::new(m.id, MeetingTime::ZERO, needles[4], &mut w.stamp());
+        store.put_note(note.clone()).unwrap();
+        let summary = Summary::new(
+            m.id,
+            Template::General,
+            Some("invented-model".into()),
+            SummaryV1 {
+                tldr: needles[5].into(),
+                ..SummaryV1::default()
+            },
+            &mut w.stamp(),
+        );
+        store.put_summary(summary.clone()).unwrap();
+        let audio = store.audio_files(m.id).unwrap()[0].clone();
+        let file = data.resolve(&audio.path).unwrap();
+        let id = match table {
+            "meeting" => m.id,
+            "track" => t.id,
+            "speaker" => sp.id,
+            "note" => note.id,
+            "summary" => summary.id,
+            _ => audio.id,
+        };
+        store.checkpoint().unwrap();
+        drop(store);
+        {
+            let c = rusqlite::Connection::open(&db).unwrap();
+            let n = c.execute(sql, [id.as_uuid().as_bytes().to_vec()]).unwrap();
+            assert_eq!(n, 1, "{table}");
+            // As if everything had been pushed: only the deletion queues rows now.
+            c.execute("DELETE FROM sync_outbox", []).unwrap();
+        }
+        let mut store = Store::open(&db).unwrap();
+        for needle in needles {
+            assert!(on_disk(&db, needle.as_bytes()), "{table}: sanity, {needle}");
+        }
+
+        let reader = rusqlite::Connection::open(&db).unwrap();
+        let report = store
+            .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+            .unwrap_or_else(|e| panic!("{table}: {e}"));
+        assert!(report.rows_tombstoned >= 4, "{table}: {report:?}");
+        assert!(!file.exists(), "{table}: the recording is gone");
+        assert!(store.meeting_reads_deleted(m.id).unwrap(), "{table}");
+        // Every row of the meeting, in every table, is a tombstone; audio rows are gone.
+        for t in ["track", "speaker", "segment", "note", "summary"] {
+            let live: i64 = reader
+                .query_row(
+                    &format!("SELECT count(*) FROM {t} WHERE meeting_id = ?1 AND deleted = 0"),
+                    [m.id.as_uuid().as_bytes().to_vec()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(live, 0, "{table}: a live {t} row is left");
+        }
+        let audio_rows: i64 = reader
+            .query_row(
+                "SELECT count(*) FROM audio_file WHERE meeting_id = ?1",
+                [m.id.as_uuid().as_bytes().to_vec()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audio_rows, 0, "{table}");
+        for needle in needles {
+            assert!(
+                !on_disk(&db, needle.as_bytes()),
+                "{table}: {needle} survived in the database, its free pages or the WAL"
+            );
+        }
+        // The deletion was written to the outbox like any other.
+        let queued: i64 = reader
+            .query_row(
+                "SELECT count(*) FROM sync_outbox WHERE tbl = ?2 AND id = ?1",
+                rusqlite::params![id.as_uuid().as_bytes().to_vec(), table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if table != "audio_file" {
+            assert_eq!(queued, 1, "{table}: the erased row is queued to sync");
+            // And it is sendable: it reads, as a tombstone with its content cleared.
+            let page = store.outbox_page(100, &[], SyncKinds::ALL).unwrap();
+            assert_eq!(page.unreadable, 0, "{table}");
+            let sent = page.rows.iter().find(|r| r.id() == id);
+            let sent = sent.unwrap_or_else(|| panic!("{table}: the row is not in the page"));
+            assert!(sent.meta().deleted, "{table}");
+        }
+        let again = store
+            .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+            .unwrap();
+        assert_eq!(again, MeetingDeletion::default(), "{table}");
+        drop(reader);
+    }
+}
+
+/// T14.26: an audio row that does not read keeps "file before row": when its file cannot be
+/// removed, the deletion stops with the row still there, and finishes once the file can go.
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "a file held open without sharing blocks its removal only on Windows: run on Windows"
+)]
+fn store_delete_meeting_keeps_a_damaged_audio_row_until_its_file_is_gone() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = TempDir::new("delete-damaged-audio");
+        let data = DataDir::new(tmp.path().join("Earshot"));
+        data.create().unwrap();
+        let db = data.db_path();
+        let mut store = Store::open(&db).unwrap();
+        let mut w = World::new();
+        let m = Meeting::new("Plain", 1, 0, Template::General, &mut w.stamp());
+        store.put_meeting(m.clone()).unwrap();
+        track_with_audio(&data, &mut store, &mut w, m.id, TrackId::Mic);
+        let audio = store.audio_files(m.id).unwrap()[0].clone();
+        let file = data.resolve(&audio.path).unwrap();
+        drop(store);
+        {
+            let c = rusqlite::Connection::open(&db).unwrap();
+            c.execute(
+                "UPDATE audio_file SET frames = -1 WHERE id = ?1",
+                [audio.id.as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&db).unwrap();
+        let rows = || -> i64 {
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .query_row("SELECT count(*) FROM audio_file", [], |r| r.get(0))
+                .unwrap()
+        };
+        let held = std::fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        assert!(
+            store
+                .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+                .is_err()
+        );
+        assert!(file.exists());
+        assert_eq!(rows(), 1, "the row stays while its file does");
+        drop(held);
+        store
+            .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+            .unwrap();
+        assert!(!file.exists());
+        assert_eq!(rows(), 0);
+    }
+}
+
+/// T14.26: a segment row the store cannot read never makes its meeting undeletable; its text
+/// and words are erased as a readable row's are, and nothing of it survives on disk.
+#[test]
+fn store_delete_meeting_erases_a_segment_row_it_cannot_read() {
+    let tmp = TempDir::new("delete-damaged-row");
+    let data = DataDir::new(tmp.path().join("Earshot"));
+    data.create().unwrap();
+    let db = data.db_path();
+    let mut store = Store::open(&db).unwrap();
+    let mut w = World::new();
+    let m = Meeting::new("Plain", 1, 0, Template::General, &mut w.stamp());
+    store.put_meeting(m.clone()).unwrap();
+    let t = Track::new(m.id, TrackId::Mic, None, ClockDomain::Qpc, &mut w.stamp());
+    store.put_track(t.clone()).unwrap();
+    let said = [
+        "Readable-needle-5c1d",
+        "Words-damaged-needle-a903",
+        "Start-damaged-needle-77e2",
+    ];
+    let mut ids = Vec::new();
+    for (i, text) in said.iter().enumerate() {
+        let at = 1_000 * i as u64;
+        let seg = Segment::from_words(
+            EntityId::generate(&w.clock, &mut w.rng),
+            t.id,
+            vec![Word::new(*text, at, at + 400, 0.9)],
+            MeetingTime::ZERO,
+        );
+        ids.push(seg.id);
+        let row = SegmentRow::new(m.id, TranscriptPass::Final, seg, &mut w.hlc, &w.clock);
+        store.put_segment(row).unwrap();
+    }
+    store.checkpoint().unwrap();
+    drop(store);
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        for (sql, id) in [
+            (
+                "UPDATE segment SET words = '[damaged' WHERE id = ?1",
+                ids[1],
+            ),
+            ("UPDATE segment SET start_ms = -7 WHERE id = ?1", ids[2]),
+        ] {
+            let n = c.execute(sql, [id.as_uuid().as_bytes().to_vec()]).unwrap();
+            assert_eq!(n, 1);
+        }
+    }
+    let mut store = Store::open(&db).unwrap();
+    assert!(store.segments(m.id).is_err(), "the rows do not read");
+    for needle in said {
+        assert!(on_disk(&db, needle.as_bytes()), "sanity: {needle} on disk");
+    }
+
+    let reader = rusqlite::Connection::open(&db).unwrap();
+    let report = store
+        .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+        .unwrap();
+    assert_eq!(report.rows_tombstoned, 1 + 1 + 3, "{report:?}");
+    assert!(store.meeting(m.id).unwrap().unwrap().meta.deleted);
+    // Every row of the meeting is a tombstone with its text and words gone, read in SQL.
+    let rows: Vec<(String, String, i64)> = {
+        let mut st = reader
+            .prepare("SELECT text, words, deleted FROM segment WHERE meeting_id = ?1")
+            .unwrap();
+        st.query_map([m.id.as_uuid().as_bytes().to_vec()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    assert_eq!(rows.len(), 3);
+    for row in &rows {
+        assert_eq!(row, &(String::new(), "[]".to_owned(), 1), "{rows:?}");
+    }
+    for needle in said {
+        assert!(
+            !on_disk(&db, needle.as_bytes()),
+            "{needle} survived in the database, its free pages or the WAL"
+        );
+    }
+    // A second deletion finds nothing left to do.
+    let again = store
+        .delete_meeting(&data, m.id, &mut w.hlc, &w.clock, &mut |_: &str| false)
+        .unwrap();
+    assert_eq!(again, MeetingDeletion::default());
+    drop(reader);
 }
 
 #[test]

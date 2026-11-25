@@ -227,6 +227,12 @@ pub const GPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
 pub const CPU_LOAD_LIMIT: Duration = Duration::from_secs(600);
 
 #[cfg(feature = "engines")]
+/// How long, over a try's own load limit, a load may wait for its turn before the try counts as
+/// stalled (T14.41): llama.cpp's own lock wait, so a load queued behind an honest slow one is never
+/// cut, and a queue stuck anywhere (llama.cpp's lock, the CUDA start's gate) still ends.
+const QUEUED_LOAD_LIMIT: Duration = earshot_llm_local::log::LOAD_LOCK_WAIT;
+
+#[cfg(feature = "engines")]
 /// How long a cancelled run may stay silent before it is left behind, so a stop does not wait
 /// for the whole stall limit.
 const STALL_CANCEL_GRACE: Duration = Duration::from_secs(30);
@@ -481,6 +487,18 @@ pub(crate) struct LoadedModel {
 /// Loads the local model on the summary thread (llama.cpp in production, a fake in tests).
 pub(crate) trait LoadLocal: Send + Sync {
     fn load(&self, config: &LocalSummaryConfig) -> Result<LoadedModel, RuntimeError>;
+
+    /// [`Self::load`], calling `on_turn` once this load's turn comes: llama.cpp runs one load at a
+    /// time per process, and a load queued behind another is not stalled (T14.41). The watch on a
+    /// load starts there. A loader that waits for nothing takes its turn at once.
+    fn load_reporting(
+        &self,
+        config: &LocalSummaryConfig,
+        on_turn: &mut dyn FnMut(),
+    ) -> Result<LoadedModel, RuntimeError> {
+        on_turn();
+        self.load(config)
+    }
 }
 
 #[cfg(feature = "engines")]
@@ -491,6 +509,14 @@ pub(crate) struct LlamaLoader;
 #[cfg(feature = "engines")]
 impl LoadLocal for LlamaLoader {
     fn load(&self, config: &LocalSummaryConfig) -> Result<LoadedModel, RuntimeError> {
+        self.load_reporting(config, &mut || {})
+    }
+
+    fn load_reporting(
+        &self,
+        config: &LocalSummaryConfig,
+        on_turn: &mut dyn FnMut(),
+    ) -> Result<LoadedModel, RuntimeError> {
         crate::cpu::require_native_builds()?;
         if !config.model_path.is_file() {
             return Err(RuntimeError::ModelMissing {
@@ -498,13 +524,14 @@ impl LoadLocal for LlamaLoader {
                 fetch_set: None,
             });
         }
-        let (llm, report) = LocalLlm::load(
+        let (llm, report) = LocalLlm::load_with_turn(
             &config.model_path,
             &LoadOptions {
                 gpu: config.gpu,
                 context_tokens: config.context_tokens,
                 threads: config.threads,
             },
+            on_turn,
         )
         .map_err(|e| RuntimeError::LocalSummary(LocalSummaryError::Load(e)))?;
         if let Some(device) = refused_gpu(
@@ -1448,6 +1475,8 @@ enum Attempt {
 #[cfg(feature = "engines")]
 /// What the thread tells the watcher.
 enum Progress {
+    /// The load's turn came (the load before it in this process finished).
+    Turn,
     /// The model is loaded on `backend`.
     Loaded(LlamaBackend, Heartbeat),
     /// The run ended.
@@ -1514,9 +1543,12 @@ fn attempt_local_on(
     let worker = std::thread::Builder::new()
         .name("earshot-summary".into())
         .spawn(move || {
+            let turn = tx.clone();
             let finished = (|| -> Result<Finished, RuntimeError> {
                 let (loaded, gpu_refused) =
-                    load_with_fallback(&job.config, &*job.loader, job.stalled)?;
+                    load_with_fallback(&job.config, &*job.loader, job.stalled, &mut || {
+                        let _ = turn.send(Progress::Turn);
+                    })?;
                 let LoadedModel {
                     heartbeat,
                     mut model,
@@ -1540,11 +1572,23 @@ fn attempt_local_on(
     let mut heartbeat: Option<Heartbeat> = None;
     let mut last_count = 0;
     let mut since = awake.now();
+    let queued_from = since;
+    // Until the load's turn comes (llama.cpp runs one load at a time, and the one before may take
+    // its whole limit) the try is queued, not stalled: the load watch starts at the turn
+    // (T14.41). A queued try that was cancelled still ends after the cancel grace, and the queue
+    // has its own bound in time awake: llama.cpp's lock wait plus the load limit
+    // ([`QUEUED_LOAD_LIMIT`]), which also covers waits before llama.cpp (the CUDA start's gate).
+    let mut queued = true;
     loop {
         if cancel.is_cancelled() {
             token.cancel();
         }
         match rx.recv_timeout(STALL_POLL) {
+            Ok(Progress::Turn) => {
+                // Only the first turn starts the watch (from the last queued reading): a CPU
+                // retry after a refused GPU load stays under the same limit, as before.
+                queued = false;
+            }
             Ok(Progress::Loaded(backend, beat)) => {
                 // Refused and retried on the CPU, or a CPU try: nothing to watch from here.
                 limit = limit_after_load(gpu_watched, backend, run_limit);
@@ -1570,8 +1614,23 @@ fn attempt_local_on(
             last_count = count;
             since = awake.now();
         }
+        // Queued (and not cancelled): no silence counts, and the watch is ready to start at once,
+        // unless the queue itself has run past its own bound (QUEUED_LOAD_LIMIT over this try's
+        // load limit), which counts as a stalled load.
+        let now = awake.now();
+        let silent = if queued && !cancel.is_cancelled() {
+            since = now;
+            let waited = now.saturating_sub(queued_from);
+            if waited >= load_limit.saturating_add(QUEUED_LOAD_LIMIT) {
+                waited
+            } else {
+                Duration::ZERO
+            }
+        } else {
+            now.saturating_sub(since)
+        };
         if let Some(limit) = limit
-            && has_stalled(awake.since(since), limit, cancel.is_cancelled())
+            && has_stalled(silent, limit, cancel.is_cancelled())
         {
             token.cancel();
             if gpu_watched {
@@ -1642,8 +1701,8 @@ impl MapChunk for LocalMapper {
             }
         }
         let config = on_cpu.as_ref().unwrap_or(&self.config);
-        let (loaded, _) =
-            load_with_fallback(config, &*self.loader, self.stalled).map_err(|e| e.to_string())?;
+        let (loaded, _) = load_with_fallback(config, &*self.loader, self.stalled, &mut || {})
+            .map_err(|e| e.to_string())?;
         let mut model = loaded.model;
         let options = options_of(&self.config, cancel);
         let run = map_last_chunk(model.as_mut(), input, &options, ranges);
@@ -1661,10 +1720,12 @@ impl MapChunk for LocalMapper {
 /// ([`LocalSummaryError::LoadRetried`]).
 ///
 /// After a stall in this app session the GPU is not tried: the CPU, with that as the reason.
+/// `on_turn` runs when a load's turn comes ([`LoadLocal::load_reporting`]), for each try.
 fn load_with_fallback(
     config: &LocalSummaryConfig,
     loader: &dyn LoadLocal,
     stalled: &AtomicBool,
+    on_turn: &mut dyn FnMut(),
 ) -> Result<(LoadedModel, Option<Box<LocalSummaryError>>), RuntimeError> {
     if config.gpu && config.cpu_fallback && stalled.load(Ordering::Acquire) {
         note_card_fallback();
@@ -1673,10 +1734,10 @@ fn load_with_fallback(
             ..config.clone()
         };
         return loader
-            .load(&cpu)
+            .load_reporting(&cpu, on_turn)
             .map(|m| (m, Some(Box::new(LocalSummaryError::GpuStalled))));
     }
-    match loader.load(config) {
+    match loader.load_reporting(config, on_turn) {
         Err(RuntimeError::LocalSummary(refusal @ LocalSummaryError::Load(_)))
             if config.gpu && config.cpu_fallback =>
         {
@@ -1685,7 +1746,7 @@ fn load_with_fallback(
                 gpu: false,
                 ..config.clone()
             };
-            match loader.load(&cpu) {
+            match loader.load_reporting(&cpu, on_turn) {
                 Ok(m) => Ok((m, Some(Box::new(refusal)))),
                 Err(RuntimeError::LocalSummary(cpu @ LocalSummaryError::Load(_))) => {
                     Err(RuntimeError::LocalSummary(LocalSummaryError::LoadRetried {

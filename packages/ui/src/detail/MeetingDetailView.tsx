@@ -74,6 +74,8 @@ import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
+import { keepUnchanged } from "./keepUnchanged";
+import { scrollLineIntoView } from "./scrollLine";
 import { ResummariseControl } from "./ResummariseControl";
 import { SpeakersPanel } from "./SpeakersPanel";
 import {
@@ -96,6 +98,7 @@ import {
   useFindMarks,
 } from "./TranscriptFind";
 import {
+  FIND_PAUSE_MS,
   type FindResult,
   findCount,
   findCountText,
@@ -346,6 +349,18 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
   },
+  // Read by assistive technology only: the transcript's keys (T14.19).
+  hiddenText: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    margin: "-1px",
+    padding: 0,
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
+    border: 0,
+  },
   row: {
     display: "grid",
     gridTemplateColumns: "56px 120px minmax(0, 1fr) auto",
@@ -356,6 +371,18 @@ const useStyles = makeStyles({
     paddingLeft: tokens.spacingHorizontalS,
     paddingRight: tokens.spacingHorizontalS,
     borderRadius: tokens.borderRadiusMedium,
+    // A line off screen is not laid out or painted (T14.18): an hours-long transcript costs what
+    // its visible lines cost. The size stands in until the line has been drawn once ("auto"
+    // then keeps its last real size), so the scrollbar and scrolling to a far line stay close.
+    // Focus, find's highlights and menus are unaffected: menus and popovers are portalled, and
+    // a line holding focus or in view is always drawn.
+    contentVisibility: "auto",
+    containIntrinsicSize: "auto 32px",
+    // A line focused from the keyboard (T14.19) shows the focus ring.
+    ":focus-visible": {
+      outline: `${tokens.strokeWidthThick} solid ${tokens.colorStrokeFocus2}`,
+      outlineOffset: "-2px",
+    },
     // The Edit button shows on hover and whenever the row holds focus (T12.16).
     ":hover .earshot-line-edit": { opacity: 1 },
     ":focus-within .earshot-line-edit": { opacity: 1 },
@@ -679,6 +706,15 @@ export function MeetingDetailView({
     setSpeakersLeaving(speakersWere === true && speakersOpen !== true);
   }
   const panelId = useId();
+  // Bumped when the user opens the panel with its button: focus goes to the panel's heading.
+  // Each press moves focus once: a later automatic open never does.
+  const [focusPanel, setFocusPanel] = useState(0);
+  const focusedPanel = useRef(0);
+  useEffect(() => {
+    if (focusPanel === focusedPanel.current || speakersOpen !== true) return;
+    focusedPanel.current = focusPanel;
+    document.getElementById(panelId)?.querySelector<HTMLElement>("h2")?.focus();
+  }, [focusPanel, speakersOpen, panelId]);
   const voicesBefore = useRef(0);
   const speakersButton = useRef<HTMLButtonElement | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -692,7 +728,10 @@ export function MeetingDetailView({
   // Find in the transcript (T12.98): page state only, cleared when the bar closes.
   const [findOpen, setFindOpen] = useState(false);
   const [findSpeaker, setFindSpeaker] = useState<string | null>(null);
+  // The box's text, and the text find looks for: the box's once typing pauses (T14.17).
   const [findText, setFindText] = useState("");
+  const [findLooked, setFindLooked] = useState("");
+  const findPause = useRef<(() => void) | null>(null);
   const [findAt, setFindAt] = useState(0);
   // Bumped by every open (the button or Ctrl+F), so focus goes to the text box each time.
   const [findFocus, setFindFocus] = useState(0);
@@ -702,12 +741,25 @@ export function MeetingDetailView({
   const findButton = useRef<HTMLButtonElement | null>(null);
   const findInput = useRef<HTMLInputElement | null>(null);
 
+  // Each read's number (T14.17): `asked` is the newest read asked, `applied` the newest whose
+  // answer the page shows. An answer older than one already shown is dropped, so a slow older
+  // read never puts back what an edit or sync just changed; any newer success is shown even
+  // while a still newer read is out. A failure is shown only for the newest read asked when
+  // nothing newer is shown. A read resolves once its own answer is shown, dropped or failed, so
+  // an edit that awaits its read finds the page holding at least that read.
+  const asked = useRef(0);
+  const applied = useRef(0);
   // `afterSync`: read again because sync changed the meeting (T12.81). A meeting deleted on
   // another computer then goes quietly: no load error, and the list (read again) moves on.
   const reload = useCallback(async (afterSync = false) => {
+    const read = ++asked.current;
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
-      setDetail(d);
+      if (read <= applied.current) return;
+      applied.current = read;
+      // Unchanged rows, word lists and movable lists keep their objects, so after an edit only
+      // the lines that changed render again (T14.18).
+      setDetail((before) => keepUnchanged(before, d));
       // Decided with each detail, in the same render: the first opens it exactly when a voice
       // needs a name; a later one opens it when more voices need a name than before (a
       // re-transcription found new ones). Never closed by itself. A voice recognised from a
@@ -717,8 +769,10 @@ export function MeetingDetailView({
       voicesBefore.current = needing;
       setSpeakersOpen((open) => (open === null ? needing > 0 : needing > before ? true : open));
       setPersons(p);
-      setLoadError(null);
+      // A newer read that failed still says so.
+      if (read === asked.current) setLoadError(null);
     } catch (e) {
+      if (read !== asked.current || applied.current > read) return;
       if (afterSync && e instanceof IpcFailure && e.error.kind === "meeting_not_found") {
         changedRef.current();
         return;
@@ -797,8 +851,8 @@ export function MeetingDetailView({
   // would otherwise carry over, and the end of a long transcript is past the end of a summary.
   useEffect(() => {
     const row = tab === "transcript" && cited !== null ? rows.current.get(cited) : undefined;
-    if (row !== undefined) row.scrollIntoView?.({ block: "center" });
-    else view.current?.scrollIntoView?.({ block: "start" });
+    if (row !== undefined) return scrollLineIntoView(row);
+    view.current?.scrollIntoView?.({ block: "start" });
   }, [tab, cited]);
 
   // Find in the transcript (T12.98). The bar shows only on the Transcript tab: leaving it
@@ -807,14 +861,35 @@ export function MeetingDetailView({
     setFindOpen(false);
     setFindSpeaker(null);
     setFindText("");
+    setFindLooked("");
     setFindAt(0);
   }
+  // A pause still running when the bar closes or the page goes looks for nothing.
+  useEffect(() => {
+    if (findOpen) return;
+    findPause.current?.();
+    findPause.current = null;
+  }, [findOpen]);
+  useEffect(() => () => findPause.current?.(), []);
+  /** The box's text changed: find looks once typing pauses, at once when the box is cleared. */
+  const typeFind = (t: string) => {
+    setFindText(t);
+    findPause.current?.();
+    findPause.current = null;
+    const look = () => {
+      findPause.current = null;
+      setFindLooked(t);
+      setFindAt(0);
+    };
+    if (t.trim() === "") look();
+    else findPause.current = timer.setTimeout(look, FIND_PAUSE_MS);
+  };
   const findSpeakerList = useMemo(() => (detail === null ? [] : findSpeakers(detail.transcript)), [detail]);
   // A chosen speaker whose lines are gone (an edit moved them) is no longer offered: any speaker.
   const findChosen = findSpeakerList.some((s) => s.key === findSpeaker) ? findSpeaker : null;
   const findResult = useMemo<FindResult>(
-    () => (findOpen && detail !== null ? findInTranscript(detail.transcript, findChosen, findText) : IDLE),
-    [findOpen, detail, findChosen, findText],
+    () => (findOpen && detail !== null ? findInTranscript(detail.transcript, findChosen, findLooked) : IDLE),
+    [findOpen, detail, findChosen, findLooked],
   );
   const findTotal = findCount(findResult);
   const findIndex = findTotal === 0 ? 0 : Math.min(findAt, findTotal - 1);
@@ -831,10 +906,19 @@ export function MeetingDetailView({
     setFindOpen(false);
     setFindSpeaker(null);
     setFindText("");
+    setFindLooked("");
     setFindAt(0);
     findButton.current?.focus();
   };
   const stepFind = (by: 1 | -1) => {
+    // Enter before the pause is over looks at once, at the first place.
+    if (findPause.current !== null) {
+      findPause.current();
+      findPause.current = null;
+      setFindLooked(findText);
+      setFindAt(0);
+      return;
+    }
     if (findTotal === 0) return;
     setFindAt((findIndex + by + findTotal) % findTotal);
   };
@@ -883,7 +967,8 @@ export function MeetingDetailView({
   const findRow = findLine(findResult, findIndex);
   const findRowId = findRow === null ? null : (detail?.transcript[findRow]?.segment_id ?? null);
   useEffect(() => {
-    if (findRowId !== null) rows.current.get(findRowId)?.scrollIntoView?.({ block: "center" });
+    const row = findRowId === null ? undefined : rows.current.get(findRowId);
+    if (row !== undefined) return scrollLineIntoView(row);
   }, [findRowId, findIndex]);
 
   /** The name of the person speaker `s` is linked to now, before an edit changes it. */
@@ -1043,7 +1128,12 @@ export function MeetingDetailView({
               aria-controls={speakersOpen === true ? panelId : undefined}
               aria-label={voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers"}
               disabled={detail === null}
-              onClick={() => setSpeakersOpen((open) => open !== true)}
+              onClick={() => {
+                // Opened by the user: focus goes into the panel, which follows the transcript in
+                // the page (T14.19). An automatic open moves nothing.
+                if (speakersOpen !== true) setFocusPanel((n) => n + 1);
+                setSpeakersOpen((open) => open !== true);
+              }}
             >
               Speakers
               {voices > 0 && (
@@ -1122,16 +1212,18 @@ export function MeetingDetailView({
             speaker={findChosen}
             text={findText}
             count={findTotal}
-            countText={findCountText(findResult, findIndex)}
+            countText={
+              // While typing pauses nothing has been looked for yet: no hint that says to type.
+              findResult.kind === "idle" && findText !== findLooked && findText.trim() !== ""
+                ? ""
+                : findCountText(findResult, findIndex, findLooked)
+            }
             inputRef={findInput}
             onSpeaker={(k) => {
               setFindSpeaker(k);
               setFindAt(0);
             }}
-            onText={(t) => {
-              setFindText(t);
-              setFindAt(0);
-            }}
+            onText={typeFind}
             onStep={stepFind}
             onClose={closeFind}
           />
@@ -1873,19 +1965,29 @@ function TranscriptTab({
   } | null>(null);
   // Where focus goes once the detail shows an action's result (the clicked button may be gone).
   // `edit`: the line's Edit button, only when focus fell to the page (the control that had it
-  // left the DOM).
-  const [focusNext, setFocusNext] = useState<{ undo: true } | { word: string } | { edit: string } | null>(
-    null,
-  );
+  // left the DOM). `line`: the line itself, the transcript's tab stop, on the same condition
+  // (after its editor closed, T14.19).
+  const [focusNext, setFocusNext] = useState<
+    { undo: true } | { word: string } | { edit: string } | { line: string } | null
+  >(null);
   const undoRef = useRef<HTMLButtonElement | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
+  const keysId = useId();
+  // The transcript is one tab stop (T14.19, roving tabindex): the line last focused, else the
+  // first. A line's buttons are reached from it with the arrow keys (`lineKeys`).
+  const [active, setActive] = useState<string | null>(null);
+  const activeId =
+    active !== null && detail.transcript.some((r) => r.segment_id === active)
+      ? active
+      : (detail.transcript[0]?.segment_id ?? null);
   useEffect(() => {
     if (focusNext === null) return;
     if ("undo" in focusNext) undoRef.current?.focus();
-    else if ("edit" in focusNext) {
+    else if ("edit" in focusNext || "line" in focusNext) {
       const at = document.activeElement;
       if (at === null || at === document.body || !at.isConnected) {
-        lineEditButton(tableRef.current, focusNext.edit)?.focus();
+        if ("edit" in focusNext) lineEditButton(tableRef.current, focusNext.edit)?.focus();
+        else lineRow(tableRef.current, focusNext.line)?.focus();
       }
     } else
       tableRef.current
@@ -1893,6 +1995,21 @@ function TranscriptTab({
         ?.focus();
     setFocusNext(null);
   }, [focusNext]);
+  // The line holding focus went away (an action removed it, or a read no longer has it): focus
+  // goes to the line now at its place, else the last, so the keyboard is never left on the page.
+  const activeIndex = useRef(0);
+  // Focus was last in the transcript: set by a line taking focus, cleared when it moves to
+  // something outside the table.
+  const focusInside = useRef(false);
+  useEffect(() => {
+    if (!focusInside.current) return;
+    if (active === null || detail.transcript.some((r) => r.segment_id === active)) return;
+    const at = document.activeElement;
+    if (at !== null && at !== document.body && at.isConnected) return;
+    const lines = tableRef.current?.querySelectorAll<HTMLElement>(':scope > [role="row"]');
+    if (lines === undefined || lines.length === 0) return;
+    lines[Math.min(activeIndex.current, lines.length - 1)].focus();
+  }, [detail.transcript, active]);
 
   // What a line does, read at the moment it is used: the rows get one object that never
   // changes, so a row renders only when its own props do (T9.24).
@@ -1904,9 +2021,10 @@ function TranscriptTab({
     () => ({
       contextMenu: (r, e) => latest.current?.contextMenu(r, e),
       keyDown: (r, e) => latest.current?.keyDown(r, e),
+      focusRow: (segment) => latest.current?.focusRow(segment),
       startEdit: (segment) => latest.current?.startEdit(segment),
       saveEdit: async (segment, text) => latest.current?.saveEdit(segment, text),
-      cancelEdit: () => latest.current?.cancelEdit(),
+      cancelEdit: (segment) => latest.current?.cancelEdit(segment),
       toggle: (segment, word) => latest.current?.toggle(segment, word),
       addFromBar: (segment, word) => latest.current?.addFromBar(segment, word),
       closeBar: (segment) => latest.current?.closeBar(segment),
@@ -2007,13 +2125,83 @@ function TranscriptTab({
     e.preventDefault();
     openMenu(r.segment_id, words, el, el);
   };
+  /** Moving through the transcript from the keyboard (T14.19): on a line, up and down (Home,
+   * End) go to other lines, right or Enter to its first button (Enter: its Edit button; an edit
+   * still starts only from that button); on a line's button, left and right go through the
+   * line's buttons and back to the line, up and down to the other lines. A line being edited or
+   * split, its Dictionary bar and anything portalled (menus, a word's popover) keep their keys. */
+  const lineKeys = (r: TranscriptRow, e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (editing === r.segment_id || splitting === r.segment_id) return;
+    const row = e.currentTarget;
+    const at = e.target as HTMLElement;
+    if (!row.contains(at)) return;
+    const onRow = at === row;
+    const controls = [...row.querySelectorAll<HTMLElement>(LINE_CONTROL)];
+    const k = controls.indexOf(at);
+    if (!onRow && k < 0) return;
+    // A menu button opens its menu with up and down (Fluent's trigger or `LineMenu`), and an
+    // open popup keeps its keys: those never move to another line.
+    const vertical = e.key === "ArrowDown" || e.key === "ArrowUp";
+    if (vertical && (at.getAttribute("aria-haspopup") === "menu" || at.getAttribute("aria-expanded") === "true")) {
+      return;
+    }
+    const lines = [...(tableRef.current?.querySelectorAll<HTMLElement>(':scope > [role="row"]') ?? [])];
+    const i = lines.indexOf(row);
+    let to: HTMLElement | null | undefined;
+    switch (e.key) {
+      case "ArrowDown":
+        to = lines[i + 1];
+        break;
+      case "ArrowUp":
+        to = i > 0 ? lines[i - 1] : undefined;
+        break;
+      case "PageDown":
+      case "PageUp": {
+        const by = linesPerPage(row);
+        to = lines[Math.max(0, Math.min(lines.length - 1, i + (e.key === "PageDown" ? by : -by)))];
+        break;
+      }
+      case "Home":
+      case "End":
+        if (!onRow) return;
+        to = e.key === "Home" ? lines[0] : lines.at(-1);
+        break;
+      case "ArrowRight":
+        to = onRow ? controls[0] : controls[k + 1];
+        break;
+      case "ArrowLeft":
+        if (onRow) return;
+        to = k === 0 ? row : controls[k - 1];
+        break;
+      case "Enter":
+        if (!onRow) return;
+        to = lineEditButton(row, r.segment_id) ?? controls[0];
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    to?.focus();
+  };
 
   // Set once a render is committed: a render React discards leaves the committed handlers.
   useLayoutEffect(() => {
     rowRefLatest.current = rowRef;
     latest.current = {
       contextMenu: (r, e) => onRowContextMenu(r)(e),
-      keyDown: (r, e) => onRowKeyDown(r)(e),
+      keyDown: (r, e) => {
+        onRowKeyDown(r)(e);
+        lineKeys(r, e);
+      },
+      focusRow: (segment) => {
+        focusInside.current = true;
+        activeIndex.current = Math.max(
+          0,
+          detail.transcript.findIndex((r) => r.segment_id === segment),
+        );
+        setActive(segment);
+      },
       startEdit: (segment) => {
         setEditing(segment);
         setSplitting(null);
@@ -2025,8 +2213,12 @@ function TranscriptTab({
         if (offered === null) return;
         setEditing(null);
         setOffer(offered.length > 0 ? { segment, words: offered } : null);
+        setFocusNext({ line: segment });
       },
-      cancelEdit: () => setEditing(null),
+      cancelEdit: (segment) => {
+        setEditing(null);
+        setFocusNext({ line: segment });
+      },
       toggle,
       addFromBar: (segment, word) => void add(segment, word, true),
       closeBar: (segment) => {
@@ -2061,7 +2253,23 @@ function TranscriptTab({
   }
 
   return (
-    <div role="table" aria-label="Transcript" className={styles.transcript} ref={tableRef}>
+    <>
+    <span id={keysId} className={styles.hiddenText}>
+      {TRANSCRIPT_KEYS_COPY}
+    </span>
+    {/* A table, not a grid: lines are read as rows with their time, speaker and words as
+        cells, and the keys move by line, not by cell, which a grid would promise (T14.19). */}
+    <div
+      role="table"
+      aria-label="Transcript"
+      aria-describedby={keysId}
+      className={styles.transcript}
+      ref={tableRef}
+      onBlur={(e) => {
+        const to = e.relatedTarget;
+        if (to instanceof Node && !e.currentTarget.contains(to)) focusInside.current = false;
+      }}
+    >
       {detail.transcript.map((r, i) => {
         const lineNote = note?.segment === r.segment_id ? note : null;
         return (
@@ -2069,6 +2277,7 @@ function TranscriptTab({
             key={r.segment_id}
             row={r}
             index={i}
+            tabStop={r.segment_id === activeId}
             movable={detail.movable_by_track[r.track_id] ?? NO_SPEAKERS}
             cited={r.segment_id === cited}
             // A line being edited or split shows no highlights.
@@ -2105,6 +2314,7 @@ function TranscriptTab({
         }}
       />
     </div>
+    </>
   );
 }
 
@@ -2260,19 +2470,50 @@ function SplitPoints({
 }
 
 
+/** Line `segment` inside `root`: the transcript's tab stop, where focus goes when its editor
+ * closes (T14.19). */
+function lineRow(root: Element | null, segment: string): HTMLElement | null {
+  return root?.querySelector<HTMLElement>(`[data-line="${CSS.escape(segment)}"]`) ?? null;
+}
+
 /** The Edit button of line `segment` inside `root`: where focus goes when the control that had
  * it is gone or took none. */
 function lineEditButton(root: Element | null, segment: string): HTMLElement | null {
   return root?.querySelector<HTMLElement>(`[data-line-edit="${CSS.escape(segment)}"]`) ?? null;
 }
 
+/** A line's own buttons, reached from the line with the arrow keys and never by Tab (T14.19):
+ * its Edit, More and Choose buttons and its word marks (`WordMarks.tsx`). */
+const LINE_CONTROL = "[data-line-control]";
+/** How many lines Page Up and Page Down move when the page has no layout to measure (jsdom). */
+export const PAGE_LINES = 10;
+
+/** About a screenful of lines from `row`: the window's height over the line's, less one so a
+ * line stays in view, at least one; `PAGE_LINES` when nothing is laid out. */
+function linesPerPage(row: HTMLElement): number {
+  const line = row.getBoundingClientRect().height;
+  const view = window.innerHeight;
+  if (!(line > 0) || !(view > 0)) return PAGE_LINES;
+  return Math.max(1, Math.floor(view / line) - 1);
+}
+
+/** What the transcript says about its keys to assistive technology (T14.19). */
+export const TRANSCRIPT_KEYS_COPY =
+  "Use the up and down arrow keys to move between lines. Enter or the right arrow reaches a line's buttons.";
+
+/** What makes a button one of a line's own (`LINE_CONTROL`). */
+const LINE_CONTROL_PROPS = { tabIndex: -1, "data-line-control": "" } as const;
+
 /** What a transcript line does; each call reaches `TranscriptTab`'s current state. */
 interface LineHandlers {
   contextMenu(r: TranscriptRow, e: MouseEvent<HTMLDivElement>): void;
   keyDown(r: TranscriptRow, e: KeyboardEvent<HTMLDivElement>): void;
+  /** Focus went into line `segment`: it becomes the transcript's tab stop (T14.19). */
+  focusRow(segment: string): void;
   startEdit(segment: string): void;
   saveEdit(segment: string, text: string): Promise<void>;
-  cancelEdit(): void;
+  /** Closes line `segment`'s editor; focus goes back to the line. */
+  cancelEdit(segment: string): void;
   toggle(segment: string, word: string): void;
   addFromBar(segment: string, word: string): void;
   closeBar(segment: string): void;
@@ -2297,6 +2538,7 @@ interface LineHandlers {
 const TranscriptLine = memo(function TranscriptLine({
   row: r,
   index: i,
+  tabStop,
   movable,
   cited,
   find,
@@ -2314,6 +2556,8 @@ const TranscriptLine = memo(function TranscriptLine({
 }: {
   row: TranscriptRow;
   index: number;
+  /** The line is the transcript's one tab stop (T14.19). */
+  tabStop: boolean;
   /** The speakers lines of this line's track can move to (T12.90, the detail's
    * `movable_by_track`), its own speaker included: the menu leaves it out. */
   movable: MovableSpeaker[];
@@ -2382,6 +2626,10 @@ const TranscriptLine = memo(function TranscriptLine({
         cited && styles.rowCited,
         find?.currentTurn && styles.rowCurrentTurn,
       )}
+      // One tab stop for the whole transcript (T14.19); focus anywhere in the line moves it here.
+      tabIndex={tabStop ? 0 : -1}
+      data-line={segment}
+      onFocus={() => h.focusRow(segment)}
       onContextMenu={(e) => h.contextMenu(r, e)}
       onKeyDown={(e) => h.keyDown(r, e)}
     >
@@ -2397,6 +2645,7 @@ const TranscriptLine = memo(function TranscriptLine({
               appearance: "subtle",
               "aria-label": `Choose who said line ${i + 1}`,
               disabledFocusable: locked,
+              ...LINE_CONTROL_PROPS,
               children: "Choose",
             }}
             items={moveItems}
@@ -2410,7 +2659,7 @@ const TranscriptLine = memo(function TranscriptLine({
             initial={r.text}
             multiline
             onSave={(text) => h.saveEdit(segment, text)}
-            onCancel={h.cancelEdit}
+            onCancel={() => h.cancelEdit(segment)}
           />
         </div>
       ) : splitting ? (
@@ -2450,6 +2699,7 @@ const TranscriptLine = memo(function TranscriptLine({
             className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
             aria-label={`Edit line ${i + 1}`}
             data-line-edit={segment}
+            {...LINE_CONTROL_PROPS}
             // Focusable, so focus that comes back to it after a word's choice stays in the line.
             disabledFocusable={locked}
             onClick={() => h.startEdit(segment)}
@@ -2465,6 +2715,7 @@ const TranscriptLine = memo(function TranscriptLine({
               className: mergeClasses(styles.lineEdit, styles.lineMore, "earshot-line-edit"),
               "aria-label": `More actions for line ${i + 1}`,
               disabledFocusable: locked,
+              ...LINE_CONTROL_PROPS,
               children: "⋯",
             }}
             items={() => (

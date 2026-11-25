@@ -600,6 +600,48 @@ fn store_sync_a_live_row_of_a_meeting_deleted_here_is_not_written() {
     assert_eq!(a.written, 1);
 }
 
+/// T14.26: a pulled meeting tombstone erases a local meeting whose row does not read; a live copy
+/// of a meeting whose damaged row here is a tombstone never brings it back.
+#[test]
+fn store_sync_a_meeting_tombstone_replaces_a_local_row_that_does_not_read() {
+    let mut e = env("sync-damaged-meeting");
+    e.store
+        .put_meeting(meeting(1, "Title-needle-3f1a", at(T0 + 1, 0, HERE)))
+        .unwrap();
+    let mut gone_here = meeting(2, "", at(T0 + 1, 0, HERE));
+    gone_here.meta.deleted = true;
+    e.store.put_meeting(gone_here).unwrap();
+    let db = e._dir.path().join("earshot.db");
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        for n in [1, 2] {
+            c.execute(
+                "UPDATE meeting SET started_unix_ms = -1 WHERE id = ?1",
+                [id(n).as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        }
+    }
+    assert!(e.store.meeting(id(1)).is_err(), "the row does not read");
+    let mut del = meeting(1, "", at(T0 + 2, 0, THERE));
+    del.meta.deleted = true;
+    let a = e.apply(&[incoming(1, SyncedRow::Meeting(del))], &rules(false));
+    assert_eq!(a.written, 1, "{a:?}");
+    let here = e.store.meeting(id(1)).unwrap().unwrap();
+    assert!(here.meta.deleted && here.title.is_empty(), "{here:?}");
+    // A live copy of the meeting whose damaged row here is a tombstone is not written.
+    let live = incoming(
+        2,
+        SyncedRow::Meeting(meeting(2, "Back", at(T0 + 3, 0, THERE))),
+    );
+    let a = e.apply(&[live], &rules(false));
+    assert_eq!((a.written, a.ignored), (0, 1), "{a:?}");
+    assert!(
+        e.store.meeting(id(2)).is_err(),
+        "still the damaged tombstone"
+    );
+}
+
 #[test]
 fn store_sync_voiceprints_apply_only_when_switched_on() {
     let mut e = env("sync-voiceprint");

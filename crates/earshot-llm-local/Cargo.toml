@@ -14,6 +14,9 @@ vulkan = ["llama-cpp-sys-2/vulkan", "earshot-asr-whisper/vulkan"]
 
 [dependencies]
 earshot-core = { path = "../earshot-core" }
+# Time awake for the load lock's holder age (T14.41): the runtime's load limits are time awake.
+# No dependencies of its own.
+earshot-proc = { path = "../earshot-proc" }
 # Pinned (PLAN D19, like whisper-rs in D13): llama-cpp-sys-2 0.1.160 vendors llama.cpp and
 # its ggml. `dynamic-link` builds them as DLLs so they coexist with whisper.cpp's static
 # ggml (crate docs, docs/local-llm.md). No `common` (it links an HTTP client), no openmp.

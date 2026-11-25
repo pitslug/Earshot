@@ -55,7 +55,10 @@ const useStyles = makeStyles({
   count: {
     color: tokens.colorNeutralForeground3,
     fontVariantNumeric: "tabular-nums",
-    minWidth: "10em",
+    // Wide enough for the longest fixed text ("Pick a speaker or type", the too-short hint), so
+    // nothing after it moves when the count changes (T14.17).
+    minWidth: "12.5em",
+    whiteSpace: "nowrap",
   },
   // A text match: a soft yellow behind the words, readable in light and dark.
   mark: {

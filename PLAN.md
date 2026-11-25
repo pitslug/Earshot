@@ -2656,13 +2656,13 @@ Lane ui-shell (`packages/ui/src/shell`, `meeting`, `apps/desktop/src/main.tsx`):
 
 Lane ui-detail (`packages/ui/src/detail`):
 
-- [ ] T14.17 Detail page correctness
+- [x] T14.17 Detail page correctness
   - do: a `busy` refusal shows the message Rust sent; `reload` drops an answer older than the newest request; `summaryHelpers` is asked when the menu opens, never on mount; find waits a short pause and needs two characters for text.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
-- [ ] T14.18 Long transcripts stay cheap to edit
+- [x] T14.18 Long transcripts stay cheap to edit
   - do: `reload` keeps unchanged row, word-list and movable objects by `segment_id` so memoised lines skip; off-screen lines use `content-visibility: auto` with a size hint; render-cost tests for an edit on a 50-line transcript (only the edited line renders).
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; the preview judged in light and dark
-- [ ] T14.19 Keyboard reach in a long transcript
+- [x] T14.19 Keyboard reach in a long transcript
   - do: opening the Speakers panel by its button moves focus into it; transcript lines are one tab stop with arrow keys between lines (roving tabindex), each line's buttons reached from the line.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
 
@@ -2683,13 +2683,13 @@ Lane live (`earshot-core` asr, `earshot-runtime` live, `earshot-capture-wasapi`,
 
 Lane store (`earshot-store`, runtime `search.rs`, `retention.rs`, `delete.rs`, `folders.rs`, the sample read in `edit.rs`):
 
-- [ ] T14.24 Search reads text, not whole meetings
+- [x] T14.24 Search reads text, not whole meetings
   - do: a repo read (in `repo_contract`, every implementation) of the texts `MeetingView` would show for a meeting (final else live draft, live rows only, no `words`), used by `search_meetings` with one short lock per meeting and the same matches as today on the existing search tests; an unreadable row is skipped and counted, never a failed search.
   - accept: `cargo test -p earshot-core model`; `cargo test -p earshot-store`; `cargo test -p earshot-runtime search`
-- [ ] T14.25 FLAC reads are bounded
+- [x] T14.25 FLAC reads are bounded
   - do: a speaker sample decodes only up to its end frame (a streaming read), and `read_flac` never allocates more than the file could hold.
   - accept: `cargo test -p earshot-store flac`; `cargo test -p earshot-runtime edit`
-- [ ] T14.26 Small store fixes
+- [x] T14.26 Small store fixes
   - do: retention deletes after a clock step only when two runs in a row agree the audio is due; `delete.rs` reads leases before taking the store lock; a folder's deletion counts `Busy` after commit as done; a meeting with an unreadable segment row can still be deleted.
   - accept: `cargo test -p earshot-store`; `cargo test -p earshot-runtime retention`; `cargo test -p earshot-runtime folders`; `cargo test -p earshot-runtime delete`
 
@@ -2734,22 +2734,22 @@ Lane update (`earshot-update`, runtime `update.rs`, `download.rs`, desktop `upda
 
 Lane bundle (`xtask` bundle, runtime `cuda.rs`, desktop `cuda_settings.rs`):
 
-- [ ] T14.37 The installer carries third-party licence notices
+- [x] T14.37 The installer carries third-party licence notices
   - do: `cargo xtask build --bundle` writes a notices file from the shipped app's dependency graph for the target (crate licence texts from the registry sources, npm production packages, llama.cpp, whisper.cpp and ONNX Runtime from their vendored or pinned licences, Earshot's own LICENSE), installs it and adds it to `expected_files`; a missing licence text fails the build by name.
   - accept: `cargo test -p xtask bundle`; `cargo xtask build --bundle` and `cargo xtask bundle-check` on main
-- [ ] T14.38 CUDA transcription loads without Microsoft's redistributable
+- [x] T14.38 CUDA transcription loads without Microsoft's redistributable
   - do: confirm from the installed provider's imports which C++ runtime files it needs beyond the four shipped; ship them beside the exe (x64), load them the way the provider's folder rule needs, and have bundle-check read the pinned CUDA files' imports against what an install holds.
   - accept: `cargo test -p xtask bundle`; `cargo test -p earshot-runtime cuda`; bundle-check on main
-- [ ] T14.39 The CUDA start reads each file once
-  - do: remove verification passes that repeat one already made in the same start with nothing loaded between, keeping "every load goes through `verify_part` or `load_verified`"; no cache by time or size.
-  - accept: `cargo test -p earshot-runtime cuda`; `cargo test -p earshot-desktop --bin earshot cuda_settings`
+- [x] T14.39 The CUDA start reads each file once
+  - result (2026-11-26): nothing removed. The lane mapped every hashing pass of the start: the only repeat inside one process is the summaries files (about 0.6 GB), verified by the parent before the trial and again inside `verify_part(Transcription)`; a CUDA download is not refused while the start is checking, so an extraction can land between the two and the second pass is not redundant under the rule. Left as it is: saving about a second per start is not worth weakening "every load goes through `verify_part`".
+  - accept: `cargo test -p earshot-desktop --bin earshot cuda_settings` (unchanged)
 
 Lane engines (runtime `model_settings.rs`, `cuda_switch.rs`, `lib.rs`, `model_bench.rs`, `earshot-llm-local` `log.rs`):
 
-- [ ] T14.40 CUDA rules read the NVIDIA card's memory
+- [x] T14.40 CUDA rules read the NVIDIA card's memory
   - do: the transcription and summary fit rules for CUDA use the card CUDA runs on, never another vendor's larger card; cases with two cards.
   - accept: `cargo test -p earshot-runtime cuda_switch`; `cargo test -p earshot-runtime model_settings`
-- [ ] T14.41 Small engine fixes
+- [x] T14.41 Small engine fixes
   - do: a second local model load waits as long as a slow load may take before calling the first stuck; `earshot_runtime::hardware()` is read at most once per short interval; `model_bench` runs `reg.exe` by its System32 path; comments that cite TODO.md line numbers say what they mean instead.
   - accept: `cargo test -p earshot-llm-local log`; `cargo test -p earshot-runtime model_settings`
 
