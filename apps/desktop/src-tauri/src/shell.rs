@@ -798,6 +798,21 @@ pub fn always_shown_toast(event: &MeetingEvent) -> Option<Toast> {
     }
 }
 
+/// The call-end question's notification to show for `event`: an open question while the window
+/// is not watched, and, whatever the window, a question asked again while its notification is still
+/// on screen (`shown`), so the notification never keeps words the question no longer says: turning
+/// stopping by itself off from the window re-sends the open question with `stops: false` (T14.52),
+/// and the notification shown before must stop promising a stop (T14.51).
+#[must_use]
+pub fn call_end_notice(event: &MeetingEvent, watched: bool, shown: bool) -> Option<Toast> {
+    match event {
+        MeetingEvent::CallEndOffer { open: true, stops } if !watched || shown => {
+            Some(call_end_toast(*stops))
+        }
+        _ => None,
+    }
+}
+
 /// Whether the call-end question is open after `event`, with the shell's phase already updated by
 /// it and `was` the state before. A question can be open only while a meeting records, so every way
 /// out of recording closes it, a meeting thread's panic (a failed summary and no end) included. A
@@ -952,6 +967,9 @@ pub struct Shell {
     has_tray: AtomicBool,
     /// The call-end question is open ([`call_end_open_after`]).
     call_end_open: AtomicBool,
+    /// The call-end question's notification is on screen: shown while the window was not watched,
+    /// until the question closes ([`call_end_notice`]).
+    call_end_shown: AtomicBool,
     /// The call-start question is open (T12.86).
     call_start_open: AtomicBool,
     /// The call-start rule, fed by [`Shell::spawn_call_start_watch`] and answered by the user.
@@ -976,6 +994,7 @@ impl Shell {
             latch: Mutex::new(KeyLatch::default()),
             has_tray: AtomicBool::new(false),
             call_end_open: AtomicBool::new(false),
+            call_end_shown: AtomicBool::new(false),
             call_start_open: AtomicBool::new(false),
             call_start: Mutex::new(earshot_runtime::call_start::CallStartWatch::new(
                 earshot_runtime::call_start::CallStartConfig::default(),
@@ -1331,7 +1350,13 @@ impl Shell {
         let open = call_end_open_after(event, self.tracker().phase(), was);
         self.call_end_open.store(open, Ordering::SeqCst);
         if was && !open {
+            self.call_end_shown.store(false, Ordering::SeqCst);
             self.take_back_call_end_toast();
+        }
+        let shown = self.call_end_shown.load(Ordering::SeqCst);
+        if let Some(toast) = call_end_notice(event, self.window_watched(), shown) {
+            self.call_end_shown.store(true, Ordering::SeqCst);
+            self.notify(&toast, None);
         }
         // Once per meeting (the banner comes again with the saved recording's problems); its own
         // notification says the recording ended, so the end's is not shown after it.
@@ -1342,9 +1367,6 @@ impl Shell {
         }
         match event {
             MeetingEvent::Started { .. } => self.end_already_told.store(false, Ordering::SeqCst),
-            MeetingEvent::CallEndOffer { open: true, stops } if !self.window_watched() => {
-                self.notify(&call_end_toast(*stops), None);
-            }
             MeetingEvent::CallEndStopped => {
                 self.end_already_told.store(true, Ordering::SeqCst);
                 if !self.window_watched() {
