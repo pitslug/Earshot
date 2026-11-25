@@ -207,6 +207,12 @@ impl SyncHost {
         self.retired.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// What would tell the running thread it has been replaced, when one is in place (tests).
+    #[cfg(test)]
+    pub fn running_superseder_for_test(&self) -> Option<Superseder> {
+        self.slot().as_ref().map(SyncThread::superseder)
+    }
+
     /// Makes every start fail to get a thread, or lets them through again (tests).
     #[cfg(test)]
     pub fn refuse_start_for_test(&self, refuse: bool) {
@@ -262,8 +268,9 @@ impl SyncHost {
     }
 
     /// Starts the thread when sync is on and this device is set up, replacing a running one
-    /// (the old one is stopped first, on a thread of its own). A device that cannot start (no
-    /// usable address) stays stopped; the page says why.
+    /// (the old one is told and stopped only once the new one exists, and joined on a thread
+    /// of its own; when no thread can be started the old one stays in place). A device that
+    /// cannot start (no usable address) stays stopped; the page says why.
     pub fn start_if_on(&self, services: &Services) {
         let _lifecycle = self.lifecycle();
         self.start_locked(services);
@@ -283,17 +290,15 @@ impl SyncHost {
         SyncThread::start_held(client, self.timing, offload).ok()
     }
 
+    /// Remembers a thread that is being stopped and may still be finishing, so the next
+    /// thread that really starts can tell it so.
+    fn remember_retired(&self, thread: &SyncThread) {
+        let mut retired = self.retired();
+        retired.retain(|s| !s.is_superseded());
+        retired.push(thread.superseder());
+    }
+
     fn start_locked(&self, services: &Services) {
-        let old = self.slot().take();
-        // The running thread is told at once that it is stopped (not when the thread that
-        // joins it gets to run): it starts no further tick and runs no further offload step,
-        // so it and the thread started below never work the store together. This takes
-        // nothing from it whether or not a new thread starts: the plain stop it gets below
-        // hands nothing back either.
-        if let Some(t) = &old {
-            t.superseder().supersede();
-        }
-        retire(old);
         let on = {
             let db = services.store();
             earshot_runtime::sync::sync_settings(&db).is_ok_and(|s| s.on)
@@ -314,24 +319,45 @@ impl SyncHost {
         } else {
             None
         };
-        let next = client
-            .map(|c| match changes {
-                Some(l) => c.with_changes(l),
-                None => c,
-            })
-            .and_then(|c| self.spawn_held(c, offload));
-        if let Some(new) = &next {
-            // The new thread exists and has done nothing yet. Only now does any thread that
-            // was turned off and is still handing summaries back stop, and the new one owns
-            // that work from its first offload step (it hands back what is still owed, as
-            // after a restart). While no thread starts (sync is off, this computer is not set
-            // up, or the thread could not be started), the one turned off goes on with it.
-            for earlier in self.retired().drain(..) {
-                earlier.supersede();
+        let Some(client) = client else {
+            // Nothing is to run: sync is off, this computer is not set up, or it has no usable
+            // address. A thread still running is stopped (it says nothing and hands nothing
+            // back, as a replaced thread always did) and remembered until it has ended, so a
+            // thread started later tells it before either works the store.
+            let old = self.slot().take();
+            if let Some(t) = &old {
+                self.remember_retired(t);
             }
-            new.begin();
+            retire(old);
+            return;
+        };
+        let client = match changes {
+            Some(l) => client.with_changes(l),
+            None => client,
+        };
+        let Some(new) = self.spawn_held(client, offload) else {
+            // No thread could be started. Nothing was told and nothing was stopped, so
+            // whatever runs keeps what it owns: the running thread stays in the slot and goes
+            // on ticking and stepping, and a thread that was turned off goes on handing
+            // summaries back. The next start tries again.
+            return;
+        };
+        // The new thread exists and has done nothing yet. Only now are the threads it takes
+        // over from told: the running one (at once, not when the thread that joins it gets to
+        // run) and any that was turned off and is still handing summaries back. Each starts no
+        // further tick and runs no further offload step, so none works the store together
+        // with the new thread, which owns the hand-backs from its first offload step (it hands
+        // back what is still owed, as after a restart).
+        let old = self.slot().take();
+        if let Some(t) = &old {
+            t.superseder().supersede();
         }
-        *self.slot() = next;
+        for earlier in self.retired().drain(..) {
+            earlier.supersede();
+        }
+        new.begin();
+        retire(old);
+        *self.slot() = Some(new);
     }
 
     /// Stops the thread without waiting for it.
@@ -341,9 +367,7 @@ impl SyncHost {
         if let Some(t) = &old {
             // It may go on handing summaries back for a while: remembered, so a thread started
             // meanwhile can take that over.
-            let mut retired = self.retired();
-            retired.retain(|s| !s.is_superseded());
-            retired.push(t.superseder());
+            self.remember_retired(t);
         }
         retire_saying_gone(old);
     }

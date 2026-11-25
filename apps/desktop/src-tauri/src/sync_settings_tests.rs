@@ -482,6 +482,54 @@ fn sync_host_tells_a_turned_off_thread_when_a_new_one_takes_its_place() {
     a.host.stop_and_wait();
 }
 
+/// T14.45 (third review): a start that cannot get a thread leaves the running thread in
+/// place. It is not told it was replaced and not stopped: it goes on syncing, and so goes on
+/// owning the hand-backs of what this computer asked for. The next start that gets a thread
+/// tells it, and only then.
+#[test]
+fn sync_host_keeps_the_running_thread_when_a_new_one_cannot_be_started() {
+    let env = relay();
+    let a = computer("sync-host-kept");
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    let running = a.host.running_superseder_for_test().expect("a thread runs");
+    let synced = |what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while a.svc.store().outbox_len().unwrap() != 0 {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    synced("the first thread never synced");
+
+    // A restart is asked for and no thread can be had.
+    a.host.refuse_start_for_test(true);
+    for _ in 0..2 {
+        a.host.start_if_on(&a.svc);
+        assert!(a.host.running(), "the thread in place is still there");
+        assert!(!running.is_superseded(), "and was told nothing");
+        assert!(a.host.retired_for_test().is_empty());
+    }
+    // It still does the work: a meeting recorded now is sent by it.
+    titled_meeting(&a.svc, "Recorded while no thread could be started");
+    assert!(a.svc.store().outbox_len().unwrap() > 0);
+    synced("the thread left in place no longer syncs");
+    assert!(!running.is_superseded());
+
+    // The next start gets its thread: the old one is told, and the new one is in place.
+    a.host.refuse_start_for_test(false);
+    a.host.start_if_on(&a.svc);
+    assert!(running.is_superseded());
+    assert!(a.host.running());
+    let next = a
+        .host
+        .running_superseder_for_test()
+        .expect("the new thread");
+    assert!(!next.is_superseded());
+    titled_meeting(&a.svc, "Recorded after the restart");
+    synced("the new thread never synced");
+    a.host.stop_and_wait();
+}
+
 /// T12.93: the one-off copy of legacy ignores runs at start only on a computer with no vault;
 /// with a vault it waits for the sync thread's first completed pull, even with sync off.
 #[test]
