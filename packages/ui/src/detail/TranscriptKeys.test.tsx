@@ -1,11 +1,15 @@
 // Keyboard reach of the meeting detail (T14.19): the Speakers button moves focus into the panel
 // it opens (an automatic open does not), and the transcript is one tab stop whose lines are
 // reached with the arrow keys and whose buttons are reached from their line.
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { sampleDetail } from "../ipc";
-import { ITEM, panel, setup } from "../test/meetingDetail";
+import { type Ipc, createMockIpc, sampleDetail } from "../ipc";
+import { IpcProvider } from "../ipc/context";
+import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { createManualTimer } from "../time";
+import { ITEM, OTHER, panel, setup } from "../test/meetingDetail";
+import { MeetingDetailView } from "./MeetingDetailView";
 
 const table = () => screen.getByRole("table", { name: "Transcript" });
 const rows = () => within(table()).getAllByRole("row");
@@ -118,6 +122,82 @@ describe("Transcript lines from the keyboard", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
     await waitFor(() => expect(rows()[0]).toHaveFocus());
+  });
+
+  it("give focus back to the line when its editor closes by Save, Escape or Cancel", async () => {
+    const { user } = await transcript();
+    await user.click(screen.getByRole("button", { name: "Edit line 2" }));
+    await user.clear(screen.getByRole("textbox", { name: "Line 2" }));
+    await user.type(screen.getByRole("textbox", { name: "Line 2" }), "An invented line about the hedge.");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(rows()[1].textContent).toContain("An invented line about the hedge."));
+    await waitFor(() => expect(rows()[1]).toHaveFocus());
+
+    await user.click(screen.getByRole("button", { name: "Edit line 3" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(rows()[2]).toHaveFocus());
+
+    await user.click(screen.getByRole("button", { name: "Edit line 4" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(rows()[3]).toHaveFocus());
+  });
+
+  it("keep the field and its focus on a refused save", async () => {
+    const { user } = await transcript();
+    await user.click(screen.getByRole("button", { name: "Edit line 2" }));
+    const field = screen.getByRole("textbox", { name: "Line 2" });
+    await user.clear(field);
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText(/A line cannot be left empty/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Line 2" })).toBeInTheDocument();
+    expect(rows()[1].contains(document.activeElement)).toBe(true);
+  });
+
+  it("after a split, focus is on the first part", async () => {
+    const { user } = await transcript();
+    rows()[0].focus();
+    await user.keyboard("{Enter}{ArrowRight}{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: "Split line" }));
+    await user.click(screen.getByRole("button", { name: "Split before word 2: the" }));
+    await waitFor(() => expect(rows()).toHaveLength(LINES + 1));
+    await waitFor(() => expect(rows()[0].contains(document.activeElement)).toBe(true));
+  });
+
+  it("go to the line now at its place when the focused line is gone", async () => {
+    const base = createMockIpc({ timer: createManualTimer(10_000), meetings: [ITEM, OTHER] });
+    const third = sampleDetail(ITEM).transcript[2];
+    let removed = false;
+    const ipc: Ipc = {
+      ...base,
+      getMeeting: async (id) => {
+        const d = await base.getMeeting(id);
+        return removed ? { ...d, transcript: d.transcript.filter((r) => r.segment_id !== third.segment_id) } : d;
+      },
+    };
+    const show = (refresh: number) => (
+      <EarshotThemeProvider>
+        <IpcProvider ipc={ipc}>
+          <MeetingDetailView
+            item={ITEM}
+            initialTab="transcript"
+            refresh={refresh}
+            onChanged={() => {}}
+            onJobStarted={() => {}}
+            onJobDismissed={() => {}}
+            onJobCancel={() => {}}
+          />
+        </IpcProvider>
+      </EarshotThemeProvider>
+    );
+    const view = render(show(0));
+    await screen.findByRole("table", { name: "Transcript" });
+    act(() => rows()[2].focus());
+    const fourth = rows()[3];
+    // The meeting is read again (another computer's re-transcription) without that line.
+    removed = true;
+    view.rerender(show(1));
+    await waitFor(() => expect(rows()).toHaveLength(LINES - 1));
+    await waitFor(() => expect(fourth).toHaveFocus());
   });
 
   it("leave typing keys to a line being edited", async () => {

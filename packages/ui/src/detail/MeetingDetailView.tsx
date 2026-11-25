@@ -1939,10 +1939,11 @@ function TranscriptTab({
   } | null>(null);
   // Where focus goes once the detail shows an action's result (the clicked button may be gone).
   // `edit`: the line's Edit button, only when focus fell to the page (the control that had it
-  // left the DOM).
-  const [focusNext, setFocusNext] = useState<{ undo: true } | { word: string } | { edit: string } | null>(
-    null,
-  );
+  // left the DOM). `line`: the line itself, the transcript's tab stop, on the same condition
+  // (after its editor closed, T14.19).
+  const [focusNext, setFocusNext] = useState<
+    { undo: true } | { word: string } | { edit: string } | { line: string } | null
+  >(null);
   const undoRef = useRef<HTMLButtonElement | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
   // The transcript is one tab stop (T14.19, roving tabindex): the line last focused, else the
@@ -1955,10 +1956,11 @@ function TranscriptTab({
   useEffect(() => {
     if (focusNext === null) return;
     if ("undo" in focusNext) undoRef.current?.focus();
-    else if ("edit" in focusNext) {
+    else if ("edit" in focusNext || "line" in focusNext) {
       const at = document.activeElement;
       if (at === null || at === document.body || !at.isConnected) {
-        lineEditButton(tableRef.current, focusNext.edit)?.focus();
+        if ("edit" in focusNext) lineEditButton(tableRef.current, focusNext.edit)?.focus();
+        else lineRow(tableRef.current, focusNext.line)?.focus();
       }
     } else
       tableRef.current
@@ -1966,6 +1968,21 @@ function TranscriptTab({
         ?.focus();
     setFocusNext(null);
   }, [focusNext]);
+  // The line holding focus went away (an action removed it, or a read no longer has it): focus
+  // goes to the line now at its place, else the last, so the keyboard is never left on the page.
+  const activeIndex = useRef(0);
+  // Focus was last in the transcript: set by a line taking focus, cleared when it moves to
+  // something outside the table.
+  const focusInside = useRef(false);
+  useEffect(() => {
+    if (!focusInside.current) return;
+    if (active === null || detail.transcript.some((r) => r.segment_id === active)) return;
+    const at = document.activeElement;
+    if (at !== null && at !== document.body && at.isConnected) return;
+    const lines = tableRef.current?.querySelectorAll<HTMLElement>(':scope > [role="row"]');
+    if (lines === undefined || lines.length === 0) return;
+    lines[Math.min(activeIndex.current, lines.length - 1)].focus();
+  }, [detail.transcript, active]);
 
   // What a line does, read at the moment it is used: the rows get one object that never
   // changes, so a row renders only when its own props do (T9.24).
@@ -1980,7 +1997,7 @@ function TranscriptTab({
       focusRow: (segment) => latest.current?.focusRow(segment),
       startEdit: (segment) => latest.current?.startEdit(segment),
       saveEdit: async (segment, text) => latest.current?.saveEdit(segment, text),
-      cancelEdit: () => latest.current?.cancelEdit(),
+      cancelEdit: (segment) => latest.current?.cancelEdit(segment),
       toggle: (segment, word) => latest.current?.toggle(segment, word),
       addFromBar: (segment, word) => latest.current?.addFromBar(segment, word),
       closeBar: (segment) => latest.current?.closeBar(segment),
@@ -2138,7 +2155,14 @@ function TranscriptTab({
         onRowKeyDown(r)(e);
         lineKeys(r, e);
       },
-      focusRow: setActive,
+      focusRow: (segment) => {
+        focusInside.current = true;
+        activeIndex.current = Math.max(
+          0,
+          detail.transcript.findIndex((r) => r.segment_id === segment),
+        );
+        setActive(segment);
+      },
       startEdit: (segment) => {
         setEditing(segment);
         setSplitting(null);
@@ -2150,8 +2174,12 @@ function TranscriptTab({
         if (offered === null) return;
         setEditing(null);
         setOffer(offered.length > 0 ? { segment, words: offered } : null);
+        setFocusNext({ line: segment });
       },
-      cancelEdit: () => setEditing(null),
+      cancelEdit: (segment) => {
+        setEditing(null);
+        setFocusNext({ line: segment });
+      },
       toggle,
       addFromBar: (segment, word) => void add(segment, word, true),
       closeBar: (segment) => {
@@ -2186,7 +2214,16 @@ function TranscriptTab({
   }
 
   return (
-    <div role="table" aria-label="Transcript" className={styles.transcript} ref={tableRef}>
+    <div
+      role="table"
+      aria-label="Transcript"
+      className={styles.transcript}
+      ref={tableRef}
+      onBlur={(e) => {
+        const to = e.relatedTarget;
+        if (to instanceof Node && !e.currentTarget.contains(to)) focusInside.current = false;
+      }}
+    >
       {detail.transcript.map((r, i) => {
         const lineNote = note?.segment === r.segment_id ? note : null;
         return (
@@ -2386,6 +2423,12 @@ function SplitPoints({
 }
 
 
+/** Line `segment` inside `root`: the transcript's tab stop, where focus goes when its editor
+ * closes (T14.19). */
+function lineRow(root: Element | null, segment: string): HTMLElement | null {
+  return root?.querySelector<HTMLElement>(`[data-line="${CSS.escape(segment)}"]`) ?? null;
+}
+
 /** The Edit button of line `segment` inside `root`: where focus goes when the control that had
  * it is gone or took none. */
 function lineEditButton(root: Element | null, segment: string): HTMLElement | null {
@@ -2406,7 +2449,8 @@ interface LineHandlers {
   focusRow(segment: string): void;
   startEdit(segment: string): void;
   saveEdit(segment: string, text: string): Promise<void>;
-  cancelEdit(): void;
+  /** Closes line `segment`'s editor; focus goes back to the line. */
+  cancelEdit(segment: string): void;
   toggle(segment: string, word: string): void;
   addFromBar(segment: string, word: string): void;
   closeBar(segment: string): void;
@@ -2521,9 +2565,8 @@ const TranscriptLine = memo(function TranscriptLine({
       )}
       // One tab stop for the whole transcript (T14.19); focus anywhere in the line moves it here.
       tabIndex={tabStop ? 0 : -1}
-      onFocus={() => {
-        if (!tabStop) h.focusRow(segment);
-      }}
+      data-line={segment}
+      onFocus={() => h.focusRow(segment)}
       onContextMenu={(e) => h.contextMenu(r, e)}
       onKeyDown={(e) => h.keyDown(r, e)}
     >
@@ -2553,7 +2596,7 @@ const TranscriptLine = memo(function TranscriptLine({
             initial={r.text}
             multiline
             onSave={(text) => h.saveEdit(segment, text)}
-            onCancel={h.cancelEdit}
+            onCancel={() => h.cancelEdit(segment)}
           />
         </div>
       ) : splitting ? (
