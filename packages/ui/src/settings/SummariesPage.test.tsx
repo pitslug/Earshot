@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -11,7 +11,7 @@ import {
   CODEX_STATUS,
   MOCK_ANTHROPIC_URL,
 } from "../ipc/mockSummaries";
-import { openSettings, renderApp } from "../test/app";
+import { openSettings, openSetup, renderApp, setupToggle } from "../test/app";
 import { createManualTimer } from "../time";
 import {
   CLAUDE_CODE_PRIVACY,
@@ -20,12 +20,24 @@ import {
   CODEX_PRIVACY,
   LIVE_DESCRIPTION,
   MODEL_PLACEHOLDER,
+  PROVIDER_LABEL,
+  SETUP_COPY,
+  SET_UP,
+  SetupSection,
+  effortStateText,
   otherKeepsText,
   remoteWarning,
+  setupHeaderName,
+  setupState,
 } from "./SummariesPage";
 import { partName, titleOf } from "./copy";
 
 const SECRET = "sk-ant-api03-ui-test-secret-0042";
+
+/** The endpoint's name in its setup section header (T12.96). */
+const SERVER_NAME = "Your own server";
+/** A setup section header's spoken name: the writer, then its state. */
+const header = (name: string, parts: string[]) => setupHeaderName(name, setupState(parts));
 
 interface Setup {
   ipc: Ipc;
@@ -75,7 +87,7 @@ describe("Settings, Summaries", () => {
       expect(await screen.findByText(detail)).toBeInTheDocument();
       expect(screen.getByText(ORDER_COPY.destinations.local)).toBeInTheDocument();
       // The endpoint is not set up: its form shows so it can be, nothing filled in.
-      const form = screen.getByRole("group", { name: "Your own server" });
+      const form = await openSetup(s.user, "Your own server");
       expect(within(form).getByLabelText("Address")).toHaveValue("");
       expect(live()).not.toBeChecked();
       expect(live()).toBeEnabled();
@@ -105,7 +117,7 @@ describe("Settings, Summaries", () => {
 
   it("uses a local network endpoint only once saved, without the remote warning", async () => {
     const s = await open();
-    const form = screen.getByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     // Not set up: the endpoint cannot be ticked, and nothing is stored until it is saved.
     expect(tick(ORDER_COPY.steps.endpoint_unset)).toBeDisabled();
     expect((await s.ipc.summarySettings()).value.writer).toBe("OnThisComputer");
@@ -132,7 +144,7 @@ describe("Settings, Summaries", () => {
 
   it("shows a refused endpoint as a message and stores nothing", async () => {
     const s = await open();
-    const form = screen.getByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     await s.user.type(within(form).getByLabelText("Address"), "http://llm.example.com/v1");
     await s.user.type(within(form).getByLabelText("Model"), "m");
     await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
@@ -155,7 +167,7 @@ describe("Settings, Summaries", () => {
 
   it("refuses an address holding the path the client appends", async () => {
     const s = await open();
-    const form = screen.getByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     await s.user.type(within(form).getByLabelText("Address"), "/v1");
     await s.user.type(within(form).getByLabelText("Model"), "claude-opus-5-5");
@@ -180,7 +192,7 @@ describe("Settings, Summaries", () => {
 
   it("keeps the Anthropic key write-only: save shows Key saved, remove brings the field back", async () => {
     const s = await open();
-    const form = screen.getByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     expect(within(form).getByLabelText("Address")).toHaveValue(MOCK_ANTHROPIC_URL);
     // A placeholder only: nothing is filled in or stored for the model.
@@ -215,7 +227,7 @@ describe("Settings, Summaries", () => {
         settings: { writer: "OwnEndpoint", provider: "Anthropic", url: MOCK_ANTHROPIC_URL, model: "claude" },
       },
     });
-    const form = screen.getByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     await s.user.type(within(form).getByLabelText("API key"), "two words");
     await s.user.click(within(form).getByRole("button", { name: "Save key" }));
     expect(await screen.findByText("The API key was not saved")).toBeInTheDocument();
@@ -223,18 +235,20 @@ describe("Settings, Summaries", () => {
       screen.getByText("This API key cannot be saved: it holds spaces or line breaks; paste only the key."),
     ).toBeInTheDocument();
     cleanup();
-    await open({
+    const t = await open({
       summaries: {
         settings: { writer: "OwnEndpoint", provider: "Anthropic", url: MOCK_ANTHROPIC_URL, model: "claude" },
         keyStoreError: "access denied",
       },
     });
+    // A set-up endpoint whose key cannot be read: its section is opened to read why.
+    await openSetup(t.user, "Your own server");
     expect(await screen.findByText("Earshot cannot tell whether a key is saved")).toBeInTheDocument();
     expect(screen.getByText("Windows Credential Manager failed: access denied.")).toBeInTheDocument();
   });
 
   it("starts with a stored key as Key saved and shows the remote warning for the stored endpoint", async () => {
-    await open({
+    const s = await open({
       summaries: {
         settings: { writer: "OwnEndpoint", provider: "Anthropic", url: MOCK_ANTHROPIC_URL, model: "claude" },
         apiKeySaved: true,
@@ -242,6 +256,11 @@ describe("Settings, Summaries", () => {
     });
     await waitFor(() => expect(tick(ORDER_COPY.steps.endpoint_anthropic)).toBeChecked());
     expect(tick(LOCAL)).not.toBeChecked();
+    // Set up and able to run: its section starts closed, its header saying what is stored.
+    const form = await screen.findByRole("group", { name: "Your own server" });
+    expect(setupToggle(form)).toHaveAttribute("aria-expanded", "false");
+    expect(setupToggle(form)).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.Anthropic, "claude"]));
+    await openSetup(s.user, "Your own server");
     expect(await screen.findByText("Key saved")).toBeInTheDocument();
     expect(screen.getByText(remoteWarning("api.anthropic.com"))).toBeInTheDocument();
     expect(live()).toBeDisabled();
@@ -251,7 +270,7 @@ describe("Settings, Summaries", () => {
     const texts: string[] = [];
     const s = await open();
     texts.push(pageText());
-    const form = screen.getByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     texts.push(pageText());
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     await s.user.type(within(form).getByLabelText("Model"), "claude");
@@ -296,7 +315,7 @@ describe("Settings, Summaries", () => {
     expect(asked.n).toBe(0);
     await makeFirst(s, CLAUDE);
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("ClaudeCode"));
-    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const card = await openSetup(s.user, "Claude through Claude Code");
     expect(await within(card).findByText("Claude Code 2.1.290 is installed and signed in.")).toBeInTheDocument();
     expect(asked.n).toBe(1);
     expect(live()).toBeDisabled();
@@ -348,7 +367,7 @@ describe("Settings, Summaries", () => {
 
   it("keeps Save model off while the Other name is empty", async () => {
     const s = await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "sonnet" } } });
-    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const card = await openSetup(s.user, "Claude through Claude Code");
     await s.user.selectOptions(within(card).getByRole("combobox", { name: "Model" }), "Other");
     const other = within(card).getByRole("group", { name: "Other model" });
     const save = within(other).getByRole("button", { name: "Save model" });
@@ -369,14 +388,14 @@ describe("Settings, Summaries", () => {
 
   it("names a stored typed model or the CLI's default under an empty Other name", async () => {
     const s = await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "claude-x-1" } } });
-    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const card = await openSetup(s.user, "Claude through Claude Code");
     const other = within(card).getByRole("group", { name: "Other model" });
     expect(within(other).queryByText(otherKeepsText("claude-x-1"))).toBeNull();
     await s.user.clear(within(other).getByRole("textbox", { name: /^Model name/ }));
     expect(within(other).getByText(otherKeepsText("claude-x-1"))).toBeInTheDocument();
     cleanup();
     const t = await open({ summaries: { settings: { writer: "Codex" } } });
-    const codex = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    const codex = await openSetup(t.user, "OpenAI through Codex");
     await t.user.selectOptions(within(codex).getByRole("combobox", { name: "Model" }), "Other");
     const codexOther = within(codex).getByRole("group", { name: "Other model" });
     expect(within(codexOther).getByText(otherKeepsText("Codex's default"))).toBeInTheDocument();
@@ -385,7 +404,7 @@ describe("Settings, Summaries", () => {
 
   it("chooses Claude Code's effort from a list, applied at once", async () => {
     const s = await open({ machine: "desktop", summaries: { settings: { writer: "ClaudeCode", claude_model: "opus" } } });
-    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const card = await openSetup(s.user, "Claude through Claude Code");
     await within(card).findByText(CLAUDE_CODE_STATUS.desktop.message);
     const effort = within(card).getByRole("combobox", { name: "Effort" });
     expect(optionTexts(effort)).toEqual(["Claude Code's default", "Low", "Medium", "High", "Extra high", "Max"]);
@@ -409,28 +428,28 @@ describe("Settings, Summaries", () => {
   });
 
   it("says effort needs a newer Claude Code when the installed one has none", async () => {
-    await open({
+    const s = await open({
       summaries: {
         settings: { writer: "ClaudeCode", claude_effort: "High" },
         claudeCode: { ...CLAUDE_CODE_STATUS.desktop, effort_note: CLAUDE_CODE_EFFORT_NEEDS_NEWER },
       },
     });
-    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const card = await openSetup(s.user, "Claude through Claude Code");
     expect(await within(card).findByText(CLAUDE_CODE_EFFORT_NEEDS_NEWER)).toBeInTheDocument();
     // The choice is kept for when Claude Code is updated.
     expect(within(card).getByRole("combobox", { name: "Effort" })).toHaveDisplayValue("High");
   });
 
   it("shows a stored model that is not in the list under Other", async () => {
-    await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "claude-opus-4-1-20250805" } } });
-    const card = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const s = await open({ summaries: { settings: { writer: "ClaudeCode", claude_model: "claude-opus-4-1-20250805" } } });
+    const card = await openSetup(s.user, "Claude through Claude Code");
     expect(within(card).getByRole("combobox", { name: "Model" })).toHaveDisplayValue("Other");
     const other = within(card).getByRole("group", { name: "Other model" });
     expect(within(other).getByRole("textbox", { name: /^Model name/ })).toHaveValue("claude-opus-4-1-20250805");
     expect(within(other).getByText("Saved.")).toBeInTheDocument();
     cleanup();
-    await open({ summaries: { settings: { writer: "Codex", codex_model: "gpt-5.6-luna" } } });
-    const codex = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    const t = await open({ summaries: { settings: { writer: "Codex", codex_model: "gpt-5.6-luna" } } });
+    const codex = await openSetup(t.user, "OpenAI through Codex");
     expect(within(codex).getByRole("combobox", { name: "Model" })).toHaveDisplayValue("Other");
     expect(
       within(within(codex).getByRole("group", { name: "Other model" })).getByRole("textbox", { name: /^Model name/ }),
@@ -470,7 +489,7 @@ describe("Settings, Summaries", () => {
     expect(asked.codex).toBe(0);
     await makeFirst(s, CODEX);
     await waitFor(async () => expect((await s.ipc.summarySettings()).value.writer).toBe("Codex"));
-    const card = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    const card = await openSetup(s.user, "OpenAI through Codex");
     expect(await within(card).findByText(CODEX_STATUS.desktop.message)).toBeInTheDocument();
     expect(asked.codex).toBe(1);
     // Claude Code is not asked for the Codex choice.
@@ -529,5 +548,196 @@ describe("Settings, Summaries", () => {
     const out = await screen.findByRole("group", { name: "OpenAI through Codex" });
     expect(await within(out).findByText("Codex 0.155.1 is installed but not signed in.")).toBeInTheDocument();
     expect(within(out).getByText(/run codex login/)).toBeInTheDocument();
+  });
+});
+
+describe("Settings, Summaries, the writers' setup sections (T12.96)", () => {
+  const SERVER = "Your own server";
+  const CLAUDE_GROUP = "Claude through Claude Code";
+  const CODEX_GROUP = "OpenAI through Codex";
+  const SET_UP_SERVER = `${SET_UP} your own server`;
+  const section = (name: string) => screen.getByRole("group", { name });
+
+  it("start closed, each header naming its writer and what is stored", async () => {
+    const s = await open({
+      machine: "desktop",
+      summaryOrder: [{ kind: "Local" }, { kind: "ClaudeCode" }, { kind: "Codex" }],
+      summaries: {
+        settings: { url: "http://192.168.1.20:8080/v1", model: "qwen3", claude_model: "opus", claude_effort: "Medium" },
+      },
+    });
+    await screen.findByRole("group", { name: CLAUDE_GROUP });
+    // Signed in and set up: nothing needs the user, so all three stay closed.
+    await waitFor(() =>
+      expect(setupToggle(section(CLAUDE_GROUP))).toHaveAccessibleName(header("Claude Code", [SETUP_COPY.signedIn, "Opus", effortStateText("Medium")])),
+    );
+    await waitFor(() => expect(setupToggle(section(CODEX_GROUP))).toHaveAccessibleName(header("Codex", [SETUP_COPY.signedIn])));
+    expect(setupToggle(section(SERVER))).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.OpenAiCompatible, "qwen3"]));
+    for (const name of [SERVER, CLAUDE_GROUP, CODEX_GROUP]) {
+      const toggle = setupToggle(section(name));
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(toggle).not.toHaveAttribute("aria-controls");
+      expect(within(section(name)).queryByRole("combobox")).toBeNull();
+      expect(within(section(name)).queryByRole("textbox")).toBeNull();
+    }
+    // The privacy lines stay in the list's rows, whatever the sections do.
+    expect(screen.getByText(CLAUDE_CODE_PRIVACY)).toBeInTheDocument();
+    expect(screen.getByText(CODEX_PRIVACY)).toBeInTheDocument();
+    // The caret opens one and closes it again; the others stay as they were.
+    const toggle = setupToggle(section(CLAUDE_GROUP));
+    await s.user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const body = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(body).not.toBeNull();
+    expect(within(body as HTMLElement).getByRole("combobox", { name: "Model" })).toHaveDisplayValue("Opus");
+    expect(setupToggle(section(CODEX_GROUP))).toHaveAttribute("aria-expanded", "false");
+    await s.user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(section(CLAUDE_GROUP)).queryByRole("combobox")).toBeNull();
+  });
+
+  it("open and close from the keyboard with Enter and Space on the caret", async () => {
+    const s = await open();
+    const toggle = setupToggle(section(SERVER));
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    toggle.focus();
+    await s.user.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(section(SERVER)).getByLabelText("Address")).toBeInTheDocument();
+    await s.user.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(section(SERVER)).queryByLabelText("Address")).toBeNull();
+    await s.user.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await s.user.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+  });
+
+  it("keep what was typed across a close", async () => {
+    const s = await open();
+    const form = await openSetup(s.user, SERVER);
+    await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
+    await s.user.click(setupToggle(form));
+    expect(within(form).queryByLabelText("Address")).toBeNull();
+    await s.user.click(setupToggle(form));
+    expect(within(form).getByLabelText("Address")).toHaveValue("http://192.168.1.20:8080/v1");
+  });
+
+  it("open the endpoint's form and focus it from Set up on its row", async () => {
+    const s = await open();
+    const form = section(SERVER);
+    expect(setupToggle(form)).toHaveAccessibleName(header(SERVER_NAME, [ORDER_COPY.page.not_set_up]));
+    expect(setupToggle(form)).toHaveAttribute("aria-expanded", "false");
+    const setUp = screen.getByRole("button", { name: SET_UP_SERVER });
+    await s.user.click(setUp);
+    expect(setupToggle(form)).toHaveAttribute("aria-expanded", "true");
+    await waitFor(() => expect(within(form).getByRole("combobox", { name: "Provider" })).toHaveFocus());
+    // Again while it is open, from the keyboard: the focus goes back to the form.
+    setUp.focus();
+    await s.user.keyboard("{Enter}");
+    await waitFor(() => expect(within(form).getByRole("combobox", { name: "Provider" })).toHaveFocus());
+    // Once set up the row has no Set up button and the header says what is stored.
+    await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
+    await s.user.type(within(form).getByLabelText("Model"), "qwen");
+    await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: SET_UP_SERVER })).toBeNull());
+    expect(setupToggle(form)).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.OpenAiCompatible, "qwen"]));
+    // Under "No summary" there are no forms, so the button is off.
+    cleanup();
+    await open({ summaryOrder: [] });
+    await waitFor(() => expect(radio(/^No summary/)).toBeChecked());
+    expect(screen.getByRole("button", { name: SET_UP_SERVER })).toBeDisabled();
+  });
+
+  it("open by themselves when their writer is ticked but cannot run", async () => {
+    // An endpoint in use with no Anthropic key.
+    await open({
+      summaries: { settings: { writer: "OwnEndpoint", provider: "Anthropic", url: MOCK_ANTHROPIC_URL, model: "claude" } },
+    });
+    await waitFor(() => expect(setupToggle(section(SERVER))).toHaveAttribute("aria-expanded", "true"));
+    expect(setupToggle(section(SERVER))).toHaveAccessibleName(header(SERVER_NAME, [PROVIDER_LABEL.Anthropic, "claude", SETUP_COPY.noApiKey]));
+    expect(within(section(SERVER)).getByLabelText("API key")).toBeInTheDocument();
+    cleanup();
+    // Claude Code not installed, Codex signed out.
+    await open({
+      summaryOrder: [{ kind: "ClaudeCode" }, { kind: "Codex" }],
+      summaries: {
+        claudeCode: CLAUDE_CODE_NOT_INSTALLED,
+        codex: { ...CODEX_STATUS.desktop, state: "NotSignedIn", message: "Codex is not signed in." },
+      },
+    });
+    await waitFor(() => expect(setupToggle(section(CLAUDE_GROUP))).toHaveAttribute("aria-expanded", "true"));
+    expect(setupToggle(section(CLAUDE_GROUP))).toHaveAccessibleName(header("Claude Code", [SETUP_COPY.notInstalled]));
+    await waitFor(() => expect(setupToggle(section(CODEX_GROUP))).toHaveAttribute("aria-expanded", "true"));
+    expect(setupToggle(section(CODEX_GROUP))).toHaveAccessibleName(header("Codex", [SETUP_COPY.notSignedIn]));
+    cleanup();
+    // Ticked while signed out: it opens once the check answers; closed by the user, it stays so.
+    const s = await open({ machine: "surface" });
+    await makeFirst(s, CLAUDE);
+    await waitFor(() => expect(setupToggle(section(CLAUDE_GROUP))).toHaveAttribute("aria-expanded", "true"));
+    await s.user.click(setupToggle(section(CLAUDE_GROUP)));
+    expect(setupToggle(section(CLAUDE_GROUP))).toHaveAttribute("aria-expanded", "false");
+    cleanup();
+    // A check that fails opens it too, to say so.
+    const t = await open({ machine: "desktop" });
+    t.ipc.codexStatus = async () => {
+      throw new Error("the check could not run");
+    };
+    await makeFirst(t, CODEX);
+    await waitFor(() => expect(setupToggle(section(CODEX_GROUP))).toHaveAttribute("aria-expanded", "true"));
+    expect(setupToggle(section(CODEX_GROUP))).toHaveAccessibleName(header("Codex", [SETUP_COPY.couldNotCheck]));
+    expect(within(section(CODEX_GROUP)).getByText("Earshot could not check Codex")).toBeInTheDocument();
+  });
+});
+
+describe("A writer's setup section (T12.96)", () => {
+  it("speaks its name and state apart, joined by the separator", () => {
+    expect(setupHeaderName("Codex", SETUP_COPY.signedIn)).toBe("Codex, Signed in");
+    expect(setupState(["Anthropic (Claude)", null, "claude"])).toBe("Anthropic (Claude), claude");
+    expect(effortStateText("ExtraHigh")).toBe("extra high effort");
+    for (const text of Object.values(SETUP_COPY)) expect(text).not.toMatch(/—|please|!/i);
+  });
+
+  it("spends a Set up request on the open that shows nothing to focus", async () => {
+    const user = userEvent.setup();
+    const section = (openRequest: number, withField: boolean) => (
+      <SetupSection name="Test writer" state="Not set up" group="Test writer" attention={false} openRequest={openRequest} fixed={false}>
+        {withField ? <input aria-label="Field" /> : <span>Nothing to focus yet</span>}
+        <span />
+      </SetupSection>
+    );
+    const view = render(
+      <>
+        {section(0, false)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    view.rerender(
+      <>
+        {section(1, false)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    const toggle = screen.getByRole("button", { name: "Test writer, Not set up" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+    // A field that appears later does not take the focus: the request was spent.
+    view.rerender(
+      <>
+        {section(1, true)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    expect(screen.getByRole("textbox", { name: "Field" })).not.toHaveFocus();
+    expect(screen.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
+    // A new request with a field does focus it (the positive case of the same check).
+    view.rerender(
+      <>
+        {section(2, true)}
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Field" })).toHaveFocus());
   });
 });

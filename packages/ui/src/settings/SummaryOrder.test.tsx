@@ -19,7 +19,7 @@ import {
   mockDeviceId,
 } from "../ipc";
 import { useSummaries } from "./useSummaries";
-import { openSettings, renderApp } from "../test/app";
+import { openSettings, openSetup, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 
 const STUDIO = mockDeviceId("e4a17d30");
@@ -189,7 +189,7 @@ describe("Settings, Summaries, the order of summary writers", () => {
 
   it("stores the endpoint ticked once its form is saved, keeping the first writer the old setting mirrors", async () => {
     const s = await open();
-    const form = await screen.findByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
     await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
     await s.user.type(within(form).getByLabelText("Model"), "qwen");
@@ -206,7 +206,7 @@ describe("Settings, Summaries, the order of summary writers", () => {
 
   it("refuses to tick a newly set-up endpoint into a full order, keeping what was typed", async () => {
     const s = await open({ summaryOrder: [{ kind: "Local" }, { kind: "ClaudeCode" }, { kind: "Codex" }] });
-    const form = await screen.findByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     await s.user.type(within(form).getByLabelText("Address"), "http://192.168.1.20:8080/v1");
     await s.user.type(within(form).getByLabelText("Model"), "qwen");
     await s.user.click(within(form).getByRole("button", { name: "Use this endpoint" }));
@@ -223,7 +223,7 @@ describe("Settings, Summaries, the order of summary writers", () => {
     });
     await waitFor(() => expect(tick(SERVER_LABEL)).toBeEnabled());
     expect(tick(SERVER_LABEL)).not.toBeChecked();
-    const form = screen.getByRole("group", { name: "Your own server" });
+    const form = await openSetup(s.user, "Your own server");
     const model = within(form).getByLabelText("Model");
     expect(model).toHaveValue("qwen");
     await s.user.clear(model);

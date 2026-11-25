@@ -30,3 +30,20 @@ export async function openSettings(
   await user.click(within(nav).getByRole("button", { name: section }));
   return nav;
 }
+
+/** The header button that folds a Summaries writer's setup section (T12.96). */
+export function setupToggle(section: HTMLElement): HTMLElement {
+  const toggle = section.querySelector<HTMLElement>(":scope > button[aria-expanded]");
+  if (toggle === null) throw new Error("the section has no fold button");
+  return toggle;
+}
+
+/** Finds the Summaries writer's setup section named `name` (T12.96) and opens it when it is
+ * folded away; resolves with the section. The sections start closed, so a test that reads or
+ * types in a writer's form opens it first, as a person would. */
+export async function openSetup(user: ReturnType<typeof userEvent.setup>, name: string): Promise<HTMLElement> {
+  const section = await screen.findByRole("group", { name });
+  const toggle = setupToggle(section);
+  if (toggle.getAttribute("aria-expanded") !== "true") await user.click(toggle);
+  return section;
+}

@@ -4,7 +4,8 @@
 // when this computer writes (T12.5b, was on Models),
 // the endpoint with its API key for Anthropic, Claude Code's and Codex's status and model (a
 // list with Other, T12.18) and Claude Code's effort, summarising during the meeting, and the
-// summary style (T7.4b, `SummaryStyleSection`). Choices save as they change; the endpoint and a
+// summary style (T7.4b, `SummaryStyleSection`). The writers' setup sections fold away (T12.96).
+// Choices save as they change; the endpoint and a
 // model name typed under Other save with their buttons. The API key is only ever sent
 // to the app, never shown or read back.
 
@@ -141,7 +142,141 @@ const useStyles = makeStyles({
     alignItems: "center",
     gap: tokens.spacingHorizontalS,
   },
+  // A writer's setup section (T12.96): the header that folds it, then what it holds.
+  setupHead: {
+    display: "flex",
+    alignItems: "center",
+    gap: tokens.spacingHorizontalS,
+  },
+  setupToggle: {
+    display: "flex",
+    alignItems: "center",
+    gap: tokens.spacingHorizontalS,
+    width: "100%",
+    margin: 0,
+    padding: 0,
+    border: "none",
+    background: "none",
+    color: "inherit",
+    font: "inherit",
+    textAlign: "start",
+    cursor: "pointer",
+    borderRadius: tokens.borderRadiusSmall,
+    ":focus-visible": {
+      outline: `${tokens.strokeWidthThick} solid ${tokens.colorStrokeFocus2}`,
+      outlineOffset: tokens.strokeWidthThick,
+    },
+  },
+  caret: {
+    flexShrink: 0,
+    transitionProperty: "transform",
+    transitionDuration: tokens.durationFaster,
+  },
+  caretOpen: {
+    transform: "rotate(90deg)",
+  },
+  setupBody: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalM,
+  },
 });
+
+function CaretIcon({ open }: { open: boolean }) {
+  const styles = useStyles();
+  return (
+    <svg
+      className={mergeClasses(styles.caret, open && styles.caretOpen)}
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M6 4l4 4-4 4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** A writer's setup section under the order list (T12.96): a header with the writer's name and
+ * a one-line state, folded away by default and opened by its caret. It opens by itself when
+ * `attention` turns true (the writer is ticked but cannot run) and when `openRequest` changes
+ * (the order list's "Set up"), which also focuses its first control. In the first-run wizard
+ * (`fixed`) it is always open and has no caret. Its contents are not rendered while it is closed;
+ * the component holding the drafts stays mounted, so a close loses nothing typed. */
+export function SetupSection({
+  name,
+  state,
+  group,
+  attention,
+  openRequest = 0,
+  fixed,
+  children,
+}: {
+  name: string;
+  state: string;
+  /** The section's accessible name. */
+  group: string;
+  attention: boolean;
+  openRequest?: number;
+  fixed: boolean;
+  children: ReactNode;
+}) {
+  const styles = useStyles();
+  const bodyId = useId();
+  const body = useRef<HTMLDivElement>(null);
+  const focusPending = useRef(false);
+  const [openState, setOpen] = useState(false);
+  const open = fixed || openState;
+  useEffect(() => {
+    if (attention) setOpen(true);
+  }, [attention]);
+  useEffect(() => {
+    if (openRequest === 0) return;
+    setOpen(true);
+    focusPending.current = true;
+  }, [openRequest]);
+  // The control to focus once a requested open shows. The request is spent on the first render
+  // that shows the body, whether or not it holds a control: a control that appears later (a
+  // reload) never takes the focus from where the user has gone since.
+  useEffect(() => {
+    if (!focusPending.current || !open || body.current === null) return;
+    focusPending.current = false;
+    const first = body.current.querySelector<HTMLElement>("select, input, textarea, button");
+    if (first !== null) first.focus();
+  });
+  const head = (
+    <span className={styles.title}>
+      <Body1Strong>{name}</Body1Strong>
+      <Caption1 className={styles.muted}>{state}</Caption1>
+    </span>
+  );
+  return (
+    <div className={styles.endpoint} role="group" aria-label={group}>
+      {fixed ? (
+        <div className={styles.setupHead}>{head}</div>
+      ) : (
+        <button
+          type="button"
+          className={styles.setupToggle}
+          aria-label={setupHeaderName(name, state)}
+          aria-expanded={open}
+          aria-controls={open ? bodyId : undefined}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <CaretIcon open={open} />
+          {head}
+        </button>
+      )}
+      {open && (
+        <div id={bodyId} ref={body} className={styles.setupBody}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** The model field's placeholder per provider (never a stored default). */
 export const MODEL_PLACEHOLDER: Record<ProviderChoice, string> = {
@@ -194,6 +329,7 @@ function EndpointForm({
   saveOnly = false,
   onUse,
   locked,
+  openRequest,
   saveOnNext,
 }: {
   state: SummariesPageState;
@@ -205,6 +341,8 @@ function EndpointForm({
   onUse(change: Partial<SummarySettingsValue>): Promise<boolean>;
   /** The order is not read yet (or could not be): nothing may store the endpoint in it. */
   locked: boolean;
+  /** Changes when the order list's "Set up" asks for the form: it opens and takes the focus. */
+  openRequest: number;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
@@ -254,9 +392,21 @@ function EndpointForm({
     return saved;
   });
 
+  const setUp = stored.url !== "" && stored.model !== "";
+  const noKey = stored.provider === "Anthropic" && keySaved === false;
+  const stateLine = !setUp
+    ? ORDER_COPY.page.not_set_up
+    : setupState([PROVIDER_LABEL[stored.provider], stored.model, noKey ? SETUP_COPY.noApiKey : null]);
+
   return (
-    <div className={styles.endpoint} role="group" aria-label="Your own server">
-      <Body1Strong>Your own server</Body1Strong>
+    <SetupSection
+      name="Your own server"
+      state={stateLine}
+      group="Your own server"
+      attention={inUse && (!setUp || noKey)}
+      openRequest={openRequest}
+      fixed={wizard}
+    >
       <div className={styles.fields}>
         <Field label="Provider">
           <Select
@@ -378,7 +528,7 @@ function EndpointForm({
           )}
         </div>
       )}
-    </div>
+    </SetupSection>
   );
 }
 
@@ -423,6 +573,59 @@ export function storedModelLabel(models: ModelOption[], stored: string): string 
  * names the model still stored. */
 export function otherKeepsText(label: string): string {
   return `Until you save a name, the model stays ${label}.`;
+}
+
+/** The words of a writer's setup section header (T12.96): the parts of its state line, joined
+ * by `separator`, and the separator between the writer's name and the state in the header's
+ * accessible name. An endpoint not set up says `ORDER_COPY.page.not_set_up`, as its row does. */
+export const SETUP_COPY = {
+  separator: ", ",
+  checking: "Checking",
+  couldNotCheck: "Could not check",
+  signedIn: "Signed in",
+  notSignedIn: "Not signed in",
+  notInstalled: "Not installed",
+  signInUnknown: "Sign-in not known",
+  noApiKey: "no API key",
+  /** Claude Code's chosen effort ({effort}: its list label in lower case). */
+  effort: "{effort} effort",
+} as const;
+
+/** A header's state line from its parts (null parts left out). */
+export function setupState(parts: (string | null)[]): string {
+  return parts.filter((p) => p !== null).join(SETUP_COPY.separator);
+}
+
+/** A header's accessible name: the writer, then its state. */
+export function setupHeaderName(name: string, state: string): string {
+  return `${name}${SETUP_COPY.separator}${state}`;
+}
+
+/** Claude Code's effort in its header's state line. */
+export function effortStateText(effort: EffortChoice): string {
+  return SETUP_COPY.effort.replace("{effort}", EFFORT_LABEL[effort].toLowerCase());
+}
+
+/** An agent CLI's state in its section's header (T12.96). */
+export function cliStateText(check: CliCheck<{ state: string; message: string }>): string {
+  switch (check.status) {
+    case "idle":
+    case "checking":
+      return SETUP_COPY.checking;
+    case "failed":
+      return SETUP_COPY.couldNotCheck;
+    case "done":
+      switch (check.view.state) {
+        case "SignedIn":
+          return SETUP_COPY.signedIn;
+        case "NotSignedIn":
+          return SETUP_COPY.notSignedIn;
+        case "NotInstalled":
+          return SETUP_COPY.notInstalled;
+        default:
+          return SETUP_COPY.signInUnknown;
+      }
+  }
 }
 
 /** The effort list (Claude Code only, T12.18): a choice, applied at once. */
@@ -478,6 +681,7 @@ function AgentCliCard({
   hint,
   saveModel,
   effort,
+  effortState = null,
   saveOnNext,
 }: {
   state: SummariesPageState;
@@ -501,6 +705,8 @@ function AgentCliCard({
   saveModel(model: string): Partial<SummarySettingsView["value"]>;
   /** The effort list, when the CLI has one. */
   effort?: ReactNode;
+  /** The effort in the header's state line ("medium effort"), when one is chosen. */
+  effortState?: string | null;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
@@ -521,8 +727,16 @@ function AgentCliCard({
   // has its own entry in the list.
   const changed = otherOpen && typed.trim() !== "" && typed.trim() !== stored;
   useSaveOnNext(saveOnNext, async () => !changed || state.save(saveModel(typed)));
+  const stateLine = setupState([
+    cliStateText(check),
+    stored === "" ? null : storedModelLabel(models, stored),
+    effortState,
+  ]);
+  // Ticked but cannot run: not installed, signed out, or its state could not be read.
+  const attention =
+    inUse && (check.status === "failed" || (check.status === "done" && check.view.state !== "SignedIn"));
   return (
-    <div className={styles.endpoint} role="group" aria-label={group}>
+    <SetupSection name={name} state={stateLine} group={group} attention={attention} fixed={saveOnNext !== undefined}>
       {check.status === "checking" && <Spinner size="tiny" label={`Checking ${name}`} />}
       {check.status === "failed" && (
         <MessageBar intent="error">
@@ -601,7 +815,7 @@ function AgentCliCard({
         )}
         {effort}
       </div>
-    </div>
+    </SetupSection>
   );
 }
 
@@ -630,6 +844,9 @@ function ClaudeCodeCard({ state, settings, inUse, saveOnNext }: WriterCardProps)
       placeholder={CLAUDE_MODEL_PLACEHOLDER}
       hint="A model name Claude Code accepts, for example a full model name."
       saveModel={(m) => ({ claude_model: m })}
+      effortState={
+        settings.value.claude_effort === null ? null : effortStateText(settings.value.claude_effort)
+      }
       effort={
         <EffortField
           state={state}
@@ -664,7 +881,8 @@ function CodexCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
 
 /** The parts under the writers: the summary models when this computer writes, the endpoint form
  * (also while the endpoint is not set up, so it can be), and the Claude Code and Codex cards for
- * the writers in the order. Nothing shows while the order is unread (`locked`). */
+ * the writers in the order, each a setup section folded away until opened (T12.96). Nothing shows
+ * while the order is unread (`locked`). */
 function WriterForms({
   state,
   settings,
@@ -676,6 +894,7 @@ function WriterForms({
   localShown,
   useEndpoint,
   localModels,
+  endpointRequest,
   saveOnNext,
 }: {
   state: SummariesPageState;
@@ -690,6 +909,8 @@ function WriterForms({
   localShown: boolean;
   useEndpoint(change: Partial<SummarySettingsValue>): Promise<boolean>;
   localModels?: ModelsPageState;
+  /** Changes when the order list asks to set the endpoint up. */
+  endpointRequest: number;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
@@ -719,6 +940,7 @@ function WriterForms({
           saveOnly={endpointSaveOnly}
           onUse={useEndpoint}
           locked={locked}
+          openRequest={endpointRequest}
           saveOnNext={saveOnNext}
         />
       )}
@@ -757,6 +979,9 @@ function ArrowIcon({ up }: { up: boolean }) {
   );
 }
 
+/** The order list's button that opens a writer's setup form (T12.96). */
+export const SET_UP = "Set up";
+
 /** Which control of a row keeps the keyboard focus after a change (T12.68). */
 type RowControl = "tick" | "up" | "down";
 
@@ -775,6 +1000,7 @@ function WriterRow({
   reason,
   onTick,
   onMove,
+  onSetUp,
 }: {
   view: StepView;
   /** What kind of writer it is, in a lighter span after its name. */
@@ -791,6 +1017,8 @@ function WriterRow({
   reason: string | null;
   onTick(on: boolean): void;
   onMove(by: -1 | 1, from: RowControl): void;
+  /** Opens and focuses the writer's setup form, for a writer not set up yet (T12.96). */
+  onSetUp?: () => void;
 }) {
   const styles = useStyles();
   const ticked = rank !== null;
@@ -835,6 +1063,17 @@ function WriterRow({
             <Badge appearance="outline" color="informative" size="small">
               {reason}
             </Badge>
+          )}
+          {reason !== null && !ticked && onSetUp !== undefined && (
+            <Button
+              appearance="transparent"
+              size="small"
+              aria-label={`${SET_UP} ${writer.toLowerCase()}`}
+              disabled={disabled}
+              onClick={onSetUp}
+            >
+              {SET_UP}
+            </Button>
           )}
         </span>
         <Caption1 id={destId} className={styles.muted}>
@@ -908,6 +1147,8 @@ function OrderSection({
   const focusNext = useRef<{ key: string; control: RowControl } | null>(null);
   // A tick refused because the order is full.
   const [full, setFull] = useState(false);
+  // Counts the order list's requests to open the endpoint's form (T12.96).
+  const [endpointRequest, setEndpointRequest] = useState(0);
   const value = settings.value;
   const order = state.order;
   // Nothing is offered before the order is read: a change then would replace an order nobody
@@ -1088,6 +1329,9 @@ function OrderSection({
               reason={reasonOf(view.step)}
               onTick={(on) => tickOne(view.step, on)}
               onMove={(by, from) => move(at, by, from)}
+              onSetUp={
+                view.step.kind === "Endpoint" && !hasEndpoint ? () => setEndpointRequest((n) => n + 1) : undefined
+              }
             />
           );
         })}
@@ -1111,6 +1355,7 @@ function OrderSection({
           localShown={stored.some((s) => s.kind === "Local") || noLocalModel}
           useEndpoint={useEndpoint}
           localModels={localModels}
+          endpointRequest={endpointRequest}
           saveOnNext={saveOnNext}
         />
       )}
