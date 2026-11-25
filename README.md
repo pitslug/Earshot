@@ -6,7 +6,7 @@ A Windows meeting recorder that keeps your conversations on your own computer. I
 
 **[Download the installer](https://github.com/pitslug/Earshot/releases/latest)** from Releases: `x64` for most Windows PCs, `arm64` for Snapdragon PCs such as the Surface Pro. Or build it from source (below). [CHANGELOG.md](CHANGELOG.md) says what each release changed.
 
-Earshot is built and checked on two computers: an x64 desktop with an NVIDIA graphics card and a Snapdragon X2 Elite Surface Pro. It should run on other Windows 11 PCs, but expect rough edges on hardware unlike those. Not tried yet: a PC with no NVIDIA graphics card, a PC without Microsoft's Visual C++ runtime already installed (the installer carries its own copy), and an in-app update of the ARM64 version.
+Earshot is built and checked on two computers: an x64 desktop with an NVIDIA graphics card and a Snapdragon X2 Elite Surface Pro. It should run on other Windows 11 PCs, but expect rough edges on hardware unlike those. Not tried yet: an x64 PC with no NVIDIA graphics card, a PC without Microsoft's Visual C++ runtime already installed (the installer carries its own copy), and an in-app update of the ARM64 version.
 
 Earshot updates itself from Settings, General: press **Check for updates**, or turn on "Check for updates automatically" (off by default), which checks when Earshot starts and then on a schedule you pick. An update never installs an older version, and after an update your data cannot be opened by the older version again (see "Where your data is").
 
@@ -36,7 +36,7 @@ The default models are English. Other languages are a choice in Settings, Transc
 ## What you need
 
 - Windows 11, x64 or ARM64. The ARM64 version has been tried on one Snapdragon X2 Elite Surface Pro.
-- Memory: a replayed meeting transcribed on the CPU peaked at about 5.5 to 5.8 GiB, and writing the summary is extra. No minimum has been established. The grey words are on by default only with 12 GB or more (see "Where the work runs").
+- Memory: a replayed meeting transcribed on the CPU peaked at about 5.5 to 5.8 GiB, and writing the summary is extra. No minimum has been established. The grey words are on by default only with more than 12 GB, in practice a 16 GB PC (see "Where the work runs").
 - Disk space for models, which the app offers to download and shows the size of first: the default transcription model is about 2.5 GB, and the local summary model is about 2.7 GB or 5.7 GB depending on your machine. On ARM64, a Parakeet model's NPU version adds about 640 MB (0.6B v2) or 140 MB (110M).
 - No graphics card is required. No NVIDIA software is required unless you opt in to CUDA.
 - On an x64 PC, Whisper models and summaries made on the PC need a processor with AVX2 and FMA. Without them Earshot refuses those with a message rather than starting them, and Parakeet models and summaries written elsewhere still work. This has not been tried on such a processor.
@@ -50,16 +50,16 @@ The default models are English. Other languages are a choice in Settings, Transc
    - **Sync:** join your other computer, set up sync, or not now.
    - **Download:** the models this computer needs. Nothing downloads until you press the button.
    - **About me:** your name, and optionally a sample of your voice so Earshot recognises you.
-   - **Optional extras:** your Obsidian folder and an audio check.
+   - **Optional extras:** whether to show grey words while someone is talking, your Obsidian folder and an audio check.
 
    Everything in it is in Settings afterwards.
 2. Choose **New meeting**, or press `Ctrl+Alt+Shift+R` anywhere, or use the tray icon. The same shortcut stops the meeting. While Earshot is running, it also offers to start recording when it sees a call app (such as Teams or Zoom) open your microphone; nothing records unless you say yes, and "Offer to record when a call starts" in Settings, General turns the offer off.
-3. When the meeting ends, Earshot finishes the transcript, separates the speakers and writes the summary. You can start another meeting straight away.
+3. Stop the meeting when it is over. During a call, when the call seems to have ended, Earshot asks whether to stop. It only asks: only if you turn on a setting on the General page, which is off by default, does a question that nobody answers stop the recording by itself, after 3 minutes. Earshot then finishes the transcript, separates the speakers and writes the summary. You can start another meeting straight away.
 4. Name any voices it asks about, then use **Export to Obsidian** if you want a note, or **Copy summary**.
 
 While a meeting is finishing, **Cancel** stops the transcript and summary work; the recording is kept and can be transcribed again from its page. In a meeting in the room, **This is me** on a voice marks it as yours without saving your voice.
 
-Closing the window leaves Earshot in the tray. **Quit Earshot** in the tray menu ends it. When you are not looking at its window, Earshot shows Windows notifications at a meeting's start, the end of recording and its summary (a re-summary's too), when a call seems to have started, and when a call you are recording seems to have ended, to ask whether to stop. They use fixed text, never a meeting's title or content, and make no sound.
+Closing the window leaves Earshot in the tray. **Quit Earshot** in the tray menu ends it. When you are not looking at its window, Earshot shows Windows notifications: at a meeting's start, the end of recording and its summary (a re-summary's too, and when a summary or transcript could not be made), when a call seems to have started, when a call you are recording seems to have ended (to ask whether to stop), and when an automatic update check finds a new version. One more is shown even while you are looking: when a recording stopped by itself because no more audio could be saved. They use fixed text with at most a count or a version number, never a meeting's title or content, and make no sound.
 
 **Tell people you are recording.** Laws on recording conversations vary by place, and getting consent is your responsibility.
 
@@ -89,7 +89,8 @@ Everything Earshot keeps is in `%LOCALAPPDATA%\Earshot` on each computer:
 
 - **Backing up.** Quit Earshot from the tray first. Then copy `earshot.db`, any `earshot.db-wal` and `earshot.db-shm` files beside it (the three belong together), and the `audio` folder. Check that your backup tool includes `%LOCALAPPDATA%`: many leave it out. Nothing in that folder is encrypted, so a copy is as readable as the original.
 - **Restoring.** Quit Earshot and put those files back where they were. Do not run one copy on two PCs that sync with each other: the database carries the identity the first PC syncs under. To put your meetings on a second PC, use sync instead.
-- **Not in the folder.** A saved Anthropic API key and the sync key and token are in Windows Credential Manager, so a restored copy on a fresh Windows account needs the API key entered again and sync set up again.
+- **Not in the folder.** A saved Anthropic API key and the sync key and token are in Windows Credential Manager, not in the backup. On a fresh Windows account or a replacement PC, enter the API key again.
+- **Sync after a restore to a fresh Windows account or PC.** The restored copy still says it syncs, but its key is gone, so Settings, Sync says this computer's sync key is missing. The relay still holds the old registration under the same identity and refuses a pairing code for it. So, in this order: on another of your computers, remove the restored computer from the list on Settings, Sync; on the restored one, choose **Remove this computer**; then join again with a pairing code from the other computer. If no other computer still syncs, the key is lost: start the relay on a new, empty volume and set sync up again. Restoring an older copy over a computer that kept its sync key has not been tried.
 - **Sync is not a backup.** Audio never syncs, settings do not sync, and a meeting you delete on one computer is deleted on all of them.
 - **Upgrading is one-way.** A new version may change the database the first time it starts. After that an older Earshot cannot open it: it shows a message asking you to install the latest version, and leaves the data untouched. Earshot does not take a copy of the database before it upgrades, on purpose: a hidden copy would keep meetings you later delete. If you want a way back, make your own backup before you update, and delete it when you no longer need it.
 - **Uninstalling** keeps your data unless you tick "Delete the application data", which deletes the whole folder, meetings and models included.
@@ -109,10 +110,13 @@ The app shows which backend actually ran, read from the runtime's own logs rathe
 - They run only with a Parakeet model, never with Whisper.
 - They run where transcription runs: on the CPU, on the NPU of a Snapdragon PC, or through CUDA on an NVIDIA card that reports at least 7.5 GiB of memory (an 8 GB card). With CUDA transcription on a smaller card, the grey words run on the CPU instead.
 - They pause while the PC is on battery and come back when it is plugged in.
-- Until you choose, they are on for the other people when the PC has at least 12 GB of memory, and off below that. Choosing **Other people only** turns them on below 12 GB too; meetings may then run slower.
-- **Everyone** needs at least 12 GB of memory whatever you choose. Below that it shows the other people's words only.
+- The memory limit is 12 GiB as Windows reports it. A PC sold as 12 GB reports a little less, so in practice this means a 16 GB PC or larger.
+- Until you choose, they are on for the other people on a PC at or above that limit, and off below it. Choosing **Other people only** turns them on below the limit too; meetings may then run slower.
+- **Everyone** needs a PC at or above that limit whatever you choose. Below it, it shows the other people's words only.
 
-**Summary writers.** In Settings, Summaries you tick the writers to use and put them in order (at most three); if one cannot write a summary, the next one tries. Besides the model on this computer they are: your own server (any OpenAI-compatible endpoint), Anthropic with your own API key, your own installed Claude Code or OpenAI Codex, and another computer of yours through sync. The transcript text is sent to whichever of those writes the summary, as [PRIVACY.md](PRIVACY.md) explains. None of them is on by default, and "Keep this meeting on this computer" on the new-meeting screen keeps one meeting away from all the ones that are not your own computers.
+**Summary writers.** In Settings, Summaries you tick the writers to use and put them in order (at most three); if one cannot write a summary, the next one tries. Besides the model on this computer they are: your own server (any OpenAI-compatible endpoint), Anthropic with your own API key, your own installed Claude Code or OpenAI Codex, and another computer of yours through sync. The transcript text is sent to whichever of those writes the summary, as [PRIVACY.md](PRIVACY.md) explains. None of them is on by default. By itself Earshot uses only the writers you ticked; a meeting's **Re-summarise** menu also lists every writer that can run now, ticked or not, and one you pick there is sent that meeting's text.
+
+"Keep this meeting on this computer" on the new-meeting screen keeps one meeting away from all the writers that are not your own computers. It can only be chosen before recording starts. **Allow** on that meeting's page lifts it for that meeting, and that cannot be undone.
 
 ## Build from source
 

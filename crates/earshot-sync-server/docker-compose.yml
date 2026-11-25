@@ -25,10 +25,11 @@
 # - A proxy running in a container on this host: it cannot reach the host's loopback address.
 #   Remove the `ports` block and put the relay on the proxy's network instead (the commented
 #   `networks` lines below), then forward to http://earshot-server:8787.
-# - A proxy on another machine: publish the port on the one address that machine uses, for
-#   example "192.0.2.10:8787:8787", and only on a network you trust, because that hop is plain
-#   HTTP. Publishing it on every interface ("8787:8787") is what this file did up to 0.4.2;
-#   choose it deliberately or not at all.
+# - A proxy on another machine: publish the port on this host's own address on the network
+#   that proxy reaches it by, for example "192.0.2.10:8787:8787" where 192.0.2.10 is this
+#   host's address there, and only on a network you trust, because that hop is plain HTTP.
+#   Publishing it on every interface ("8787:8787") is what this file did up to 0.4.2; choose
+#   it deliberately or not at all.
 #
 # Updating from a compose file that published "8787:8787": unless your proxy runs on this host
 # outside a container, pick one of the last two ways above or it will stop reaching the relay.

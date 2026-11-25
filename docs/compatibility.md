@@ -11,10 +11,11 @@ The short version:
 
 What it is: `earshot-update-x64.json` or `earshot-update-arm64.json` on this project's latest GitHub release, the one small file an update check asks for ([updates.md](updates.md)).
 
-- It is signed with the project's release key (Ed25519). The app checks the signature against a key built into it before it reads anything in the file.
+- It is signed with a release key of the project's (Ed25519). The app checks the signature against a key built into it before it reads anything in the file.
 - It must name a version newer than the one running, for this PC's architecture. So an update never moves a copy backwards.
-- Installed copies up to 0.4.2 read the file strictly: the six fields they know (`product`, `arch`, `version`, `installer`, `size`, `sha256`) and nothing else. A file with any other field is refused by those copies as malformed. So the file's shape cannot change while those copies are expected to update.
-- A copy trusts only the key it was built with. If the key is ever replaced, older copies cannot verify later releases and have to be updated by hand from the Releases page ([updates.md](updates.md), "If the key is lost").
+- Installed copies up to 0.4.2 read the file strictly: the six fields they know (`product`, `arch`, `version`, `installer`, `size`, `sha256`) and nothing else. A file with any other field is refused by those copies as malformed. So the file keeps exactly that shape for as long as those copies are expected to update.
+- Copies from the release after 0.4.2 are built to ignore fields they do not know (PLAN T14.34), so that the file can grow later without stranding them. Every field they do know is still checked, and the signature still covers the file's exact bytes.
+- A copy trusts only the keys it was built with. Copies up to 0.4.2 hold one. From the release after 0.4.2 the built-in list has a second place, for a backup key kept offline (PLAN T14.34); until that key exists the place is empty and verifies nothing. If a key is ever replaced, copies that hold only the old one cannot verify later releases and have to be updated by hand from the Releases page ([updates.md](updates.md), "If the key is lost").
 - A release with no update file makes a check say that no update information is available. Nothing else breaks.
 
 ## 2. The database
