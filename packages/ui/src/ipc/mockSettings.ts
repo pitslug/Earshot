@@ -142,14 +142,14 @@ const MAX_PATH_CHARS = 1024;
 const RESERVED_CHARACTER = 'A folder name cannot contain < > " | ? or *.';
 const TRAILING_DOT_OR_SPACE = "A folder name cannot end with a dot or a space.";
 const DEVICE_NAME =
-  "CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9 are names Windows keeps for itself.";
+  "CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM0 to COM9 and LPT0 to LPT9 are names Windows keeps for itself.";
 
 /** `export_settings::windows_refuses`: why Windows cannot create a folder called `name`. */
 function windowsRefuses(name: string): string | null {
   if (/[<>"|?*]/.test(name)) return RESERVED_CHARACTER;
   if (/[. ]$/.test(name)) return TRAILING_DOT_OR_SPACE;
   const base = name.split(".")[0].replace(/ +$/, "");
-  if (/^(CON|PRN|AUX|NUL|(COM|LPT)[1-9¹²³])$/i.test(base)) return DEVICE_NAME;
+  if (/^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(COM|LPT)[0-9¹²³])$/i.test(base)) return DEVICE_NAME;
   return null;
 }
 
