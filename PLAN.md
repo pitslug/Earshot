@@ -2644,13 +2644,13 @@ Lane ipc (desktop: `ipc.rs`, `check_child.rs`, `models.rs`, `model_jobs.rs`, set
 
 Lane ui-shell (`packages/ui/src/shell`, `meeting`, `apps/desktop/src/main.tsx`):
 
-- [ ] T14.14 A render error shows a way back, and reload keys do nothing
+- [x] T14.14 A render error shows a way back, and reload keys do nothing
   - do: a root error boundary with fixed copy, Stop recording (when one records) and Reload; `unhandledrejection` logged nowhere and shown nowhere beyond the existing error bars; F5, Ctrl+R and Ctrl+Shift+R are swallowed app-wide; Ctrl+F outside a meeting page does nothing.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
-- [ ] T14.15 Meetings behind the followed one keep their pages right
+- [x] T14.15 Meetings behind the followed one keep their pages right
   - do: a per-meeting refresh on `PostProgress Stored` and `Summary` for any open meeting, with `finishing` from its own state; `start` no longer resets live state before `startMeeting` resolves; a start failure is shown wherever the user is; the "could not start" and "could not be stopped" bars can be dismissed.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
-- [ ] T14.16 A failed list read keeps the list
+- [x] T14.16 A failed list read keeps the list
   - do: the last good list and the open meeting stay, with an error bar and Try again; unchanged list items keep their identity so rows do not re-render per sync event (render-cost test).
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
 

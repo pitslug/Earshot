@@ -62,6 +62,7 @@ import {
   type MeetingListItem,
   NEWER_DATA_KIND,
   type RecoveredRecording,
+  type SummaryEvent,
   errorText,
   useIpc,
 } from "../ipc";
@@ -88,6 +89,7 @@ import {
   type RowDot,
   displayTitle,
   groupByDay,
+  keepUnchanged,
   recoveredText,
   rowDot,
   secondaryLine,
@@ -96,6 +98,7 @@ import {
 import { openMenuFromKeyboard } from "./menuKeys";
 import { STOPPING_TEXT, deleteQuestion, stopsWork } from "./deleteQuestion";
 import { DataFolderScreen } from "./DataFolderScreen";
+import { ErrorBar } from "./ErrorBar";
 import { NewerDataScreen } from "./NewerDataScreen";
 import { PAGE_MIN_WIDTH, SIDEBAR_MIN, SidebarSplitter, useSidebarWidth } from "./SidebarSplitter";
 
@@ -322,7 +325,9 @@ type Load =
   | { status: "newer" }
   // The data folder could not be opened at the start (T9.23): Try again restarts Earshot.
   | { status: "dataFolder"; message: string }
-  | { status: "loaded"; meetings: MeetingListItem[]; folders: FolderListItem[] };
+  // `stale`: why the latest read failed, in the app's words (T14.16). The meetings and folders
+  // are then the last ones read: a read that fails takes nothing off the screen.
+  | { status: "loaded"; meetings: MeetingListItem[]; folders: FolderListItem[]; stale: string | null };
 
 /** A problem with a folder change, shown above the meeting pane until dismissed. */
 interface FolderNotice {
@@ -354,6 +359,20 @@ const QUIT_COPY = {
 /** Events after which the meeting list is read again. */
 const RELOAD_ON: MeetingEvent["type"][] = ["Started", "Ended", "Summary"];
 
+/** Why a meeting that ended without ever recording did not start: its result's own words when it
+ * has any, else fixed ones. */
+function neverRecordedText(result: SummaryEvent): string {
+  return "message" in result ? result.message : NEVER_RECORDED_COPY;
+}
+
+/** What the start bar says of a start that came to nothing with no reason given. */
+const NEVER_RECORDED_COPY = "The meeting ended before it began recording. Start it again.";
+
+/** `counts` with one more for `id`. */
+function countedFor(counts: Record<string, number>, id: string): Record<string, number> {
+  return { ...counts, [id]: (counts[id] ?? 0) + 1 };
+}
+
 /** The app window: meeting list and the selected meeting or the meeting screen. */
 export function AppShell({
   timer = realTimer,
@@ -367,7 +386,7 @@ export function AppShell({
   // one unmounts, without undoing the aria-hidden its open modal put on the page. Deleting a
   // meeting unmounts the whole meeting view, its confirmation dialog included, so without
   // this the page stayed hidden from screen readers after a delete.
-  useFocusFinders();
+  const { findFirstFocusable } = useFocusFinders();
   const styles = useStyles();
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const ipc = useIpc();
@@ -389,10 +408,23 @@ export function AppShell({
   const [retryError, setRetryError] = useState<string | null>(null);
   // The ended meeting whose result the user dismissed (or answered with a job) on its page.
   const [resultDismissed, setResultDismissed] = useState<string | null>(null);
-  // Change when the ended meeting's final transcript or summary is stored, so its page reads it
-  // again (and shows a stored summary).
-  const [detailRefresh, setDetailRefresh] = useState(0);
-  const [summaryStored, setSummaryStored] = useState(0);
+  // Per meeting, how often its final transcript or its summary result arrived, and how often a
+  // summary of it was stored: its page, when open, reads it again (and shows a stored summary).
+  // Counted for every meeting, not only the one the screen follows: one finishing behind a newer
+  // meeting has a page too (T14.15).
+  const [detailRefresh, setDetailRefresh] = useState<Record<string, number>>({});
+  const [summaryStored, setSummaryStored] = useState<Record<string, number>>({});
+  // The meeting the app said it started, until its `Started` event has arrived: the meeting
+  // screen shows that it is starting, not the meeting followed before it (T14.15).
+  const [startingId, setStartingId] = useState<string | null>(null);
+  // The same, written as the events arrive and not on a render: an event can follow the answer
+  // before React has drawn.
+  const startingRef = useRef<string | null>(null);
+  // The meetings whose `Started` the window heard, and why each meeting that ended without one
+  // never recorded: an answer to a start can arrive after its meeting's events, and is read
+  // against these (a meeting or two per start, for the life of the window).
+  const startedIds = useRef(new Set<string>());
+  const neverRecorded = useRef(new Map<string, string>());
   // The meetings a Cancel was pressed for, each until its result.
   const [cancellingIds, setCancellingIds] = useState<string[]>([]);
   // Older meetings still finishing behind the newer one the screen follows, oldest first, each
@@ -432,6 +464,8 @@ export function AppShell({
   // A deleted row took keyboard focus with it: focus moves on once the list is read again.
   const refocusAfterDelete = useRef<string | null>(null);
   const newMeetingButton = useRef<HTMLButtonElement | null>(null);
+  // The body of a screen that has no meeting list (Settings, the wizard), while one shows.
+  const screenBody = useRef<HTMLDivElement | null>(null);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   // The folder shown: "All meetings" (`null`) each time the app opens, never stored.
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -594,7 +628,27 @@ export function AppShell({
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
       setStartError(null);
+      startedIds.current.add(event.meeting);
+      startingRef.current = null;
+      setStartingId(null);
       setCallStartAsked(false);
+    }
+    // A meeting that ends without ever having sent `Started` never recorded: the app answered
+    // its start and then it failed (T14.15). Its result says why; kept in case the answer to its
+    // start arrives after it.
+    if (event.type === "Summary" && !startedIds.current.has(event.meeting)) {
+      neverRecorded.current.set(event.meeting, neverRecordedText(event.result));
+    }
+    // The start the window is waiting on is over: nothing is starting any more, and the meeting
+    // screen, which has nothing to show for it, gives way to the meeting pages.
+    if ((event.type === "Summary" || event.type === "Ended") && event.meeting === startingRef.current) {
+      startingRef.current = null;
+      setStartingId(null);
+      setView((v) => (v === "meeting" ? "detail" : v));
+      if (event.type === "Summary") {
+        neverRecorded.current.delete(event.meeting);
+        setStartError(neverRecordedText(event.result));
+      }
     }
     // Followed here, not on a render: an end and the next start can arrive before React draws.
     if (event.type === "Ended" && lastMeeting.current?.id === event.meeting) {
@@ -609,17 +663,14 @@ export function AppShell({
     }
     // An older meeting's end says nothing about the stop button of this one.
     if (event.type === "Ended" && event.meeting === liveMeetingId.current) setStopping(false);
-    // The page of the meeting that has ended reads it again when its finishing stored something.
-    if (
-      event.type === "PostProgress" &&
-      event.step.kind === "Stored" &&
-      event.meeting === liveMeetingId.current
-    ) {
-      setDetailRefresh((n) => n + 1);
+    // A meeting's page reads it again when its finishing stored something, whichever meeting the
+    // screen follows: an older one finishing behind a newer one has its page too (T14.15).
+    if (event.type === "PostProgress" && event.step.kind === "Stored") {
+      setDetailRefresh((all) => countedFor(all, event.meeting));
     }
-    if (event.type === "Summary" && event.meeting === liveMeetingId.current) {
-      setDetailRefresh((n) => n + 1);
-      if (event.result.kind === "Stored") setSummaryStored((n) => n + 1);
+    if (event.type === "Summary") {
+      setDetailRefresh((all) => countedFor(all, event.meeting));
+      if (event.result.kind === "Stored") setSummaryStored((all) => countedFor(all, event.meeting));
     }
     if (event.type === "PostProgress") {
       const work = workOfStep(event.step);
@@ -646,6 +697,9 @@ export function AppShell({
     return m.state === "Processing" || m.state === "Waiting" ? afterWork[m.id] : undefined;
   };
   const recording = meeting !== null && meeting.phase === "recording";
+  // The app has answered a start whose first event is still on its way: the meeting the screen
+  // followed until now is not the one being shown.
+  const starting = startingId !== null && meeting?.meetingId !== startingId;
   // The list groups by day: it renders when the day changes, never on a clock tick (T9.24).
   const today = useLocalDay(timer, now);
 
@@ -661,7 +715,17 @@ export function AppShell({
     Promise.all([ipc.listMeetings(), ipc.listFolders()]).then(
       ([meetings, folders]) => {
         if (!current) return;
-        setLoad({ status: "loaded", meetings, folders });
+        // Rows that say what they said before stay the objects they were, and a read that
+        // changed nothing changes no state: the rows are memoised on them (T9.24), and the list
+        // is read again after every sync pass (T14.16).
+        setLoad((was) => {
+          if (was.status !== "loaded") return { status: "loaded", meetings, folders, stale: null };
+          const keptMeetings = keepUnchanged(was.meetings, meetings);
+          const keptFolders = keepUnchanged(was.folders, folders);
+          return keptMeetings === was.meetings && keptFolders === was.folders && was.stale === null
+            ? was
+            : { status: "loaded", meetings: keptMeetings, folders: keptFolders, stale: null };
+        });
         setSelectedId((sel) =>
           sel !== null && meetings.some((m) => m.id === sel) ? sel : (meetings[0]?.id ?? null),
         );
@@ -678,7 +742,10 @@ export function AppShell({
           setLoad({ status: "dataFolder", message: error.error.message });
           return;
         }
-        setLoad({ status: "failed", message: errorText(error) });
+        // The last list read stays, with the meeting that is open (T14.16); only a first read
+        // that failed has nothing to keep.
+        const message = errorText(error);
+        setLoad((was) => (was.status === "loaded" ? { ...was, stale: message } : { status: "failed", message }));
       },
     );
     return () => {
@@ -694,7 +761,8 @@ export function AppShell({
 
   // Once the recording ends, whoever was watching it sees the meeting's own page: its draft
   // transcript at once, how its finishing goes at the top, then its summary (T12.28).
-  const endedId = meeting !== null && meeting.phase !== "recording" ? meeting.meetingId : null;
+  // Not while the next meeting starts: the ended one is then the meeting before it.
+  const endedId = meeting !== null && !starting && meeting.phase !== "recording" ? meeting.meetingId : null;
   useEffect(() => {
     if (view !== "meeting" || endedId === null) return;
     setSelectedId(endedId);
@@ -753,11 +821,36 @@ export function AppShell({
 
   // Only a recording meeting keeps the next one out; one that is finishing goes on behind it.
   const newMeeting = () => setView(meeting?.phase === "recording" ? "meeting" : "start");
+  // The meeting followed until now is left as it is until the new one's `Started` replaces it: a
+  // start that fails must not take the previous meeting's progress and its Cancel away (T14.15).
   const start = async (mode: CaptureMode, title: string | null, keepLocal: boolean) => {
-    live.reset();
     setRetryError(null);
     setStopError(null);
-    const id = await ipc.startMeeting(mode, title, keepLocal);
+    setStartError(null);
+    let id: string;
+    try {
+      id = await ipc.startMeeting(mode, title, keepLocal);
+    } catch (e: unknown) {
+      // Said by the window, not by the new-meeting screen: its checks can take a while, and
+      // the user may be anywhere by now.
+      setStartError(errorText(e));
+      throw e;
+    }
+    // Its result arrived before this answer and it never recorded: a start that failed, said as
+    // one, with the new-meeting screen usable again.
+    const never = neverRecorded.current.get(id);
+    if (never !== undefined) {
+      neverRecorded.current.delete(id);
+      setStartError(never);
+      throw new Error(never);
+    }
+    // `Started` shows the meeting and may arrive before or after this answer; until it has, the
+    // meeting screen says it is starting. `startedIds` is written when the event arrives, not
+    // on a render, so it is current here.
+    if (!startedIds.current.has(id)) {
+      startingRef.current = id;
+      setStartingId(id);
+    }
     setSelectedId(id);
     setView("meeting");
   };
@@ -989,9 +1082,9 @@ export function AppShell({
             h.askRecovered();
             break;
           case "StartFailed":
+            // Said wherever the user is (T14.15): no screen is left for it, so nothing typed in
+            // Settings, the wizard or the new-meeting screen is lost.
             setStartError(e.message);
-            // The wizard stays, whatever step it is on: it says why above itself.
-            setView((v) => (v === "first-run" ? v : "detail"));
             break;
           case "CallStartOffer":
             setCallStartAsked(e.open);
@@ -1087,24 +1180,44 @@ export function AppShell({
 
   if (!firstRunKnown) return quitDialog || null;
 
+  // Where focus goes when an error bar that held it goes away (its Dismiss, or a Try again that
+  // worked): back to the screen under the bar, by one rule for every such bar. With the meeting
+  // list on screen that is the row of the meeting shown, else New meeting, as after a delete;
+  // never the page's own first control, which while recording is Stop. On a screen without the
+  // list (Settings, the wizard) it is that screen's first control.
+  const focusAfterBar = () => {
+    const body = screenBody.current;
+    if (body !== null) {
+      findFirstFocusable(body)?.focus();
+      return;
+    }
+    const row = selectedId !== null ? rowButtons.current.get(selectedId) : undefined;
+    (row ?? newMeetingButton.current)?.focus();
+  };
+
+  // Why a meeting could not start, on every screen (T14.15): a start from the tray or the
+  // shortcut fails wherever the user is, and one from the window can fail after they left the
+  // new-meeting screen.
+  const startErrorBar = startError !== null && (
+    <ErrorBar
+      title="The meeting could not start"
+      onGoneWithFocus={focusAfterBar}
+      actions={
+        <Button size="small" appearance="transparent" onClick={() => setStartError(null)}>
+          Dismiss
+        </Button>
+      }
+    >
+      {startError}
+    </ErrorBar>
+  );
+
   if (view === "first-run") {
     return (
       <div className={styles.wizardFrame}>
-        {startError !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The meeting could not start</MessageBarTitle>
-              {startError}
-            </MessageBarBody>
-            <MessageBarActions>
-              <Button size="small" appearance="transparent" onClick={() => setStartError(null)}>
-                Dismiss
-              </Button>
-            </MessageBarActions>
-          </MessageBar>
-        )}
+        {startErrorBar}
         {callStartBar}
-        <div className={styles.wizardBody}>
+        <div ref={screenBody} className={styles.wizardBody}>
           <FirstRunWizard
             onDone={(noModel) => {
               refresh();
@@ -1142,17 +1255,17 @@ export function AppShell({
         }}
       />
     );
-    return noModelNote ? (
+    // One frame whether or not a bar shows: a bar that comes or goes must not remount Settings
+    // and lose what is typed there.
+    return (
       <div className={styles.wizardFrame}>
         {noModelBar}
-        <div className={styles.wizardBody}>{settings}</div>
+        {startErrorBar}
+        <div ref={screenBody} className={styles.wizardBody}>
+          {settings}
+        </div>
         {quitDialog}
       </div>
-    ) : (
-      <>
-        {settings}
-        {quitDialog}
-      </>
     );
   }
 
@@ -1316,21 +1429,32 @@ export function AppShell({
           </MessageBar>
         )}
         {callStartBar}
-        {startError !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The meeting could not start</MessageBarTitle>
-              {startError}
-            </MessageBarBody>
-          </MessageBar>
+        {load.status === "loaded" && load.stale !== null && (
+          <ErrorBar
+            title="The meeting list could not be updated"
+            onGoneWithFocus={focusAfterBar}
+            actions={
+              <Button size="small" onClick={refresh}>
+                Try again
+              </Button>
+            }
+          >
+            {load.stale}
+          </ErrorBar>
         )}
+        {startErrorBar}
         {stopError !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The meeting could not be stopped</MessageBarTitle>
-              {stopError}
-            </MessageBarBody>
-          </MessageBar>
+          <ErrorBar
+            title="The meeting could not be stopped"
+            onGoneWithFocus={focusAfterBar}
+            actions={
+              <Button size="small" appearance="transparent" onClick={() => setStopError(null)}>
+                Dismiss
+              </Button>
+            }
+          >
+            {stopError}
+          </ErrorBar>
         )}
         {folderNotice !== null && (
           <MessageBar intent="warning">
@@ -1380,8 +1504,8 @@ export function AppShell({
           </MessageBar>
         ))}
         {view === "start" && <NewMeetingView onStart={start} onCancel={() => setView("detail")} />}
-        {showMeeting && meeting === null && <Spinner label="Starting the meeting" />}
-        {showMeeting && meeting !== null && meeting.phase === "recording" && (
+        {showMeeting && (meeting === null || starting) && <Spinner label="Starting the meeting" />}
+        {showMeeting && meeting !== null && !starting && meeting.phase === "recording" && (
           <RecordingView
             meeting={meeting}
             timer={timer}
@@ -1396,11 +1520,14 @@ export function AppShell({
         {view === "detail" && (
           <Detail
             load={load}
+            onRetry={refresh}
+            onBarGone={focusAfterBar}
             selected={selected}
             ended={ended}
-            refresh={detailRefresh}
+            behind={selected !== null && behindIds.includes(selected.id)}
+            refresh={selected !== null ? (detailRefresh[selected.id] ?? 0) : 0}
             synced={(selected !== null ? (synced[selected.id] ?? 0) : 0) + peopleSynced}
-            summaryStored={summaryStored}
+            summaryStored={selected !== null ? (summaryStored[selected.id] ?? 0) : 0}
             onNewMeeting={newMeeting}
             nameVoices={nameVoices}
             onChanged={refresh}
@@ -1819,8 +1946,11 @@ interface EndedMeeting {
 
 function Detail({
   load,
+  onRetry,
+  onBarGone,
   selected,
   ended,
+  behind,
   refresh,
   synced,
   summaryStored,
@@ -1835,11 +1965,19 @@ function Detail({
   onManagePeople,
 }: {
   load: Load;
+  /** Reads the meeting list again, after a first read that failed (T14.16). */
+  onRetry: () => void;
+  /** Puts focus back on the screen when the failed-read bar goes while it holds focus. */
+  onBarGone: () => void;
   selected: MeetingListItem | null;
   ended: EndedMeeting | null;
+  /** The selected meeting is still finishing behind a newer one the screen follows (T14.15). */
+  behind: boolean;
+  /** Changes when the selected meeting's final transcript or summary result arrived. */
   refresh: number;
   /** Changes when sync changed the selected meeting or any person (T12.81). */
   synced: number;
+  /** Changes when a summary of the selected meeting was stored. */
   summaryStored: number;
   onNewMeeting: () => void;
   nameVoices: number;
@@ -1860,12 +1998,17 @@ function Detail({
   if (load.status === "newer" || load.status === "dataFolder") return null;
   if (load.status === "failed") {
     return (
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>Meetings could not be loaded</MessageBarTitle>
-          {load.message}
-        </MessageBarBody>
-      </MessageBar>
+      <ErrorBar
+        title="Meetings could not be loaded"
+        onGoneWithFocus={onBarGone}
+        actions={
+          <Button size="small" onClick={onRetry}>
+            Try again
+          </Button>
+        }
+      >
+        {load.message}
+      </ErrorBar>
     );
   }
   if (load.meetings.length === 0 || selected === null) {
@@ -1884,16 +2027,19 @@ function Detail({
   // Only the page of the meeting that has ended says how it finishes; the draft transcript is
   // what there is to read meanwhile.
   const own = ended !== null && ended.id === selected.id ? ended : null;
+  // Finishing by its own state: the meeting the screen follows, or one finishing behind it
+  // (whose progress and Cancel are the bar above every page).
+  const finishing = own?.finishing ?? behind;
   return (
     <MeetingDetailView
       key={selected.id}
       item={selected}
       status={own?.status}
-      finishing={own?.finishing ?? false}
-      initialTab={own?.finishing ? "transcript" : "summary"}
-      refresh={own !== null ? refresh : 0}
+      finishing={finishing}
+      initialTab={finishing ? "transcript" : "summary"}
+      refresh={refresh}
       synced={synced}
-      showSummary={own !== null ? summaryStored : 0}
+      showSummary={summaryStored}
       nameVoices={nameVoices}
       onChanged={onChanged}
       timer={timer}

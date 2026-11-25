@@ -1,10 +1,9 @@
 import {
-  AppShell,
-  EarshotThemeProvider,
+  AppRoot,
   type Ipc,
-  IpcProvider,
   createTauriIpc,
   isTauri,
+  suppressBrowserKeys,
   suppressBrowserMenu,
 } from "@earshot/ui";
 import { StrictMode } from "react";
@@ -47,6 +46,17 @@ async function previewIpc(): Promise<Ipc> {
     callStartOfferAfterMs: query.get("callStarted") === "1" ? 3_000 : undefined,
     newerData: query.get("newerData") === "1",
     dataFolderFails: query.get("dataFolder") === "1",
+    // `?start=failed`: New meeting, Start shows a meeting that could not start (T14.15).
+    ...(query.get("start") === "failed"
+      ? {
+          startError: {
+            kind: "model",
+            message:
+              "Earshot needs a transcription model that is not on this computer yet. Open Settings, Transcription to download one.",
+            retryable: false,
+          },
+        }
+      : {}),
     provisionalWords: previews === "battery" || previews === "waiting" ? previews : undefined,
     ...(query.get("summary") === "failed"
       ? {
@@ -109,16 +119,37 @@ const ipc = inTauri ? createTauriIpc() : await previewIpc();
 // In the app the webview's own right-click menu (Back, Refresh, Print) is hidden except in text
 // fields and over selected text; the browser preview keeps it, for inspecting.
 if (inTauri) suppressBrowserMenu(document);
+// The webview's reload keys would throw the window's state away while the app keeps recording,
+// and its find bar is not the transcript's (T14.14). The preview keeps both, for inspecting.
+if (inTauri) suppressBrowserKeys(window);
+
+// Preview only: `?crash=1` shows what a screen that throws leaves (T14.14), `?crash=recording`
+// the same while a meeting records (the newest sample meeting is listed as recording).
+const crash = inTauri ? null : new URLSearchParams(window.location.search).get("crash");
+function PreviewCrash(): never {
+  throw new Error("The preview's screen that throws");
+}
+const boundaryIpc: Ipc =
+  crash === "recording"
+    ? {
+        ...ipc,
+        listMeetings: async () =>
+          (await ipc.listMeetings()).map((m, i) => (i === 0 ? { ...m, state: "Recording" as const } : m)),
+      }
+    : ipc;
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root");
 
+// The whole tree is `AppRoot` (T14.14): the theme, then the error boundary, then the app's
+// provider and the app window under it, so a screen that throws leaves fixed words, Stop
+// recording and Reload instead of a blank window. Only `StrictMode`, which draws nothing, and
+// the theme the boundary's own words need sit above the boundary; nothing else may be put
+// there, because what throws above it blanks the window. The order is pinned by `AppRoot`'s test.
 createRoot(root).render(
   <StrictMode>
-    <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell notice={inTauri ? undefined : "Preview: sample data"} />
-      </IpcProvider>
-    </EarshotThemeProvider>
+    <AppRoot ipc={boundaryIpc} notice={inTauri ? undefined : "Preview: sample data"}>
+      {crash !== null ? <PreviewCrash /> : undefined}
+    </AppRoot>
   </StrictMode>,
 );
