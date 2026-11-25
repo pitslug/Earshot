@@ -24,7 +24,7 @@ What each release changed, in plain words, newest first. It is written from the 
 - The Summaries page folds away each writer's setup, and says when Claude Code or Codex is not signed in. The Dictionary page points to the People page for saved names. Settings pages share one set of widths.
 - The Sync page's list of computers keeps up while it is open, and the first-run Sync step knows when this computer already syncs.
 - Transcript lines are one Tab stop, with the arrow keys moving between lines; the Speakers button moves focus into the panel.
-- Find in a transcript waits for a short pause and needs two characters of text.
+- Find in a transcript waits for a short pause before it looks, and does not look for a single English letter on its own.
 - An Anthropic API key is sent only to the address it was saved for, and never over plain http except to this computer. A changed address asks for the key again.
 - Codex and Claude Code run with more of your environment cleared (Node and Bun options among them), and Codex runs with the features it was measured with: any other feature that is on is turned off for the run.
 - Rows a new computer receives are applied in the same sync as the meetings they belong to.
