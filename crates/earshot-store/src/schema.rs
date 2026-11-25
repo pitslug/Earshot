@@ -374,6 +374,13 @@ const V10: &str = "
 ALTER TABLE speaker ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Migration 11: the final-pass run that wrote a final segment (T12.92, `SegmentRow::pass_run`),
+/// so sync compares lines of different runs only (docs/sync-spec.md section 7 rule 4b). Every
+/// existing row reads `NULL`, which the sync rule never drops.
+const V11: &str = "
+ALTER TABLE segment ADD COLUMN pass_run BLOB;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
 pub(crate) const SYNCED_TABLES: [&str; 12] = [
     "meeting",
@@ -392,7 +399,7 @@ pub(crate) const SYNCED_TABLES: [&str; 12] = [
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10]
+    [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -416,6 +423,7 @@ mod tests {
         "a8f780ef2d07563a4eddfb9f7d9c50f0f82cd141f41b1251447c85085f6a82ec",
         "f10864a9858e63a54c715b4f181c53658c756f8b247de4b70b5f4e46e2ab2af4",
         "b9b652e25dd0447600dd2f29d1352b13ba8ab739c2f329dde00852dd0cc25487",
+        "abd6ccc41ec257a3fc516c01ccb806099824ad1442d4fac078dbf458af9fb51e",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -638,6 +646,32 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 9);
+    }
+
+    /// The committed schema-10 fixture (`tests/data/schema_v10.sql`, used by
+    /// `tests/segment_pass_run.rs`) creates exactly the objects migrations 1 to 10 create, so
+    /// the pass-run migration (11) is tested on a real schema-10 database.
+    #[test]
+    fn store_pass_run_v10_fixture_has_exactly_the_schema_of_migrations_1_to_10() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v10.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..10] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(
+            want.iter()
+                .any(|o| o.1 == "speaker" && o.3.as_deref().is_some_and(|s| s.contains("ignored"))),
+            "{want:?}"
+        );
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 10);
     }
 
     /// A voice sample row holds a body exactly when it is live (migration 9's `CHECK`): a

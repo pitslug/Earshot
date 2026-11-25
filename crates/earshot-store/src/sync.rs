@@ -323,6 +323,18 @@ pub struct Applied {
     /// Summary requests this device withdrew that came back open (claimed elsewhere before
     /// that device heard of the withdrawal): the withdrawal was stamped again here.
     pub withdrawals_kept: usize,
+    /// Words of a re-transcription dropped because a user's edited line of another run covers
+    /// them (docs/sync-spec.md section 7 rule 4b, T12.92).
+    pub words_dropped_under_edits: usize,
+    /// Pulled copies of a final line that lost to the user's edit here although they were
+    /// stamped later (rule 4a): the edit was stamped again, so it goes out and wins at the
+    /// relay.
+    pub edited_lines_kept: usize,
+    /// Lines rule 4b rewrote or tombstoned (the rows behind
+    /// [`Applied::words_dropped_under_edits`]).
+    pub lines_rewritten_under_edits: usize,
+    /// Speaker rows made live again because a user's edited line still names them (rule 4c).
+    pub speakers_revived: usize,
     /// The meetings a row written here belongs to (a meeting's own row, its tracks, lines,
     /// speakers, notes, summaries and summary requests), including a summary the convergence
     /// rules replaced: ids only, so the window can read again what changed (T12.81). A row
@@ -622,6 +634,109 @@ fn converge<C: Clock + ?Sized>(
     for (id, meeting) in dead {
         erase_sample_by_id(tx, hlc, clock, id)?;
         erased_sample(out, meeting.as_deref());
+    }
+    Ok(())
+}
+
+/// Rule 4b and 4c (docs/sync-spec.md section 7, T12.92), run after the page's writes for each
+/// meeting the page wrote that is live here and not leased by this process:
+///
+/// - (b) on each track, every word of a live final line without an edit whose `pass_run` is
+///   set and differs from that of a live edited final line of the same track, and that lies
+///   under it (core `drop_words_under_edits`), is dropped; a line that loses some words is
+///   rewritten with the rest (same id, speaker and run), one that loses all is tombstoned, each
+///   with this device's stamp. Lines of the edited line's own run are never compared, rows
+///   without a run are never dropped, edited lines are never changed, and a line is written
+///   only when its words change, so a second run writes nothing.
+/// - (c) every tombstoned speaker row a live edited final line names is made live again, with
+///   its stored name and person, with this device's stamp; a "Me" row comes back as a room
+///   voice when the meeting already has a live "Me" (one "Me" per meeting), in id order.
+///
+/// Every device writes the same content, so the copies converge whichever stamp wins.
+fn edits_win<C: Clock + ?Sized>(
+    tx: &StoreTx<'_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    leased: &dyn Fn(EntityId) -> bool,
+    out: &mut Applied,
+) -> Result<(), StoreError> {
+    use earshot_core::asr::{Segment, drop_words_under_edits};
+    use earshot_core::diar::SpeakerRole;
+    use earshot_core::model::TranscriptPass;
+    use std::collections::{BTreeMap, BTreeSet};
+    let meetings: Vec<EntityId> = out.meetings.iter().copied().collect();
+    for m in meetings {
+        if leased(m)
+            || !crate::repo::synced_by_id(&tx.conn, "meeting", m)?
+                .is_some_and(|r| !r.meta().deleted)
+        {
+            continue;
+        }
+        let rows = crate::repo::segments_of(&tx.conn, m)?;
+        let finals: Vec<&SegmentRow> = rows
+            .iter()
+            .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
+            .collect();
+        let edited: Vec<&SegmentRow> = finals
+            .iter()
+            .copied()
+            .filter(|r| r.text_edited_at.is_some())
+            .collect();
+        if edited.is_empty() {
+            continue;
+        }
+        // The edits a line of (track, run) gives way to, built once per pair the meeting has.
+        let mut edits_for: BTreeMap<(EntityId, EntityId), Vec<Segment>> = BTreeMap::new();
+        for r in finals.iter().filter(|r| r.text_edited_at.is_none()) {
+            let Some(run) = r.pass_run else {
+                continue;
+            };
+            let edits = edits_for.entry((r.segment.track, run)).or_insert_with(|| {
+                edited
+                    .iter()
+                    .filter(|e| e.segment.track == r.segment.track && e.pass_run != Some(run))
+                    .map(|e| e.segment.clone())
+                    .collect()
+            });
+            if edits.is_empty() {
+                continue;
+            }
+            let (kept, dropped) = drop_words_under_edits(vec![r.segment.clone()], edits);
+            if dropped == 0 {
+                continue;
+            }
+            let mut new = (*r).clone();
+            match kept.into_iter().next() {
+                Some(segment) => new.segment = segment,
+                None => new.meta.deleted = true,
+            }
+            new.meta.touch(hlc, clock);
+            crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(new))?;
+            out.words_dropped_under_edits += dropped;
+            out.lines_rewritten_under_edits += 1;
+        }
+        let named: BTreeSet<EntityId> =
+            edited.iter().filter_map(|e| e.segment.speaker_id).collect();
+        let mut speakers = crate::repo::speakers_of(&tx.conn, m)?;
+        speakers.sort_by_key(|s| s.id);
+        let mut me_live = speakers
+            .iter()
+            .any(|s| !s.meta.deleted && s.role == SpeakerRole::Me);
+        for s in speakers {
+            if s.meta.deleted && named.contains(&s.id) {
+                let mut back = s;
+                back.meta.deleted = false;
+                if back.role == SpeakerRole::Me {
+                    if me_live {
+                        back.role = SpeakerRole::Room;
+                    }
+                    me_live = true;
+                }
+                back.meta.touch(hlc, clock);
+                crate::repo::put_synced(&tx.conn, &SyncedRow::Speaker(back))?;
+                out.speakers_revived += 1;
+            }
+        }
     }
     Ok(())
 }
@@ -1052,9 +1167,37 @@ impl Store {
                         }
                     }
                 }
-                if local
-                    .as_ref()
-                    .is_some_and(|l| l.meta().updated_at >= row.meta().updated_at)
+                // Rule 4a (docs/sync-spec.md section 7, T12.92): two copies of one final line
+                // are compared by the user's edit first, so a re-transcription that did not see
+                // an edit never replaces it, whatever the stamps. Only while the meeting is live
+                // here. The relay keeps the later `updated_at` alone, so a copy kept here that
+                // is stamped below the losing one is stamped again and goes out.
+                let mut restamp_written = false;
+                if let (Some(SyncedRow::Segment(here)), SyncedRow::Segment(there)) = (&local, row)
+                    && let Some(order) = SegmentRow::edit_order(here, there)
+                    && crate::repo::synced_by_id(&tx.conn, "meeting", there.meeting_id)?
+                        .is_some_and(|m| !m.meta().deleted)
+                {
+                    if order != std::cmp::Ordering::Greater {
+                        let _ = hlc.observe(inc.stamp, clock);
+                        if here.meta.updated_at < there.meta.updated_at {
+                            let mut again = here.clone();
+                            again.meta.touch(hlc, clock);
+                            crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again))?;
+                            out.edited_lines_kept += 1;
+                            out.meetings.insert(here.meeting_id);
+                        } else {
+                            out.ignored += 1;
+                        }
+                        unhold(tx, inc)?;
+                        continue;
+                    }
+                    restamp_written = here.meta.updated_at > there.meta.updated_at;
+                }
+                if !restamp_written
+                    && local
+                        .as_ref()
+                        .is_some_and(|l| l.meta().updated_at >= row.meta().updated_at)
                 {
                     unhold(tx, inc)?;
                     out.ignored += 1;
@@ -1108,6 +1251,14 @@ impl Store {
                 }
                 unhold(tx, inc)?;
                 let _ = hlc.observe(inc.stamp, clock);
+                // Rule 4a: an edit that won over a later-stamped copy here is stamped again
+                // (after the incoming stamp was observed), so it keeps its outbox entry and goes
+                // out to win at the relay.
+                if restamp_written && let SyncedRow::Segment(won) = row {
+                    let mut again = won.clone();
+                    again.meta.touch(hlc, clock);
+                    crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again))?;
+                }
                 out.written += 1;
                 if let Some(m) = row.meeting() {
                     out.meetings.insert(m);
@@ -1146,6 +1297,7 @@ impl Store {
                 }
             }
             converge(tx, hlc, clock, &mut out)?;
+            edits_win(tx, hlc, clock, rules.leased, &mut out)?;
             if let Some(after) = rules.after {
                 after(tx)?;
             }

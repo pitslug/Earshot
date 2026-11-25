@@ -476,6 +476,7 @@ pub fn replace_segments<R: MeetingRepo + ?Sized, C: Clock + ?Sized>(
                     segment: s,
                     // New recogniser text: no edit of the user's applies to it.
                     text_edited_at: None,
+                    pass_run: None,
                 }
             }
             None => SegmentRow::new(meeting, pass, s, hlc, clock),

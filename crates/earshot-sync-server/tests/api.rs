@@ -446,6 +446,36 @@ async fn relay_refuses_a_format_two_device_at_vault_three() {
     assert_eq!(v["vault_format"], 3);
 }
 
+/// T12.92: envelope format 4 (the final-pass run on a segment row). Once a format-4 device has
+/// pushed, a format-3 device is refused on both calls, so it can never write a line back without
+/// its run or the edit order; the relay itself needed no change (it keeps the highest format).
+#[tokio::test]
+async fn relay_refuses_a_format_three_device_at_vault_four() {
+    let h = harness("format4");
+    let t = h.register(1, 0xC1).await;
+    let push = |format: u32| serde_json::to_vec(&json!({"format": format, "rows": []})).unwrap();
+    let (s, _) = h
+        .call("POST", "/v1/rows", Some(&t), Some(3), Some(push(3)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "a format-3 vault takes format 3");
+    let body = serde_json::to_vec(&json!({"format": 4, "rows": [row(1, 1, 0, b"x")]})).unwrap();
+    let (s, _) = h
+        .call("POST", "/v1/rows", Some(&t), Some(4), Some(body))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    for (method, body) in [("GET", None), ("POST", Some(push(3)))] {
+        let (s, v) = h.call(method, "/v1/rows", Some(&t), Some(3), body).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::CONFLICT, "update_needed"),
+            "{method}"
+        );
+    }
+    let (s, v) = h.call("GET", "/v1/rows", Some(&t), Some(4), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["vault_format"], 4);
+}
+
 #[tokio::test]
 async fn relay_refuses_oversized_rows_requests_and_presence() {
     let h = harness("limits");

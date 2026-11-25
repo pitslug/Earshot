@@ -63,7 +63,10 @@ pub struct TickReport {
     pub unreadable: usize,
     /// Meetings deleted here because they were deleted on another device.
     pub deleted_meetings: usize,
-    /// Repairs made by the convergence rules: "Me" people merged and summaries replaced.
+    /// Repairs made by the convergence rules: "Me" people merged, summaries replaced,
+    /// withdrawals kept, and a user's line edits kept over a re-transcription (edited lines
+    /// stamped again, lines rewritten under them, their speakers revived; T12.92). Rows, not
+    /// words.
     pub repaired: usize,
     /// The meetings whose rows this tick wrote or deleted here (ids only;
     /// [`earshot_store::Applied::meetings`] plus the meetings deleted here).
@@ -801,8 +804,12 @@ impl SyncClient {
         report.written += applied.written;
         report.ignored += applied.ignored + applied.skipped;
         report.held += applied.held.iter().sum::<usize>();
-        report.repaired +=
-            applied.mes_merged + applied.summaries_replaced + applied.withdrawals_kept;
+        report.repaired += applied.mes_merged
+            + applied.summaries_replaced
+            + applied.withdrawals_kept
+            + applied.edited_lines_kept
+            + applied.lines_rewritten_under_edits
+            + applied.speakers_revived;
         report.meetings.extend(applied.meetings);
         report.people |= applied.people;
         Ok(())

@@ -588,6 +588,33 @@ fn edit_move_line_changes_no_voice_sample_voiceprint_or_identity_entry() {
     assert_eq!(left.person_id, Some(rowan));
 }
 
+/// T12.92: a split's second part is of the first part's final-pass run.
+#[test]
+fn edit_split_line_second_part_is_of_the_first_parts_run() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Release", 1276);
+    let line = line_with(&svc, m, "yes friday works for the release");
+    let run = EntityId::from_bytes([0x5A; 16]);
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let mut row = db
+            .segments(m)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.segment.id == line.id)
+            .unwrap();
+        row.pass_run = Some(run);
+        let (store, hlc) = db.parts();
+        row.meta.touch(hlc, &*clock);
+        store.put_segment(row).unwrap();
+    }
+    let second = split_line(&svc, m, line.id, 2).unwrap();
+    assert_eq!(row_of(&svc, m, line.id).pass_run, Some(run));
+    assert_eq!(row_of(&svc, m, second).pass_run, Some(run));
+}
+
 #[test]
 fn edit_split_line_divides_words_times_and_confidence_and_keeps_the_first_id() {
     let dir = TempDir::new("edit");

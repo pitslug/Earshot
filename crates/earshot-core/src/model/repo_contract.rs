@@ -95,6 +95,8 @@ impl Rows {
             pass: TranscriptPass::Live,
             segment: seg,
             text_edited_at: None,
+            // Not the default, so a repository that drops the column fails the round trip.
+            pass_run: Some(self.id()),
         }
     }
 

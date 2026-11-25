@@ -351,7 +351,7 @@ fn put_track(c: &Connection, t: &Track) -> Result<(), RepoError> {
 
 // ---- segment ----
 
-const SEGMENT: [&str; 12] = [
+const SEGMENT: [&str; 13] = [
     "meeting_id",
     "track_id",
     "pass",
@@ -364,6 +364,7 @@ const SEGMENT: [&str; 12] = [
     "edited_wall",
     "edited_logical",
     "edited_node",
+    "pass_run",
 ];
 
 /// An optional HLC timestamp from the 3 columns starting at `i` (all NULL: `None`).
@@ -408,10 +409,11 @@ fn segment_row(r: &Row<'_>) -> rusqlite::Result<SegmentRow> {
             speaker_id: get_opt_id(r, REST + 8)?,
         },
         text_edited_at: get_opt_hlc(r, REST + 9)?,
+        pass_run: get_opt_id(r, REST + 12)?,
     })
 }
 
-fn segments_of(c: &Connection, meeting: EntityId) -> Result<Vec<SegmentRow>, RepoError> {
+pub(crate) fn segments_of(c: &Connection, meeting: EntityId) -> Result<Vec<SegmentRow>, RepoError> {
     let sql = select_sql(
         "segment",
         &synced_cols(&SEGMENT),
@@ -458,6 +460,7 @@ fn put_segment(c: &Connection, row: &SegmentRow) -> Result<(), RepoError> {
         opt_id(s.speaker_id),
     ];
     rest.extend(opt_hlc_values(row.text_edited_at)?);
+    rest.push(opt_id(row.pass_run));
     let v = synced_values(s.id, &row.meta, rest)?;
     exec(c, &upsert_sql("segment", &synced_cols(&SEGMENT), "id"), &v)?;
     Ok(())
@@ -479,7 +482,7 @@ fn speaker_row(r: &Row<'_>) -> rusqlite::Result<Speaker> {
     })
 }
 
-fn speakers_of(c: &Connection, meeting: EntityId) -> Result<Vec<Speaker>, RepoError> {
+pub(crate) fn speakers_of(c: &Connection, meeting: EntityId) -> Result<Vec<Speaker>, RepoError> {
     let sql = select_sql(
         "speaker",
         &synced_cols(&SPEAKER),

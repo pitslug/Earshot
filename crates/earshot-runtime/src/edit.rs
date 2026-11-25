@@ -844,6 +844,8 @@ pub fn split_line(
 
         row.meta.touch(stamp.hlc, stamp.clock);
         row.text_edited_at = Some(row.meta.updated_at);
+        // The second part is of the first's run (T12.92, docs/sync-spec.md section 7 rule 4b).
+        let pass_run = row.pass_run;
         tx.put_segment(row)?;
         let mut new = SegmentRow::new(
             meeting,
@@ -853,6 +855,7 @@ pub fn split_line(
             stamp.clock,
         );
         new.text_edited_at = Some(new.meta.updated_at);
+        new.pass_run = pass_run;
         tx.put_segment(new)?;
         Ok(second_id)
     })
