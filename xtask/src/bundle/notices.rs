@@ -5,11 +5,15 @@
 //!   is built with ([`tree_args`]: `cargo tree -e normal,no-proc-macro`, so build scripts and
 //!   procedural macros, which put no code in the exe, are left out). Each crate's licence
 //!   expression comes from cargo, its licence files (`LICENSE*`, `LICENCE*`, `COPYING*`,
-//!   `NOTICE*`, `UNLICENSE*`) from its source folder in the build's own `CARGO_HOME`
-//!   ([`cargo_home`]), which holds exactly what the build compiled. `cargo metadata` is not used:
+//!   `NOTICE*`, `UNLICENSE*`) from its source folder in the build's own `CARGO_HOME`, else the
+//!   shell's ([`cargo_homes`]; both copies must agree). `cargo metadata` is not used:
 //!   it needs every workspace package, dev-dependencies included, downloaded, and the build's
 //!   `CARGO_HOME` holds only what the build needed (measured 2026-11-26), so offline it fails.
-//! - **Native libraries** compiled from sources a crate carries ([`VENDORED`], [`DISCLAIMERS`]).
+//!   Under an `OR` the entry says which licence Earshot takes and quotes only that one's text
+//!   ([`choose_where`], [`identify`]); every licence taken needs its text among the files.
+//! - **The Rust standard library** ([`rust_std_entry`]).
+//! - **Native libraries** compiled from sources a crate carries ([`VENDORED`], [`IN_FILE`],
+//!   [`DISCLAIMERS`]) or linked in prebuilt ([`LINKED_PREBUILT`]).
 //! - **JavaScript packages** the window is built from: the production dependency closure of
 //!   [`NPM_ROOTS`], read from the installed `node_modules` as Node resolves it ([`npm_packages`]),
 //!   with the same licence rules as crates.
@@ -121,6 +125,148 @@ pub const VENDORED: &[Vendored] = &[
         what: "code ring took from the fiat-crypto project",
         file: "third_party/fiat/LICENSE",
     },
+];
+
+/// A notice inside a source file compiled into the app, under another holder or licence than its
+/// tree's top-level licence: `lines` lines quoted from the first line holding `from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InFile {
+    /// The crate that carries it.
+    pub krate: &'static str,
+    /// What it covers.
+    pub what: &'static str,
+    /// The source file, below the crate's folder.
+    pub file: &'static str,
+    /// Words on the notice's first line.
+    pub from: &'static str,
+    /// How many lines the notice runs to.
+    pub lines: usize,
+}
+
+/// The in-file notices of the native trees compiled into the app (read 2026-11-26 by scanning
+/// every compiled source of llama.cpp's and whisper.cpp's `src`, `ggml/src` (base, CPU and Vulkan
+/// backends) and `include` for a copyright or licence line: [`in_file_candidates`] keeps that scan
+/// honest). A notice that moves or changes fails the build.
+pub const IN_FILE: &[InFile] = &[
+    InFile {
+        krate: "llama-cpp-sys-2",
+        what: "llamafile's matrix multiplication in llama.cpp's ggml CPU backend",
+        file: "llama.cpp/ggml/src/ggml-cpu/llamafile/sgemm.cpp",
+        from: "// Copyright 2024 Mozilla Foundation",
+        lines: 21,
+    },
+    InFile {
+        krate: "whisper-rs-sys",
+        what: "llamafile's matrix multiplication in whisper.cpp's ggml CPU backend",
+        file: "whisper.cpp/ggml/src/ggml-cpu/llamafile/sgemm.cpp",
+        from: "// Copyright 2024 Mozilla Foundation",
+        lines: 21,
+    },
+    InFile {
+        krate: "llama-cpp-sys-2",
+        what: "the YaRN rotary embedding in llama.cpp's ggml CPU backend",
+        file: "llama.cpp/ggml/src/ggml-cpu/ops.cpp",
+        from: "// YaRN algorithm based on",
+        lines: 2,
+    },
+    InFile {
+        krate: "whisper-rs-sys",
+        what: "the YaRN rotary embedding in whisper.cpp's ggml CPU backend",
+        file: "whisper.cpp/ggml/src/ggml-cpu/ops.cpp",
+        from: "// YaRN algorithm based on",
+        lines: 2,
+    },
+    InFile {
+        krate: "llama-cpp-sys-2",
+        what: "llama.cpp's BPE tokenizer",
+        file: "llama.cpp/src/llama-vocab.cpp",
+        from: "// adapted from https://github.com/cmp-nct/ggllm.cpp",
+        lines: 1,
+    },
+];
+
+/// The files below `dir` (a native tree's compiled folders, [`COMPILED_NATIVE`]) with a line that
+/// names a copyright or a licence, relative to `dir`, sorted: what [`IN_FILE`] and
+/// [`NOT_NOTICES`] together must cover.
+///
+/// # Errors
+/// An unreadable folder.
+pub fn in_file_candidates(dir: &Path, folders: &[&str]) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    for folder in folders {
+        let (path, recurse) = match folder.strip_suffix("/*") {
+            Some(top) => (dir.join(top), false),
+            None => (dir.join(folder), true),
+        };
+        let files = if recurse {
+            super::files_under(&path)?
+        } else {
+            let mut top = Vec::new();
+            for e in std::fs::read_dir(&path).with_context(|| format!("read {}", path.display()))? {
+                let e = e?;
+                if e.file_type()?.is_file() {
+                    top.push(e.path());
+                }
+            }
+            top
+        };
+        for f in files {
+            let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !["c", "cpp", "h", "hpp", "comp", "glsl", "inc"].contains(&ext) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&std::fs::read(&f)?).to_lowercase();
+            if ["copyright", "license", "licence", "spdx"]
+                .iter()
+                .any(|w| text.contains(w))
+            {
+                let rel = f.strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
+                found.push(rel);
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+/// The folders of each native tree that are compiled into the shipped app (`/*`: that folder's own
+/// files only): llama.cpp's library and ggml's base, CPU and Vulkan backends; whisper.cpp's
+/// library and ggml's base, CPU and Vulkan backends (x64 builds whisper.cpp with Vulkan). Optional parts no shipped build turns on (KleidiAI,
+/// AMX, CUDA, SYCL, CANN, ...) are not here, nor ggml's public headers (declarations only; the two
+/// with notices, `ggml-cann.h` and `ggml-sycl.h`, belong to backends no shipped build compiles).
+pub const COMPILED_NATIVE: &[(&str, &[&str])] = &[
+    (
+        "llama-cpp-sys-2",
+        &[
+            "llama.cpp/src",
+            "llama.cpp/include",
+            "llama.cpp/ggml/src/*",
+            "llama.cpp/ggml/src/ggml-cpu/*",
+            "llama.cpp/ggml/src/ggml-cpu/arch",
+            "llama.cpp/ggml/src/ggml-cpu/llamafile",
+            "llama.cpp/ggml/src/ggml-vulkan",
+        ],
+    ),
+    (
+        "whisper-rs-sys",
+        &[
+            "whisper.cpp/src",
+            "whisper.cpp/include",
+            "whisper.cpp/ggml/src/*",
+            "whisper.cpp/ggml/src/ggml-cpu/*",
+            "whisper.cpp/ggml/src/ggml-cpu/arch",
+            "whisper.cpp/ggml/src/ggml-cpu/llamafile",
+            "whisper.cpp/ggml/src/ggml-vulkan",
+        ],
+    ),
+];
+
+/// Files [`in_file_candidates`] finds that hold no notice: the words name a model's metadata key.
+pub const NOT_NOTICES: &[&str] = &[
+    "llama.cpp/src/llama-arch.cpp",
+    "llama.cpp/src/llama-arch.h",
+    "llama.cpp/src/llama-model-saver.cpp",
 ];
 
 /// Sources compiled into the app whose authors disclaim copyright, with no licence file to copy.
@@ -256,11 +402,13 @@ fn allowed_id(id: &str) -> bool {
     PERMISSIVE.contains(&id) || FILE_COPYLEFT_ACCEPTED.contains(&id)
 }
 
-/// What makes a choice worse, compared in order: copyleft parts, parts with no standard text,
-/// parts needing a holder the package may not name, then more parts.
-fn cost(terms: &[Term]) -> (usize, usize, usize, usize) {
+/// What makes a choice worse, compared in order: parts the package ships no text of (`has_text`),
+/// copyleft parts, parts with no standard text, parts needing a holder the package may not name,
+/// then more parts. This is the fixed preference by which one side of an `OR` is taken.
+fn cost(terms: &[Term], has_text: &dyn Fn(&Term) -> bool) -> (usize, usize, usize, usize, usize) {
     let count = |f: &dyn Fn(&Term) -> bool| terms.iter().filter(|t| f(t)).count();
     (
+        count(&|t| !has_text(t)),
         count(&|t| FILE_COPYLEFT_ACCEPTED.contains(&t.id.as_str())),
         count(&|t| canonical(&t.id).is_none()),
         count(&|t| NEEDS_HOLDER.contains(&t.id.as_str())),
@@ -272,6 +420,13 @@ fn cost(terms: &[Term]) -> (usize, usize, usize, usize) {
 /// each `OR` taken (the first on a tie), or `None` when nothing satisfies it.
 #[must_use]
 pub fn choose(licence: &Licence) -> Option<Vec<Term>> {
+    choose_where(licence, &|_| true)
+}
+
+/// [`choose`], preferring first the alternatives whose every licence the package ships a text of
+/// (`has_text`).
+#[must_use]
+pub fn choose_where(licence: &Licence, has_text: &dyn Fn(&Term) -> bool) -> Option<Vec<Term>> {
     match licence {
         Licence::Id(id, with) => {
             (allowed_id(id) && with.as_deref().is_none_or(|w| EXCEPTIONS.contains(&w))).then(|| {
@@ -284,14 +439,17 @@ pub fn choose(licence: &Licence) -> Option<Vec<Term>> {
         Licence::And(parts) => {
             let mut all = Vec::new();
             for p in parts {
-                all.extend(choose(p)?);
+                all.extend(choose_where(p, has_text)?);
             }
             Some(all)
         }
         Licence::Or(parts) => {
             let mut best: Option<Vec<Term>> = None;
-            for choice in parts.iter().filter_map(choose) {
-                if best.as_ref().is_none_or(|b| cost(&choice) < cost(b)) {
+            for choice in parts.iter().filter_map(|p| choose_where(p, has_text)) {
+                if best
+                    .as_ref()
+                    .is_none_or(|b| cost(&choice, has_text) < cost(b, has_text))
+                {
                     best = Some(choice);
                 }
             }
@@ -344,6 +502,90 @@ pub fn licence_files(dir: &Path) -> Result<Vec<(String, String)>> {
     Ok(found)
 }
 
+/// The licences a licence file holds the text of, from its words (compared without case or line
+/// breaks) and its name (`LICENSE-MIT` and the like). A file that names none, such as a `NOTICE`
+/// or a file pointing at others, is a notice, not a text.
+#[must_use]
+pub fn identify(name: &str, text: &str) -> Vec<&'static str> {
+    // Comment markers at line starts (a licence kept as a source comment) are not words.
+    let t = text
+        .to_lowercase()
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['/', '#', '*', ';']))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let has = |s: &str| t.contains(s);
+    let mut ids = Vec::new();
+    let mut add = |id: &'static str, yes: bool| {
+        if yes && !ids.contains(&id) {
+            ids.push(id);
+        }
+    };
+    add("Apache-2.0", has("apache license") && has("version 2.0"));
+    add(
+        "MIT",
+        has("permission is hereby granted, free of charge") && !has("unicode license"),
+    );
+    add("Unlicense", has("free and unencumbered software"));
+    add(
+        "BSD-3-Clause",
+        has("redistribution and use in source and binary forms") && has("neither the name"),
+    );
+    add(
+        "BSD-2-Clause",
+        has("redistribution and use in source and binary forms")
+            && !has("neither the name")
+            && !has("bzip2"),
+    );
+    add(
+        "ISC",
+        has("with or without fee is hereby granted, provided that the above copyright notice"),
+    );
+    add(
+        "0BSD",
+        has("with or without fee is hereby granted.")
+            && !has("provided that the above copyright notice"),
+    );
+    add(
+        "Zlib",
+        has("altered source versions must be plainly marked") && !has("bzip2"),
+    );
+    add("Unicode-3.0", has("unicode license"));
+    add("CC0-1.0", has("cc0 1.0 universal"));
+    add(
+        "CDLA-Permissive-2.0",
+        has("community data license agreement"),
+    );
+    add(
+        "bzip2-1.0.6",
+        has("bzip2") && has("redistribution and use in source and binary forms"),
+    );
+    add("MPL-2.0", has("mozilla public license"));
+    add("GPL", has("gnu general public license"));
+    add("LGPL", has("gnu lesser general public license"));
+    let upper = name.to_ascii_uppercase().replace('_', "-");
+    for (part, id) in [
+        ("-MIT", "MIT"),
+        ("-APACHE", "Apache-2.0"),
+        ("-ZLIB", "Zlib"),
+        ("-ISC", "ISC"),
+        ("-0BSD", "0BSD"),
+    ] {
+        add(id, upper.contains(part) && !upper.contains("THIRD"));
+    }
+    add("Unlicense", upper.starts_with("UNLICENSE"));
+    ids
+}
+
+/// Whether a file holding the texts `ids` holds `term`'s (MIT-0's text reads as MIT's).
+fn holds(ids: &[&str], term: &Term) -> bool {
+    ids.iter()
+        .any(|id| *id == term.id || (term.id == "MIT-0" && *id == "MIT"))
+}
+
 /// A package whose notice is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
@@ -383,6 +625,27 @@ pub fn package_line_start(name: &str, version: &str) -> String {
 /// # Errors
 /// By `who`: no licence, one that does not parse, or one no allowed licence satisfies.
 pub fn checked_licence(who: &str, licence: Option<&str>) -> Result<(String, Vec<Term>)> {
+    checked_licence_where(who, licence, &|_| true)
+}
+
+/// Whether `l` offers a choice anywhere.
+fn has_or(l: &Licence) -> bool {
+    match l {
+        Licence::Id(..) => false,
+        Licence::Or(_) => true,
+        Licence::And(parts) => parts.iter().any(has_or),
+    }
+}
+
+/// [`checked_licence`] with [`choose_where`].
+///
+/// # Errors
+/// As [`checked_licence`].
+pub fn checked_licence_where(
+    who: &str,
+    licence: Option<&str>,
+    has_text: &dyn Fn(&Term) -> bool,
+) -> Result<(String, Vec<Term>)> {
     let expr = licence
         .map(str::trim)
         .filter(|e| !e.is_empty())
@@ -390,7 +653,7 @@ pub fn checked_licence(who: &str, licence: Option<&str>) -> Result<(String, Vec<
             format!("{who} declares no licence: a package with no licence cannot ship")
         })?;
     let parsed = parse_licence(expr).with_context(|| format!("{who}: licence `{expr}`"))?;
-    let chosen = choose(&parsed).with_context(|| {
+    let chosen = choose_where(&parsed, has_text).with_context(|| {
         format!(
             "{who} is under `{expr}`, which no licence on the allow-list satisfies \
              (bundle::notices::PERMISSIVE, FILE_COPYLEFT_ACCEPTED): nothing copyleft may ship \
@@ -441,15 +704,47 @@ fn standard_text_notes(what: &str, chosen: &[Term]) -> Vec<String> {
 /// and no standard text to use.
 pub fn package_entry(p: &Package) -> Result<Entry> {
     let who = format!("{} {}", p.name, p.version);
-    let (expr, chosen) = checked_licence(&who, p.licence.as_deref())?;
-    let mut notes = Vec::new();
     let files = licence_files(&p.dir).with_context(|| format!("{who}'s licence files"))?;
+    let found: Vec<Vec<&str>> = files.iter().map(|(n, t)| identify(n, t)).collect();
+    let shipped = |term: &Term| files.is_empty() || found.iter().any(|ids| holds(ids, term));
+    let (expr, chosen) = checked_licence_where(&who, p.licence.as_deref(), &shipped)?;
+    let mut notes = Vec::new();
+    if parse_licence(&expr).is_ok_and(|l| has_or(&l)) {
+        let ids: Vec<String> = chosen.iter().map(Term::text).collect();
+        notes.push(format!(
+            "Earshot uses it under {}, and only that licence's text is given.",
+            ids.join(" and ")
+        ));
+    }
     let texts = if files.is_empty() {
         let texts = standard_texts(&who, &chosen)?;
         notes.extend(standard_text_notes("package", &chosen));
         texts
     } else {
-        files.into_iter().map(|(_, t)| t).collect()
+        // Every licence taken needs its text among the files (AND as much as one licence).
+        let missing: Vec<String> = chosen
+            .iter()
+            .filter(|t| !found.iter().any(|ids| holds(ids, t)))
+            .map(Term::text)
+            .collect();
+        ensure!(
+            missing.is_empty(),
+            "{who} is under `{expr}` but none of its licence files ({}) holds the text of {}: \
+             find the text or ask the owner",
+            files
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            missing.join(" and ")
+        );
+        // A file holding only licences not taken (the other side of an OR) is left out.
+        files
+            .into_iter()
+            .zip(&found)
+            .filter(|(_, ids)| ids.is_empty() || chosen.iter().any(|t| holds(ids, t)))
+            .map(|((_, t), _)| t)
+            .collect()
     };
     let expr = expr.as_str();
     let copyleft: Vec<String> = chosen
@@ -575,47 +870,60 @@ fn path_key(path: &Path) -> String {
     key
 }
 
-/// The `CARGO_HOME` the release build used ([`crate::build::neutral_cargo_home`]), when it holds
-/// registry sources, else the shell's own.
+/// The `CARGO_HOME`s that may hold the crates' sources, in the order they are asked: the one the
+/// release build used ([`crate::build::neutral_cargo_home`]), then the shell's own, each only when
+/// it holds registry sources. After a `Cargo.lock` change the neutral one lacks the new crates
+/// until the next release build; the shell's (which `cargo xtask ci` fills) has them.
 #[must_use]
-pub fn cargo_home() -> PathBuf {
+pub fn cargo_homes() -> Vec<PathBuf> {
     let neutral = crate::build::neutral_cargo_home(std::env::var_os("SystemDrive"));
-    if neutral.join("registry").join("src").is_dir() {
-        return neutral;
+    let shell = std::env::var_os("CARGO_HOME").map_or_else(
+        || PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join(".cargo"),
+        PathBuf::from,
+    );
+    let mut homes = Vec::new();
+    for home in [neutral, shell] {
+        if home.join("registry").join("src").is_dir() && !homes.contains(&home) {
+            homes.push(home);
+        }
     }
-    if let Some(home) = std::env::var_os("CARGO_HOME") {
-        return PathBuf::from(home);
-    }
-    PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join(".cargo")
+    homes
 }
 
-/// The crates of the shipped app for `target` and `features`, from `cargo tree` with
-/// `cargo_home`.
+/// The crates of the shipped app for `target` and `features`, from `cargo tree` (offline) with the
+/// first of `homes` it succeeds with.
 ///
 /// # Errors
-/// A failed, cut off or unreadable `cargo tree`.
+/// No home given, or `cargo tree` failed, was cut off or unreadable with every one.
 pub fn shipped_crates(
     root: &Path,
     target: &str,
     features: &[String],
-    cargo_home: &Path,
+    homes: &[PathBuf],
 ) -> Result<Vec<TreeCrate>> {
     let args = tree_args(target, features);
-    let mut cmd = crate::ci::cargo_command();
-    cmd.args(&args)
-        .current_dir(root)
-        .env("CARGO_HOME", cargo_home);
     let what = format!("`cargo {}`", args.join(" "));
-    let out = crate::proc::run_with_timeout(&mut cmd, TREE_TIMEOUT)
-        .with_context(|| format!("{what} could not start or took too long"))?;
-    out.require_complete(&what)?;
-    ensure!(
-        out.success,
-        "{what} failed (run the release build first, so its crates are in {}): {}",
-        cargo_home.display(),
-        out.describe()
-    );
-    parse_tree(&out.stdout, root)
+    let mut failures = Vec::new();
+    for home in homes {
+        let mut cmd = crate::ci::cargo_command();
+        cmd.args(&args).current_dir(root).env("CARGO_HOME", home);
+        let out = crate::proc::run_with_timeout(&mut cmd, TREE_TIMEOUT)
+            .with_context(|| format!("{what} could not start or took too long"))?;
+        out.require_complete(&what)?;
+        if out.success {
+            return parse_tree(&out.stdout, root);
+        }
+        failures.push(format!("with {}: {}", home.display(), out.describe()));
+    }
+    bail!(
+        "{what} failed with every cargo home (run the release build or `cargo xtask ci` first, so \
+         the crates are there): {}",
+        if failures.is_empty() {
+            "no cargo home holds registry sources".to_owned()
+        } else {
+            failures.join("\n")
+        }
+    )
 }
 
 /// The source folder of `name` `version` below `cargo_home`'s registry sources: the first
@@ -643,30 +951,105 @@ pub fn crate_dir(cargo_home: &Path, name: &str, version: &str) -> Result<PathBuf
         })
 }
 
-/// The crates of `tree` as packages, their folders below `cargo_home`.
+/// The crates of `tree` as packages, their folders in the first of `homes` that holds them. Where
+/// another home holds the crate too, its licence files must be the same bytes, so the notices are
+/// the same whichever home supplied them.
 ///
 /// # Errors
-/// A crate whose folder is missing.
-pub fn crate_packages(tree: &[TreeCrate], cargo_home: &Path) -> Result<Vec<Package>> {
+/// A crate no home holds, or two homes whose copies' licence files differ.
+pub fn crate_packages(tree: &[TreeCrate], homes: &[PathBuf]) -> Result<Vec<Package>> {
     tree.iter()
         .map(|c| {
+            let dirs: Vec<PathBuf> = homes
+                .iter()
+                .filter_map(|h| crate_dir(h, &c.name, &c.version).ok())
+                .collect();
+            let dir = dirs.first().cloned().with_context(|| {
+                format!(
+                    "{} {} has no sources in any cargo home ({}): run the release build or \
+                     `cargo xtask ci` first",
+                    c.name,
+                    c.version,
+                    homes
+                        .iter()
+                        .map(|h| h.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            let first = licence_digest(&dir)?;
+            for other in &dirs[1..] {
+                ensure!(
+                    licence_digest(other)? == first,
+                    "{} {}'s licence files differ between {} and {}",
+                    c.name,
+                    c.version,
+                    dir.display(),
+                    other.display()
+                );
+            }
             Ok(Package {
                 name: c.name.clone(),
                 version: c.version.clone(),
                 licence: c.licence.clone(),
-                dir: crate_dir(cargo_home, &c.name, &c.version)?,
+                dir,
                 url: format!("https://crates.io/crates/{}/{}", c.name, c.version),
             })
         })
         .collect()
 }
 
+/// A SHA-256 over the names and bytes of the licence files directly in `dir`.
+///
+/// # Errors
+/// An unreadable folder or file.
+pub fn licence_digest(dir: &Path) -> Result<String> {
+    use sha2::Digest as _;
+    let mut hash = sha2::Sha256::new();
+    for (name, text) in licence_files(dir)? {
+        hash.update(name.as_bytes());
+        hash.update([0]);
+        hash.update(text.as_bytes());
+        hash.update([0]);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// The entries of [`VENDORED`] and [`DISCLAIMERS`] for the crates of `packages`.
 ///
 /// # Errors
 /// A listed file missing from its crate, or a disclaimer whose words are not in its file.
-pub fn vendored_entries(packages: &[Package]) -> Result<Vec<Entry>> {
+pub fn vendored_entries(packages: &[Package], target: &str) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
+    let arch = if target == crate::build::ARM64_WINDOWS {
+        "arm64"
+    } else {
+        "x64"
+    };
+    for l in LINKED_PREBUILT {
+        for p in packages.iter().filter(|p| p.name == l.krate) {
+            let file = l.file.replace("{arch}", arch);
+            ensure!(
+                p.dir.join(&file).is_file(),
+                "{} {} no longer has {file} (bundle::notices::LINKED_PREBUILT)",
+                p.name,
+                p.version
+            );
+            entries.push(Entry {
+                line: format!(
+                    "{} | {} {}, file {file} | {}",
+                    l.what, p.name, p.version, p.url
+                ),
+                texts: Vec::new(),
+                notes: vec![format!(
+                    "Copyright {}. Used under {}. No copy of that licence comes with the library \
+                     in {}, so none is quoted here.",
+                    l.holder, l.terms, p.name
+                )],
+                copyleft: Vec::new(),
+            });
+        }
+    }
     for v in VENDORED {
         for p in packages.iter().filter(|p| p.name == v.krate) {
             let path = p.dir.join(v.file);
@@ -684,6 +1067,35 @@ pub fn vendored_entries(packages: &[Package]) -> Result<Vec<Entry>> {
                 ),
                 texts: vec![read_text(&path)?],
                 notes: Vec::new(),
+                copyleft: Vec::new(),
+            });
+        }
+    }
+    for n in IN_FILE {
+        for p in packages.iter().filter(|p| p.name == n.krate) {
+            let path = p.dir.join(n.file);
+            let text = read_text(&path)?;
+            let lines: Vec<&str> = text.lines().collect();
+            let at = lines
+                .iter()
+                .position(|l| l.contains(n.from))
+                .with_context(|| {
+                    format!(
+                        "{} {}'s {} no longer has its notice starting \"{}\" \
+                     (bundle::notices::IN_FILE)",
+                        p.name, p.version, n.file, n.from
+                    )
+                })?;
+            let quoted = lines
+                .get(at..at + n.lines)
+                .with_context(|| format!("{} {}'s {} ends early", p.name, p.version, n.file))?;
+            entries.push(Entry {
+                line: format!(
+                    "{} | {} {}, file {} | {}",
+                    n.what, p.name, p.version, n.file, p.url
+                ),
+                texts: vec![quoted.join("\n")],
+                notes: vec!["The notice in the source file, as it stands.".to_owned()],
                 copyleft: Vec::new(),
             });
         }
@@ -939,8 +1351,15 @@ pub fn npm_packages(root: &Path) -> Result<Vec<Package>> {
 /// As [`package_entry`].
 fn entries_of(packages: &[Package], copyleft: &mut Vec<String>) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
+    let mut failed = Vec::new();
     for p in packages {
-        let e = package_entry(p)?;
+        let e = match package_entry(p) {
+            Ok(e) => e,
+            Err(e) => {
+                failed.push(format!("{e:#}"));
+                continue;
+            }
+        };
         if !e.copyleft.is_empty() {
             copyleft.push(format!(
                 "{} {} ({})",
@@ -951,6 +1370,12 @@ fn entries_of(packages: &[Package], copyleft: &mut Vec<String>) -> Result<Vec<En
         }
         entries.push(e);
     }
+    ensure!(
+        failed.is_empty(),
+        "{} packages cannot ship as they are:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
     Ok(entries)
 }
 
@@ -1041,7 +1466,11 @@ pub fn other_entries(
         line: format!("uninstall.exe | {} | {}", nsis.licence, nsis.attribution),
         texts: vec![read_text(&copying)?],
         notes: vec![
-            "The installer and uninstaller are made with NSIS and carry its code.".to_owned(),
+            "The installer and uninstaller are made with NSIS and carry its code, unchanged."
+                .to_owned(),
+            "The source code of NSIS, its LZMA compression module included, is available from \
+             the NSIS project at https://nsis.sourceforge.io."
+                .to_owned(),
         ],
         copyleft: Vec::new(),
     });
@@ -1092,6 +1521,168 @@ pub fn other_entries(
     Ok(entries)
 }
 
+/// The sections' headings, in order: what an installed file is judged by when the tree cannot be
+/// read ([`installed_file_problems`]).
+pub const SECTION_CRATES: &str = "Rust crates compiled into earshot.exe";
+/// See [`SECTION_CRATES`].
+pub const SECTION_STD: &str = "The Rust standard library";
+/// See [`SECTION_CRATES`].
+pub const SECTION_NATIVE: &str = "Native libraries";
+/// See [`SECTION_CRATES`].
+pub const SECTION_NPM: &str = "JavaScript packages in the app's window";
+/// See [`SECTION_CRATES`].
+pub const SECTION_OTHER: &str = "Other files";
+/// Every heading of the file, in order.
+pub const SECTIONS: [&str; 6] = [
+    SECTION_CRATES,
+    SECTION_STD,
+    SECTION_NATIVE,
+    SECTION_NPM,
+    SECTION_OTHER,
+    "Licence texts",
+];
+
+/// What is wrong with an installed notices `text` judged by itself, for a machine that cannot
+/// read the shipped tree (`bundle-check --installer` without crate sources or `node_modules`):
+/// Earshot's licence first, every heading in order, every package section holding entries, and
+/// every licence text an entry names present. Empty means none found.
+#[must_use]
+pub fn installed_file_problems(text: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    if text.trim().is_empty() {
+        return vec!["the file is empty or missing".to_owned()];
+    }
+    if !(text.contains("### Text 1\n\nMIT License") && text.contains(OWN_COPYRIGHT)) {
+        problems.push("Earshot's own licence is not text 1".to_owned());
+    }
+    let mut at = 0;
+    let mut starts = Vec::new();
+    for heading in SECTIONS {
+        match text[at..].find(&format!("\n## {heading}\n")) {
+            Some(i) => {
+                at += i + 1;
+                starts.push(at);
+            }
+            None => problems.push(format!("no section `{heading}` in order")),
+        }
+    }
+    if starts.len() == SECTIONS.len() {
+        for (i, heading) in [SECTION_CRATES, SECTION_NPM].iter().enumerate() {
+            let k = if i == 0 { 0 } else { 3 };
+            let body = &text[starts[k]..starts[k + 1]];
+            if !body
+                .lines()
+                .any(|l| l.contains(" | ") && !l.starts_with(' '))
+            {
+                problems.push(format!("section `{heading}` lists nothing"));
+            }
+        }
+    }
+    let texts = text.matches("\n### Text ").count();
+    for line in text.lines() {
+        if let Some(list) = line.trim_start().strip_prefix("Licence texts: ") {
+            for n in list.split(", ") {
+                if n.parse::<usize>().map_or(true, |n| n == 0 || n > texts) {
+                    problems.push(format!("an entry names text {n}, which is not there"));
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// The Rust standard library's entry: dual-licensed MIT or Apache-2.0 (as every Rust toolchain's
+/// `share\doc\rust\COPYRIGHT-library.html` says), with those two texts read from the pinned
+/// toolchain's `licenses` folder when `rustc --print sysroot` finds it, else by reference.
+///
+/// # Errors
+/// An unreadable `rust-toolchain.toml`.
+pub fn rust_std_entry(root: &Path) -> Result<Entry> {
+    let toolchain: toml::Table = std::fs::read_to_string(root.join("rust-toolchain.toml"))
+        .context("read rust-toolchain.toml")?
+        .parse()
+        .context("parse rust-toolchain.toml")?;
+    let channel = toolchain
+        .get("toolchain")
+        .and_then(|t| t.get("channel"))
+        .and_then(|c| c.as_str())
+        .context("rust-toolchain.toml has no channel")?
+        .to_owned();
+    let mut cmd = std::process::Command::new("rustc");
+    cmd.args(["--print", "sysroot"]).current_dir(root);
+    let docs = crate::proc::run_with_timeout(&mut cmd, Duration::from_secs(60))
+        .filter(|o| o.success && o.complete())
+        .map(|o| {
+            PathBuf::from(o.stdout.trim())
+                .join("share")
+                .join("doc")
+                .join("rust")
+        });
+    let licences = docs.as_ref().map(|d| d.join("licenses"));
+    let texts: Option<Vec<String>> = licences.as_ref().and_then(|l| {
+        ["MIT.txt", "Apache-2.0.txt"]
+            .iter()
+            .map(|f| read_text(&l.join(f)).ok())
+            .collect()
+    });
+    let mut notes = vec![
+        "Earshot uses it under MIT, as every Rust program may; its own notices for the code it \
+         is built from are COPYRIGHT-library.html in the Rust toolchain's documentation \
+         (share\\doc\\rust)."
+            .to_owned(),
+    ];
+    let texts = texts.unwrap_or_else(|| {
+        notes.push(
+            "The toolchain's own licence files were not found where this file was made: the \
+             texts are those of https://github.com/rust-lang/rust, LICENSE-MIT and \
+             LICENSE-APACHE."
+                .to_owned(),
+        );
+        Vec::new()
+    });
+    // Only the side taken, as for crates: MIT.
+    let texts: Vec<String> = texts
+        .into_iter()
+        .filter(|t| identify("MIT.txt", t).contains(&"MIT"))
+        .collect();
+    Ok(Entry {
+        line: format!(
+            "Rust standard library {channel} | MIT OR Apache-2.0 | https://github.com/rust-lang/rust"
+        ),
+        texts,
+        notes,
+        copyleft: Vec::new(),
+    })
+}
+
+/// A library a crate links in prebuilt, whose licence text the crate does not carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkedPrebuilt {
+    /// The crate that carries it.
+    pub krate: &'static str,
+    /// What it is.
+    pub what: &'static str,
+    /// The file linked, below the crate's folder, `{arch}` standing for `x64` or `arm64`.
+    pub file: &'static str,
+    /// Who holds its copyright, as its own version resource says.
+    pub holder: &'static str,
+    /// Where its terms are published.
+    pub terms: &'static str,
+}
+
+/// Microsoft's WebView2 loader, which `webview2-com-sys`'s build script links into the exe
+/// (`WebView2LoaderStatic.lib`). Neither the crate nor this machine (no NuGet cache) holds the
+/// WebView2 SDK's licence text (looked for 2026-11-26), so the entry names the component, its
+/// holder and where its terms are published, and quotes no text.
+pub const LINKED_PREBUILT: &[LinkedPrebuilt] = &[LinkedPrebuilt {
+    krate: "webview2-com-sys",
+    what: "Microsoft Edge WebView2 loader (WebView2LoaderStatic.lib), linked into earshot.exe",
+    file: "{arch}/WebView2LoaderStatic.lib",
+    holder: "Microsoft Corporation",
+    terms: "the licence of the Microsoft.Web.WebView2 SDK, published with it at \
+            https://www.nuget.org/packages/Microsoft.Web.WebView2",
+}];
+
 /// The notices of the app for `target` built with `features`, and the packages under file-level
 /// copyleft (by `name version`), for the owner. `tools` is the bundle's tools folder
 /// (`<target-dir>\.tauri`), whose NSIS the installer is made with.
@@ -1105,29 +1696,37 @@ pub fn notices(
     features: &[String],
     tools: &Path,
 ) -> Result<(String, Vec<String>)> {
-    let home = cargo_home();
-    let tree = shipped_crates(root, target, features, &home)?;
-    let packages = crate_packages(&tree, &home)?;
+    let homes = cargo_homes();
+    let tree = shipped_crates(root, target, features, &homes)?;
+    let packages = crate_packages(&tree, &homes)?;
     let mut copyleft = Vec::new();
     let crates = entries_of(&packages, &mut copyleft)?;
     let npm = entries_of(&npm_packages(root)?, &mut copyleft)?;
     let sections = vec![
         Section {
-            heading: "Rust crates compiled into earshot.exe".to_owned(),
+            heading: SECTION_CRATES.to_owned(),
             intro: "Each crate's licence files as it publishes them; where it publishes none, \
-                    the standard text of its licence."
+                    the standard text of its licence. Where a crate offers a choice of licences, \
+                    its entry says which one Earshot uses and gives only that one's text."
                 .to_owned(),
             entries: crates,
         },
         Section {
-            heading: "Native libraries built from source".to_owned(),
-            intro: "Libraries compiled from the sources a crate above carries, with the licence \
-                    files those sources hold."
+            heading: SECTION_STD.to_owned(),
+            intro: "Rust's standard library, compiled into earshot.exe with every Rust program."
                 .to_owned(),
-            entries: vendored_entries(&packages)?,
+            entries: vec![rust_std_entry(root)?],
         },
         Section {
-            heading: "JavaScript packages in the app's window".to_owned(),
+            heading: SECTION_NATIVE.to_owned(),
+            intro: "Libraries compiled from the sources a crate above carries, with the licence \
+                    files those sources hold and the notices inside their source files, and \
+                    libraries a crate above links in as it publishes them."
+                .to_owned(),
+            entries: vendored_entries(&packages, target)?,
+        },
+        Section {
+            heading: SECTION_NPM.to_owned(),
             intro: "The packages the window's page is built from, each with its licence files \
                     as it publishes them; where it publishes none, the standard text of its \
                     licence."
@@ -1135,7 +1734,7 @@ pub fn notices(
             entries: npm,
         },
         Section {
-            heading: "Other files".to_owned(),
+            heading: SECTION_OTHER.to_owned(),
             intro: "Files beside earshot.exe that no package above made, and ONNX Runtime, which \
                     the app downloads."
                 .to_owned(),
@@ -1185,7 +1784,7 @@ pub fn expected_names(
     target: &str,
     features: &[String],
 ) -> Result<Vec<(String, String)>> {
-    let tree = shipped_crates(root, target, features, &cargo_home())?;
+    let tree = shipped_crates(root, target, features, &cargo_homes())?;
     let mut names: Vec<(String, String)> = tree.into_iter().map(|c| (c.name, c.version)).collect();
     names.extend(npm_packages(root)?.into_iter().map(|p| (p.name, p.version)));
     Ok(names)

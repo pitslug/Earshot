@@ -1461,12 +1461,38 @@ fn bundle_check_the_notices_must_name_every_shipped_package() {
         ("serde".to_owned(), "1.0.229".to_owned()),
         ("tauri".to_owned(), "2.12.4".to_owned()),
     ];
-    let whole = "# Notices\n\nserde 1.0.229 | MIT | u\ntauri 2.12.4 | MIT | u\n";
-    assert!(notices_check(whole, &shipped).0);
-    let (pass, detail) = notices_check("# Notices\n\nserde 1.0.229 | MIT | u\n", &shipped);
+    let file = |lines: &[&str]| {
+        let sections: Vec<notices::Section> = notices::SECTIONS[..5]
+            .iter()
+            .map(|h| notices::Section {
+                heading: (*h).to_owned(),
+                intro: "Intro.".into(),
+                entries: lines
+                    .iter()
+                    .map(|l| notices::Entry {
+                        line: (*l).to_owned(),
+                        texts: vec!["t".into()],
+                        notes: vec![],
+                        copyleft: vec![],
+                    })
+                    .collect(),
+            })
+            .collect();
+        notices::render(
+            "# Notices",
+            &notices::own_licence("MIT License\n\nPermission."),
+            &sections,
+        )
+    };
+    let whole = file(&["serde 1.0.229 | MIT | u", "tauri 2.12.4 | MIT | u"]);
+    assert!(notices_check(&whole, &shipped).0);
+    let (pass, detail) = notices_check(&file(&["serde 1.0.229 | MIT | u"]), &shipped);
     assert!(!pass);
     assert!(detail.contains("tauri 2.12.4"), "{detail}");
-    // A missing or empty file fails, and so does an expectation that is empty.
+    // A missing or empty file fails, and so does an expectation that is empty, and a file that
+    // names everything but is not whole.
     assert!(!notices_check("", &shipped).0);
-    assert!(!notices_check(whole, &[]).0);
+    assert!(!notices_check(&whole, &[]).0);
+    let bare = "# Notices\n\nserde 1.0.229 | MIT | u\ntauri 2.12.4 | MIT | u\n";
+    assert!(!notices_check(bare, &shipped).0);
 }

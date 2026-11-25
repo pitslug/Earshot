@@ -165,13 +165,22 @@ fn bundle_notices_use_a_packages_own_licence_files() {
     std::fs::write(dir.join("COPYING"), "").unwrap();
     std::fs::write(dir.join("README.md"), "not a licence").unwrap();
     std::fs::create_dir(dir.join("LICENSES")).unwrap();
+    // Only the side taken is quoted, and the entry says which.
     let e = package_entry(&package(&dir, Some("MIT OR Apache-2.0"))).unwrap();
+    assert_eq!(e.texts, ["Apache text"]);
     assert_eq!(
-        e.texts,
-        ["Apache text", "Copyright (c) Invented Holder\n\nText."]
+        e.notes,
+        ["Earshot uses it under Apache-2.0, and only that licence's text is given."]
     );
-    assert!(e.notes.is_empty(), "{:?}", e.notes);
     assert!(e.copyleft.is_empty());
+    // A single licence: its file, and no choice to state.
+    let e = package_entry(&package(&dir, Some("MIT"))).unwrap();
+    assert_eq!(e.texts, ["Copyright (c) Invented Holder\n\nText."]);
+    assert!(e.notes.is_empty(), "{:?}", e.notes);
+    // Both sides of AND: both files.
+    let both = package_entry(&package(&dir, Some("MIT AND Apache-2.0"))).unwrap();
+    assert_eq!(both.texts.len(), 2);
+    let e = package_entry(&package(&dir, Some("MIT OR Apache-2.0"))).unwrap();
     assert_eq!(
         e.line,
         "invented-crate 1.2.3 | MIT OR Apache-2.0 | https://crates.io/crates/invented-crate/1.2.3"
@@ -181,6 +190,71 @@ fn bundle_notices_use_a_packages_own_licence_files() {
             .starts_with(&package_line_start("invented-crate", "1.2.3"))
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+const MIT_WORDS: &str = "Copyright (c) Invented Holder\n\nPermission is hereby granted, free of \
+                         charge, to any person obtaining a copy of this software.";
+const GPL_WORDS: &str = "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007";
+
+#[test]
+fn bundle_notices_quote_only_the_side_of_an_or_taken_and_never_gpl() {
+    let dir = tmp("or-gpl");
+    std::fs::write(dir.join("LICENSE-MIT"), MIT_WORDS).unwrap();
+    std::fs::write(dir.join("COPYING"), GPL_WORDS).unwrap();
+    // A pointer naming no licence text is a notice and stays.
+    std::fs::write(dir.join("NOTICE"), "See the licence files.").unwrap();
+    for expr in ["MIT OR GPL-3.0-only", "GPL-3.0-only OR MIT"] {
+        let e = package_entry(&package(&dir, Some(expr))).unwrap();
+        assert_eq!(e.texts, [MIT_WORDS, "See the licence files."], "{expr}");
+        assert!(e.texts.iter().all(|t| !t.contains("GNU")), "{expr}");
+        assert!(
+            e.notes.iter().any(|n| n.contains("under MIT")),
+            "{:?}",
+            e.notes
+        );
+    }
+    // Content decides as well as names: an unnamed GPL text is still left out.
+    std::fs::rename(dir.join("COPYING"), dir.join("LICENSE")).unwrap();
+    let e = package_entry(&package(&dir, Some("MIT OR GPL-3.0-only"))).unwrap();
+    assert!(e.texts.iter().all(|t| !t.contains("GNU")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundle_notices_every_licence_taken_needs_its_text_among_the_files() {
+    let dir = tmp("and-missing");
+    std::fs::write(dir.join("LICENSE-MIT"), MIT_WORDS).unwrap();
+    let err = package_entry(&package(&dir, Some("MIT AND Apache-2.0"))).unwrap_err();
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("invented-crate 1.2.3") && text.contains("Apache-2.0"),
+        "{text}"
+    );
+    // A single licence whose file holds another licence's text: refused too.
+    let err = package_entry(&package(&dir, Some("ISC"))).unwrap_err();
+    assert!(format!("{err:#}").contains("invented-crate 1.2.3"));
+    // An OR takes the side whose text is shipped, before the preference for no holder.
+    let e = package_entry(&package(&dir, Some("Apache-2.0 OR MIT"))).unwrap();
+    assert_eq!(e.texts, [MIT_WORDS]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundle_notices_identify_licence_texts_by_their_words_and_names() {
+    assert_eq!(identify("LICENSE", MIT_WORDS), ["MIT"]);
+    assert_eq!(identify("COPYING", GPL_WORDS), ["GPL"]);
+    assert_eq!(identify("LICENSE-APACHE", "anything"), ["Apache-2.0"]);
+    assert_eq!(identify("UNLICENSE", "anything"), ["Unlicense"]);
+    assert!(identify("NOTICE", "See the other files.").is_empty());
+    // A licence kept as source comments reads the same.
+    let isc = "// Permission to use, copy, modify, and/or distribute this software for any\n\
+               // purpose with or without fee is hereby granted, provided that the above\n\
+               // copyright notice and this permission notice appear in all copies.";
+    assert_eq!(identify("LICENSE.txt", isc), ["ISC"]);
+    assert_eq!(
+        identify("LICENSE-THIRD-PARTY", "Apache License Version 2.0"),
+        ["Apache-2.0"]
+    );
 }
 
 #[test]
@@ -201,10 +275,11 @@ fn bundle_notices_use_a_standard_text_and_say_so_when_a_package_ships_none() {
         "{:?}",
         e.notes
     );
-    // A licence with no holder to name says only the first.
+    // A licence with no holder to name says which side, and not the holder.
     let e = package_entry(&package(&dir, Some("MIT OR Apache-2.0"))).unwrap();
     assert_eq!(e.texts, [normalise(canonical("Apache-2.0").unwrap())]);
-    assert_eq!(e.notes.len(), 1, "{:?}", e.notes);
+    assert_eq!(e.notes.len(), 2, "{:?}", e.notes);
+    assert!(e.notes[0].contains("under Apache-2.0"), "{:?}", e.notes);
     // No file and no standard text: fails by name.
     let err = package_entry(&package(&dir, Some("ISC"))).unwrap_err();
     let text = format!("{err:#}");
@@ -410,6 +485,92 @@ fn bundle_notices_hold_earshots_licence_without_its_copyright_line() {
 }
 
 #[test]
+fn bundle_notices_take_a_crate_from_whichever_home_holds_it_and_require_both_copies_agree() {
+    let make = |tag: &str, licence: &str| {
+        let home = tmp(tag);
+        let dir = home.join("registry/src/index/x-1.0.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "").unwrap();
+        std::fs::write(dir.join("LICENSE"), licence).unwrap();
+        home
+    };
+    let tree = [TreeCrate {
+        name: "x".into(),
+        version: "1.0.0".into(),
+        licence: Some("MIT".into()),
+    }];
+    let neutral = tmp("home-neutral-empty");
+    std::fs::create_dir_all(neutral.join("registry/src/index")).unwrap();
+    let shell = make("home-shell", "same words");
+    // Only the second home has it (a Cargo.lock change before a release build): taken from there.
+    let found = crate_packages(&tree, &[neutral.clone(), shell.clone()]).unwrap();
+    assert!(found[0].dir.starts_with(&shell));
+    // Both have it with the same licence files: the first, and the same text either way.
+    let neutral_too = make("home-neutral", "same words");
+    let found = crate_packages(&tree, &[neutral_too.clone(), shell.clone()]).unwrap();
+    assert!(found[0].dir.starts_with(&neutral_too));
+    assert_eq!(
+        licence_digest(&found[0].dir).unwrap(),
+        licence_digest(&shell.join("registry/src/index/x-1.0.0")).unwrap()
+    );
+    // Copies that differ: refused by name.
+    let other = make("home-other", "other words");
+    let err = crate_packages(&tree, &[other.clone(), shell.clone()]).unwrap_err();
+    assert!(format!("{err:#}").contains("x 1.0.0"));
+    // No home has it: refused by name.
+    assert!(crate_packages(&tree, std::slice::from_ref(&neutral)).is_err());
+    for d in [neutral, shell, neutral_too, other] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[test]
+fn bundle_notices_an_installed_file_is_judged_by_itself_without_the_tree() {
+    let entry = |line: &str| Entry {
+        line: line.into(),
+        texts: vec!["shared".into()],
+        notes: vec![],
+        copyleft: vec![],
+    };
+    let sections: Vec<Section> = SECTIONS[..5]
+        .iter()
+        .map(|h| Section {
+            heading: (*h).to_owned(),
+            intro: "Intro.".into(),
+            entries: vec![entry("a 1.0.0 | MIT | u")],
+        })
+        .collect();
+    let own = own_licence("MIT License\n\nCopyright (c) Invented\n\nPermission.");
+    let good = render("# Title", &own, &sections);
+    assert_eq!(installed_file_problems(&good), Vec::<String>::new());
+    assert!(!installed_file_problems("").is_empty());
+    // A section gone, a text gone, or the own licence gone: each named.
+    let no_npm = good.replace(&format!("\n## {SECTION_NPM}\n"), "\n");
+    assert!(
+        installed_file_problems(&no_npm)
+            .iter()
+            .any(|p| p.contains(SECTION_NPM))
+    );
+    let cut = &good[..good.find("### Text 2").unwrap()];
+    assert!(
+        installed_file_problems(cut)
+            .iter()
+            .any(|p| p.contains("text 2"))
+    );
+    let foreign = good.replace(OWN_COPYRIGHT, "");
+    assert!(!installed_file_problems(&foreign).is_empty());
+    // A package section with no entries.
+    let mut empty = sections.clone();
+    empty[0].entries.clear();
+    let empty = render("# Title", &own, &empty);
+    assert!(
+        installed_file_problems(&empty)
+            .iter()
+            .any(|p| p.contains(SECTION_CRATES))
+    );
+}
+
+#[test]
 fn bundle_notices_quote_vendored_licences_and_fail_when_one_moves() {
     let dir = tmp("vendored");
     let whisper = dir.join("whisper-rs-sys");
@@ -433,24 +594,54 @@ fn bundle_notices_quote_vendored_licences_and_fail_when_one_moves() {
         dir: d.to_path_buf(),
         url: format!("https://crates.io/crates/{name}/1.0.0"),
     };
-    let entries =
-        vendored_entries(&[p("whisper-rs-sys", &whisper), p("libsqlite3-sys", &sqlite)]).unwrap();
-    assert_eq!(entries.len(), 2);
+    // whisper-rs-sys's in-file notices (IN_FILE), invented words in the real places.
+    let cpu = whisper.join("whisper.cpp/ggml/src/ggml-cpu");
+    std::fs::create_dir_all(cpu.join("llamafile")).unwrap();
+    let header: Vec<String> = std::iter::once("// Copyright 2024 Mozilla Foundation".to_owned())
+        .chain((1..21).map(|i| format!("// invented line {i}")))
+        .chain(["", "code();"].map(str::to_owned))
+        .collect();
+    std::fs::write(cpu.join("llamafile/sgemm.cpp"), header.join("\r\n")).unwrap();
+    std::fs::write(
+        cpu.join("ops.cpp"),
+        "int a;\n// YaRN algorithm based on an invented file\n// Invented licence line.\nint b;\n",
+    )
+    .unwrap();
+    let x64 = "x86_64-pc-windows-msvc";
+    let entries = vendored_entries(
+        &[p("whisper-rs-sys", &whisper), p("libsqlite3-sys", &sqlite)],
+        x64,
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 4);
     assert_eq!(entries[0].texts, ["whisper licence"]);
     assert!(
         entries[0].line.contains("whisper.cpp/LICENSE"),
         "{}",
         entries[0].line
     );
-    assert!(entries[1].texts.is_empty());
-    assert!(entries[1].notes[0].contains("disclaims copyright"));
+    // The whole notice and nothing after it.
+    assert_eq!(entries[1].texts, [header[..21].join("\n")]);
+    assert_eq!(
+        entries[2].texts,
+        ["// YaRN algorithm based on an invented file\n// Invented licence line."]
+    );
+    assert!(entries[3].texts.is_empty());
+    assert!(entries[3].notes[0].contains("disclaims copyright"));
+    // An in-file notice that is gone stops the build.
+    std::fs::write(cpu.join("ops.cpp"), "int a;\n").unwrap();
+    assert!(vendored_entries(&[p("whisper-rs-sys", &whisper)], x64).is_err());
     // Nothing for a crate that is not in the tree.
-    assert!(vendored_entries(&[]).unwrap().is_empty());
+    assert!(
+        vendored_entries(&[], "x86_64-pc-windows-msvc")
+            .unwrap()
+            .is_empty()
+    );
     // Moved or changed: the build stops.
     std::fs::remove_file(whisper.join("whisper.cpp").join("LICENSE")).unwrap();
-    assert!(vendored_entries(&[p("whisper-rs-sys", &whisper)]).is_err());
+    assert!(vendored_entries(&[p("whisper-rs-sys", &whisper)], "x86_64-pc-windows-msvc").is_err());
     std::fs::write(sqlite.join("sqlite3").join("sqlite3.c"), "/* MIT */").unwrap();
-    assert!(vendored_entries(&[p("libsqlite3-sys", &sqlite)]).is_err());
+    assert!(vendored_entries(&[p("libsqlite3-sys", &sqlite)], "x86_64-pc-windows-msvc").is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -494,7 +685,7 @@ fn bundle_notices_follow_npm_production_dependencies_as_node_resolves_them() {
         r#"{"name": "a", "version": "1.0.0", "license": "MIT",
             "dependencies": {"b": "1"}, "optionalDependencies": {"not-installed": "1"}}"#,
     );
-    std::fs::write(modules.join("a").join("LICENSE"), "a's licence").unwrap();
+    std::fs::write(modules.join("a").join("LICENSE"), MIT_WORDS).unwrap();
     // Nested, as an older layout or a second version puts it: found from `a` first.
     write_json(
         &modules.join("a").join("node_modules").join("b"),
@@ -528,7 +719,7 @@ fn bundle_notices_follow_npm_production_dependencies_as_node_resolves_them() {
     assert_eq!(found[1].url, "https://www.npmjs.com/package/a/v/1.0.0");
     // Entries follow the crates' rules: own files, else the standard text and a note.
     let a = package_entry(&found[1]).unwrap();
-    assert_eq!(a.texts, ["a's licence"]);
+    assert_eq!(a.texts, [MIT_WORDS]);
     let b = package_entry(&found[2]).unwrap();
     assert!(
         b.notes
@@ -602,7 +793,7 @@ fn bundle_notices_name_the_other_files_from_their_manifests() {
 
 /// The real shipped tree of this host's architecture: every crate allowed and given a text, every
 /// vendored licence found, the same text twice, no path of this machine, every crate named. Needs
-/// the release build's crates in [`cargo_home`] (any earlier `cargo xtask build`, or `cargo xtask
+/// the release build's crates in [`cargo_homes`] (any earlier `cargo xtask build`, or `cargo xtask
 /// ci` for the shell's own `CARGO_HOME`).
 #[test]
 fn bundle_notices_the_real_shipped_tree_passes_and_is_named_whole() {
@@ -648,6 +839,43 @@ fn bundle_notices_the_real_shipped_tree_passes_and_is_named_whole() {
         assert!(text.contains(v.file), "{}", v.file);
     }
     assert!(text.contains("MIT License"), "Earshot's own licence");
+    // The installed file judged by itself, as bundle-check does without the tree.
+    assert_eq!(installed_file_problems(&text), Vec::<String>::new());
+    for want in [
+        "Microsoft Edge WebView2 loader",
+        "Rust standard library ",
+        "// Copyright 2024 Mozilla Foundation",
+        "Jeffrey Quesnelle",
+        "nsis.sourceforge.io",
+    ] {
+        assert!(text.contains(want), "{want}");
+    }
+    // Every compiled native source naming a copyright or licence is quoted or known not a notice.
+    let homes = cargo_homes();
+    let tree = shipped_crates(&root, target, &features, &homes).unwrap();
+    let packages = crate_packages(&tree, &homes).unwrap();
+    for (krate, folders) in COMPILED_NATIVE {
+        let dir = &packages.iter().find(|p| p.name == *krate).unwrap().dir;
+        let found = in_file_candidates(dir, folders).unwrap();
+        let mut known: Vec<String> = IN_FILE
+            .iter()
+            .filter(|n| n.krate == *krate)
+            .map(|n| n.file.to_owned())
+            .chain(
+                NOT_NOTICES
+                    .iter()
+                    .filter(|f| {
+                        folders
+                            .iter()
+                            .any(|d| f.starts_with(d.trim_end_matches("/*")))
+                    })
+                    .map(|f| (*f).to_owned()),
+            )
+            .collect();
+        known.sort();
+        known.dedup();
+        assert_eq!(found, known, "{krate}: quote new notices in IN_FILE");
+    }
     assert!(text.contains(OWN_COPYRIGHT));
     // What bundle-check's scan of the install will find in it: nothing.
     let found = super::super::paths::scan_bytes(

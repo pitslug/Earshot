@@ -623,15 +623,16 @@ pub fn notice_check(installed: &str, expected: &str) -> (bool, String) {
 
 /// `bundle-check`'s verdict on the installed [`NOTICES_FILE`] `text`: there, and naming every
 /// package of `shipped` ([`notices::expected_names`], the rule the bundle wrote it by), with the
-/// detail to print.
+/// detail to print. The file must also be whole by itself ([`notices::installed_file_problems`]).
 #[must_use]
 pub fn notices_check(text: &str, shipped: &[(String, String)]) -> (bool, String) {
     let missing = notices::missing_names(text, shipped);
-    let pass = !text.trim().is_empty() && !shipped.is_empty() && missing.is_empty();
+    let problems = notices::installed_file_problems(text);
+    let pass = !shipped.is_empty() && missing.is_empty() && problems.is_empty();
     (
         pass,
         format!(
-            "{} bytes, {} packages expected, missing: {missing:?}",
+            "{} bytes, {} packages expected, missing: {missing:?}, problems: {problems:?}",
             text.len(),
             shipped.len()
         ),
@@ -1655,7 +1656,7 @@ fn check_install(
     target: &str,
     qnn: &[QnnPin],
     notice: &str,
-    shipped: &[(String, String)],
+    shipped: Option<&[(String, String)]>,
 ) -> Result<()> {
     let mut found = Vec::new();
     for file in files_under(dir)? {
@@ -1711,13 +1712,26 @@ fn check_install(
         &detail,
     );
     let third_party = std::fs::read_to_string(dir.join(NOTICES_FILE)).unwrap_or_default();
-    let (named, detail) = notices_check(&third_party, shipped);
-    verdict(
-        all,
-        &format!("nsis: {NOTICES_FILE} names every package of the shipped tree"),
-        named,
-        &detail,
-    );
+    match shipped {
+        Some(shipped) => {
+            let (named, detail) = notices_check(&third_party, shipped);
+            verdict(
+                all,
+                &format!("nsis: {NOTICES_FILE} names every package of the shipped tree"),
+                named,
+                &detail,
+            );
+        }
+        None => {
+            let problems = notices::installed_file_problems(&third_party);
+            verdict(
+                all,
+                &format!("nsis: {NOTICES_FILE} is whole by itself (no tree to compare with)"),
+                problems.is_empty(),
+                &format!("{} bytes, problems: {problems:?}", third_party.len()),
+            );
+        }
+    }
     if target == ARM64_WINDOWS {
         for (pin, result) in qnn_pin_results(dir, qnn) {
             let detail = match &result {
@@ -2039,8 +2053,20 @@ pub fn check(
     // After the digest, so a run stopped by an unreadable checkout notice still names the
     // installer it was given; still before anything is touched.
     let notice = install_notice_text(root)?;
-    let shipped =
-        notices::expected_names(root, triple, &build::shipped_features(Some(triple), &[]))?;
+    let names = notices::expected_names(root, triple, &build::shipped_features(Some(triple), &[]));
+    let shipped = match names {
+        Ok(names) => Some(names),
+        // A machine checking only an installer may hold neither the crate sources nor
+        // `node_modules` (the Surface): the file is then judged by itself, and says so.
+        Err(e) if installer.is_some() => {
+            println!(
+                "bundle-check: skipped: {NOTICES_FILE} against the shipped tree, which this \
+                 checkout cannot read ({e:#}); the installed file is judged by itself instead"
+            );
+            None
+        }
+        Err(e) => return Err(e),
+    };
     let reference = exe_dir
         .as_deref()
         .map_or(Reference::Installer, Reference::Built);
@@ -2121,8 +2147,8 @@ struct Installed {
 struct Notices {
     /// [`install_notice_text`] of this checkout.
     meeting: String,
-    /// [`notices::expected_names`] of the shipped tree.
-    shipped: Vec<(String, String)>,
+    /// [`notices::expected_names`] of the shipped tree, `None` when this checkout cannot read it.
+    shipped: Option<Vec<(String, String)>>,
 }
 
 /// The check itself, with the registry saved by the caller.
@@ -2162,7 +2188,7 @@ fn check_saved(
         triple,
         qnn,
         &notices.meeting,
-        &notices.shipped,
+        notices.shipped.as_deref(),
     )?;
     // The counts are printed as the summary line; the verdicts above already judged what ran.
     let _counts = check_cuda_imports(
