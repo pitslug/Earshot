@@ -623,12 +623,13 @@ pub async fn benchmark(
 /// benchmark runs.
 #[tauri::command]
 #[specta::specta]
-pub fn start_benchmark(
+pub async fn start_benchmark(
     state: tauri::State<'_, crate::ipc::AppState>,
     jobs: tauri::State<'_, BenchmarkJobs>,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start(&services)
+    let jobs = jobs.inner().clone();
+    crate::ipc::blocking(move || jobs.start(&services)).await
 }
 
 /// Cancels the benchmark; nothing is stored.

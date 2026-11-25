@@ -207,6 +207,9 @@ pub const CHECK_RUNNING_MESSAGE: &str =
 pub const DOWNLOADING_MESSAGE: &str =
     "A model is still downloading. Run the model check when the downloads have finished.";
 
+/// What a cancel of the model check says when none runs.
+pub const CHECK_NOT_RUNNING: &str = "The model check is not running.";
+
 /// Why a download is refused once a restart was claimed: the restart would cut it.
 pub const RESTARTING: &str = "Earshot is restarting. Try again once it has started.";
 
@@ -505,10 +508,7 @@ impl ModelJobs {
                 cancel.cancel();
                 Ok(())
             }
-            _ => Err(IpcError::new(
-                "not_checking",
-                "the model check is not running",
-            )),
+            _ => Err(IpcError::new("not_checking", CHECK_NOT_RUNNING)),
         }
     }
 
@@ -736,22 +736,36 @@ fn check_guarded(inner: &Inner, svc: &Services, cancel: &CancelToken, gives_way:
     });
 }
 
-/// What the check tells the user when ONNX Runtime's library for `library` cannot load
-/// (`e`, the runtime's own text: paths only inside the models directory, never a URL).
+/// The model check's warning when the graphics card's libraries could not load (T14.13): fixed
+/// copy in the words of the NPU's (`plain_text::CHECK_NPU_LIBRARY_UNAVAILABLE`), with no library
+/// name and none of the error's words. No "restart": the check runs in a child process of its
+/// own, so the next check tries the card again.
+pub const CHECK_CARD_LIBRARY_UNAVAILABLE: &str = "Earshot could not use the graphics card this \
+     time, so the model check tests Parakeet models on the processor only.";
+
+/// The same when the graphics card's files are not on this computer.
+pub const CHECK_CARD_NOT_DOWNLOADED: &str = "Support for the graphics card is not on this \
+     computer: it is not downloaded. The model check tests Parakeet models on the processor only.";
+
+/// What `plain_text::library_problem` says of files that are not on this computer.
+const NOT_DOWNLOADED: &str = "it is not downloaded";
+
+/// What the check tells the user when the libraries that run speech models on `library` (the
+/// NPU, else the graphics card) cannot load: fixed copy chosen by the part and by whether its
+/// files are missing (`plain_text::library_problem`), never a library's name or the error's
+/// text.
 #[must_use]
 pub fn check_fallback_message(
     library: earshot_runtime::backends::Accelerator,
     e: &earshot_runtime::RuntimeError,
 ) -> String {
-    // The NPU's is fixed copy, with no library name or error text (T12.64).
     if library == earshot_runtime::backends::Accelerator::Qnn {
-        return crate::plain_text::CHECK_NPU_LIBRARY_UNAVAILABLE.to_owned();
+        crate::plain_text::CHECK_NPU_LIBRARY_UNAVAILABLE.to_owned()
+    } else if crate::plain_text::library_problem(e) == NOT_DOWNLOADED {
+        CHECK_CARD_NOT_DOWNLOADED.to_owned()
+    } else {
+        CHECK_CARD_LIBRARY_UNAVAILABLE.to_owned()
     }
-    let why = crate::plain_text::library_problem(e);
-    format!(
-        "The {library:?} library of ONNX Runtime is unavailable, so the model check tests \
-         Parakeet models on the processor only ({why})."
-    )
 }
 
 /// The production work: downloads through the manifest's allowlist, the check through

@@ -416,15 +416,44 @@ fn model_job_check_library_fallback_is_one_warning_before_the_trials() {
         check_fallback_message(earshot_runtime::backends::Accelerator::Qnn, &raw),
         message
     );
-    // Other libraries keep their library and reason.
-    let cuda = check_fallback_message(
-        earshot_runtime::backends::Accelerator::Cuda,
-        &earshot_runtime::RuntimeError::Unavailable("x"),
+    // The graphics card's case is fixed copy too (T14.13): no library name, none of the
+    // error's words.
+    let cuda = check_fallback_message(earshot_runtime::backends::Accelerator::Cuda, &raw);
+    assert_eq!(cuda, CHECK_CARD_LIBRARY_UNAVAILABLE);
+    assert_eq!(
+        cuda,
+        "Earshot could not use the graphics card this time, so the model check tests Parakeet \
+         models on the processor only."
     );
-    assert!(
-        cuda.starts_with("The Cuda library of ONNX Runtime"),
-        "{cuda}"
-    );
+    for word in [
+        "Cuda",
+        "CUDA",
+        "ONNX",
+        "library",
+        "dll",
+        "zq-raw-words",
+        "0x",
+        "unavailable",
+    ] {
+        assert!(!cuda.contains(word), "{word} in {cuda}");
+    }
+    assert!(!crate::plain_text::names_developer_tool(&cuda));
+    // Its files missing (a real refusal from an empty models folder): fixed copy that says so.
+    let missing = earshot_runtime::backends::init_onnx(
+        &earshot_runtime::backends::ModelDir::new(dir.0.join("no-models")),
+        earshot_runtime::backends::Accelerator::Cpu,
+    )
+    .unwrap_err();
+    let not_there = check_fallback_message(earshot_runtime::backends::Accelerator::Cuda, &missing);
+    assert_eq!(not_there, CHECK_CARD_NOT_DOWNLOADED);
+    assert!(not_there.contains("it is not downloaded"), "{not_there}");
+    for word in ["Cuda", "CUDA", "ONNX", "library", "dll", "0x", "no-models"] {
+        assert!(!not_there.contains(word), "{word} in {not_there}");
+    }
+    assert!(!crate::plain_text::names_developer_tool(&not_there));
+    for copy in [CHECK_CARD_LIBRARY_UNAVAILABLE, CHECK_CARD_NOT_DOWNLOADED] {
+        assert!(copy.ends_with('.') && !copy.contains("  "), "{copy}");
+    }
     for mode in [Mode::Succeed, Mode::Fail, Mode::Panic] {
         let (tx, rx_go) = mpsc::channel();
         let fake = Arc::new(Fake {
@@ -604,7 +633,10 @@ fn model_job_cancel_check_ends_with_one_failed() {
     let (fake, _go) = Fake::new(Mode::Succeed);
     let (jobs, rx) = runner(fake);
     let e = jobs.cancel_check().unwrap_err();
-    assert_eq!(e.kind, "not_checking");
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("not_checking", "The model check is not running.")
+    );
     jobs.start_check(&svc).unwrap();
     // The first trial has started: the check is waiting inside its work.
     assert!(matches!(

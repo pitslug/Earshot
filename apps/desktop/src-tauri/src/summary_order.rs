@@ -958,7 +958,7 @@ pub async fn resummarise_writers(
 /// A computer is asked through `ask_summary_helper`.
 #[tauri::command]
 #[specta::specta]
-pub fn resummarise_with(
+pub async fn resummarise_with(
     state: tauri::State<'_, crate::ipc::AppState>,
     jobs: tauri::State<'_, crate::jobs::JobRunner>,
     meeting: String,
@@ -969,12 +969,16 @@ pub fn resummarise_with(
         OrderStep::Writer(w) => OrderStep::Writer(w),
         OrderStep::Computer(_) => return Err(IpcError::internal()),
     };
-    jobs.start_summary(
-        &services,
-        crate::detail::parse_id(&meeting)?,
-        crate::jobs::SummaryStart::Named(step),
-        None,
-    )
+    let (jobs, meeting) = (jobs.inner().clone(), crate::detail::parse_id(&meeting)?);
+    crate::ipc::blocking(move || {
+        jobs.start_summary(
+            &services,
+            meeting,
+            crate::jobs::SummaryStart::Named(step),
+            None,
+        )
+    })
+    .await
 }
 
 #[cfg(test)]

@@ -558,7 +558,7 @@ export function createModelsMock(
     },
     runCheck: async () => startCheck(),
     cancelCheck: async () => {
-      if (!checking) fail("not_checking", "the model check is not running");
+      if (!checking) fail("not_checking", "The model check is not running.");
       for (const c of checkTimers) c();
       checking = false;
       emit({ type: "Failed", model: null, message: "The model check was cancelled.", retryable: true });

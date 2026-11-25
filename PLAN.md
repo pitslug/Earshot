@@ -2629,16 +2629,16 @@ Lane shell (desktop: `shell.rs`, `meeting.rs`, `meeting_events.rs`, `general.rs`
 
 Lane ipc (desktop: `ipc.rs`, `check_child.rs`, `models.rs`, `model_jobs.rs`, settings command modules):
 
-- [ ] T14.10 Commands that take shared locks run off the main thread
+- [x] T14.10 Commands that take shared locks run off the main thread
   - do: every non-async command that reaches a lease, the check slot, the downloads lock, the store or a WorkGate pass becomes `async` plus `ipc::blocking`; a test lists the commands that may stay sync and why.
   - accept: `cargo test -p earshot-desktop --bin earshot ipc`; bindings unchanged (`EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings` gives no diff)
-- [ ] T14.11 A model check that stops answering ends by itself
+- [x] T14.11 A model check that stops answering ends by itself
   - do: a stall limit on the check child's progress lines (awake clock, clock-free test), ending as the retryable failure a missing final line gives; the child's lines carry a prefix and other stdout lines are skipped, as `summary_child` does.
   - accept: `cargo test -p earshot-desktop --bin earshot check_child`
-- [ ] T14.12 A model in use by a meeting cannot be removed
+- [x] T14.12 A model in use by a meeting cannot be removed
   - do: removal is refused `busy` while a meeting records, finishes or is held with that model (the model it started with, not only the current settings).
   - accept: `cargo test -p earshot-desktop --bin earshot models`
-- [ ] T14.13 Small command fixes
+- [x] T14.13 Small command fixes
   - do: `start_meeting` cleans its title by the rename rule; lower-case internal phrases and raw Tauri error text in `ipc.rs` become fixed copy; `meeting_list` reads the list in one store lock.
   - accept: `cargo test -p earshot-desktop --bin earshot ipc`
 
