@@ -11,9 +11,11 @@ import { type SyncDeviceView, type SyncMockData, createMockIpc } from "../ipc";
 import { mockDeviceId } from "../ipc/mockSync";
 import { MOCK_SYNC_CODE, MOCK_SYNC_SECRET } from "../ipc/mockSync";
 import { openSettings, renderApp } from "../test/app";
+import { setWindowWatched } from "../test/windowWatched";
 import { createManualTimer } from "../time";
 import offload from "../../../../fixtures/ui/offload_copy_cases.json";
 import { DEVICE_NAME_TOO_LONG } from "../ipc/mockSync";
+import { DEVICES_FRESH_MS } from "./useSync";
 import {
   DEVICES_REFRESH_MS,
   NAME_EXPLAINED,
@@ -257,6 +259,120 @@ describe("the Sync page", () => {
     const before = asked.length;
     act(() => timer.advance(DEVICES_REFRESH_MS * 3));
     expect(asked).toHaveLength(before);
+  });
+
+  it("asks for the computers only while the window is watched, and at once when it is again (T14.50)", async () => {
+    const answer = [{ ...device("3f2a9c1e", true), seen_s_ago: 0 }, { ...device("b71d04a8", false), name: "Laptop" }];
+    const asked: number[] = [];
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ meetings: [], timer, sync: { setUp: true } });
+    renderApp(
+      {
+        ...ipc,
+        syncDevices: async () => {
+          asked.push(asked.length);
+          return answer.map((d) => ({ ...d }));
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "Sync");
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getByText("Laptop")).toBeInTheDocument();
+    expect(asked).toHaveLength(1);
+    // The ask is made in the same turn the timer fires in, so a count read right after one
+    // says whether it was made.
+    act(() => timer.advance(DEVICES_REFRESH_MS));
+    expect(asked).toHaveLength(2);
+    // Its answer arrives (a return while an ask still runs waits for it, asking nothing more).
+    await act(async () => {});
+    // Hidden to the tray: nothing is asked, however long the page stays open there, and the
+    // list stays as it was.
+    act(() => setWindowWatched(false, false, true));
+    act(() => timer.advance(DEVICES_REFRESH_MS * 5));
+    expect(asked).toHaveLength(2);
+    expect(within(list).getByText("Laptop")).toBeInTheDocument();
+    // Watched again: asked at once, not at the next interval, and then every interval as before.
+    act(() => setWindowWatched(true, true, true));
+    expect(asked).toHaveLength(3);
+    await act(async () => {});
+    act(() => timer.advance(DEVICES_REFRESH_MS - 1));
+    expect(asked).toHaveLength(3);
+    act(() => timer.advance(1));
+    expect(asked).toHaveLength(4);
+    await act(async () => {});
+    // Visible but behind another window (not focused) is not watched either.
+    act(() => setWindowWatched(true, false, true));
+    act(() => timer.advance(DEVICES_REFRESH_MS * 3));
+    expect(asked).toHaveLength(4);
+    act(() => setWindowWatched(true, true, true));
+    expect(asked).toHaveLength(5);
+    await waitFor(() => expect(within(list).getByText("Laptop")).toBeInTheDocument());
+  });
+
+  it("asks nothing on a quick return to the window, and never a second time while an ask runs (T14.50)", async () => {
+    let answer = [{ ...device("3f2a9c1e", true), seen_s_ago: 0 }, { ...device("b71d04a8", false), name: "Laptop" }];
+    const asked: number[] = [];
+    const held: { release: (() => void) | null } = { release: null };
+    let hold = false;
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ meetings: [], timer, sync: { setUp: true } });
+    renderApp(
+      {
+        ...ipc,
+        syncDevices: () => {
+          asked.push(asked.length);
+          const view = answer.map((d) => ({ ...d }));
+          if (!hold) return Promise.resolve(view);
+          return new Promise<SyncDeviceView[]>((resolve) => {
+            held.release = () => resolve(view);
+          });
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "Sync");
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getByText("Laptop")).toBeInTheDocument();
+    expect(asked).toHaveLength(1);
+    // Away and back with the last answer still fresh: nothing is asked.
+    act(() => setWindowWatched(false, false, true));
+    act(() => timer.advance(DEVICES_FRESH_MS - 1));
+    act(() => setWindowWatched(true, true, true));
+    expect(asked).toHaveLength(1);
+    // Control: once the answer is DEVICES_FRESH_MS old, a return asks at once.
+    act(() => setWindowWatched(false, false, true));
+    act(() => timer.advance(1));
+    act(() => setWindowWatched(true, true, true));
+    expect(asked).toHaveLength(2);
+    await waitFor(() => expect(within(list).getByText("Laptop")).toBeInTheDocument());
+    // An ask that has not answered yet: a return starts no second one, and still shows its answer.
+    hold = true;
+    answer = [answer[0], { ...answer[1], name: "Desk" }];
+    act(() => timer.advance(DEVICES_REFRESH_MS));
+    expect(asked).toHaveLength(3);
+    act(() => setWindowWatched(false, false, true));
+    act(() => timer.advance(DEVICES_FRESH_MS * 5));
+    act(() => setWindowWatched(true, true, true));
+    expect(asked).toHaveLength(3);
+    expect(held.release).not.toBeNull();
+    act(() => held.release?.());
+    expect(await within(list).findByText("Desk")).toBeInTheDocument();
+    expect(asked).toHaveLength(3);
+  });
+
+  it("asks for nothing when the page opens in a window that is not watched, until it is", async () => {
+    setWindowWatched(false, false);
+    const { calls } = await setup({ setUp: true });
+    await screen.findByRole("switch", { name: "Sync is on" });
+    expect(calls).toContain("syncView");
+    expect(calls).not.toContain("syncDevices");
+    act(() => setWindowWatched(true, true, true));
+    expect(calls.filter((c) => c === "syncDevices")).toHaveLength(1);
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getByText("This computer")).toBeInTheDocument();
   });
 
   it("says this computer is online while sync runs, and not syncing when it does not", async () => {

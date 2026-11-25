@@ -1034,3 +1034,57 @@ fn store_sync_applied_names_only_the_meetings_whose_rows_were_written() {
     assert_eq!(p.written, 1);
     assert!(p.meetings.is_empty() && p.people, "{p:?}");
 }
+
+/// T14.50: the mark the offload step reads instead of every request moves with every request
+/// written on this device (a new row, or a later stamp).
+#[test]
+fn store_sync_the_request_mark_moves_with_every_request_written_here() {
+    use earshot_core::model::{RequestState, SummaryRequest, SummaryRequestRepo};
+    let mut e = env("sync-request-mark");
+    let empty = e.store.summary_requests_mark().unwrap();
+    assert_eq!((empty.rows, empty.latest), (0, None));
+    e.store
+        .put_meeting(meeting(1, "Invented", at(T0 + 1, 0, HERE)))
+        .unwrap();
+    let request = |n: u8, state: RequestState, updated: HlcTimestamp| SummaryRequest {
+        id: id(n),
+        meta: meta(updated),
+        meeting_id: id(1),
+        target_device: THERE,
+        asking_device: HERE,
+        segment_count: 4,
+        state,
+        reason: String::new(),
+    };
+    e.store
+        .put_summary_request(request(2, RequestState::Requested, at(T0 + 5, 1, HERE)))
+        .unwrap();
+    let one = e.store.summary_requests_mark().unwrap();
+    assert_eq!((one.rows, one.latest), (1, Some(at(T0 + 5, 1, HERE))));
+    // A second request, stamped earlier: the count moves, the latest stamp does not.
+    e.store
+        .put_summary_request(request(3, RequestState::Requested, at(T0 + 4, 9, HERE)))
+        .unwrap();
+    let two = e.store.summary_requests_mark().unwrap();
+    assert_eq!((two.rows, two.latest), (2, Some(at(T0 + 5, 1, HERE))));
+    assert_ne!(one, two);
+    // A request changed (same wall time, a later logical count): the latest stamp moves.
+    e.store
+        .put_summary_request(request(3, RequestState::Withdrawn, at(T0 + 5, 2, HERE)))
+        .unwrap();
+    let three = e.store.summary_requests_mark().unwrap();
+    assert_eq!((three.rows, three.latest), (2, Some(at(T0 + 5, 2, HERE))));
+    // The other device's id sorts above this one's at an equal time and count.
+    e.store
+        .put_summary_request(request(2, RequestState::Claimed, at(T0 + 5, 2, THERE)))
+        .unwrap();
+    assert_eq!(
+        e.store.summary_requests_mark().unwrap().latest,
+        Some(at(T0 + 5, 2, THERE))
+    );
+    // Reading it changes nothing.
+    assert_eq!(
+        e.store.summary_requests_mark().unwrap(),
+        e.store.summary_requests_mark().unwrap()
+    );
+}

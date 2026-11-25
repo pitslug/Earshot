@@ -49,6 +49,6 @@ pub use fsutil::total_memory;
 pub use layout::DataDir;
 pub use sync::{
     AfterApply, Applied, ApplyRules, Held, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, OutboxPage,
-    SyncKinds, SyncedRow,
+    RequestsMark, SyncKinds, SyncedRow,
 };
 pub use versioned::{encode_versioned, split_version};

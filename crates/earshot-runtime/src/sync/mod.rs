@@ -43,7 +43,8 @@ use crate::services::Services;
 /// The vault key type, for hosts that store it ([`SyncVault`]).
 pub use earshot_sync::VaultKey;
 pub use engine::{
-    ChangeListener, LISTENER_PANICKED, Peer, SyncChanges, SyncClient, TickReport, WorkerWriter,
+    ChangeListener, Heard, LISTENER_PANICKED, Peer, PresenceListener, SyncChanges, SyncClient,
+    TickReport, WorkerWriter,
 };
 pub use presence::{
     Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ModelPlace, ONLINE_WITHIN_S, PRESENCE_EVERY,
@@ -879,11 +880,20 @@ pub fn vault_devices(
     services: &Services,
     vault: std::sync::Arc<dyn SyncVault>,
 ) -> Result<Vec<SyncDevice>, SyncProblem> {
-    let secrets = vault.load()?.ok_or(SyncProblem::Vault)?;
-    let client = SyncClient::new(services.clone(), vault)?;
-    let me = *client.device().as_uuid().as_bytes();
-    let answer = client.relay().vault(&secrets.token)?;
-    let peers = client.peers()?;
+    // Not set up is said before any client is made.
+    if !vault.has()? {
+        return Err(SyncProblem::Vault);
+    }
+    SyncClient::new(services.clone(), vault)?.vault_devices()
+}
+
+/// The vault's devices as the relay lists them, this device first, each with what its presence
+/// says.
+pub(crate) fn devices_of(
+    me: [u8; 16],
+    answer: earshot_sync::wire::VaultResponse,
+    peers: &[Peer],
+) -> Vec<SyncDevice> {
     let mut devices: Vec<SyncDevice> = answer
         .devices
         .into_iter()
@@ -892,19 +902,19 @@ pub fn vault_devices(
                 .iter()
                 .find(|p| p.device.as_uuid().as_bytes()[..] == d.device_id.0[..]);
             let presence = peer.and_then(|p| p.presence.as_ref());
+            // What it says of itself is read once, by the rule the sync thread's listener
+            // hears too.
+            let heard = peer.and_then(Peer::heard);
             let id: [u8; 16] = d.device_id.0.as_slice().try_into().unwrap_or([0; 16]);
             SyncDevice {
                 device: earshot_core::identity::DeviceId::from_bytes(id),
                 this_device: d.device_id.0 == me,
-                name: presence.map(|p| p.name.clone()).filter(|n| !n.is_empty()),
+                name: heard.as_ref().and_then(|h| h.name.clone()),
                 online: peer.is_some_and(|p| p.online),
                 recording: presence.is_some_and(|p| p.recording),
                 offers_summaries: presence.is_some_and(|p| p.offers_summaries),
-                writer_kind: presence
-                    .filter(|p| p.offers_summaries)
-                    .and_then(|p| p.writer_kind.as_deref())
-                    .and_then(crate::offload::WriterKind::parse),
-                model_place: presence.and_then(model_place_of),
+                writer_kind: heard.as_ref().and_then(|h| h.writer_kind),
+                model_place: heard.as_ref().and_then(|h| h.model_place),
                 short_id: d
                     .device_id
                     .0
@@ -918,16 +928,7 @@ pub fn vault_devices(
         })
         .collect();
     devices.sort_by_key(|d| (!d.this_device, d.joined_unix_s));
-    Ok(devices)
-}
-
-/// Where a device's own local model runs, from its presence: only a summary worker's, only
-/// while it offers summaries with its local model, and only a word this build knows.
-fn model_place_of(p: &Presence) -> Option<ModelPlace> {
-    let local = p.writer_kind.as_deref() == Some(crate::offload::WriterKind::Local.word());
-    (p.kind == KIND_SERVER && p.offers_summaries && local)
-        .then(|| p.model_place.as_deref().and_then(ModelPlace::parse))
-        .flatten()
+    devices
 }
 
 /// The stored status (the default when none is stored or it cannot be read).

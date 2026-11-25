@@ -1023,5 +1023,154 @@ fn offload_host_declines_when_its_thread_cannot_start() {
     );
 }
 
+// ---- T14.50: the names the sync thread hears reach the cache and the waiting meeting ----
+
+#[test]
+fn offload_hearing_presence_remembers_each_computer_and_answers_only_new_names() {
+    use earshot_runtime::sync::Heard;
+    let desk = earshot_core::identity::DeviceId::from_bytes([0xd1; 16]);
+    let server = earshot_core::identity::DeviceId::from_bytes([0xd2; 16]);
+    let said = |device, name: Option<&str>, writer, place| Heard {
+        device,
+        name: name.map(str::to_owned),
+        writer_kind: writer,
+        model_place: place,
+    };
+    assert!(!known_computers().contains_key(&desk));
+    let first = [
+        said(
+            desk,
+            Some("Invented desk"),
+            Some(WriterKind::ClaudeCode),
+            None,
+        ),
+        said(
+            server,
+            Some("Invented server"),
+            Some(WriterKind::Local),
+            Some(ModelPlace::GraphicsCard),
+        ),
+    ];
+    assert_eq!(hear_presence(&first), vec![desk, server], "both are new");
+    let known = known_computers();
+    assert_eq!(known[&desk].name.as_deref(), Some("Invented desk"));
+    assert_eq!(known[&desk].writer, Some(WriterKind::ClaudeCode));
+    assert_eq!(
+        (known[&server].writer, known[&server].place),
+        (Some(WriterKind::Local), Some(ModelPlace::GraphicsCard))
+    );
+    // Heard again as it was: nothing is new, so no meeting is read again for it.
+    assert_eq!(hear_presence(&first), Vec::new());
+    // One renamed, the other without a name this time (its presence could not say): only the
+    // renamed one is answered, and the known name of the other is kept.
+    let second = [
+        said(desk, Some("Invented desk, renamed"), None, None),
+        said(server, None, Some(WriterKind::Local), None),
+    ];
+    assert_eq!(hear_presence(&second), vec![desk]);
+    let known = known_computers();
+    assert_eq!(known[&desk].name.as_deref(), Some("Invented desk, renamed"));
+    assert_eq!(known[&desk].writer, Some(WriterKind::ClaudeCode), "kept");
+    assert_eq!(known[&server].name.as_deref(), Some("Invented server"));
+    assert_eq!(known[&server].place, None, "the place is as last said");
+    // The banner of a meeting waiting for it reads the same cache.
+    assert_eq!(
+        waiting_copy(known[&desk].name.as_deref()),
+        "Waiting for Invented desk, renamed to write the summary."
+    );
+}
+
+/// After a restart nothing in the process has heard the other computer's name. The sync thread
+/// the app starts reads presence for the claimed request it waits on: the name reaches the
+/// cache from that read, and the window is told which meeting to read again, so "Waiting for
+/// <computer>" names it without the Sync or Summaries page being opened.
+#[test]
+fn offload_the_sync_thread_names_the_computer_a_waiting_meeting_shows_after_a_restart() {
+    struct Idle;
+    impl OffloadHost for Idle {
+        fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
+            panic!("nothing is handed back while the helper is online: {job:?}")
+        }
+        fn write_for(&self, _: SummaryRequest) {}
+    }
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let b_id = b.id();
+    earshot_runtime::sync::set_offer_summaries(&b.svc, true).unwrap();
+    earshot_runtime::sync::set_device_name(&b.svc, "Invented laptop").unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    cb.send_presence(false).unwrap();
+    let m = meeting_with_final(&a.svc, 91, 3);
+    let elsewhere = meeting_with_final(&a.svc, 92, 2);
+    let request = earshot_runtime::offload::ask(&a.svc, m, b_id)
+        .unwrap()
+        .unwrap();
+    // The other computer claims it; everything is synced by hand, so the thread started below
+    // has nothing left to apply.
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    cb.tick().unwrap();
+    let claimed = earshot_runtime::offload::Offload::new()
+        .step(&b.svc, &mut || None, &Idle)
+        .unwrap();
+    assert_eq!(claimed.claimed, 1, "{claimed:?}");
+    cb.tick().unwrap();
+    ca.tick().unwrap();
+    let quiet = ca.tick().unwrap();
+    assert_eq!(quiet.written, 0, "{quiet:?}");
+    let got = a.svc.store().summary_request(request).unwrap().unwrap();
+    assert_eq!(got.state, RequestState::Claimed);
+    // As after a restart: this process has heard nothing of that computer.
+    assert!(!known_computers().contains_key(&b_id));
+    assert_eq!(
+        waiting_copy(None),
+        "Waiting for your other computer to write the summary."
+    );
+
+    // The app starts its sync thread, with its offload host and the window's listener.
+    let told: Arc<Mutex<Vec<crate::sync_settings::SyncEvent>>> = Arc::default();
+    let sink = Arc::clone(&told);
+    a.host
+        .set_change_listener(Arc::new(move |c: &earshot_runtime::sync::SyncChanges| {
+            sink.lock()
+                .unwrap()
+                .push(crate::sync_settings::sync_event(c));
+        }));
+    a.host.set_offload_host(Arc::new(Idle));
+    a.host.start_if_on(&a.svc);
+    assert!(a.host.running());
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let named = |told: &Mutex<Vec<crate::sync_settings::SyncEvent>>| {
+        told.lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.meetings.contains(&m.to_string()))
+            .count()
+    };
+    while named(&told) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the window was never told to read the waiting meeting again"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The name was in the cache before the window was told, so the read it makes shows it.
+    let name = known_computers().get(&b_id).and_then(|n| n.name.clone());
+    assert_eq!(name.as_deref(), Some("Invented laptop"));
+    assert_eq!(
+        waiting_copy(name.as_deref()),
+        "Waiting for Invented laptop to write the summary."
+    );
+    a.host.stop_and_wait();
+    assert_eq!(named(&told), 1, "told once: the name did not change again");
+    assert!(
+        told.lock()
+            .unwrap()
+            .iter()
+            .all(|e| !e.meetings.contains(&elsewhere.to_string())),
+        "a meeting that waits for nobody is not named"
+    );
+}
+
 #[path = "offload_order_tests.rs"]
 mod order;

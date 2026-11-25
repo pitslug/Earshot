@@ -2782,10 +2782,11 @@ Second wave (after the lanes above are merged):
   - do: `label_segment_speakers` runs with the store lock free (or sweeps with a pointer), with the same labels on the existing tests.
   - accept: `cargo test -p earshot-core diar`; `cargo test -p earshot-runtime post`
 - [ ] T14.49 A removed person or folder stays removed
+  - status (2026-11-26): held out of 0.9.0. The rule is written as docs/sync-spec.md section 7A (proposed, not built). Its spec review blocked it: finality held in one direction only, so a removal made on a computer that never syncs again could be undone by a later offline rename (voiceprints kept). Advisories: speaker-link writers must refuse a tombstoned person, the Me row under an `is_me` tombstone, an erasure flush for name-only removals, the names pin, three facts missing from the owner's questions, more tests. Next: revise 7A, review again, the owner's confirmations, then build.
   - deps: T14.42
   - do: a rule in docs/sync-spec.md first: person and folder tombstones are final in `apply_remote`, as meeting tombstones are.
   - accept: `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.50 Small sync fixes
+- [x] T14.50 Small sync fixes
   - deps: T14.46
   - do: a retired sync thread stops when a new one starts; the signal lock is not held while waiting for the beats lock; the open Sync page asks the relay only while the window is watched and reuses the thread's client; `converge` runs only for kinds a page wrote.
   - accept: `cargo test -p earshot-runtime sync`; `cmd /c pnpm --filter @earshot/ui test`

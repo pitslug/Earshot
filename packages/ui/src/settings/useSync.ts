@@ -4,15 +4,22 @@
 // one this computer shows, until Hide, the code's own expiry (on the injected timer) or the page
 // closes.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { type SyncCodeView, type SyncDeviceView, type SyncView, errorText, useIpc } from "../ipc";
+import { useWindowWatched } from "../shell/windowWatched";
 import type { Timer } from "../time";
 import { type Load, useLoad } from "./parts";
 
-/** How often the open Sync page asks for the computers again, so one that quits, sleeps or comes
- * back shows without leaving the page (the 0.4.2 test, 2026-11-25). */
+/** How often the open Sync page asks for the computers again while the window is watched, so one
+ * that quits, sleeps or comes back shows without leaving the page (the 0.4.2 test, 2026-11-25). */
 export const DEVICES_REFRESH_MS = 10_000;
+
+/** A list of computers answered less than this long ago is not asked for again when the window is
+ * watched again (a quick look away and back asks nothing). */
+export const DEVICES_FRESH_MS = 2_000;
+
+type DevicesAnswer = { ok: true; view: SyncDeviceView[] } | { ok: false; message: string };
 
 /** One of the two forms for a computer that is not set up. */
 export interface SyncForm {
@@ -82,32 +89,62 @@ export function useSync(timer: Timer): SyncPageState {
   }, [code, timer]);
 
   const setUp = load.status === "loaded" && load.view.set_up;
+  // The server is asked only while the window is watched (T14.50): hidden in the tray, minimised
+  // or behind another window, the open page asks nothing, and it asks at once when it is watched
+  // again (this effect runs anew), so the list is never older than the last look at it. A return
+  // within DEVICES_FRESH_MS of the last shown answer asks nothing, and no second ask starts while
+  // one runs: a run that finds one waits for its answer instead.
+  const watched = useWindowWatched();
+  const asking = useRef<Promise<DevicesAnswer> | null>(null);
+  const shownAt = useRef<number | null>(null);
+  const lastAsked = useRef(devicesAsked);
   useEffect(() => {
     if (!setUp) {
       setDevices(null);
+      shownAt.current = null;
       return;
     }
+    if (!watched) return;
+    // A bump (the interval, Sync now) always asks; anything else is a return to the window.
+    const bumped = devicesAsked !== lastAsked.current;
+    lastAsked.current = devicesAsked;
+    const fresh = shownAt.current !== null && timer.now() - shownAt.current < DEVICES_FRESH_MS;
+    if (!bumped && asking.current === null && fresh) return;
     let live = true;
     setDevices((d) => d ?? { status: "loading" });
-    void ipc.syncDevices().then(
-      (view) => {
-        if (live) setDevices({ status: "loaded", view });
-      },
-      (e: unknown) => {
-        if (live) setDevices({ status: "failed", message: errorText(e) });
-      },
-    );
+    let ask = asking.current;
+    if (ask === null) {
+      const started = ipc.syncDevices().then(
+        (view): DevicesAnswer => ({ ok: true, view }),
+        (e: unknown): DevicesAnswer => ({ ok: false, message: errorText(e) }),
+      );
+      asking.current = started;
+      void started.then(() => {
+        if (asking.current === started) asking.current = null;
+      });
+      ask = started;
+    }
+    void ask.then((answer) => {
+      if (!live) return;
+      if (answer.ok) {
+        setDevices({ status: "loaded", view: answer.view });
+        shownAt.current = timer.now();
+      } else {
+        setDevices({ status: "failed", message: answer.message });
+      }
+    });
     return () => {
       live = false;
     };
-  }, [ipc, setUp, devicesAsked]);
+  }, [ipc, setUp, watched, devicesAsked, timer]);
 
-  // While the page is open the computers are asked for again, so one that quits, sleeps or
-  // comes back shows without leaving the page; leaving the page stops it.
+  // While the page is open and the window is watched the computers are asked for again, so one
+  // that quits, sleeps or comes back shows without leaving the page; leaving the page, or the
+  // window no longer being watched, stops it.
   useEffect(() => {
-    if (!setUp) return;
+    if (!setUp || !watched) return;
     return timer.setInterval(() => setDevicesAsked((n) => n + 1), DEVICES_REFRESH_MS);
-  }, [setUp, timer]);
+  }, [setUp, watched, timer]);
 
   const shown = (view: SyncView) => setLoad({ status: "loaded", view });
 

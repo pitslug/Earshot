@@ -303,6 +303,14 @@ impl SyncThread {
         cv.notify_all();
     }
 
+    /// The thread's client, for a host's own asks of the relay beside the thread's ticks
+    /// ([`SyncClient::vault_devices`], T14.50): one HTTP client and runtime for both, in place
+    /// of a new client for every ask. It stays usable after the thread has ended.
+    #[must_use]
+    pub fn client(&self) -> Arc<SyncClient> {
+        Arc::clone(&self.client)
+    }
+
     /// What ends this thread when another takes its place ([`Superseder`]).
     #[must_use]
     pub fn superseder(&self) -> Superseder {
@@ -619,15 +627,43 @@ fn run(
             // thread's last).
             let _stepping = steps.lock().unwrap_or_else(PoisonError::into_inner);
             if !superseded(signal) {
+                // Whether the tick may have changed a summary request here: it wrote, deleted
+                // or repaired a row, or it panicked and cannot say. With nothing changed and
+                // nothing to do or wait for at the last step, the step reads no request (T14.50).
+                let rows_changed = tick_report.as_ref().is_none_or(super::TickReport::changed);
+                // The devices whose name the host had not heard, from the presence the step
+                // read for its own work (T14.50): no request is made for it.
+                let mut named: Vec<earshot_core::identity::DeviceId> = Vec::new();
                 // Kept whatever the step ends with, as the tick's report is (T12.81).
                 let _ = catch_unwind(AssertUnwindSafe(|| {
-                    state.step_into(
+                    state.step_after_tick_into(
                         &services,
-                        &mut || client.peers().ok(),
+                        &mut || {
+                            let peers = client.peers().ok();
+                            if let Some(peers) = &peers {
+                                named.extend(client.tell_presence(peers));
+                            }
+                            peers
+                        },
                         &**host,
+                        rows_changed,
                         &mut step_report,
                     )
                 }));
+                // A meeting waiting for a computer that now has a name is read again by the
+                // window, so its banner names the computer. A store failure here costs only
+                // that: the banner names it when the meeting is next opened.
+                if !named.is_empty()
+                    && let Ok(Ok(waiting)) = catch_unwind(AssertUnwindSafe(|| {
+                        crate::offload::meetings_waiting_on(
+                            &services.store(),
+                            client.device(),
+                            &named,
+                        )
+                    }))
+                {
+                    step_report.meetings.extend(waiting);
+                }
             }
         }
         // Once per pass, after the step (T12.81): what the tick applied and what the step wrote

@@ -178,6 +178,56 @@ pub struct Peer {
     pub online: bool,
 }
 
+/// What another device's presence says of itself, for this device's labels of it: the one
+/// reading of a presence blob behind the Sync page's list of computers
+/// ([`super::vault_devices`]) and what the sync thread hears ([`PresenceListener`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heard {
+    /// The device.
+    pub device: DeviceId,
+    /// Its name (`None` for an empty one).
+    pub name: Option<String>,
+    /// The kind of writer it would use, when it offers summaries and this build knows the kind.
+    pub writer_kind: Option<crate::offload::WriterKind>,
+    /// Where its own local model runs: only a summary worker's, only while it offers summaries
+    /// with its local model, and only a word this build knows (T11.6a).
+    pub model_place: Option<super::presence::ModelPlace>,
+}
+
+impl Peer {
+    /// What this device's presence says of itself; `None` when it sent none this device can
+    /// read.
+    #[must_use]
+    pub fn heard(&self) -> Option<Heard> {
+        let p = self.presence.as_ref()?;
+        let local = p.writer_kind.as_deref() == Some(crate::offload::WriterKind::Local.word());
+        Some(Heard {
+            device: self.device,
+            name: Some(p.name.clone()).filter(|n| !n.is_empty()),
+            writer_kind: p
+                .writer_kind
+                .as_deref()
+                .filter(|_| p.offers_summaries)
+                .and_then(crate::offload::WriterKind::parse),
+            model_place: (p.kind == super::presence::KIND_SERVER && p.offers_summaries && local)
+                .then(|| {
+                    p.model_place
+                        .as_deref()
+                        .and_then(super::presence::ModelPlace::parse)
+                })
+                .flatten(),
+        })
+    }
+}
+
+/// Told what the other devices' presence says each time the sync thread reads it for its own
+/// work ([`SyncClient::with_presence`], T14.50): on the sync thread, with no store lock held, at
+/// no request of its own (the thread reads presence only while this device waits for a claimed
+/// summary request). It must not block. It answers with the devices whose name it had not
+/// heard before, or had heard differently: the meetings waiting for those are read again by the
+/// window. A panic in it is caught and never ends sync.
+pub type PresenceListener = Arc<dyn Fn(&[Heard]) -> Vec<DeviceId> + Send + Sync>;
+
 /// The writer kind a summary worker names in its presence, asked again at every presence send
 /// (where its model is can change while it runs).
 pub type WorkerWriter =
@@ -201,6 +251,12 @@ pub struct SyncClient {
     model_place: Option<super::presence::ModelPlace>,
     /// Told after every tick that changed rows here ([`SyncClient::with_changes`]).
     changes: Option<ChangeListener>,
+    /// Told what presence says when the sync thread reads it ([`SyncClient::with_presence`]).
+    presence: Option<PresenceListener>,
+    /// Whether this client has applied a page with every convergence repair
+    /// ([`Store::apply_remote_every_repair`]): its first page, so each start of sync goes over
+    /// the whole store once; later pages run only the repairs their own rows call for (T14.50).
+    repaired_all: AtomicBool,
     /// Pull pages per tick and rows per page: `MAX_PULL_PAGES` and `PULL_DEFAULT`, smaller only
     /// in tests (a tick that ends with `more == true`).
     pull_pages: usize,
@@ -443,6 +499,8 @@ impl SyncClient {
             worker: None,
             model_place: None,
             changes: None,
+            presence: None,
+            repaired_all: AtomicBool::new(false),
             pull_pages: MAX_PULL_PAGES,
             pull_limit: earshot_sync::wire::PULL_DEFAULT,
             #[cfg(test)]
@@ -537,6 +595,34 @@ impl SyncClient {
             eprintln!("{LISTENER_PANICKED}");
         }
         told.is_ok()
+    }
+
+    /// Each time the sync thread reads the other devices' presence for its own work,
+    /// `listener` hears what each said of itself ([`PresenceListener`], T14.50): the app keeps
+    /// the names, so a meeting waiting for another computer names it after a restart.
+    #[must_use]
+    pub fn with_presence(mut self, listener: PresenceListener) -> Self {
+        self.presence = Some(listener);
+        self
+    }
+
+    /// Tells the listener ([`Self::with_presence`]) what `peers` said, this device left out;
+    /// returns the devices it names as newly or differently named (none without a listener, or
+    /// when it panics).
+    pub fn tell_presence(&self, peers: &[Peer]) -> Vec<DeviceId> {
+        let Some(listener) = &self.presence else {
+            return Vec::new();
+        };
+        let heard: Vec<Heard> = peers
+            .iter()
+            .filter(|p| p.device != self.device)
+            .filter_map(Peer::heard)
+            .collect();
+        if heard.is_empty() {
+            return Vec::new();
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(&heard)))
+            .unwrap_or_default()
     }
 
     /// Every request this client made, one entry per hop.
@@ -651,6 +737,27 @@ impl SyncClient {
                 })
             })
             .collect())
+    }
+
+    /// [`super::vault_devices`] through this client (T14.50): a host that lists the devices
+    /// again and again (the open Sync page) asks through a client it already has, the running
+    /// sync thread's when there is one, instead of making one, with its own HTTP client and
+    /// runtime, for every ask.
+    ///
+    /// Safe beside a tick of this client on another thread: it reads the vault and makes two
+    /// requests, and takes neither the tick lock, the store lock nor any lock of the sync
+    /// thread's, so a tick never waits for it and it never waits for a tick. The relay's
+    /// requests of both go through one HTTP client and runtime, which serve callers on several
+    /// threads at once (the sync thread's gone presence already does).
+    ///
+    /// # Errors
+    /// As [`super::vault_devices`].
+    pub fn vault_devices(&self) -> Result<Vec<super::SyncDevice>, SyncProblem> {
+        let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
+        let me = *self.device.as_uuid().as_bytes();
+        let answer = self.relay.vault(&secrets.token)?;
+        let peers = self.peers()?;
+        Ok(super::devices_of(me, answer, &peers))
     }
 
     /// The flag that ends a tick at its next page.
@@ -1160,7 +1267,17 @@ impl SyncClient {
             after: Some(&after),
         };
         let (store, hlc) = db.parts();
-        let applied = store.apply_remote(page, &rules, hlc, &*clock)?;
+        // The first page this client applies runs every convergence repair, whatever it holds
+        // (rows left unrepaired by an earlier build are mended once per start); every later one
+        // runs the repairs its own rows call for (T14.50). One tick at a time on a store, so the
+        // flag has one writer.
+        let applied = if self.repaired_all.load(Ordering::Relaxed) {
+            store.apply_remote(page, &rules, hlc, &*clock)?
+        } else {
+            let applied = store.apply_remote_every_repair(page, &rules, hlc, &*clock)?;
+            self.repaired_all.store(true, Ordering::Relaxed);
+            applied
+        };
         if applied.biometrics_forgotten > 0 {
             // A Busy here means the forgetting is committed; the next checkpoint erases it.
             let _ = store.flush_erasures();
