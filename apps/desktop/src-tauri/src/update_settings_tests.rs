@@ -748,6 +748,7 @@ fn update_install_holds_the_checked_installer_until_it_has_started() {
     let path = installer_at(&dir, b"the checked installer");
     let started = AtomicBool::new(false);
     launch_held(
+        &dir.0,
         &path,
         |file| {
             // The check reads through the held handle.
@@ -789,13 +790,19 @@ fn update_install_a_failed_check_starts_nothing_and_lets_the_file_go() {
     let dir = crate::testutil::TempDir::new("update-hold-refused");
     let path = installer_at(&dir, b"a changed installer");
     let result = launch_held(
+        &dir.0,
         &path,
         |_| Err(UpdateError::InstallerChanged),
         |_| panic!("started a refused installer"),
     );
     assert!(matches!(result, Err(UpdateError::InstallerChanged)));
     std::fs::remove_file(&path).unwrap();
-    let missing = launch_held(&path, |_| Ok(()), |_| panic!("started a missing file"));
+    let missing = launch_held(
+        &dir.0,
+        &path,
+        |_| Ok(()),
+        |_| panic!("started a missing file"),
+    );
     assert!(matches!(missing, Err(UpdateError::Unreadable(_))));
 }
 
@@ -805,7 +812,12 @@ fn update_install_a_file_someone_has_open_for_writing_is_not_held_or_started() {
     let dir = crate::testutil::TempDir::new("update-hold-writer");
     let path = installer_at(&dir, b"being written");
     let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-    let result = launch_held(&path, |_| Ok(()), |_| panic!("started while written"));
+    let result = launch_held(
+        &dir.0,
+        &path,
+        |_| Ok(()),
+        |_| panic!("started while written"),
+    );
     assert!(
         matches!(result, Err(UpdateError::Unreadable(_))),
         "{result:?}"
@@ -819,13 +831,20 @@ fn update_install_a_program_starts_while_its_file_is_held() {
     // What the install relies on: CreateProcess (std's spawn, which `earshot_proc::spawn_detached`
     // uses) opens the program for execute with read sharing, which a read-only share allows. A
     // copy of a harmless system program stands in for the installer; it exits at once.
+    // It runs a copy of a Windows system tool (whoami.exe) from a temp folder, so it can fail on
+    // a host whose policy (AppLocker, WDAC, Smart App Control) blocks unknown executables: that
+    // is the host refusing the copy, not the hold failing.
+    const POLICY: &str = "a copy of whoami.exe did not run while held; if this host's policy \
+        (AppLocker, WDAC, Smart App Control) blocks unknown executables in temp folders, that \
+        is the cause, not the hold";
     let system = std::env::var_os("SystemRoot").expect("SystemRoot");
     let whoami = PathBuf::from(system).join("System32").join("whoami.exe");
     let dir = crate::testutil::TempDir::new("update-hold-start");
     let path = dir.0.join("Earshot_9.9.9_x64-setup.exe");
     std::fs::copy(&whoami, &path).unwrap();
     let mut status = None;
-    launch_held(
+    let result = launch_held(
+        &dir.0,
         &path,
         |_| Ok(()),
         |p| {
@@ -838,7 +857,106 @@ fn update_install_a_program_starts_while_its_file_is_held() {
             );
             Ok(())
         },
-    )
-    .unwrap();
-    assert!(status.is_some_and(|s| s.success()), "{status:?}");
+    );
+    assert!(result.is_ok(), "{POLICY}: {result:?}");
+    assert!(status.is_some_and(|s| s.success()), "{POLICY}: {status:?}");
+}
+
+/// Makes `link` a directory junction to `target` (no privilege needed), through `cmd`'s
+/// `mklink /J` in a job.
+#[cfg(windows)]
+fn junction(link: &std::path::Path, target: &std::path::Path) {
+    let system = std::env::var_os("SystemRoot").expect("SystemRoot");
+    let spec = earshot_proc::ChildSpec {
+        program: PathBuf::from(system).join("System32").join("cmd.exe"),
+        args: vec![
+            "/c".into(),
+            "mklink".into(),
+            "/J".into(),
+            link.as_os_str().to_owned(),
+            target.as_os_str().to_owned(),
+        ],
+        current_dir: std::env::temp_dir(),
+        env_remove: Vec::new(),
+        env_set: Vec::new(),
+        stdin: Vec::new(),
+        deadline: Duration::from_secs(30),
+        max_output: 64 * 1024,
+    };
+    let out = earshot_proc::run(&spec, &|| false).expect("cmd ran");
+    assert!(out.status.success(), "mklink /J failed: {out:?}");
+    assert!(link.exists(), "no junction at {}", link.display());
+}
+
+#[cfg(windows)]
+#[test]
+fn update_install_an_updates_folder_that_is_a_junction_is_refused() {
+    let dir = crate::testutil::TempDir::new("update-hold-junction-dir");
+    let real = dir.0.join("elsewhere");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("Earshot_9.9.9_x64-setup.exe"), b"an installer").unwrap();
+    let updates = dir.0.join("updates");
+    junction(&updates, &real);
+    let path = updates.join("Earshot_9.9.9_x64-setup.exe");
+    let result = launch_held(
+        &updates,
+        &path,
+        |_| panic!("checked a file reached through a link"),
+        |_| panic!("started a file reached through a link"),
+    );
+    assert!(
+        matches!(&result, Err(UpdateError::Unreadable(why)) if why == "the updates folder is a link"),
+        "{result:?}"
+    );
+    // The control: the same file through the real folder is held, checked and started.
+    let real_path = real.join("Earshot_9.9.9_x64-setup.exe");
+    launch_held(&real, &real_path, |_| Ok(()), |_| Ok(())).unwrap();
+    // Remove the junction itself, never what it points at.
+    std::fs::remove_dir(&updates).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn update_install_an_installer_name_that_is_a_junction_is_refused() {
+    let dir = crate::testutil::TempDir::new("update-hold-junction-file");
+    let elsewhere = dir.0.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let updates = dir.0.join("updates");
+    std::fs::create_dir_all(&updates).unwrap();
+    let path = updates.join("Earshot_9.9.9_x64-setup.exe");
+    junction(&path, &elsewhere);
+    let result = launch_held(
+        &updates,
+        &path,
+        |_| panic!("checked a link"),
+        |_| panic!("started a link"),
+    );
+    assert!(result.is_err(), "{result:?}");
+    std::fs::remove_dir(&path).unwrap();
+}
+
+#[test]
+fn update_install_a_path_outside_the_updates_folder_is_refused() {
+    let dir = crate::testutil::TempDir::new("update-hold-outside");
+    let updates = dir.0.join("updates");
+    std::fs::create_dir_all(updates.join("sub")).unwrap();
+    for path in [
+        updates.join("sub").join("Earshot_9.9.9_x64-setup.exe"),
+        updates
+            .join("sub")
+            .join("..")
+            .join("Earshot_9.9.9_x64-setup.exe"),
+    ] {
+        std::fs::write(&path, b"an installer").unwrap();
+        let result = launch_held(
+            &updates,
+            &path,
+            |_| panic!("checked a file outside the folder"),
+            |_| panic!("started a file outside the folder"),
+        );
+        assert!(
+            matches!(&result, Err(UpdateError::Unreadable(why)) if why == "the installer is not in the updates folder"),
+            "{result:?}"
+        );
+    }
 }
