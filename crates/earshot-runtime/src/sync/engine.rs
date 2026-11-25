@@ -201,6 +201,10 @@ pub struct SyncClient {
     model_place: Option<super::presence::ModelPlace>,
     /// Told after every tick that changed rows here ([`SyncClient::with_changes`]).
     changes: Option<ChangeListener>,
+    /// Whether this client has applied a page with every convergence repair
+    /// ([`Store::apply_remote_every_repair`]): its first page, so each start of sync goes over
+    /// the whole store once; later pages run only the repairs their own rows call for (T14.50).
+    repaired_all: AtomicBool,
     /// Pull pages per tick and rows per page: `MAX_PULL_PAGES` and `PULL_DEFAULT`, smaller only
     /// in tests (a tick that ends with `more == true`).
     pull_pages: usize,
@@ -443,6 +447,7 @@ impl SyncClient {
             worker: None,
             model_place: None,
             changes: None,
+            repaired_all: AtomicBool::new(false),
             pull_pages: MAX_PULL_PAGES,
             pull_limit: earshot_sync::wire::PULL_DEFAULT,
             #[cfg(test)]
@@ -1160,7 +1165,17 @@ impl SyncClient {
             after: Some(&after),
         };
         let (store, hlc) = db.parts();
-        let applied = store.apply_remote(page, &rules, hlc, &*clock)?;
+        // The first page this client applies runs every convergence repair, whatever it holds
+        // (rows left unrepaired by an earlier build are mended once per start); every later one
+        // runs the repairs its own rows call for (T14.50). One tick at a time on a store, so the
+        // flag has one writer.
+        let applied = if self.repaired_all.load(Ordering::Relaxed) {
+            store.apply_remote(page, &rules, hlc, &*clock)?
+        } else {
+            let applied = store.apply_remote_every_repair(page, &rules, hlc, &*clock)?;
+            self.repaired_all.store(true, Ordering::Relaxed);
+            applied
+        };
         if applied.biometrics_forgotten > 0 {
             // A Busy here means the forgetting is committed; the next checkpoint erases it.
             let _ = store.flush_erasures();

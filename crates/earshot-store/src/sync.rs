@@ -366,6 +366,48 @@ impl Applied {
     }
 }
 
+/// The kinds of row a page wrote here that a convergence repair reads ([`converge`]): each
+/// repair runs only for a page that wrote one of its kinds (T14.50). Marked for every write
+/// the page makes to such a table, a kept copy stamped again included.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Wrote {
+    /// A person row (rule 1, and the `merged_into` chains rule 3a follows).
+    persons: bool,
+    /// A summary row (rule 2).
+    summaries: bool,
+    /// A voiceprint row (rules 3 and 3a).
+    prints: bool,
+    /// A voice sample row (rules 3 and 3a).
+    samples: bool,
+}
+
+impl Wrote {
+    /// Every kind: every repair runs.
+    const EVERYTHING: Self = Self {
+        persons: true,
+        summaries: true,
+        prints: true,
+        samples: true,
+    };
+
+    fn row(&mut self, row: &SyncedRow) {
+        match row {
+            SyncedRow::Person(_) => self.persons = true,
+            SyncedRow::Summary(_) => self.summaries = true,
+            SyncedRow::Voiceprint(_) => self.prints = true,
+            SyncedRow::VoiceprintSample(_) => self.samples = true,
+            SyncedRow::Meeting(_)
+            | SyncedRow::Track(_)
+            | SyncedRow::Segment(_)
+            | SyncedRow::Speaker(_)
+            | SyncedRow::Note(_)
+            | SyncedRow::Folder(_)
+            | SyncedRow::SummaryRequest(_)
+            | SyncedRow::DictionaryWord(_) => {}
+        }
+    }
+}
+
 /// A `sync_pending` row as read: key, seq, wall_ms, logical, node, body, reason.
 type HeldColumns = (Vec<u8>, i64, i64, u32, Vec<u8>, Vec<u8>, String);
 
@@ -599,16 +641,31 @@ fn erase_sample_by_id<C: Clock + ?Sized>(
 ///
 /// Two live folders with one name both stay (the user decides). Run after every page, so a
 /// repair also covers rows that arrived in earlier pages.
+///
+/// Each repair runs only when the page wrote a row of a kind it reads (`wrote`, T14.50): a
+/// repair's answer depends only on the rows of those kinds, every earlier page left them
+/// repaired, and nothing this device writes itself leaves them otherwise (a second "Me" is
+/// never made while one is live, a summary replaces the one before it in its own transaction,
+/// a voice is saved only for a live person and a removal forgets the voices with the person).
+/// So a page that wrote none of a repair's kinds would find nothing for it to do. With
+/// [`Wrote::EVERYTHING`] every repair runs, as before T14.50
+/// ([`Store::apply_remote_every_repair`]).
 fn converge<C: Clock + ?Sized>(
     tx: &StoreTx<'_>,
     hlc: &mut Hlc,
     clock: &C,
     out: &mut Applied,
+    wrote: Wrote,
 ) -> Result<(), StoreError> {
-    let mut mes: Vec<Person> = crate::repo::all_persons(&tx.conn)?
-        .into_iter()
-        .filter(|p| p.is_me && p.is_live())
-        .collect();
+    // Rule 1 reads persons.
+    let mut mes: Vec<Person> = if wrote.persons {
+        crate::repo::all_persons(&tx.conn)?
+            .into_iter()
+            .filter(|p| p.is_me && p.is_live())
+            .collect()
+    } else {
+        Vec::new()
+    };
     mes.sort_by_key(|p| (p.meta.created_at, p.id));
     if let Some((keep, rest)) = mes.split_first() {
         let default_name = earshot_core::voiceprint::DEFAULT_ME_NAME;
@@ -632,11 +689,14 @@ fn converge<C: Clock + ?Sized>(
             out.people = true;
         }
     }
-    let crowded: Vec<[u8; 16]> = {
+    // Rule 2 reads summaries.
+    let crowded: Vec<[u8; 16]> = if wrote.summaries {
         let mut st = tx.conn.prepare(
             "SELECT meeting_id FROM summary WHERE deleted = 0 GROUP BY meeting_id HAVING count(*) > 1",
         )?;
         st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+    } else {
+        Vec::new()
     };
     for meeting in crowded {
         let mut live: Vec<Summary> =
@@ -657,17 +717,25 @@ fn converge<C: Clock + ?Sized>(
     }
     // Rule 3a: no live voiceprint or voice sample of a person tombstoned here, directly or at
     // the end of a `merged_into` chain (docs/voice-samples.md 7.4). A person not known here,
-    // or a chain that loops, leaves the row alone.
-    dead_person_repair(tx, hlc, clock, out)?;
-    // Rule 3: no live voice sample of a print tombstoned here (docs/voice-samples.md 7.4).
-    let dead: Vec<([u8; 16], Option<Vec<u8>>)> = {
-        let mut st = tx.conn.prepare(
-            "SELECT s.id, s.meeting_id FROM voiceprint_sample s \
+    // or a chain that loops, leaves the row alone. It reads persons (rule 1's merges are
+    // person rows too, and run only when the page wrote one), prints and samples.
+    let forgotten_before = out.biometrics_forgotten;
+    if wrote.persons || wrote.prints || wrote.samples {
+        dead_person_repair(tx, hlc, clock, out)?;
+    }
+    // Rule 3: no live voice sample of a print tombstoned here (docs/voice-samples.md 7.4). It
+    // reads prints and samples, and rule 3a may just have tombstoned a print.
+    let dead: Vec<([u8; 16], Option<Vec<u8>>)> =
+        if wrote.prints || wrote.samples || out.biometrics_forgotten != forgotten_before {
+            let mut st = tx.conn.prepare(
+                "SELECT s.id, s.meeting_id FROM voiceprint_sample s \
              JOIN voiceprint v ON v.id = s.voiceprint_id WHERE s.deleted = 0 AND v.deleted = 1",
-        )?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_, _>>()?
-    };
+            )?;
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?
+        } else {
+            Vec::new()
+        };
     // Erased by id in SQL, never read back first: a damaged live row (one `from_stored`
     // refuses) is erased too and cannot abort the page.
     for (id, meeting) in dead {
@@ -1086,6 +1154,10 @@ impl Store {
     /// withdrawal is final (`withdrawal`, docs/sync-spec.md section 10.1). One IMMEDIATE
     /// transaction: what it reads cannot change before it writes.
     ///
+    /// After the page's writes the convergence repairs run (docs/sync-spec.md section 7), each
+    /// only when the page wrote a row of a kind that repair reads (T14.50; `converge` says why
+    /// that loses nothing). [`Store::apply_remote_every_repair`] runs them all.
+    ///
     /// # Errors
     /// Store errors; nothing of the page is written then.
     pub fn apply_remote<C: Clock + ?Sized>(
@@ -1094,6 +1166,36 @@ impl Store {
         rules: &ApplyRules<'_>,
         hlc: &mut Hlc,
         clock: &C,
+    ) -> Result<Applied, StoreError> {
+        self.apply_remote_with(page, rules, hlc, clock, Wrote::default())
+    }
+
+    /// [`Store::apply_remote`], running every convergence repair whatever the page wrote, as
+    /// every page did before T14.50. The sync client applies the first page after it starts
+    /// this way, so anything a repair would mend that no page of this run caused (rows left by
+    /// an earlier build, say) is mended once per start; the result for a store the repairs have
+    /// already been over is the same as [`Store::apply_remote`]'s.
+    ///
+    /// # Errors
+    /// As [`Store::apply_remote`].
+    pub fn apply_remote_every_repair<C: Clock + ?Sized>(
+        &mut self,
+        page: &[Incoming],
+        rules: &ApplyRules<'_>,
+        hlc: &mut Hlc,
+        clock: &C,
+    ) -> Result<Applied, StoreError> {
+        self.apply_remote_with(page, rules, hlc, clock, Wrote::EVERYTHING)
+    }
+
+    /// `wrote` starts as the kinds whose repairs run whatever the page writes.
+    fn apply_remote_with<C: Clock + ?Sized>(
+        &mut self,
+        page: &[Incoming],
+        rules: &ApplyRules<'_>,
+        hlc: &mut Hlc,
+        clock: &C,
+        mut wrote: Wrote,
     ) -> Result<Applied, StoreError> {
         self.immediate(|tx| {
             let mut out = Applied::default();
@@ -1204,6 +1306,7 @@ impl Store {
                             here.base_speech_ms(),
                         );
                         crate::repo::put_synced(&tx.conn, &SyncedRow::Voiceprint(again))?;
+                        wrote.prints = true;
                         out.deletions_kept += 1;
                     } else {
                         out.ignored += 1;
@@ -1227,6 +1330,7 @@ impl Store {
                         let again = VoiceprintSample::erased(here.id(), meta)
                             .map_err(|e| StoreError::Repo(RepoError::Storage(e.to_string())))?;
                         crate::repo::put_synced(&tx.conn, &SyncedRow::VoiceprintSample(again))?;
+                        wrote.samples = true;
                         out.deletions_kept += 1;
                     } else {
                         out.ignored += 1;
@@ -1355,6 +1459,7 @@ impl Store {
                     }
                 }
                 unhold(tx, inc)?;
+                wrote.row(row);
                 let _ = hlc.observe(inc.stamp, clock);
                 // Rule 4a: an edit that won over a later-stamped copy here is stamped again
                 // (after the incoming stamp was observed), so it keeps its outbox entry and goes
@@ -1402,9 +1507,12 @@ impl Store {
                     out.biometrics_forgotten +=
                         crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?
                             .total();
+                    // It tombstones that identity's prints and erases its samples.
+                    wrote.prints = true;
+                    wrote.samples = true;
                 }
             }
-            converge(tx, hlc, clock, &mut out)?;
+            converge(tx, hlc, clock, &mut out, wrote)?;
             edits_win(tx, hlc, clock, rules.leased, &mut out)?;
             if let Some(after) = rules.after {
                 after(tx)?;

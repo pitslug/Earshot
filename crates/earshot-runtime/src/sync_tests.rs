@@ -4968,5 +4968,94 @@ fn sync_vault_answers_are_judged_by_epoch_and_by_what_was_seen() {
     assert_eq!(MAX_VAULT_RESETS, 3);
 }
 
+/// T14.50: the convergence repairs run for the kinds a page wrote, and a client's first page
+/// runs them all. Two live "Me" people are written here by hand (no shipped code leaves them),
+/// so the difference shows.
+#[test]
+fn sync_a_clients_first_page_runs_every_repair_and_later_pages_only_their_own() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let c = Device::new("sync-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.relay.url(), offer.code()).unwrap();
+    let (ca, cb, cc) = (a.client(), b.client(), c.client());
+    let put_me = |dev: &Device, n: u8| {
+        let clock = Arc::clone(&dev.svc.clock);
+        let mut db = dev.svc.store();
+        let (store, hlc) = db.parts();
+        let at = hlc.now(&*clock);
+        store
+            .put_person(earshot_core::voiceprint::Person {
+                id: earshot_core::identity::EntityId::from_bytes([
+                    0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, n, 0x5e,
+                ]),
+                meta: earshot_core::identity::SyncMeta {
+                    created_at: at,
+                    updated_at: at,
+                    deleted: false,
+                    origin_device_id: at.node,
+                },
+                display_name: "An invented user".into(),
+                is_me: true,
+                merged_into: None,
+            })
+            .unwrap();
+    };
+    let live_mes = |dev: &Device| {
+        dev.svc
+            .store()
+            .persons()
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.is_me && p.is_live())
+            .count()
+    };
+    let shared = meeting(&b.svc, "Planning", 1);
+    cb.tick().unwrap();
+    let third = meeting(&c.svc, "Review", 2);
+    cc.tick().unwrap();
+    put_me(&a, 1);
+    a.clock.advance_ms(10);
+    put_me(&a, 2);
+    assert_eq!(live_mes(&a), 2);
+    // This client's first page holds the other computer's meeting and no person row written
+    // here: every repair runs all the same.
+    let first = ca.tick().unwrap();
+    assert!(first.written > 0, "{first:?}");
+    assert_eq!(first.repaired, 1, "{first:?}");
+    assert_eq!(live_mes(&a), 1);
+    // A later page of the same client that writes no person row runs no "Me" repair.
+    a.clock.advance_ms(10);
+    put_me(&a, 3);
+    b.clock.advance_ms(1_000);
+    b.rename(shared, "Planning, renamed");
+    cb.tick().unwrap();
+    let later = ca.tick().unwrap();
+    assert!(later.written > 0, "{later:?}");
+    assert_eq!(later.repaired, 0, "{later:?}");
+    assert_eq!(a.title(shared).as_deref(), Some("Planning, renamed"));
+    assert_eq!(live_mes(&a), 2, "left for a page that writes a person row");
+    // A new client (the next start of sync) goes over everything on its first page. That page
+    // holds a rename from the third computer and no person row newer than the copy here: a
+    // tick pushes before it pulls, so neither other computer has sent a repair of its own.
+    c.clock.advance_ms(1_000);
+    c.rename(third, "Review, renamed");
+    cc.tick().unwrap();
+    let restarted = a.client();
+    let again = restarted.tick().unwrap();
+    assert!(again.written > 0, "{again:?}");
+    assert_eq!(again.repaired, 1, "{again:?}");
+    assert_eq!(live_mes(&a), 1);
+    // Everything settles the same on both.
+    for _ in 0..3 {
+        restarted.tick().unwrap();
+        cb.tick().unwrap();
+        cc.tick().unwrap();
+    }
+    assert_eq!(a.rows(), b.rows());
+    assert_eq!(a.rows(), c.rows());
+    assert_eq!(live_mes(&b), 1);
+}
+
 #[path = "sync_edit_tests.rs"]
 mod edits;
