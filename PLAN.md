@@ -1529,7 +1529,8 @@ M0 to M9 hold only v1 work; v1 is released at GATE-04. New ideas and features go
   - decided (the owner, 2026-11-12): clear them. The notice option below is not built; a company gateway would be a later, explicit setting.
   - do: the owner's decision first (privacy invariant 3.9): either clear `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and the Bedrock and Vertex switches so the CLI talks only to its signed-in default, or keep them (a company gateway is a legitimate setup) and show on the Summaries card, from the variable's presence only and never its value, that this computer sends Claude Code traffic to a custom address. Whichever is chosen applies to both CLIs the same way and is written into PRIVACY.md. Prefer the known install folders over PATH when both exist. Reviewer required (privacy).
   - accept: `cargo test -p earshot-llm claude_code`; `cargo test -p earshot-llm codex`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] GATE-04 v1 sign-off
+- [x] GATE-04 v1 sign-off
+  - status (2026-11-26): passed by the owner on the 0.4.2 hand tests on both machines.
   - deps: T9.2, T9.17, T9.18, T9.19, T9.20, T9.21, T9.22, T9.23, T9.24, T9.25
 
 ### Post-release v1 updates
@@ -1982,6 +1983,7 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
 
 - [~] T12.36a A raw mic stays raw when Windows' default recording device changes
   - status (2026-11-25): built and merged after review: a fallen-back raw mic tries raw again every 10 s doubling to 60 s (open before close, banner cleared on return), kept across a chosen-device give-up, off for the audio check; `record-raw` prints the stream error's and the refused re-open's codes. The desktop's mic does not support raw, so the conversion hypothesis is untested (docs/echo-fragments.md). Owed before [x]: the Surface reproduction with `record-raw --mic-raw` and the owner's default-device switch in a raw meeting.
+  - status (2026-11-26): the Surface reproduction is done (docs/echo-fragments.md): a Bluetooth headset refuses raw before any open call (lasting, so no retry within the grace), and the built-in mic re-opens raw straight after the switch back. Owed before [x]: the owner's default-device switch in a raw meeting on the next build.
   - deps: T12.36
   - found (the owner, 2026-11-19, Surface, raw mic on with the Surface mic chosen by name): changing Windows' default recording device to a Bluetooth headset mid-meeting showed the `raw-mic` banner. The chosen mic correctly did not follow the default (no hands-free banner), but its stream was re-opened and the re-open was refused raw, so the rest of the meeting recorded the processed stream. Raw had been accepted at the start.
   - found (the owner, 2026-11-20, Surface, 0.4.0, raw mic on with the default mic, a call on the built-in speakers): the `raw-mic` banner showed partway through, with no device change the owner noticed; the canceller's delay lock moved up by about the processed stream's known extra latency at the same point and stayed there, so the rest of the call was processed. The trigger is unknown: the reproduction also covers a stream error with no device change (for example a call app or Windows changing the endpoint's format or effects), and the refused raw re-open's HRESULT says which.
@@ -2594,49 +2596,49 @@ From the read-only review of 2026-11-25 (eight reviewers by area; nothing was ru
 
 Lane docs (no build):
 
-- [ ] T14.1 PRIVACY.md says what 1.0 does
+- [x] T14.1 PRIVACY.md says what 1.0 does
   - do: rewrite from PLAN 3.9 and the code: sync and the relay (what the relay can and cannot see), opt-in voiceprint and Dictionary sync, summary offload to another computer and the worker (whose host can read synced meetings), the sync key and token in Credential Manager, the call-start and call-end watchers reading which call app has an audio session (names never stored), agent-CLI hand-offs, the update host and model hosts. Only current Settings page names.
   - accept: every claim traced to code or PLAN 3.9 in the lane report; the owner reads it before the tag
-- [ ] T14.2 README.md for 1.0
+- [x] T14.2 README.md for 1.0
   - do: Status, What you need, Using it and the grey-words limits rewritten from the code (`backends.rs` preview rules); sync, Dictionary, the call-start offer and the five first-run steps named; where the data lives, what a backup must copy, that sync is not a backup, that a newer database cannot be opened by an older build (no copy is taken at upgrade: it would outlive deletions).
   - accept: every limit and page name traced to code in the lane report
-- [ ] T14.3 Project files a public 1.0 needs
+- [x] T14.3 Project files a public 1.0 needs
   - do: `SECURITY.md` (report through GitHub's private vulnerability reporting on the repo, no email address), `CHANGELOG.md` from the tags, `CONTRIBUTING.md` (points at AGENTS.md, says Windows ci is local), `docs/compatibility.md` (update file, sync format and "update the worker last", relay and worker pairing, schema and downgrade, stored settings), `docs/sync.md` status line and a short "run it" pointer.
   - accept: files present; no em dashes; no private path or name
-- [ ] T14.4 Relay and worker compose files for strangers
+- [x] T14.4 Relay and worker compose files for strangers
   - do: the relay's compose binds `127.0.0.1:8787` (or the proxy network only) with the reason; both compose files pin `EARSHOT_VERSION` in their example `.env` text and say to update the worker last; `.github/workflows/relay-image.yml` and docs/updates.md stop pushing the pre-0.4.0 image name.
   - accept: `image-check.sh` unchanged or updated with the reason; files read back in the lane report
 
 Lane shell (desktop: `shell.rs`, `meeting.rs`, `meeting_events.rs`, `general.rs`, `tauri.conf.json`; runtime `summary_child.rs`, the summary load watches; `earshot-proc`):
 
-- [ ] T14.5 The tray never deadlocks and never sticks on "Starting"
+- [x] T14.5 The tray never deadlocks and never sticks on "Starting"
   - do: `refresh_tray` and every other holder release the tray lock before any Tauri call (tray and menu calls block on the main thread, tauri 2.12 `run_item_main_thread!`); the tracker records the meeting id from `driver.start`'s `Ok` so a start with no `Started` still ends.
   - accept: `cargo test -p earshot-desktop --bin earshot shell` with a test that a refresh from another thread while the main-thread path wants the lock cannot block (a fake tray seam); existing shell tests
-- [ ] T14.6 A second press while a meeting is starting does nothing
+- [x] T14.6 A second press while a meeting is starting does nothing
   - do: the tray item and the shortcut read a meeting in pre-flight as starting, not recording: no Stop is sent until `Started` has gone out. The window's own Stop is unchanged.
   - accept: `cargo test -p earshot-desktop --bin earshot shell` and `meeting` with a double toggle during a gated pre-flight (the meeting records)
-- [ ] T14.7 A failed start never joins another meeting's thread
+- [x] T14.7 A failed start never joins another meeting's thread
   - do: `MeetingDriver::start` keeps its own thread's handle until the start result is known (or matches by `seq`) and joins outside the `threads` lock.
   - accept: `cargo test -p earshot-desktop --bin earshot meeting` with a failing start racing a second start through a rendezvous
-- [ ] T14.8 Stall watches do not count sleep
+- [x] T14.8 Stall watches do not count sleep
   - do: `AfterWatch`, the GPU summary child's watch, the summary load watches and `earshot-proc`'s `run_with` deadlines read `earshot_proc::awake_time()` (falling back to `Instant` where it is unavailable), each with a clock-free test whose fake keeps awake and asleep time apart (the T12.62 rule).
   - accept: `cargo test -p earshot-desktop --bin earshot meeting`; `cargo test -p earshot-runtime summary_child`; `cargo test -p earshot-proc`
-- [ ] T14.9 Small host fixes
+- [x] T14.9 Small host fixes
   - do: `recording` clears when `Ended` goes out (gap banners still follow it); "Start with Windows" reads its value without depending on the console code page (no new `unsafe` outside the listed files); a store that failed to open at an autostart says so once in a notification (fixed copy); the call-start watch reads its setting from a cached value that `set_offer_on` updates; the CSP gains `base-uri`, `form-action` and `object-src`; developer words in `meeting.rs` messages go through `plain_text`.
   - accept: `cargo test -p earshot-desktop --bin earshot`
 
 Lane ipc (desktop: `ipc.rs`, `check_child.rs`, `models.rs`, `model_jobs.rs`, settings command modules):
 
-- [ ] T14.10 Commands that take shared locks run off the main thread
+- [x] T14.10 Commands that take shared locks run off the main thread
   - do: every non-async command that reaches a lease, the check slot, the downloads lock, the store or a WorkGate pass becomes `async` plus `ipc::blocking`; a test lists the commands that may stay sync and why.
   - accept: `cargo test -p earshot-desktop --bin earshot ipc`; bindings unchanged (`EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings` gives no diff)
-- [ ] T14.11 A model check that stops answering ends by itself
+- [x] T14.11 A model check that stops answering ends by itself
   - do: a stall limit on the check child's progress lines (awake clock, clock-free test), ending as the retryable failure a missing final line gives; the child's lines carry a prefix and other stdout lines are skipped, as `summary_child` does.
   - accept: `cargo test -p earshot-desktop --bin earshot check_child`
-- [ ] T14.12 A model in use by a meeting cannot be removed
+- [x] T14.12 A model in use by a meeting cannot be removed
   - do: removal is refused `busy` while a meeting records, finishes or is held with that model (the model it started with, not only the current settings).
   - accept: `cargo test -p earshot-desktop --bin earshot models`
-- [ ] T14.13 Small command fixes
+- [x] T14.13 Small command fixes
   - do: `start_meeting` cleans its title by the rename rule; lower-case internal phrases and raw Tauri error text in `ipc.rs` become fixed copy; `meeting_list` reads the list in one store lock.
   - accept: `cargo test -p earshot-desktop --bin earshot ipc`
 
@@ -2666,16 +2668,16 @@ Lane ui-detail (`packages/ui/src/detail`):
 
 Lane live (`earshot-core` asr, `earshot-runtime` live, `earshot-capture-wasapi`, `earshot-asr-whisper`):
 
-- [ ] T14.20 A silent track's live stream holds no audio
-  - do: `PieceStream` releases audio before the settled frontier that no piece can still need (keeping `kept_from` right), and `settle` works from a settled prefix; `asr_stretch_resume_equals_the_whole_track_pass_wherever_the_stream_stopped` and the bit-for-bit stretch tests unchanged; a test that an hour of silence keeps a bounded buffer.
+- [x] T14.20 A silent track's live stream holds no audio
+  - do: `PieceStream` releases audio before the settled frontier that no piece can still need (keeping `kept_from` right); `settle` is left scanning from the start (measured in the lane: 0.42 ms per look after 4 hours of talk, one look per 256 ms, so a settled prefix buys nothing); `asr_stretch_resume_equals_the_whole_track_pass_wherever_the_stream_stopped` and the bit-for-bit stretch tests unchanged; a test that an hour of silence keeps a bounded buffer.
   - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime live`
-- [ ] T14.21 A stuck live worker stops taking audio
+- [x] T14.21 A stuck live worker stops taking audio
   - do: past its cap a worker is sent no more audio (one warning, as today), and dropping a worker whose thread is stuck cancels and leaves it, never joins.
   - accept: `cargo test -p earshot-runtime live`
-- [ ] T14.22 Capture start cannot wait forever; a packet with no data is silence
+- [x] T14.22 Capture start cannot wait forever; a packet with no data is silence
   - do: the capture thread's ready wait has a bound (a judgement, above the activation timeout), after which the start fails with fixed copy and the thread is left; a non-silent packet with a null buffer is treated as silent. Through `FakeDriver` only.
   - accept: `cargo test -p earshot-capture-wasapi`
-- [ ] T14.23 Non-finite word probabilities never reach the store
+- [x] T14.23 Non-finite word probabilities never reach the store
   - do: `Word::new` (or the decoders' own clamp) maps a non-finite probability to 0; a final pass with a NaN from a fake transcriber stores.
   - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime post`
 
@@ -2693,13 +2695,13 @@ Lane store (`earshot-store`, runtime `search.rs`, `retention.rs`, `delete.rs`, `
 
 Lane export (`earshot-core` export, runtime `export_settings.rs`):
 
-- [ ] T14.27 Re-export keeps ticked action items
+- [x] T14.27 Re-export keeps ticked action items
   - do: merging carries `[x]` (and any other task marker) over for task lines whose text is unchanged; the identity rule (a render merged into its own output) holds.
   - accept: `cargo test -p earshot-core export`; `cargo xtask accept m5`
-- [ ] T14.28 Generated text cannot embed or fetch
+- [x] T14.28 Generated text cannot embed or fetch
   - do: generated text in a note cannot form an image or embed (`![`), raw HTML (`<`) or a wikilink embed; the user's own notes are untouched; snapshots and the m5 goldens updated by the rule in AGENTS (reviewed, copied by hand).
   - accept: `cargo test -p earshot-core export`; `cargo xtask accept m5`
-- [ ] T14.29 The Obsidian subfolder refuses names Windows refuses
+- [x] T14.29 The Obsidian subfolder refuses names Windows refuses
   - do: reserved characters, trailing dots and spaces and device names are refused at save with fixed copy (shared case table with the UI mock if the mock mirrors the rule).
   - accept: `cargo test -p earshot-runtime export_settings`; `cmd /c pnpm --filter @earshot/ui test`
 
@@ -2720,13 +2722,13 @@ Lane llm (`earshot-llm`, `earshot-net`, runtime `summary_settings.rs`):
 
 Lane update (`earshot-update`, runtime `update.rs`, `download.rs`, desktop `update_settings.rs`, xtask `update.rs`):
 
-- [ ] T14.34 The version file can grow, and a second key can sign it
+- [x] T14.34 The version file can grow, and a second key can sign it
   - do: unknown manifest fields are ignored (the signature still covers the exact bytes; every known field checked as today); verification accepts any key of a built-in list, whose second entry is the owner's offline backup key (the owner generates it: until then the list holds one key and a test pins that an empty slot verifies nothing); `sign-update` unchanged for the first key. The file's shape does not change: 0.4.x copies still read it.
   - accept: `cargo test -p earshot-update`; `cargo test -p xtask update`; `cargo test -p earshot-runtime update`
-- [ ] T14.35 The installer that was verified is the one that runs
+- [x] T14.35 The installer that was verified is the one that runs
   - do: the verified file is held open, shared for reading only, from the last verify until the installer has started.
   - accept: `cargo test -p earshot-desktop --bin earshot update_settings`
-- [ ] T14.36 A download is hashed once
+- [x] T14.36 A download is hashed once
   - do: a transfer that starts at byte 0 hashes while it writes; a resumed one hashes the kept part once.
   - accept: `cargo test -p earshot-runtime download`
 

@@ -565,12 +565,13 @@ pub async fn set_my_name(
 /// a sample, a meeting or the model check runs.
 #[tauri::command]
 #[specta::specta]
-pub fn start_voice_sample(
+pub async fn start_voice_sample(
     state: tauri::State<'_, crate::ipc::AppState>,
     voice: tauri::State<'_, VoiceJobs>,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    voice.start(&services)
+    let voice = voice.inner().clone();
+    crate::ipc::blocking(move || voice.start(&services)).await
 }
 
 /// Cancels the voice sample; nothing is saved.

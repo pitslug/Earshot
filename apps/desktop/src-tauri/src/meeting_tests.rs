@@ -871,6 +871,192 @@ fn meeting_driver_stop_before_the_first_event_is_honoured() {
     }));
 }
 
+/// A pre-flight that says when it began and waits to be let through: the seconds a real one can
+/// take with no window showing it.
+struct GatedPrepare {
+    inner: Arc<FakePrepare>,
+    entered: Mutex<mpsc::Sender<()>>,
+    gate: Mutex<mpsc::Receiver<()>>,
+}
+
+impl GatedPrepare {
+    /// The pre-flight, what says it began and what lets it through.
+    fn new(script: Script) -> (Arc<Self>, Receiver<()>, mpsc::Sender<()>) {
+        let (entered_tx, entered) = mpsc::channel();
+        let (let_through, gate) = mpsc::channel();
+        let prepare = Arc::new(Self {
+            inner: FakePrepare::new(script),
+            entered: Mutex::new(entered_tx),
+            gate: Mutex::new(gate),
+        });
+        (prepare, entered, let_through)
+    }
+}
+
+impl Prepare for GatedPrepare {
+    fn prepare(
+        &self,
+        svc: &Services,
+        request: &StartRequest,
+        ticket: &Arc<QueueTicket>,
+    ) -> Result<Prepared, IpcError> {
+        let _ = self.entered.lock().unwrap().send(());
+        self.gate
+            .lock()
+            .unwrap()
+            .recv_timeout(MEET_GUARD)
+            .expect("the test lets the pre-flight through");
+        self.inner.prepare(svc, request, ticket)
+    }
+}
+
+fn driver_on(prepare: Arc<dyn Prepare>) -> (MeetingDriver, Receiver<MeetingEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let sink: Sink = Arc::new(move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let t0 = Instant::now();
+    (
+        MeetingDriver::new(
+            prepare,
+            sink,
+            Arc::new(move || t0),
+            crate::activity::WorkGate::new(),
+            &crate::cuda_settings::CudaLatch::resolved_off(),
+        ),
+        rx,
+    )
+}
+
+/// Starts a meeting on a thread of its own, as the shell does.
+fn start_on_a_thread(
+    d: &MeetingDriver,
+    svc: &Services,
+) -> std::thread::JoinHandle<Result<String, IpcError>> {
+    let (d, svc) = (d.clone(), svc.clone());
+    std::thread::spawn(move || d.start(&svc, request(CaptureMode::Call)))
+}
+
+#[test]
+fn meeting_driver_a_second_press_during_the_preflight_stops_nothing_and_the_meeting_records() {
+    // T14.6: the tray's item or the shortcut pressed again while the pre-flight runs. The driver
+    // calls the meeting recording from the start request, so the press was a Stop, honoured the
+    // moment the meeting started.
+    use crate::shell::{ToggleAction, press};
+    let dir = TempDir::new("driver-double-press");
+    let svc = services(&dir);
+    let (prepare, entered, let_through) = GatedPrepare::new(Script::UntilStopped);
+    let (d, rx) = driver_on(prepare);
+    let starter = start_on_a_thread(&d, &svc);
+    entered
+        .recv_timeout(MEET_GUARD)
+        .expect("the pre-flight began");
+    assert_eq!(d.phase_with_starting(), (DriverPhase::Recording, true));
+    assert_eq!(press(&d), ToggleAction::Nothing);
+    assert_eq!(press(&d), ToggleAction::Nothing);
+    assert!(!d.stop_requested());
+    let_through.send(()).unwrap();
+    let meeting = starter.join().unwrap().unwrap();
+    // Still starting until `Started` has gone out.
+    let first = events_until(&rx, |e| matches!(e, MeetingEvent::Started { .. }));
+    assert_eq!(first.len(), 1, "{first:?}");
+    // The driver notes it right after sending it.
+    let until = Instant::now() + MEET_GUARD;
+    while d.phase_with_starting().1 {
+        assert!(Instant::now() < until, "the meeting never left its start");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The meeting records: nothing asked it to stop.
+    assert_eq!(d.phase(), DriverPhase::Recording);
+    assert!(!d.stop_requested());
+    // Now a press is a Stop.
+    assert_eq!(press(&d), ToggleAction::Stop);
+    assert!(d.stop_requested());
+    let rest = until_summary(&rx);
+    assert!(rest.contains(&MeetingEvent::Ended {
+        meeting,
+        reason: EndedReason::Stopped
+    }));
+    d.join();
+    assert_eq!(press(&d), ToggleAction::Start, "nothing records");
+}
+
+#[test]
+fn meeting_driver_the_windows_own_stop_during_the_preflight_is_still_honoured() {
+    // T14.6 changes only what the tray's item and the shortcut do: the window's Stop is the
+    // driver's, as before.
+    let dir = TempDir::new("driver-preflight-stop");
+    let svc = services(&dir);
+    let (prepare, entered, let_through) = GatedPrepare::new(Script::UntilStopped);
+    let (d, rx) = driver_on(prepare);
+    let starter = start_on_a_thread(&d, &svc);
+    entered
+        .recv_timeout(MEET_GUARD)
+        .expect("the pre-flight began");
+    d.stop().unwrap();
+    let_through.send(()).unwrap();
+    let meeting = starter.join().unwrap().unwrap();
+    let events = until_summary(&rx);
+    assert!(events.contains(&MeetingEvent::Ended {
+        meeting,
+        reason: EndedReason::Stopped
+    }));
+    d.join();
+}
+
+#[test]
+fn meeting_driver_a_failed_start_never_joins_another_meetings_thread() {
+    // T14.7: the failing thread clears `recording` before it reports, so a second start can put
+    // its meeting in the driver before the first start cleans up. The first must take back only
+    // its own thread: joining the second meeting's, under the driver's lock, held `stop` and
+    // `phase` up for that meeting's whole life.
+    let dir = TempDir::new("driver-start-race");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::PreflightFails);
+    let (d, rx) = driver(Arc::clone(&prepare));
+    // The rendezvous: the second start runs inside the first one's failure, after its result is
+    // known and before its clean-up.
+    let second = Arc::new(Mutex::new(None));
+    let d = d.with_failed_start_hook({
+        let (prepare, svc, second) = (Arc::clone(&prepare), svc.clone(), Arc::clone(&second));
+        Arc::new(move |d: &MeetingDriver| {
+            *prepare.script.lock().unwrap() = Script::UntilStopped;
+            *second.lock().unwrap() = Some(d.start(&svc, request(CaptureMode::Call)));
+        })
+    });
+    // On a thread of its own, so a start that waits for the second meeting fails this test
+    // instead of hanging it.
+    let (done, first) = mpsc::channel();
+    {
+        let (d, svc) = (d.clone(), svc.clone());
+        std::thread::spawn(move || {
+            let _ = done.send(d.start(&svc, request(CaptureMode::Call)));
+        });
+    }
+    let first = first
+        .recv_timeout(MEET_GUARD)
+        .expect("the failed start waited for the second meeting's thread");
+    assert_eq!(first.unwrap_err().kind, "model");
+    let meeting = second
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the second start ran")
+        .expect("the second meeting started");
+    // The second meeting is still the driver's: it records, and it can be stopped.
+    assert_eq!(d.phase(), DriverPhase::Recording);
+    d.stop().unwrap();
+    let events = until_summary(&rx);
+    assert!(events.contains(&MeetingEvent::Ended {
+        meeting,
+        reason: EndedReason::Stopped
+    }));
+    d.join();
+    assert!(!d.busy());
+    assert_eq!(svc.store().meetings().unwrap().len(), 1);
+}
+
 #[test]
 fn meeting_driver_a_panic_after_the_start_ends_with_a_failed_summary_and_frees_the_driver() {
     let dir = TempDir::new("driver-panic");
@@ -920,25 +1106,154 @@ fn meeting_driver_a_panicking_preflight_is_a_failed_start() {
     assert!(rx.try_recv().is_err());
 }
 
+/// Words of the program's insides that a window never shows (T14.9).
+const INSIDE_WORDS: [&str; 9] = [
+    "llama", "ggml", "cublas", "dll", "DLL", "PATH", "CUDA", "ONNX", "Cuda",
+];
+
+fn no_inside_words(text: &str) {
+    for word in INSIDE_WORDS {
+        assert!(!text.contains(word), "{word} in: {text}");
+    }
+    assert!(!crate::plain_text::names_developer_tool(text), "{text}");
+    assert!(
+        text.chars().next().is_some_and(char::is_uppercase) && text.ends_with('.'),
+        "{text}"
+    );
+}
+
 #[test]
-fn meeting_summary_setup_errors_name_the_missing_dlls_in_one_sentence() {
+fn meeting_summary_setup_errors_are_fixed_copy_without_the_missing_files_names() {
+    // T14.9: this said "llama.cpp's DLLs", "on PATH" and each file's name. The kind still says
+    // which failure it is; the window gets what to do.
     use earshot_runtime::host::SummarySetupError;
     let e = summary_setup_error(SummarySetupError::LlamaDllsMissing(vec![
         "llama.dll".into(),
         "ggml.dll".into(),
     ]));
     assert_eq!(e.kind, "summary_dlls");
-    assert_eq!(
-        e.message,
-        "A summary on this computer needs llama.cpp's DLLs next to Earshot; not found: llama.dll, ggml.dll"
-    );
+    assert_eq!(e.message, crate::plain_text::SUMMARY_FILES_MISSING);
+    no_inside_words(&e.message);
     let e = summary_setup_error(SummarySetupError::CudaDllsMissing(vec![
         "cublas64_13*.dll".into(),
     ]));
+    assert_eq!(e.kind, "summary_dlls");
+    assert_eq!(e.message, crate::plain_text::SUMMARY_GRAPHICS_FILES_MISSING);
+    no_inside_words(&e.message);
     assert_eq!(
-        e.message,
-        "A summary on this computer needs the CUDA runtime's DLLs on PATH; not found: cublas64_13*.dll"
+        crate::plain_text::SUMMARY_FILES_MISSING,
+        "Earshot cannot write a summary on this computer because some of its own files are \
+         missing. Install Earshot again, or choose another way to summarise in Settings, \
+         Summaries."
     );
+}
+
+#[test]
+fn meeting_driver_refusals_are_plain_sentences() {
+    // T14.9: "a meeting is already recording" and "no meeting is recording" reached the window
+    // as written for a log.
+    let dir = TempDir::new("driver-refusals");
+    let svc = services(&dir);
+    let (d, rx) = driver(FakePrepare::new(Script::UntilStopped));
+    let none = d.stop().unwrap_err();
+    assert_eq!(
+        (none.kind.as_str(), none.message.as_str()),
+        ("not_recording", "No meeting is recording.")
+    );
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let second = d.start(&svc, request(CaptureMode::Call)).unwrap_err();
+    assert_eq!(
+        (second.kind.as_str(), second.message.as_str()),
+        (
+            "busy",
+            "A meeting is already recording. Stop it before you start another."
+        )
+    );
+    for text in [&none.message, &second.message] {
+        no_inside_words(text);
+    }
+    d.stop().unwrap();
+    until_summary(&rx);
+    d.join();
+}
+
+#[test]
+fn meeting_speech_library_banners_name_no_library_and_no_error_text() {
+    // T14.9: the banner said "The Cuda library of ONNX Runtime is unavailable" and then the
+    // error's own text.
+    use earshot_runtime::backends::Accelerator;
+    let raw = RuntimeError::Asr(earshot_core::asr::AsrError::Backend(
+        "zq-raw-words onnxruntime_providers_cuda.dll refused (0x7e)".into(),
+    ));
+    let banner = onnx_fallback_message(Accelerator::Cuda, &raw);
+    assert_eq!(banner, crate::plain_text::GRAPHICS_SPEECH_UNAVAILABLE);
+    assert_eq!(
+        banner,
+        "Earshot could not use the graphics card for speech models this time, so they run on \
+         the processor. Restart Earshot to try again."
+    );
+    let missing = RuntimeError::ModelMissing {
+        path: std::path::PathBuf::from("zq-folder").join("onnxruntime.dll"),
+        fetch_set: None,
+    };
+    let not_there = onnx_fallback_message(Accelerator::Cuda, &missing);
+    assert_eq!(not_there, crate::plain_text::GRAPHICS_SPEECH_NOT_DOWNLOADED);
+    for text in [&banner, &not_there] {
+        no_inside_words(text);
+        assert!(!text.contains("zq-"), "{text}");
+        assert!(!text.contains("0x"), "{text}");
+    }
+    // The NPU's stays its own (T12.64).
+    assert_eq!(
+        onnx_fallback_message(Accelerator::Qnn, &raw),
+        crate::plain_text::NPU_LIBRARY_UNAVAILABLE
+    );
+}
+
+#[test]
+fn meeting_recording_reads_as_over_when_ended_goes_out_and_gap_banners_follow() {
+    // T14.9: with a gap in the recording the mapper sends the gap's banner after `Ended` (the
+    // screen after a meeting shows only what follows it), and the flag cleared only before that
+    // last banner, so what heard `Ended` found the driver still recording.
+    use earshot_runtime::live::RuntimeWarning;
+    let mut mapper = EventMapper::new(CaptureMode::Call);
+    let saved = RuntimeEvent::RecordingSaved {
+        reason: earshot_core::capture::EndReason::Stopped,
+        problems: vec![
+            RuntimeWarning::RecordingGap {
+                total: Duration::from_secs(4),
+            },
+            RuntimeWarning::EveryRecordingStopped { disk_full: false },
+        ],
+    };
+    let mapped = mapper.map(&saved, Instant::now());
+    let ended = position(&mapped, |e| matches!(e, MeetingEvent::Ended { .. }));
+    assert_eq!((mapped.len(), ended), (3, 1), "{mapped:?}");
+    let recording = AtomicBool::new(true);
+    let heard = Mutex::new(Vec::new());
+    send_mapped(mapped, true, &recording, &|e| {
+        let ended = matches!(e, MeetingEvent::Ended { .. });
+        heard
+            .lock()
+            .unwrap()
+            .push((ended, recording.load(Ordering::SeqCst)));
+    });
+    // The banner told with the save goes out while it still records; `Ended` and the gap's
+    // banner after it do not.
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [(false, true), (true, false), (false, false)]
+    );
+
+    // Any other event leaves the flag alone.
+    let recording = AtomicBool::new(true);
+    send_mapped(
+        vec![MeetingEvent::Words { total: 3 }],
+        false,
+        &recording,
+        &|_| {},
+    );
+    assert!(recording.load(Ordering::SeqCst));
 }
 
 #[test]
@@ -2377,6 +2692,78 @@ fn meeting_with_a_live_model_load_that_never_returns_never_blocks_the_next() {
         LIVE_LOAD_STALLED_MESSAGE,
     );
     drop(release);
+}
+
+/// A meeting whose final pass hangs in a step, on a driver with the production bounds read on
+/// `clock`: the driver, its events, the meeting, and what lets the hung step go.
+fn hung_step_on(
+    svc: &Services,
+    clock: earshot_proc::AwakeClock,
+) -> (
+    MeetingDriver,
+    Receiver<MeetingEvent>,
+    String,
+    mpsc::Sender<()>,
+) {
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::AfterHangs {
+        in_step: true,
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(prepare);
+    let d = d.with_awake_clock(clock);
+    let meeting = d.start(svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    (d, rx, meeting, release)
+}
+
+fn left_for_stalling(events: &[MeetingEvent], meeting: &str) -> bool {
+    result_of(events, meeting)
+        == SummaryEvent::Failed {
+            message: POST_STALLED_MESSAGE.into(),
+            retryable: false,
+        }
+}
+
+#[test]
+fn meeting_after_watch_counts_time_awake_not_time_asleep() {
+    // T14.8: the meeting ends, the lid closes during its final pass. On waking, the hours asleep
+    // are not silence: the work is left only after its bound of time awake with no sign of life.
+    use earshot_proc::HandClock;
+    let dir = TempDir::new("after-asleep");
+    let svc = services(&dir);
+    let night = Duration::from_secs(8 * 3600);
+    let step = AfterBounds::default().step;
+    let clock = HandClock::default();
+    let (d, rx, meeting, release) = hung_step_on(&svc, clock.awake());
+    clock.read_twice_more();
+    clock.sleep(night);
+    clock.read_twice_more();
+    assert!(d.is_finishing(&meeting), "left for the time asleep");
+    clock.advance(step - Duration::from_secs(1));
+    clock.read_twice_more();
+    assert!(d.is_finishing(&meeting), "left short of its bound");
+    clock.advance(Duration::from_secs(1));
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(left_for_stalling(&events, &meeting), "{events:?}");
+    d.join();
+    release.send(()).unwrap();
+
+    // The negative control: on a clock that counts the sleep, as `Instant` does on Windows, the
+    // same night leaves the meeting unprocessed.
+    let dir = TempDir::new("after-asleep-control");
+    let svc = services(&dir);
+    let clock = HandClock::default();
+    let (d, rx, meeting, release) = hung_step_on(&svc, clock.wall());
+    clock.read_twice_more();
+    clock.sleep(night);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    assert!(left_for_stalling(&events, &meeting), "{events:?}");
+    d.join();
+    release.send(()).unwrap();
 }
 
 #[test]

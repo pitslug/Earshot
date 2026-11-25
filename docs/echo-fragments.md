@@ -211,6 +211,21 @@ What each verdict means (for the owner; each next step is a decision, not automa
 
 A measurement that contradicts this rule is reported as it is; the rule is not changed after measuring.
 
+### Result (2026-11-26): no clear difference
+
+Four takes on the Surface in the rule's order, transcribed by Parakeet TDT 0.6B v2 on the CPU, the mic track alone:
+
+| Take | Stream | Read words kept (of 53) | Stray words |
+|---|---|---|---|
+| 1 | default | 52 | 1 |
+| 2 | raw | 52 | 1 |
+| 3 | raw | 51 | 2 |
+| 4 | default | 52 | 1 |
+
+- Totals: default 104, raw 103 of 106. A difference of 1, under the 4 the rule needs, and pair 1 is level: **no clear difference**.
+- One departure from the rule's command: the replays ran without `--timeline`, because `earshot-cli replay` accepts `--timeline` only with `--ref`. Every take recorded 0 timestamp errors and 0 device changes, so the exact-stamp replay should place the same samples (not checked by a replay with it).
+- On the rule's reading, the T12.32 talk-over loss came from the canceller in double talk, not the raw stream, and the owner's real meetings with the setting on (done 2026-11-20) decide T12.36.
+
 ## T12.36a re-open: why a raw mic fell back, and how it gets back
 
 Two of the owner's Surface meetings with the raw setting on fell back to the processed stream partway through (one after a default-device change with a chosen mic, one after a stream error with no device change). Nothing recorded why: the refused re-open's error went only to the re-open report, which the live source drops. The Surface reproduction (`earshot-cli record-raw --mic-raw`, which prints each failed re-open as the failed call and HRESULT number) is still owed.
@@ -231,3 +246,17 @@ A re-open asks for the track's rate (`Some(rate)`) and, for the mono mic, any ch
 `cargo test -p earshot-capture-wasapi raw_reopen_requests_on_the_default_mic -- --ignored --nocapture` opens the desktop's default mic raw as the start does, then raw at the same and at another rate (with the first stream held and after it is closed) and raw beside a processed stream, printing each refusal as call and HRESULT only.
 
 Result: the desktop's default mic (a USB audio interface) does not declare raw processing (`raw_refusal` reads `NotSupported`), so the first raw open is refused before any stream exists and the re-open requests cannot be compared here. The hypothesis that a raw re-open fails on its conversion request stays untested; it needs the Surface, where raw is supported: `earshot-cli record-raw --mic-raw` with a default-device switch, which now prints both the stream error and the refused re-open's codes. Under Automatic (T12.36b) this desktop records processed in the room with no banner, as designed.
+
+### Surface reproduction (2026-11-26)
+
+`earshot-cli record-raw --mic-raw` for 90 s on the Surface, Windows' default recording device switched by hand, no call app open:
+
+- At 17.8 s, onto a Bluetooth headset: the mic re-open was refused raw before any open call (the headset does not declare raw processing), so there is no HRESULT. The recorder's refuse-only rule left the mic silent while on the headset (29.2 s).
+- At 47.1 s, back to the built-in mic: re-opened raw with no error.
+- No other stream error; the loopback had no device change. The run ended with the raw-refused error after writing its files, as designed.
+
+What this settles and what it does not:
+
+- A device that cannot give raw is a lasting refusal, not a busy endpoint while Windows reconfigures, so there is nothing to retry within the re-open grace. The app keeps the fallback (processed, one banner) and its scheduled raw tries; on such a device each try is refused by the property read before any stream opens.
+- The built-in mic accepts raw again straight after the switch back, which is what the scheduled tries rely on to clear the banner.
+- Not reproduced: the 2026-11-19 case (a mic chosen by name re-opened and refused raw while the default moved), because the recorder always follows the default, and the 2026-11-20 fallback with no device change. Both are covered by the scheduled tries; the owner's default-device switch in a raw meeting on the next build checks that.

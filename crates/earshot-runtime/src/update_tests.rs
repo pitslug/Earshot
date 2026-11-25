@@ -113,7 +113,7 @@ fn source(port: u16, key_of: &[u8; 32]) -> UpdateSource {
         version_url: Url::parse(&format!("{base}/latest/version.json")).unwrap(),
         downloads: format!("{base}/download"),
         allowlist,
-        key: public_key(key_of),
+        keys: vec![public_key(key_of)],
         arch: "x64".into(),
     }
 }
@@ -342,7 +342,7 @@ fn update_a_huge_version_file_is_not_read() {
 
 #[test]
 fn update_the_real_source_contacts_only_this_repo_and_its_download_host() {
-    let src = UpdateSource::releases_with_key(public_key(&SEED)).unwrap();
+    let src = UpdateSource::releases_with_keys(&[public_key(&SEED)]).unwrap();
     assert_eq!(src.version_url.host_str(), Some("github.com"));
     let hop0: Vec<_> = src.allowlist.entries().map(|(h, _)| h.to_owned()).collect();
     assert_eq!(hop0, ["github.com"]);
@@ -361,7 +361,28 @@ fn update_the_real_source_contacts_only_this_repo_and_its_download_host() {
 
 #[test]
 fn update_this_build_has_a_source_because_it_has_the_key() {
-    assert!(UpdateSource::releases().is_ok());
+    let src = UpdateSource::releases().unwrap();
+    assert_eq!(src.keys, earshot_update::RELEASE_KEYS);
+    assert!(matches!(
+        UpdateSource::releases_with_keys(&[]),
+        Err(UpdateError::NoKey)
+    ));
+}
+
+#[test]
+fn update_a_release_signed_by_the_second_key_of_the_list_is_offered() {
+    // The backup key's path: a file signed by it alone, read by a copy that lists both keys.
+    let server = publish(&release("0.2.0", INSTALLER), &OTHER_SEED, INSTALLER);
+    let mut src = source(server.port, &SEED);
+    src.keys.push(public_key(&OTHER_SEED));
+    let up = updater(src);
+    let offer = offered(up.check("0.1.0").unwrap());
+    let dir = temp("second-key");
+    let path = up
+        .download(&offer, &dir, &CancelToken::new(), &mut |_, _| {})
+        .unwrap();
+    verify_installer(&offer, &path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

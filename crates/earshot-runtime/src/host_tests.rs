@@ -1057,9 +1057,10 @@ fn host_meeting_queue_live_needs_follow_the_checked_order_and_model() {
     let (svc, _) = services(&dir);
     let build = crate::backends::accelerator_order();
     let needs_of = |model: &str, order: Vec<Accelerator>, live_summaries: bool| {
+        let folder = ModelDir::new(dir.0.join("models"));
         let models = Arc::new(MeetingModels::new(
             &svc,
-            ModelDir::new(dir.0.join("models")),
+            folder.clone(),
             (
                 build.clone(),
                 ResolvedModels {
@@ -1067,6 +1068,7 @@ fn host_meeting_queue_live_needs_follow_the_checked_order_and_model() {
                     order,
                 },
             ),
+            use_model(&folder, model),
             Arc::default(),
             Box::new(|_, _| String::new()),
         ));
@@ -1519,4 +1521,142 @@ fn host_npu_compiled_a_wait_for_the_start_up_compile_reaches_the_hold_notes() {
             RuntimeWarning::NpuPreparing { waiting: false },
         ]
     );
+}
+
+/// T14.12: a model is in use from the moment something says so until its guard is dropped, per
+/// models folder, counted per use; an NPU version is in use with its model.
+#[test]
+fn host_models_in_use_are_the_models_whose_uses_are_held() {
+    let dir = TempDir::new("host-in-use");
+    let here = ModelDir::new(dir.0.join("models"));
+    let elsewhere = ModelDir::new(dir.0.join("other-models"));
+    assert!(models_in_use(&here).is_empty());
+    let first = use_model(&here, "small.en");
+    let second = use_model(&here, "small.en");
+    let other = use_model(&here, "tiny.en");
+    assert_eq!(models_in_use(&here), ["small.en", "tiny.en"]);
+    assert!(
+        models_in_use(&elsewhere).is_empty(),
+        "another folder's models are its own"
+    );
+    drop(first);
+    assert_eq!(
+        models_in_use(&here),
+        ["small.en", "tiny.en"],
+        "one use of two is left"
+    );
+    drop(second);
+    assert_eq!(models_in_use(&here), ["tiny.en"]);
+    drop(other);
+    assert!(models_in_use(&here).is_empty());
+    // A model's NPU version is in use with it, as the catalogue lists them (the removal
+    // protection's own rule).
+    let catalogue = crate::catalogue::Catalogue::embedded().unwrap();
+    let model = "parakeet-tdt-0.6b-v2";
+    let used = use_model(&here, model);
+    assert_eq!(
+        models_in_use(&here),
+        with_npu_versions(catalogue, vec![model.to_owned()])
+    );
+    drop(used);
+}
+
+/// T14.12: a meeting keeps the model it started with in use for as long as anything of the
+/// meeting can still load it, whatever the settings say meanwhile.
+#[test]
+fn host_meeting_models_keep_the_model_the_meeting_started_with_in_use() {
+    let dir = TempDir::new("host-meeting-in-use");
+    let (svc, _) = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    // The pre-flight takes the use when it reads the settings: in use before the meeting's
+    // models exist, with no gap when they take it over.
+    let started_with = use_model(&models, "tiny.en");
+    assert_eq!(started_with.model(), "tiny.en");
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    let meeting = Arc::new(MeetingModels::new(
+        &svc,
+        models.clone(),
+        (
+            crate::backends::accelerator_order(),
+            ResolvedModels {
+                model: "tiny.en".to_owned(),
+                order: vec![Accelerator::Cpu],
+            },
+        ),
+        started_with,
+        Arc::default(),
+        Box::new(|_, _| String::new()),
+    ));
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    // The settings now name another model: the meeting still has the one it started with.
+    {
+        let mut db = svc.store();
+        let (mut settings, _) = crate::model_settings::model_settings(&db).unwrap();
+        settings.transcription = crate::model_settings::ModelPick::Named("small.en".to_owned());
+        crate::model_settings::set_model_settings(&mut db, &settings).unwrap();
+    }
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    // What the meeting hands out (its live work, the work after it) keeps it in use.
+    let held_by_live_work = meeting.live_needs(false);
+    drop(meeting);
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    drop(held_by_live_work);
+    assert!(models_in_use(&models).is_empty());
+}
+
+/// T14.12: a meeting with live summaries keeps their local summary model in use beside its
+/// transcription model, for as long as the meeting holds its models.
+#[test]
+fn host_meeting_models_keep_the_live_summaries_model_in_use_too() {
+    let dir = TempDir::new("host-live-summary-in-use");
+    let (svc, _) = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let summary_model = crate::summary_model::SUMMARY_MODELS[0].id;
+    let meeting = MeetingModels::new(
+        &svc,
+        models.clone(),
+        (
+            crate::backends::accelerator_order(),
+            ResolvedModels {
+                model: "tiny.en".to_owned(),
+                order: vec![Accelerator::Cpu],
+            },
+        ),
+        use_model(&models, "tiny.en"),
+        Arc::default(),
+        Box::new(|_, _| String::new()),
+    );
+    assert_eq!(models_in_use(&models), ["tiny.en"]);
+    meeting.also_using(use_model(&models, summary_model));
+    let mut both = vec![summary_model.to_owned(), "tiny.en".to_owned()];
+    both.sort();
+    assert_eq!(models_in_use(&models), both);
+    drop(meeting);
+    assert!(models_in_use(&models).is_empty());
+}
+
+/// T14.12: a use of another model than the one the meeting checked never leaves the meeting's
+/// own model out: both are in use.
+#[test]
+fn host_meeting_models_given_another_models_use_still_keep_their_own() {
+    let dir = TempDir::new("host-other-use");
+    let (svc, _) = services(&dir);
+    let models = ModelDir::new(dir.0.join("models"));
+    let meeting = MeetingModels::new(
+        &svc,
+        models.clone(),
+        (
+            crate::backends::accelerator_order(),
+            ResolvedModels {
+                model: "tiny.en".to_owned(),
+                order: vec![Accelerator::Cpu],
+            },
+        ),
+        use_model(&models, "small.en"),
+        Arc::default(),
+        Box::new(|_, _| String::new()),
+    );
+    assert_eq!(models_in_use(&models), ["small.en", "tiny.en"]);
+    drop(meeting);
+    assert!(models_in_use(&models).is_empty());
 }

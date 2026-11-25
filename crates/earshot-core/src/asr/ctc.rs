@@ -179,7 +179,8 @@ pub fn words_from_tokens(tokens: &[CtcToken], vocab: &Vocab, frame_len: Duration
             text: b.text,
             start: at(b.start, frame_len),
             end: at(b.end, frame_len),
-            probability: mean.exp().clamp(0.0, 1.0),
+            // `clamp` keeps NaN (a model fault): no number is no confidence (T14.23).
+            probability: super::types::probability_or_zero(mean.exp().clamp(0.0, 1.0)),
         });
     };
     let mut out = Vec::new();
@@ -284,6 +285,24 @@ mod tests {
         assert_eq!((w[0].start.as_millis(), w[0].end.as_millis()), (0, 160));
         assert_eq!((w[1].start.as_millis(), w[1].end.as_millis()), (240, 560));
         assert!((w[1].probability - 0.9).abs() < 1e-5);
+    }
+
+    #[test]
+    fn asr_ctc_a_token_without_a_number_gives_its_word_no_confidence() {
+        // T14.23: a NaN log-probability (a model fault) makes the word's probability 0, never
+        // NaN; its text and times are those of the same tokens with numbers.
+        let lp = frames(&[1, 1, 6, 2, 3, 3, 5, 6], 7);
+        let good = ctc_greedy(&lp, 8, 7, 6).unwrap();
+        let mut bad = good.clone();
+        bad[1].log_prob = f32::NAN;
+        let want = words_from_tokens(&good, &vocab(), FRAME);
+        let got = words_from_tokens(&bad, &vocab(), FRAME);
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!((&g.text, g.start, g.end), (&w.text, w.start, w.end));
+        }
+        assert_eq!(got[0].probability, want[0].probability);
+        assert_eq!(got[1].probability.to_bits(), 0f32.to_bits());
     }
 
     #[test]

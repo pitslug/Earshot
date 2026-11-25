@@ -6,8 +6,8 @@
 //! - **One destination.** [`UpdateSource::releases`] is fixed at build time: this repo's GitHub
 //!   releases, with their download host for redirects. Nothing read from the network can name a
 //!   host or a path: the installer's URL is built from the verified version and architecture.
-//! - **Verified before use.** [`earshot_update::verify`] checks the signature against the key built
-//!   into the app before anything in the file is read. An [`UpdateOffer`] is made only from a file
+//! - **Verified before use.** [`earshot_update::verify`] checks the signature against the keys
+//!   built into the app ([`earshot_update::RELEASE_KEYS`]) before anything in the file is read. An [`UpdateOffer`] is made only from a file
 //!   that passed and a version newer than the running one, so holding one is the proof.
 //! - **Downloaded by the model rules.** [`crate::download::download`]: streaming, `.part` resume,
 //!   size and SHA-256 before the rename.
@@ -291,7 +291,7 @@ impl fmt::Display for UpdateError {
 
 impl std::error::Error for UpdateError {}
 
-/// Where updates come from, and the key they must be signed with.
+/// Where updates come from, and the keys they may be signed with.
 #[derive(Debug, Clone)]
 pub struct UpdateSource {
     /// The version file.
@@ -300,23 +300,26 @@ pub struct UpdateSource {
     downloads: String,
     /// All the client may contact.
     allowlist: Allowlist,
-    /// The release key's public half.
-    key: [u8; 32],
+    /// The public halves of the release keys: a signature by any one is enough.
+    keys: Vec<[u8; 32]>,
     /// This build's architecture.
     arch: String,
 }
 
 impl UpdateSource {
-    /// This repo's releases and the key built into the app.
+    /// This repo's releases and the keys built into the app.
     ///
     /// # Errors
     /// [`UpdateError::NoKey`] in a build without one.
     pub fn releases() -> Result<Self, UpdateError> {
-        Self::releases_with_key(earshot_update::RELEASE_PUBLIC_KEY.ok_or(UpdateError::NoKey)?)
+        Self::releases_with_keys(earshot_update::RELEASE_KEYS)
     }
 
-    /// This repo's releases and `key`.
-    fn releases_with_key(key: [u8; 32]) -> Result<Self, UpdateError> {
+    /// This repo's releases and `keys`.
+    fn releases_with_keys(keys: &[[u8; 32]]) -> Result<Self, UpdateError> {
+        if keys.is_empty() {
+            return Err(UpdateError::NoKey);
+        }
         let arch = earshot_update::this_arch();
         let bad = |e: earshot_net::UrlError| UpdateError::Setup(e.to_string());
         let mut allowlist = Allowlist::new();
@@ -331,7 +334,7 @@ impl UpdateSource {
             version_url,
             downloads: format!("{RELEASES}/download"),
             allowlist,
-            key,
+            keys: keys.to_vec(),
             arch: arch.to_owned(),
         })
     }
@@ -430,7 +433,7 @@ impl Updater {
             404 => return Err(UpdateError::NotPublished),
             other => return Err(UpdateError::Status(other)),
         }
-        let release = earshot_update::verify(&response.body, &self.source.key, &self.source.arch)
+        let release = earshot_update::verify(&response.body, &self.source.keys, &self.source.arch)
             .map_err(UpdateError::Refused)?;
         let newer = match (
             release.version.parse::<Version>(),
@@ -486,6 +489,22 @@ impl Updater {
 /// [`UpdateError::InstallerChanged`], or [`UpdateError::Unreadable`].
 pub fn verify_installer(offer: &UpdateOffer, path: &Path) -> Result<(), UpdateError> {
     let mut file = std::fs::File::open(path).map_err(|e| UpdateError::Unreadable(e.to_string()))?;
+    verify_installer_file(offer, &mut file)
+}
+
+/// [`verify_installer`] through a handle the caller already holds, read from its start. The
+/// app holds the installer open, shared for reading only, from this check until the installer
+/// has started (T14.35), so the file that runs is the file that was checked.
+///
+/// # Errors
+/// [`UpdateError::InstallerChanged`], or [`UpdateError::Unreadable`].
+pub fn verify_installer_file(
+    offer: &UpdateOffer,
+    file: &mut std::fs::File,
+) -> Result<(), UpdateError> {
+    use std::io::Seek as _;
+    file.rewind()
+        .map_err(|e| UpdateError::Unreadable(e.to_string()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut size = 0u64;

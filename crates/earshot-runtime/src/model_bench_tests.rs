@@ -397,3 +397,100 @@ fn model_check_trial_of_base_en_on_the_cpu_is_correct() {
     assert!(missing.failure.is_some());
     assert!(missing.trial.wer_percent.is_nan());
 }
+
+/// T14.11: the rule alone. A trial's sign of life is its decodes' poll count having moved since
+/// the last look; a count that stands still is none.
+#[test]
+fn model_check_trial_life_is_the_poll_count_having_moved() {
+    let mut signs = PollLife(0);
+    assert!(!signs.moved(0), "nothing polled yet");
+    assert!(signs.moved(3));
+    assert!(!signs.moved(3), "the same count again is no progress");
+    assert!(!signs.moved(3));
+    assert!(signs.moved(4));
+}
+
+/// T14.11: while a trial decodes, life is reported only after its decodes moved on. A decode
+/// that stops polling (stuck in one engine call) is looked at again and again and says nothing.
+#[test]
+fn model_check_trial_reports_life_only_while_its_decodes_move() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// Bounds a failing case only.
+    const GUARD: Duration = Duration::from_secs(60);
+    fn wait_for(what: &str, done: impl Fn() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < GUARD, "waited too long for {what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    let cancel = CancelToken::new();
+    let finished = AtomicBool::new(false);
+    let (looks, lives) = (AtomicU64::new(0), AtomicU64::new(0));
+    std::thread::scope(|scope| {
+        // Ends the wait when the test fails, so the scope can end.
+        struct Finish<'a>(&'a AtomicBool);
+        impl Drop for Finish<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _finish = Finish(&finished);
+        scope.spawn(|| {
+            report_life_until(
+                &|| finished.load(Ordering::SeqCst),
+                &|| {
+                    looks.fetch_add(1, Ordering::SeqCst);
+                    cancel.polls()
+                },
+                Duration::ZERO,
+                &mut || {
+                    lives.fetch_add(1, Ordering::SeqCst);
+                },
+            );
+        });
+        // Returns once the wait has looked twice more: it has seen the count as it is now.
+        let looked = || {
+            let from = looks.load(Ordering::SeqCst);
+            wait_for("a look", || looks.load(Ordering::SeqCst) >= from + 2);
+        };
+        // The decodes have not polled: looked at, nothing said.
+        looked();
+        assert_eq!(lives.load(Ordering::SeqCst), 0);
+        // A decode polls its token (between two engine calls): one sign of life, once.
+        let _ = cancel.is_cancelled();
+        wait_for("the sign of life", || lives.load(Ordering::SeqCst) == 1);
+        looked();
+        assert_eq!(
+            lives.load(Ordering::SeqCst),
+            1,
+            "no further poll, no further sign"
+        );
+        // It moves on again, then stops for good (stuck in one call): one more sign, then none
+        // however often it is looked at.
+        let _ = cancel.is_cancelled();
+        let _ = cancel.is_cancelled();
+        wait_for("the second sign", || lives.load(Ordering::SeqCst) == 2);
+        for _ in 0..5 {
+            looked();
+        }
+        assert_eq!(lives.load(Ordering::SeqCst), 2);
+    });
+}
+
+/// T14.11: a trial that cannot load says nothing of life and still ends as a failed trial.
+#[test]
+fn model_check_trial_that_cannot_load_reports_no_life() {
+    // A load that got as far as whisper would capture the process-wide log.
+    let _whisper = crate::backends::tests::whisper_loads();
+    let clip = TestClip::bundled().unwrap();
+    let empty = ModelDir::new(std::env::temp_dir().join("earshot-model-check-no-life"));
+    let mut lives = 0;
+    let missing = run_trial_watched(&empty, "base.en", BackendKind::Cpu, &clip, &mut || {
+        lives += 1;
+    });
+    assert!(missing.failure.is_some());
+    assert_eq!(lives, 0);
+}

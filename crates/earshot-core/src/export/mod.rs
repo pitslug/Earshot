@@ -9,8 +9,11 @@
 //!   user's raw notes, and the transcript in a collapsed `> [!note]- Transcript` callout.
 //! - [`merge`]: replaces only the managed region and the Earshot-owned frontmatter keys
 //!   ([`OWNED_KEYS`], updated in place), keeps every other key and all text outside the
-//!   region byte for byte, and merges `tags` as a union. Merging a render into its own
-//!   output is the identity, so re-export is byte-identical.
+//!   region byte for byte, and merges `tags` as a union. A task line in the new region
+//!   whose text after the checkbox is unchanged keeps the mark the user set on it (`x`,
+//!   `X` or a plugin's own character), so ticked action items survive a re-export.
+//!   Merging a render into its own output is the identity, so re-export is
+//!   byte-identical.
 //! - [`earshot_id_of`]: the `earshot_id` in a note's frontmatter (finding a renamed or
 //!   moved note).
 //!
@@ -18,6 +21,19 @@
 //! (summary, transcript) become `" - "`; the user's own notes are written as typed.
 //! Content can never forge a region marker: `<!--` in any rendered text is written as
 //! `&lt;!--`.
+//!
+//! Escaping rule (T14.28): generated text (summary fields, speaker names and transcript
+//! lines, all of which can come from a model, a recogniser or another computer) cannot
+//! form an image or embed (`![...](...)`, `![[...]]`), raw HTML or an HTML comment, so
+//! opening a note never fetches anything, and cannot hide the rest of the note behind an
+//! Obsidian comment (`%%`), a code fence or display maths (`$$`): a `<` that could start
+//! HTML is written `&lt;`, the `[` of every `![` `&#91;`, and so on (`text::neutralise_generated`
+//! has the whole list). Entities, not backslash escapes, because a backslash already in
+//! the text would cancel an inserted one; Obsidian's reading view shows every entity as
+//! the original character. Plain links and wikilinks are kept (they fetch nothing until
+//! clicked). The user's own notes are the user's text and are written as typed, with only
+//! the `<!--` rule applied. An accepted limit: third-party plugins that run inline code
+//! spans (for example Dataview inline queries) are not neutralised against.
 //!
 //! The frontmatter is written by hand, not by a YAML library: strings are double-quoted
 //! with escapes, and merging works on top-level key blocks (a key line plus its indented

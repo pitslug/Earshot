@@ -424,6 +424,51 @@ fn failed(model: &'static str, backend: BackendKind, why: String, load: Duration
     }
 }
 
+/// How often a running trial looks at whether its decodes made progress
+/// ([`run_trial_watched`]): only how soon a sign of life is passed on, never one by itself.
+const LIFE_LOOK: Duration = Duration::from_secs(2);
+
+/// How often a running trial looks at whether its decodes have ended.
+const TRIAL_POLL: Duration = Duration::from_millis(20);
+
+/// Whether a trial's decodes made progress since the last look: the poll count of their
+/// [`CancelToken`] has moved (the sign `live::worker`'s stall watch reads, T9.22a: every shipped
+/// decode polls its token between engine calls). A count that stands still is no progress,
+/// however much time passes.
+#[derive(Debug)]
+struct PollLife(u64);
+
+impl PollLife {
+    /// The count now is `polls`: whether it moved since the last look.
+    fn moved(&mut self, polls: u64) -> bool {
+        let moved = polls != self.0;
+        self.0 = polls;
+        moved
+    }
+}
+
+/// Waits until `finished`, calling `life` after a look (every `look_every`) that found the
+/// decodes' poll count (`polls`) moved since the look before. Nothing is said while it stands
+/// still.
+fn report_life_until(
+    finished: &dyn Fn() -> bool,
+    polls: &dyn Fn() -> u64,
+    look_every: Duration,
+    life: &mut dyn FnMut(),
+) {
+    let mut signs = PollLife(polls());
+    let mut looked = Instant::now();
+    while !finished() {
+        std::thread::sleep(TRIAL_POLL.min(look_every));
+        if looked.elapsed() >= look_every {
+            looked = Instant::now();
+            if signs.moved(polls()) {
+                life();
+            }
+        }
+    }
+}
+
 /// Runs the clip through `model` on `backend` as a two-track load (module docs). ONNX
 /// Runtime must be initialised with a library that has the backend's provider.
 #[must_use]
@@ -432,6 +477,21 @@ pub fn run_trial(
     model: &'static str,
     backend: BackendKind,
     clip: &TestClip,
+) -> TrialReport {
+    run_trial_watched(models, model, backend, clip, &mut || {})
+}
+
+/// [`run_trial`], calling `life` whenever the trial made progress (T14.11): after each model
+/// or helper it loaded, and while the two tracks decode, each time their decodes were found to
+/// have moved on (`PollLife`, looked at every [`LIFE_LOOK`]). A trial stuck in one load or one
+/// engine call says nothing, so whoever watches it can tell slow from stuck.
+#[must_use]
+pub fn run_trial_watched(
+    models: &ModelDir,
+    model: &'static str,
+    backend: BackendKind,
+    clip: &TestClip,
+    life: &mut dyn FnMut(),
 ) -> TrialReport {
     let started = Instant::now();
     let Some(accel) = Accel::of(backend) else {
@@ -455,6 +515,8 @@ pub fn run_trial(
             (Ok(t), Ok(v)) => tracks.push((t, v)),
             (Err(e), _) | (_, Err(e)) => return failed(model, backend, e, started.elapsed()),
         }
+        // A track's model and helper are loaded.
+        life();
     }
     let load = started.elapsed();
     let evidence = tracks.first().map(|(t, _)| t.backend_evidence());
@@ -479,6 +541,12 @@ pub fn run_trial(
                     })
                 })
                 .collect();
+            report_life_until(
+                &|| handles.iter().all(|h| h.is_finished()),
+                &|| cancel.polls(),
+                LIFE_LOOK,
+                life,
+            );
             handles
                 .into_iter()
                 .map(|h| {
@@ -538,6 +606,32 @@ pub fn run_check(
     languages: &[&str],
     progress: &mut dyn FnMut(&CheckProgress),
 ) -> Result<CheckOutcome, RuntimeError> {
+    run_check_watched(models, languages, &mut |step| {
+        if let CheckStep::Progress(p) = step {
+            progress(p);
+        }
+    })
+}
+
+/// What [`run_check_watched`] tells its caller.
+#[derive(Debug)]
+pub enum CheckStep<'a> {
+    /// A trial starts or ended ([`run_check`]'s progress).
+    Progress(&'a CheckProgress),
+    /// The running trial made progress ([`run_trial_watched`]): a sign of life, nothing to show.
+    Alive,
+}
+
+/// [`run_check`], also telling `step` whenever the running trial made progress (T14.11), so a
+/// check watched from outside (the app's child process) is stopped only when it makes none.
+///
+/// # Errors
+/// As [`run_check`].
+pub fn run_check_watched(
+    models: &ModelDir,
+    languages: &[&str],
+    step: &mut dyn FnMut(CheckStep<'_>),
+) -> Result<CheckOutcome, RuntimeError> {
     let clip = TestClip::bundled()?;
     let facts = hardware_facts();
     let mut search = ModelSearch::new(&facts, languages, &|m| installed(models, m));
@@ -545,14 +639,19 @@ pub fn run_check(
     loop {
         match search.next() {
             Step::Test { model, backend } => {
-                progress(&CheckProgress::Testing { model, backend });
-                let report = run_trial(models, model, backend, &clip);
+                step(CheckStep::Progress(&CheckProgress::Testing {
+                    model,
+                    backend,
+                }));
+                let report = run_trial_watched(models, model, backend, &clip, &mut || {
+                    step(CheckStep::Alive);
+                });
                 search.record(report.trial.clone());
                 let verdict = search.trials().last().map_or(Verdict::Wrong, |(_, v)| *v);
-                progress(&CheckProgress::Tested {
+                step(CheckStep::Progress(&CheckProgress::Tested {
                     report: report.clone(),
                     verdict,
-                });
+                }));
                 trials.push((report, verdict));
             }
             Step::Done(recommendation) => {

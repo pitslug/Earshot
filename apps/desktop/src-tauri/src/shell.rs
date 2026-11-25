@@ -146,6 +146,13 @@ pub struct PhaseTracker {
     meeting: Option<String>,
     /// The phase before the tray or the shortcut asked for a meeting.
     before_start: Phase,
+    /// The meeting the tray or the shortcut started, from the driver's answer
+    /// ([`PhaseTracker::start_reported`]), until its `Started` arrives (T14.5): one that ends with
+    /// no `Started` (its thread stopped first) still ends the start.
+    reported: Option<String>,
+    /// The meetings whose last event arrived while a start was on its way and that were not the
+    /// one followed: the driver's answer can come after the meeting's own last event.
+    ended_while_starting: Vec<String>,
 }
 
 impl Default for PhaseTracker {
@@ -154,6 +161,8 @@ impl Default for PhaseTracker {
             phase: Phase::Idle,
             meeting: None,
             before_start: Phase::Idle,
+            reported: None,
+            ended_while_starting: Vec::new(),
         }
     }
 }
@@ -168,6 +177,13 @@ impl PhaseTracker {
                 Phase::Recording
             }
             MeetingEvent::Ended { meeting, .. } if self.follows(meeting) => Phase::Finishing,
+            // The meeting this start made, ended with no `Started`: followed from here on.
+            MeetingEvent::Ended { meeting, .. } if self.reported(meeting) => {
+                self.meeting = self.reported.take();
+                Phase::Finishing
+            }
+            // The same with no end either (its thread stopped): the start is over.
+            MeetingEvent::Summary { meeting, .. } if self.reported(meeting) => self.before_start,
             MeetingEvent::Summary { meeting, .. } if self.follows(meeting) => {
                 if self.phase == Phase::Starting {
                     self.before_start = Phase::Idle;
@@ -176,11 +192,43 @@ impl PhaseTracker {
                     Phase::Idle
                 }
             }
+            MeetingEvent::Summary { meeting, .. } if self.phase == Phase::Starting => {
+                self.ended_while_starting.push(meeting.clone());
+                Phase::Starting
+            }
             _ => self.phase,
         };
+        self.moved_to(next)
+    }
+
+    /// Sets the phase; true when it changed. What belongs to a start goes with it.
+    fn moved_to(&mut self, next: Phase) -> bool {
+        if next != Phase::Starting {
+            self.reported = None;
+            self.ended_while_starting.clear();
+        }
         let changed = next != self.phase;
         self.phase = next;
         changed
+    }
+
+    fn reported(&self, meeting: &str) -> bool {
+        self.reported.as_deref() == Some(meeting)
+    }
+
+    /// The driver answered the tray's or the shortcut's start with `meeting` (T14.5); true when
+    /// the phase changed. Its `Started` usually came first and this changes nothing. Without one,
+    /// the meeting's end or its last event now ends the start, also when that event came before
+    /// this answer.
+    pub fn start_reported(&mut self, meeting: &str) -> bool {
+        if self.phase != Phase::Starting {
+            return false;
+        }
+        if self.ended_while_starting.iter().any(|m| m == meeting) {
+            return self.moved_to(self.before_start);
+        }
+        self.reported = Some(meeting.to_owned());
+        false
     }
 
     /// The phase.
@@ -215,7 +263,7 @@ impl PhaseTracker {
     /// last meeting was doing.
     pub fn start_failed(&mut self) {
         if self.phase == Phase::Starting {
-            self.phase = self.before_start;
+            self.moved_to(self.before_start);
         }
     }
 }
@@ -271,15 +319,33 @@ pub enum ToggleAction {
     Start,
     /// Stop the recording.
     Stop,
+    /// Nothing: a meeting is starting (T14.6).
+    Nothing,
 }
 
-/// [`ToggleAction`] from what the driver says.
+/// [`ToggleAction`] from what the driver says. `starting`: the meeting it calls recording has
+/// not sent its `Started` yet. Its pre-flight can take seconds with no window showing it, and a
+/// second press then must not stop the meeting the moment it starts (T14.6), so it does nothing.
+/// The window's own Stop is the driver's and is not decided here.
 #[must_use]
-pub fn toggle_action(phase: DriverPhase) -> ToggleAction {
+pub fn toggle_action(phase: DriverPhase, starting: bool) -> ToggleAction {
     match phase {
         DriverPhase::Idle | DriverPhase::Processing => ToggleAction::Start,
+        DriverPhase::Recording if starting => ToggleAction::Nothing,
         DriverPhase::Recording => ToggleAction::Stop,
     }
+}
+
+/// A press of the tray's item or the shortcut, as far as `driver` goes: the recording is asked
+/// to stop here; a start is the shell's to make, on a thread of its own.
+pub fn press(driver: &MeetingDriver) -> ToggleAction {
+    let (phase, starting) = driver.phase_with_starting();
+    let action = toggle_action(phase, starting);
+    if action == ToggleAction::Stop {
+        // It may have just ended by itself; the UI shows that either way.
+        let _ = driver.stop();
+    }
+    action
 }
 
 /// What "Quit Earshot" does now.
@@ -513,6 +579,16 @@ pub fn listening_toast() -> Toast {
     }
 }
 
+/// The notification after the driver answered the tray's or the shortcut's start, by the phase
+/// the tracker is in once it heard the answer ([`PhaseTracker::start_reported`]):
+/// [`listening_toast`] while the meeting starts or records, nothing for one that is already over
+/// (it ended with no `Started`, or it was that short). Nobody is being recorded then, and its
+/// own end says how it went.
+#[must_use]
+pub fn started_toast(phase: Phase) -> Option<Toast> {
+    matches!(phase, Phase::Starting | Phase::Recording).then(listening_toast)
+}
+
 /// The notification when a recording ends for `reason` with no window on screen, so a stop by the
 /// shortcut is confirmed before the summary arrives; `None` after the call-end stop or a meeting that
 /// stopped because no track could record, whose own notification already said it
@@ -604,6 +680,61 @@ pub fn mic_reading(
 /// How often the call-start watch looks at its poller and the setting (the poller itself reads
 /// every [`earshot_capture_wasapi::session::CALL_POLL_INTERVAL`]).
 const CALL_START_STEP: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The General page's "offer to record when a call starts" as the call-start watch reads it
+/// (T14.9): kept from its first read and from every change, so the watch does not take the
+/// store's lock twice a second for a value that changes when the user changes it. The setting
+/// is device-local and has one writer (`call_start::set_offer_on`, from the General page's
+/// command, which tells this cache).
+#[derive(Debug, Default)]
+pub struct OfferSetting(Mutex<Option<bool>>);
+
+impl OfferSetting {
+    fn kept(&self) -> std::sync::MutexGuard<'_, Option<bool>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The setting: the value kept, else what `read` gives (the store), kept from then on. A
+    /// read that fails (`None`: no store) is off for now and is read again next time. The lock
+    /// is not held across `read`; a change made meanwhile wins.
+    pub fn get(&self, read: impl FnOnce() -> Option<bool>) -> bool {
+        if let Some(on) = *self.kept() {
+            return on;
+        }
+        let read = read();
+        let mut kept = self.kept();
+        if kept.is_none() {
+            *kept = read;
+        }
+        kept.unwrap_or(false)
+    }
+
+    /// The setting was stored as `on`.
+    pub fn set(&self, on: bool) {
+        *self.kept() = Some(on);
+    }
+}
+
+/// The notification that Earshot started in the tray and could not open its data (T14.9): with
+/// no window on screen nothing else says so, and every meeting would fail to start. Fixed copy;
+/// the window says why.
+#[must_use]
+pub fn data_unopened_toast() -> Toast {
+    Toast {
+        title: "Earshot could not open its data".into(),
+        body: "Meetings cannot be recorded until this is fixed. Open Earshot to see why.".into(),
+        click: ToastClick::Window,
+        buttons: Vec::new(),
+        stays: false,
+    }
+}
+
+/// What a start says in a notification: [`data_unopened_toast`] when the store failed to open
+/// and no window shows it (started by Windows, in the tray). With a window, the window says it.
+#[must_use]
+pub fn start_toast(shows_window: bool, store_failed: bool) -> Option<Toast> {
+    (store_failed && !shows_window).then(data_unopened_toast)
+}
 
 /// The notification that nobody answered and the recording stopped by itself.
 #[must_use]
@@ -703,12 +834,72 @@ pub fn with_record_dot(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// What draws the tray: Tauri's icon and menu item in the app, a fake in tests.
+pub trait TraySurface: Send + Sync {
+    /// Shows `view`. Called off the main thread, each of Tauri's tray and menu calls waits until
+    /// the main thread has run it (tauri 2.12 `run_item_main_thread!`).
+    fn show(&self, view: TrayView);
+}
+
+/// The tray's surface and the one way to draw on it (T14.5). No lock is held across a call to
+/// the surface: a call made off the main thread waits for the main thread, and the main thread
+/// draws too (the shortcut, the tray's own menu), so a lock held across the call would have each
+/// waiting for the other, with the window and the tray dead.
+#[derive(Default)]
+pub struct TrayBoard {
+    surface: Mutex<Option<Arc<dyn TraySurface>>>,
+}
+
+impl TrayBoard {
+    /// The tray exists: draw on `surface` from now on.
+    pub fn set(&self, surface: Arc<dyn TraySurface>) {
+        *self.surface.lock().unwrap_or_else(PoisonError::into_inner) = Some(surface);
+    }
+
+    fn surface(&self) -> Option<Arc<dyn TraySurface>> {
+        self.surface
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Draws the tray of the phase `phase` reads. With no lock around the drawing, two threads
+    /// may draw at once and the older phase may land last, so each draws again until the phase it
+    /// drew is still the phase: whichever draws last then drew the phase as it is.
+    pub fn refresh(&self, phase: impl Fn() -> Phase) {
+        loop {
+            let drawn = phase();
+            let Some(surface) = self.surface() else {
+                return;
+            };
+            surface.show(tray_view(drawn));
+            if phase() == drawn {
+                return;
+            }
+        }
+    }
+}
+
 /// The tray's parts that change.
 struct TrayParts {
     icon: TrayIcon,
     toggle: MenuItem<tauri::Wry>,
     idle: tauri::image::Image<'static>,
     recording: tauri::image::Image<'static>,
+}
+
+impl TraySurface for TrayParts {
+    fn show(&self, view: TrayView) {
+        let image = if view.recording {
+            &self.recording
+        } else {
+            &self.idle
+        };
+        let _ = self.icon.set_icon(Some(image.clone()));
+        let _ = self.icon.set_tooltip(Some(view.tooltip));
+        let _ = self.toggle.set_text(view.toggle_label);
+        let _ = self.toggle.set_enabled(view.toggle_enabled);
+    }
 }
 
 /// The shortcut's state, read by the General page.
@@ -736,7 +927,7 @@ impl ShortcutStatus {
 pub struct Shell {
     app: AppHandle,
     tracker: Mutex<PhaseTracker>,
-    tray: Mutex<Option<TrayParts>>,
+    tray: TrayBoard,
     latch: Mutex<KeyLatch>,
     has_tray: AtomicBool,
     /// The call-end question is open ([`call_end_open_after`]).
@@ -745,6 +936,8 @@ pub struct Shell {
     call_start_open: AtomicBool,
     /// The call-start rule, fed by [`Shell::spawn_call_start_watch`] and answered by the user.
     call_start: Mutex<earshot_runtime::call_start::CallStartWatch>,
+    /// Whether the call-start offer is on, as last read or stored.
+    call_start_setting: OfferSetting,
     /// The call-end offer stopped this recording, or every track stopped recording (T9.17): its own
     /// notification said so, and [`ended_toast`] says nothing more.
     end_already_told: AtomicBool,
@@ -759,7 +952,7 @@ impl Shell {
         Self {
             app,
             tracker: Mutex::new(PhaseTracker::default()),
-            tray: Mutex::new(None),
+            tray: TrayBoard::default(),
             latch: Mutex::new(KeyLatch::default()),
             has_tray: AtomicBool::new(false),
             call_end_open: AtomicBool::new(false),
@@ -767,6 +960,7 @@ impl Shell {
             call_start: Mutex::new(earshot_runtime::call_start::CallStartWatch::new(
                 earshot_runtime::call_start::CallStartConfig::default(),
             )),
+            call_start_setting: OfferSetting::default(),
             end_already_told: AtomicBool::new(false),
             #[cfg(windows)]
             toasts: crate::toast_win::Toaster::default(),
@@ -831,12 +1025,12 @@ impl Shell {
                 }
             })
             .build(app)?;
-        *self.tray.lock().unwrap_or_else(PoisonError::into_inner) = Some(TrayParts {
+        self.tray.set(Arc::new(TrayParts {
             icon,
             toggle,
             idle,
             recording,
-        });
+        }));
         self.has_tray.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -899,11 +1093,8 @@ impl Shell {
 
     /// Starts a meeting, or stops the recording one.
     pub fn toggle(self: &Arc<Self>) {
-        match toggle_action(self.driver().phase()) {
-            ToggleAction::Stop => {
-                // It may have just ended by itself; the UI shows that either way.
-                let _ = self.driver().stop();
-            }
+        match press(&self.driver()) {
+            ToggleAction::Stop | ToggleAction::Nothing => {}
             ToggleAction::Start => {
                 if !self.tracker().begin_start() {
                     return;
@@ -947,9 +1138,20 @@ impl Shell {
                 )
             });
         match started {
-            Ok(_) => {
-                if !self.window_watched() {
-                    self.notify(&listening_toast(), None);
+            Ok(meeting) => {
+                // Its `Started` usually came first; one that ended without it still ends the
+                // start (T14.5).
+                let (changed, phase) = {
+                    let mut tracker = self.tracker();
+                    (tracker.start_reported(&meeting), tracker.phase())
+                };
+                if changed {
+                    self.refresh_tray();
+                }
+                if let Some(toast) = started_toast(phase)
+                    && !self.window_watched()
+                {
+                    self.notify(&toast, None);
                 }
             }
             Err(e) => self.start_failed(e.message),
@@ -989,13 +1191,10 @@ impl Shell {
         self: &Arc<Self>,
         poller: &mut Option<earshot_capture_wasapi::RenderSessionPoller>,
     ) {
-        let on = self
-            .app
-            .state::<AppState>()
-            .services()
-            .ok()
-            .and_then(|s| earshot_runtime::call_start::offer_on(&s.store()).ok())
-            .unwrap_or(false);
+        let on = self.call_start_setting.get(|| {
+            let services = self.app.state::<AppState>().services().ok()?;
+            earshot_runtime::call_start::offer_on(&services.store()).ok()
+        });
         if !on {
             // Turned off (or no store): no readings, and an open question goes.
             *poller = None;
@@ -1016,7 +1215,9 @@ impl Shell {
         let Some(reading) = poller.as_mut().and_then(|p| mic_reading(p.latest())) else {
             return;
         };
-        let recording = matches!(self.tracker().phase(), Phase::Starting | Phase::Recording)
+        // One lock at a time.
+        let phase = self.tracker().phase();
+        let recording = matches!(phase, Phase::Starting | Phase::Recording)
             || self.driver().phase() == DriverPhase::Recording;
         let change = self.call_start_watch().reading(reading, recording);
         match change {
@@ -1044,6 +1245,20 @@ impl Shell {
         self.call_start
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The General page stored the call-start offer as `on`: the watch reads it from here.
+    pub fn call_start_offer_stored(&self, on: bool) {
+        self.call_start_setting.set(on);
+    }
+
+    /// Says once, at the start, what no window is there to say (T14.9, [`start_toast`]):
+    /// `shows_window` is whether this start opened the window.
+    pub fn tell_start_problems(self: &Arc<Self>, shows_window: bool) {
+        let store_failed = self.app.state::<AppState>().services().is_err();
+        if let Some(toast) = start_toast(shows_window, store_failed) {
+            self.notify(&toast, None);
+        }
     }
 
     /// The question closed: the window's banner and the notification go.
@@ -1155,19 +1370,7 @@ impl Shell {
     }
 
     fn refresh_tray(&self) {
-        let view = tray_view(self.tracker().phase());
-        let tray = self.tray.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(parts) = tray.as_ref() {
-            let image = if view.recording {
-                &parts.recording
-            } else {
-                &parts.idle
-            };
-            let _ = parts.icon.set_icon(Some(image.clone()));
-            let _ = parts.icon.set_tooltip(Some(view.tooltip));
-            let _ = parts.toggle.set_text(view.toggle_label);
-            let _ = parts.toggle.set_enabled(view.toggle_enabled);
-        }
+        self.tray.refresh(|| self.tracker().phase());
     }
 
     /// Shows `toast`; `meeting` is what its clicks open. Never blocks the caller (the meeting

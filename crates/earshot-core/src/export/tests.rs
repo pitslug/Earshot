@@ -646,6 +646,359 @@ fn export_merge_keeps_crlf_line_endings() {
     assert_eq!(merged, doc);
 }
 
+// ---- T14.27: ticked action items survive a re-export ----
+
+const ADA_TASK: &str = "**Ada Lovelace**: Send revised travel numbers (due: Friday)";
+const ME_TASK: &str = "**Me**: Update the forecast";
+
+#[test]
+fn export_merge_keeps_ticked_action_items_whose_text_is_unchanged() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    // The user ticks one item and marks the other with a plugin's "in progress" marker.
+    let ticked = doc
+        .replace(&format!("- [ ] {ADA_TASK}"), &format!("- [x] {ADA_TASK}"))
+        .replace(&format!("- [ ] {ME_TASK}"), &format!("- [/] {ME_TASK}"));
+    assert_ne!(ticked, doc);
+    // Re-exporting the same render keeps both marks: still a fixed point.
+    assert_eq!(merge(&ticked, &r).unwrap(), ticked);
+
+    // A new summary with one item reworded: the unchanged item keeps its mark, the
+    // reworded one comes back unticked, the rest of the region is replaced.
+    let mut f2 = fixture();
+    f2.summary.tldr = "New summary.".into();
+    f2.summary.action_items[1].task = "Update the forecast by Monday".into();
+    let r2 = render(&input(&f2), &opts()).unwrap();
+    let merged = merge(&ticked, &r2).unwrap();
+    assert!(merged.contains(&format!("- [x] {ADA_TASK}\n")), "{merged}");
+    assert!(
+        merged.contains("- [ ] **Me**: Update the forecast by Monday\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("- [/]"), "{merged}");
+    assert!(merged.contains("New summary."));
+    // Apart from the carried mark the merge is the plain merge of the new render.
+    let plain = merge(&doc, &r2).unwrap();
+    assert_eq!(
+        merged,
+        plain.replace(&format!("- [ ] {ADA_TASK}"), &format!("- [x] {ADA_TASK}"))
+    );
+}
+
+#[test]
+fn export_merge_keeps_the_users_own_marker_character_and_crlf() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    for mark in ['X', '-', '>', '!', '\u{2713}'] {
+        let doc = r.to_file().replace(
+            &format!("- [ ] {ME_TASK}"),
+            &format!("- [{mark}] {ME_TASK}"),
+        );
+        assert_eq!(merge(&doc, &r).unwrap(), doc, "{mark:?}");
+        let crlf = doc.replace('\n', "\r\n");
+        assert_eq!(merge(&crlf, &r).unwrap(), crlf, "{mark:?} CRLF");
+    }
+}
+
+#[test]
+fn export_merge_carries_marks_of_repeated_task_lines_in_order() {
+    let mut f = fixture();
+    // Two identical items, then a third with other text.
+    let item = f.summary.action_items[1].clone();
+    f.summary.action_items = vec![item.clone(), item, f.summary.action_items[0].clone()];
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    let first = doc.find(&format!("- [ ] {ME_TASK}")).unwrap();
+    let second = doc[first + 1..].find(&format!("- [ ] {ME_TASK}")).unwrap() + first + 1;
+    // Tick only the second copy.
+    let mut ticked = doc.clone();
+    ticked.replace_range(second..second + 5, "- [x]");
+    assert_eq!(merge(&ticked, &r).unwrap(), ticked);
+    // A new render that keeps one copy only takes the first copy's mark (unticked).
+    let mut f2 = fixture();
+    f2.summary.action_items = f.summary.action_items[1..].to_vec();
+    let r2 = render(&input(&f2), &opts()).unwrap();
+    let merged = merge(&ticked, &r2).unwrap();
+    assert_eq!(
+        merged.matches(&format!("- [ ] {ME_TASK}")).count(),
+        1,
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 0, "{merged}");
+}
+
+#[test]
+fn export_merge_keeps_a_tick_on_a_line_written_before_the_escaping_rule() {
+    let mut f = fixture();
+    f.summary.action_items[1].task = "Check the <b>bold</b> ![chart] text".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    let escaped = "**Me**: Check the &lt;b>bold&lt;/b> !&#91;chart] text";
+    assert!(doc.contains(&format!("- [ ] {escaped}\n")), "{doc}");
+    // As a version from before T14.28 wrote it, raw, and the user ticked it.
+    let old = doc.replace(
+        &format!("- [ ] {escaped}"),
+        "- [x] **Me**: Check the <b>bold</b> ![chart] text",
+    );
+    let merged = merge(&old, &r).unwrap();
+    assert!(merged.contains(&format!("- [x] {escaped}\n")), "{merged}");
+    // Already escaped text is not escaped again: the ticked new form is a fixed point.
+    assert_eq!(merge(&merged, &r).unwrap(), merged);
+    // The control: other text still does not match.
+    let other = doc.replace(
+        &format!("- [ ] {escaped}"),
+        "- [x] **Me**: Check the <i>bold</i>",
+    );
+    assert!(!merge(&other, &r).unwrap().contains("- [x]"));
+}
+
+#[test]
+fn export_merge_into_its_own_output_stays_the_identity_when_generated_text_holds_a_mark() {
+    let mut f = fixture();
+    // Two summary bullets render as `- [x] foo` then `- [ ] foo`.
+    f.summary.enhanced_notes[0].bullets[0].text = "[x] Check travel".into();
+    f.summary.enhanced_notes[0].bullets[1].text = "[ ] Check travel".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    assert!(
+        doc.contains("- [x] Check travel\n- [ ] Check travel\n"),
+        "{doc}"
+    );
+    assert_eq!(merge(&doc, &r).unwrap(), doc);
+}
+
+#[test]
+fn export_merge_keeps_a_tick_after_a_plugin_appended_to_the_line() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    // A task plugin ticked the item and added a done date after its text.
+    let done = doc.replace(
+        &format!("- [ ] {ME_TASK}"),
+        &format!("- [x] {ME_TASK} \u{2705} 2026-11-20"),
+    );
+    let merged = merge(&done, &r).unwrap();
+    assert!(merged.contains(&format!("- [x] {ME_TASK}\n")), "{merged}");
+    assert!(
+        !merged.contains("2026-11-20"),
+        "the appended text is not carried"
+    );
+    // An exact copy still comes first: the exact pass pairs before the appended one.
+    assert_eq!(merge(&merged, &r).unwrap(), merged);
+}
+
+#[test]
+fn export_merge_does_not_carry_a_tick_to_a_longer_item_sharing_its_start() {
+    let mut f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    let ticked = r
+        .to_file()
+        .replace(&format!("- [ ] {ME_TASK}"), &format!("- [x] {ME_TASK}"));
+    // The new summary words the item longer: a different item, unticked.
+    f.summary.action_items[1].task = "Update the forecast numbers".into();
+    let r2 = render(&input(&f), &opts()).unwrap();
+    let merged = merge(&ticked, &r2).unwrap();
+    assert!(
+        merged.contains("- [ ] **Me**: Update the forecast numbers\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("- [x] **Me**"), "{merged}");
+    // A prefix that ends mid-word does not match either.
+    let partial = r
+        .to_file()
+        .replace(&format!("- [ ] {ME_TASK}"), &format!("- [x] {ME_TASK}s"));
+    assert!(!merge(&partial, &r).unwrap().contains("- [x] **Me**"));
+}
+
+#[test]
+fn export_merge_keeps_a_tick_written_under_the_wider_escaping_rule() {
+    let mut f = fixture();
+    f.summary.action_items[1].task = "Keep costs <5% over".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    let line = doc
+        .lines()
+        .find(|l| l.starts_with("- [ ] **Me**"))
+        .unwrap()
+        .to_owned();
+    // The note as T14.28's first rule wrote it (every `<` escaped), then ticked.
+    let wider = doc.replace(&line, &line.replace("- [ ]", "- [x]").replace('<', "&lt;"));
+    let merged = merge(&wider, &r).unwrap();
+    assert!(merged.contains(&line.replace("- [ ]", "- [x]")), "{merged}");
+}
+
+#[test]
+fn export_merge_never_carries_a_mark_from_outside_the_region() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    // The user copied the item above the region and ticked that copy.
+    let doc = r
+        .to_file()
+        .replace(BEGIN_MARKER, &format!("- [x] {ME_TASK}\n\n{BEGIN_MARKER}"));
+    let merged = merge(&doc, &r).unwrap();
+    assert_eq!(merged, doc);
+    assert_eq!(merged.matches(&format!("- [ ] {ME_TASK}")).count(), 1);
+}
+
+// ---- T14.28: generated text cannot embed or fetch ----
+
+/// Text that would make Obsidian fetch or embed something, or hide text, if written raw.
+const HOSTILE: [&str; 7] = [
+    "![](https://example.invalid/a.png)",
+    "![[Secret note]]",
+    "<img src=\"https://example.invalid/b.png\">",
+    "<iframe src=\"https://example.invalid/\"></iframe>",
+    "<https://example.invalid/c>",
+    "\\![x](https://example.invalid/d.png)",
+    "<!-- hidden -->",
+];
+
+#[test]
+fn export_generated_text_cannot_form_an_image_an_embed_or_html() {
+    let mut f = fixture();
+    let all = HOSTILE.join(" and ");
+    f.summary.tldr = all.clone();
+    f.summary.enhanced_notes[0].heading = all.clone();
+    f.summary.enhanced_notes[0].bullets[0].text = all.clone();
+    f.summary.decisions[0].text = all.clone();
+    f.summary.action_items[0].owner = all.clone();
+    f.summary.action_items[0].task = all.clone();
+    f.summary.action_items[0].due = Some(all.clone());
+    f.summary.open_questions[0] = all.clone();
+    f.speakers[1].display_name = all.clone();
+    f.segments[0].text = all.clone();
+    f.notes.clear();
+    let r = render(&input(&f), &opts()).unwrap();
+    let region = r
+        .region
+        .strip_prefix(&format!("{BEGIN_MARKER}\n"))
+        .and_then(|s| s.strip_suffix(&format!("{END_MARKER}\n")))
+        .unwrap();
+    assert!(!region.contains("!["), "{region}");
+    assert!(!region.contains('<'), "{region}");
+    // Ordinary text around the triggers is kept, the triggers written as entities that
+    // Obsidian's reading view shows as the original characters.
+    assert!(
+        region.contains("!&#91;](https://example.invalid/a.png)"),
+        "{region}"
+    );
+    assert!(region.contains("!&#91;[Secret note]]"), "{region}");
+    assert!(region.contains("&lt;img src=\"https://example.invalid/b.png\">"));
+    assert!(region.contains("&lt;!-- hidden -->"));
+    // Every generated place got the escape: tldr, heading, bullet, decision, owner, task,
+    // due, question, the speaker name on its one line and the transcript line.
+    assert_eq!(region.matches("&lt;iframe").count(), 10, "{region}");
+    // Still a fixed point.
+    let doc = r.to_file();
+    assert_eq!(merge(&doc, &r).unwrap(), doc);
+}
+
+#[test]
+fn export_ordinary_prose_with_the_trigger_characters_still_reads_naturally() {
+    let mut f = fixture();
+    f.summary.tldr = "Costs fell! [Budget] is <5% over, a -> b, and 3 > 2.".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    assert!(
+        r.region
+            .contains("\nCosts fell! [Budget] is <5% over, a -> b, and 3 > 2.\n"),
+        "{}",
+        r.region
+    );
+    // Single markers and short runs are prose too.
+    f.summary.tldr = "Up 5% to $10, a ~ b, `x` and `` y ``.".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    assert!(
+        r.region
+            .contains("\nUp 5% to $10, a ~ b, `x` and `` y ``.\n"),
+        "{}",
+        r.region
+    );
+}
+
+/// Text that would hide the rest of the note if written raw at the start of a line or a
+/// list item's text.
+const HIDING: [&str; 6] = [
+    "%% everything after this is a comment",
+    "```",
+    "~~~~ notes",
+    "  ```rust",
+    "$$ x",
+    "a %%% b $$$ c",
+];
+
+#[test]
+fn export_generated_text_cannot_hide_the_users_text_after_the_region() {
+    for hiding in HIDING {
+        let mut f = fixture();
+        f.summary.tldr = hiding.into();
+        f.summary.enhanced_notes[0].heading = hiding.into();
+        f.summary.enhanced_notes[0].bullets[0].text = hiding.into();
+        f.summary.decisions[0].text = hiding.into();
+        f.summary.action_items[0].owner = hiding.into();
+        f.summary.action_items[0].task = hiding.into();
+        f.summary.action_items[0].due = Some(hiding.into());
+        f.summary.open_questions[0] = hiding.into();
+        f.speakers[1].display_name = hiding.into();
+        f.segments[0].text = hiding.into();
+        let r = render(&input(&f), &opts()).unwrap();
+        let doc = format!("{}\nMy own words after the region.\n", r.to_file());
+        let region = &r.region;
+        assert!(!region.contains("%%"), "{hiding:?}: {region}");
+        assert!(!region.contains("$$"), "{hiding:?}: {region}");
+        // No line of the region, nor a list item's text, opens a fence.
+        for line in region.lines() {
+            let text = line
+                .trim_start_matches(' ')
+                .strip_prefix("- ")
+                .unwrap_or(line)
+                .trim_start_matches(' ');
+            assert!(
+                !text.starts_with("```") && !text.starts_with("~~~"),
+                "{hiding:?}: {line:?}"
+            );
+        }
+        assert!(doc.ends_with("<!-- earshot:end -->\n\nMy own words after the region.\n"));
+        assert_eq!(merge(&doc, &r).unwrap(), doc, "{hiding:?}");
+    }
+    // Mid-line runs cannot open a fence and are kept.
+    let mut f = fixture();
+    f.summary.tldr = "use ``` to fence".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    assert!(r.region.contains("\nuse ``` to fence\n"), "{}", r.region);
+}
+
+#[test]
+fn export_the_generated_escapes_are_idempotent_and_undone_by_the_plain_form() {
+    let samples = [
+        HOSTILE.join(" "),
+        HIDING.join(" "),
+        "```x".to_owned(),
+        "~~~".to_owned(),
+        "<5% and <b> and &lt;i>".to_owned(),
+    ];
+    for s in samples {
+        let once = text::neutralise_generated(&s);
+        assert_eq!(text::neutralise_generated(&once), once, "{s:?}");
+        assert_eq!(
+            merge::plain_form(&once),
+            merge::plain_form(&s),
+            "{s:?} -> {once:?}"
+        );
+    }
+}
+
+#[test]
+fn export_the_users_own_notes_are_written_as_typed() {
+    let mut f = fixture();
+    f.notes[1].text = "see ![chart](https://example.invalid/e.png) <b>now</b>".into();
+    let doc = render(&input(&f), &opts()).unwrap().to_file();
+    assert!(
+        doc.contains("- `00:33:20` see ![chart](https://example.invalid/e.png) <b>now</b>\n"),
+        "{doc}"
+    );
+}
+
 #[test]
 fn export_content_cannot_forge_region_markers() {
     let mut f = fixture();

@@ -1372,6 +1372,242 @@ fn meeting_queue_a_stretch_worker_past_its_cap_stops_and_says_so() {
     );
 }
 
+/// A [`ContentWords`] whose first call waits until released (a decode that does not return),
+/// keeps the cancel token it was given and says when it is dropped (its thread has ended).
+struct FirstCallWaits {
+    entered: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    token: Arc<Mutex<Option<CancelToken>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+/// The handles of a [`FirstCallWaits`].
+#[derive(Default, Clone)]
+struct Waits {
+    entered: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    token: Arc<Mutex<Option<CancelToken>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl Waits {
+    fn transcriber(&self) -> Box<FirstCallWaits> {
+        Box::new(FirstCallWaits {
+            entered: Arc::clone(&self.entered),
+            release: Arc::clone(&self.release),
+            token: Arc::clone(&self.token),
+            dropped: Arc::clone(&self.dropped),
+        })
+    }
+}
+
+impl Drop for FirstCallWaits {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+impl earshot_core::asr::Transcriber for FirstCallWaits {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &earshot_core::asr::TranscribeOptions,
+        cancel: &CancelToken,
+    ) -> Result<earshot_core::asr::Transcription, AsrError> {
+        if !self.entered.swap(true, Ordering::SeqCst) {
+            *self.token.lock().unwrap() = Some(cancel.clone());
+            wait_for(&self.release);
+        }
+        ContentWords.transcribe(audio, options, cancel)
+    }
+
+    fn backend_info(&self) -> earshot_core::asr::BackendInfo {
+        ContentWords.backend_info()
+    }
+}
+
+/// A stretch worker with `cap` whose first decode has begun (and waits, unless released): ten
+/// seconds with one turn in them, sent in 100 ms packets. Returns the worker, the samples
+/// sent, and those still waiting when the decode began (it takes no more until it returns).
+fn worker_in_a_decode(waits: &Waits, cap: u64) -> (LiveWorker, u64, u64) {
+    let audio = speech(&words("w", 1_000, 5), 10_000, 302);
+    let worker = LiveWorker::spawn(
+        TrackId::Mic,
+        stretch_track(waits.transcriber()),
+        earshot_core::pipeline::PartialPolicy::Coalesce,
+        cap,
+    )
+    .unwrap();
+    for packet in audio.chunks(1_600) {
+        worker.send(packet);
+    }
+    wait_for(&waits.entered);
+    let waiting = worker.waiting();
+    (worker, audio.len() as u64, waiting)
+}
+
+fn live_asr_errors(events: &[PipelineEvent]) -> usize {
+    events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                PipelineEvent::Error(PipelineError::LiveAsr {
+                    track: TrackId::Mic,
+                    ..
+                })
+            )
+        })
+        .count()
+}
+
+/// T14.21: a worker whose decode does not return is sent no more audio once more than its cap
+/// waits, so its queue stays bounded however long the meeting goes on. When the decode does
+/// return, the track stops as "fell behind", once, and its frontier follows everything the
+/// session had for it, as when all of it was sent.
+#[test]
+fn meeting_queue_a_worker_stuck_in_a_decode_is_sent_no_more_audio_past_its_cap() {
+    let waits = Waits::default();
+    // More than the ten seconds the worker starts with.
+    let cap = 15 * 16_000;
+    let (worker, first, waited) = worker_in_a_decode(&waits, cap);
+    // The cap, one slice (30 s) and two packets: more than that waiting, and no more is sent.
+    let limit = cap + 30 * 16_000 + 2 * 1_600;
+    let packet = noise(303, 1_600, 0.3);
+    // Ten minutes more, while the decode waits.
+    let packets = 6_000u64;
+    let mut most = 0;
+    for k in 0..packets {
+        let before = worker.waiting();
+        worker.send(&packet);
+        most = most.max(worker.waiting());
+        // Up to the limit everything is sent; past it, nothing.
+        if before <= limit {
+            assert_eq!(worker.waiting(), waited + (k + 1) * 1_600);
+            assert_eq!(worker.past_cap(), worker.waiting() > limit);
+        } else {
+            assert!(worker.past_cap());
+            assert_eq!(worker.waiting(), before, "sent past the cap");
+        }
+    }
+    assert!(worker.past_cap());
+    // The queue stopped at the packet that passed the limit, with ten minutes still to come.
+    assert!(
+        most > limit && most <= limit + 1_600,
+        "{most} against {limit}"
+    );
+    assert!(most < packets * 1_600 / 10);
+    assert_eq!(worker.waiting(), most, "nothing was sent after that");
+    assert!(worker.backlog() >= most);
+    assert!(
+        worker.drain().0.is_empty(),
+        "nothing is said while it waits"
+    );
+
+    // The decode returns: the queue is past the cap, so the track stops and says so once.
+    waits.release.store(true, Ordering::SeqCst);
+    let total = first + packets * 1_600;
+    let limit = Instant::now() + GUARD;
+    let mut events = Vec::new();
+    while worker.decoded_through() != MeetingTime::from_pipeline_frames(total) {
+        assert!(
+            Instant::now() < limit,
+            "the frontier stayed at {:?}",
+            worker.decoded_through()
+        );
+        events.extend(worker.drain().0);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(worker.waiting(), 0);
+    assert_eq!(worker.backlog(), 0);
+    // More audio after the stop is counted too, as a stopped track counted what it was sent.
+    worker.send(&packet);
+    while worker.decoded_through() != MeetingTime::from_pipeline_frames(total + 1_600) {
+        assert!(
+            Instant::now() < limit,
+            "audio after the stop was not counted"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    events.extend(worker.finish().0);
+    assert_eq!(live_asr_errors(&events), 1, "{events:?}");
+}
+
+/// T14.21: a slow worker within its cap loses nothing: every packet is sent while its decode
+/// takes its time, and it goes on to transcribe all of them.
+#[test]
+fn meeting_queue_a_slow_worker_within_its_cap_is_sent_everything() {
+    let waits = Waits::default();
+    let cap = 60 * 16_000;
+    let (worker, _, waited) = worker_in_a_decode(&waits, cap);
+    // Three quarters of a minute behind, with a turn in it.
+    let late = speech(&words("x", 20_000, 5), 45_000, 304);
+    for packet in late.chunks(1_600) {
+        worker.send(packet);
+    }
+    assert!(!worker.past_cap());
+    assert_eq!(worker.waiting(), waited + late.len() as u64);
+    waits.release.store(true, Ordering::SeqCst);
+    let (events, _) = worker.finish();
+    assert_eq!(live_asr_errors(&events), 0, "{events:?}");
+    let finals = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                PipelineEvent::Transcript {
+                    event: TranscriptEvent::Final(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(finals, 2, "the turn before the wait and the one during it");
+}
+
+/// T14.21: dropping a worker whose decode never returns asks it to stop and leaves its thread;
+/// it does not wait for the decode.
+#[test]
+fn meeting_queue_dropping_a_worker_stuck_in_a_decode_leaves_its_thread() {
+    let waits = Waits::default();
+    let (worker, ..) = worker_in_a_decode(&waits, u64::MAX);
+    let began = Instant::now();
+    drop(worker);
+    let took = began.elapsed();
+    assert!(
+        took < Duration::from_secs(30),
+        "the drop waited {took:?} for a decode that does not return"
+    );
+    assert!(
+        !waits.dropped.load(Ordering::SeqCst),
+        "the thread is still in its decode"
+    );
+    let token = waits.token.lock().unwrap().clone().unwrap();
+    assert!(token.is_cancelled(), "the decode was asked to stop");
+    // Let the thread end.
+    waits.release.store(true, Ordering::SeqCst);
+    wait_for(&waits.dropped);
+}
+
+/// A worker whose decode does return is still waited for (the drop's own rule, here with a
+/// bound a busy host cannot pass): its thread has ended and its transcriber is gone when it
+/// returns.
+#[test]
+fn meeting_queue_ending_a_healthy_worker_waits_for_its_thread() {
+    let waits = Waits::default();
+    waits.release.store(true, Ordering::SeqCst);
+    let (mut worker, ..) = worker_in_a_decode(&waits, u64::MAX);
+    assert!(worker.end_within(GUARD));
+    assert!(waits.dropped.load(Ordering::SeqCst));
+    // A decode that does not return is not: the bound passes and the thread is left.
+    let stuck = Waits::default();
+    let (mut worker, ..) = worker_in_a_decode(&stuck, u64::MAX);
+    assert!(!worker.end_within(Duration::from_millis(50)));
+    assert!(!stuck.dropped.load(Ordering::SeqCst));
+    stuck.release.store(true, Ordering::SeqCst);
+    wait_for(&stuck.dropped);
+}
+
 /// A hold the speaker thread can take over without passing its own bound at the next packet.
 #[test]
 fn meeting_queue_a_full_speaker_hold_fits_the_thread_it_hands_over_to() {

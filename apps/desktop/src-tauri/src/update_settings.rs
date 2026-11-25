@@ -291,11 +291,106 @@ impl UpdateWork for HostUpdates {
 
     fn launch(&self) -> Result<(), UpdateError> {
         let offer = self.offer()?;
-        let path = offer.installer_path(self.dir()?);
-        earshot_runtime::update::verify_installer(&offer, &path)?;
-        earshot_proc::spawn_detached(&path, &earshot_runtime::update::installer_args())
-            .map_err(|e| UpdateError::Unreadable(e.to_string()))
+        let dir = self.dir()?;
+        let path = offer.installer_path(dir);
+        launch_held(
+            dir,
+            &path,
+            |file| earshot_runtime::update::verify_installer_file(&offer, file),
+            |p| earshot_proc::spawn_detached(p, &earshot_runtime::update::installer_args()),
+        )
     }
+}
+
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: a symbolic link, junction or other reparse point.
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+/// Whether `metadata` (read without following links) is a reparse point.
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+/// Opens the installer at `path` for reading, shared with readers only: while the handle lives,
+/// nobody can write, truncate, rename, replace or delete the file (Windows refuses each open or
+/// move that needs write or delete access), and nobody who already has it open for writing lets
+/// this open succeed. Reading stays possible, which is all starting a program needs:
+/// `CreateProcess` opens the image for execute with read sharing, and execute counts as read.
+/// A link at `path` is opened as itself, never followed (`FILE_FLAG_OPEN_REPARSE_POINT`), so
+/// [`launch_held`] can refuse it.
+fn hold_installer(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        /// `FILE_SHARE_READ`: no `FILE_SHARE_WRITE`, no `FILE_SHARE_DELETE`.
+        const FILE_SHARE_READ: u32 = 0x1;
+        /// `FILE_FLAG_OPEN_REPARSE_POINT`.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path)
+}
+
+/// Refuses an installer that is reached through a link Earshot controls the name of: the
+/// installer itself (`held`), the updates folder `dir`, or a `path` that does not resolve to its
+/// own name directly inside the resolved `dir`. A link above the updates folder (a redirected
+/// profile, say) is resolved, not refused, so such a computer can still update.
+fn refuse_links(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    held: &std::fs::File,
+) -> Result<(), UpdateError> {
+    let link = |what: &str| UpdateError::Unreadable(format!("the {what} is a link"));
+    let unreadable = |e: std::io::Error| UpdateError::Unreadable(e.to_string());
+    if is_reparse_point(&held.metadata().map_err(unreadable)?) {
+        return Err(link("installer"));
+    }
+    if is_reparse_point(&std::fs::symlink_metadata(dir).map_err(unreadable)?) {
+        return Err(link("updates folder"));
+    }
+    let name = path
+        .file_name()
+        .filter(|_| path.parent() == Some(dir))
+        .ok_or_else(|| {
+            UpdateError::Unreadable("the installer is not in the updates folder".into())
+        })?;
+    let expected = std::fs::canonicalize(dir).map_err(unreadable)?.join(name);
+    if std::fs::canonicalize(path).map_err(unreadable)? != expected {
+        return Err(UpdateError::Unreadable(
+            "the installer's path goes through a link".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The install's last step (T14.35): holds the installer ([`hold_installer`]) from before
+/// `verify` reads it until `start` has returned, so the file that runs is the file that was
+/// checked. The installer and the updates folder `dir` must not be links ([`refuse_links`]). A
+/// refusal or a check that fails starts nothing; the handle is let go either way.
+fn launch_held(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    verify: impl FnOnce(&mut std::fs::File) -> Result<(), UpdateError>,
+    start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), UpdateError> {
+    let mut held = hold_installer(path).map_err(|e| UpdateError::Unreadable(e.to_string()))?;
+    refuse_links(dir, path, &held)?;
+    verify(&mut held)?;
+    let started = start(path).map_err(|e| UpdateError::Unreadable(e.to_string()));
+    drop(held);
+    started
 }
 
 /// What the page's events go to.

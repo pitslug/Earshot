@@ -19,6 +19,26 @@
 //! all at the end; it decodes the same pieces either way. A queue past `cap` is taken whole, which
 //! makes the track stop as "fell behind" (`LiveTrack::feed`).
 //!
+//! A worker that does not take its queue (a decode that never returns) is sent no more audio past
+//! its cap (T14.21), so a hung decode costs a bounded queue, not the rest of the meeting's audio
+//! in memory. The session stops sending once more than [`cut_at`] samples wait in the channel:
+//! the cap, one slice and two of the largest messages sent. Whatever the worker is doing then, an
+//! alive one stops the track as "fell behind" the next time it takes its queue, exactly as it
+//! would have had the audio kept coming (a queue past `cap` at that moment is taken whole and
+//! stops the track in `LiveTrack::feed`):
+//! - in a decode, or about to take its queue: more than `cap` waits and nothing is taken from it
+//!   before that take;
+//! - taking its queue whole: it takes everything, more than `cap`;
+//! - taking a slice: it takes at most a slice and one message more, and the count of what it
+//!   took (`taken`) trails by at most the message in its hands, so more than `cap` still waits
+//!   afterwards and the next take is whole.
+//!
+//! So no worker the rule before would have let go on is cut. Audio the session does not send is
+//! counted ([`ToWorker::Unsent`], at most one such message waiting), and an alive worker adds
+//! it to what its stopped track received, as it did when the audio itself came: its frontier
+//! follows the meeting as before (the echo hold, the previews and the live summaries read it).
+//! A worker whose thread is stuck is left when it is dropped, never joined ([`DROP_WAIT`]).
+//!
 //! Speaker work never runs here: it has its own thread (`super::speaker_thread`, T6.13d3),
 //! so a decode never waits for it.
 //!
@@ -34,11 +54,12 @@
 //! soon as its own decode returns (`PieceStream::push_each`), so only the piece whose
 //! decode panicked is lost: earlier pieces of the same core call are logged and shown.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use earshot_core::asr::{AsrError, CancelToken, DecodedPieces};
 use earshot_core::audio::{PIPELINE_RATE, Sample, quantise_pcm16};
@@ -61,7 +82,52 @@ pub(super) struct StretchLog {
 
 enum ToWorker {
     Audio(Vec<Sample>),
+    /// Audio was not sent (the queue is past its cap, module docs): the count is in
+    /// [`Unsent::samples`].
+    Unsent,
     Finish,
+}
+
+/// Audio the session did not send to a worker past its cap: the samples the worker has not
+/// counted yet, and whether a [`ToWorker::Unsent`] is on its way (so at most one waits in the
+/// channel however long the worker takes).
+#[derive(Default)]
+struct Unsent {
+    samples: AtomicU64,
+    told: AtomicBool,
+}
+
+/// How long a dropped worker's thread is waited for after its decode was cancelled: a judgement
+/// (a healthy decode sees the cancel well within it, and a failing session can afford it), not a
+/// measurement. A thread still running then is stuck in a call that never returns and is left,
+/// never joined (T14.21).
+pub const DROP_WAIT: Duration = Duration::from_secs(2);
+
+/// The waiting samples past which a worker with `cap` is sent no more audio (module docs), given
+/// the largest message sent to it so far.
+fn cut_at(cap: u64, largest: u64) -> u64 {
+    let slice = PIPELINE_RATE.frames_for(CATCH_UP_SLICE) as u64;
+    cap.saturating_add(slice)
+        .saturating_add(largest.saturating_mul(2))
+}
+
+/// Whether `events` hold the error a track's live ASR stops with (`LiveTrack` sends one only
+/// when it stops).
+fn stopped_in(events: &[PipelineEvent]) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::Error(PipelineError::LiveAsr { .. })))
+}
+
+/// Adds `n` samples the session did not send to what a stopped `live` received (a stopped
+/// track only counts what it is fed).
+fn count_unsent(live: &mut LiveTrack, mut n: u64, cap: u64, events: &mut Vec<PipelineEvent>) {
+    const SILENCE: [Sample; 1600] = [0.0; 1600];
+    while n > 0 {
+        let k = usize::try_from(n).map_or(SILENCE.len(), |n| n.min(SILENCE.len()));
+        live.feed(&SILENCE[..k], cap, events);
+        n -= k as u64;
+    }
 }
 
 /// The most audio a stretch worker takes into one engine call while its queue is within the cap.
@@ -149,6 +215,16 @@ pub(super) struct LiveWorker {
     from: Receiver<FromWorker>,
     /// Samples sent and not yet decoded (sent minus fed into the chunker and run).
     queued: Arc<AtomicU64>,
+    /// The pipeline's `max_asr_backlog` in samples.
+    cap: u64,
+    /// Samples sent, and the largest message among them.
+    sent: Cell<u64>,
+    largest: Cell<u64>,
+    /// Samples the thread has taken off its channel (counted right after each message).
+    taken: Arc<AtomicU64>,
+    /// Past its cap: no more audio is sent, only counted (module docs).
+    cut: Cell<bool>,
+    unsent: Arc<Unsent>,
     /// Pipeline frames up to which the track is transcribed (`LiveTrack::decoded_through`
     /// after each decode).
     decoded: Arc<AtomicU64>,
@@ -178,6 +254,10 @@ impl LiveWorker {
         let partials = live.has_partials();
         let counter = Arc::clone(&queued);
         let progress = Arc::clone(&decoded);
+        let taken = Arc::new(AtomicU64::new(0));
+        let took = Arc::clone(&taken);
+        let unsent = Arc::new(Unsent::default());
+        let not_sent = Arc::clone(&unsent);
         let stretches = live
             .stretches_through()
             .map(|_| Arc::new(Mutex::new(StretchLog::default())));
@@ -191,6 +271,9 @@ impl LiveWorker {
                 let mut events = Vec::new();
                 let mut finish = false;
                 let mut on = true;
+                // Whether the track's live ASR has stopped, and unsent samples met before it had.
+                let mut stopped = false;
+                let mut owed = 0u64;
                 let slice = PIPELINE_RATE.frames_for(CATCH_UP_SLICE) as u64;
                 while let Ok(first) = inbox.recv() {
                     // Everything queued so far is decoded in one go, or, for the stretches, at
@@ -201,14 +284,31 @@ impl LiveWorker {
                     while let Some(msg) = next.take() {
                         match msg {
                             ToWorker::Audio(samples) => {
+                                took.fetch_add(samples.len() as u64, Ordering::SeqCst);
                                 n += samples.len() as u64;
+                                let before = events.len();
                                 if quantise {
                                     live.feed(&quantise_pcm16(&samples), cap, &mut events);
                                 } else {
                                     live.feed(&samples, cap, &mut events);
                                 }
+                                stopped = stopped || stopped_in(&events[before..]);
+                            }
+                            ToWorker::Unsent => {
+                                // Cleared before the count is read, so samples added after the
+                                // read are told again.
+                                not_sent.told.store(false, Ordering::SeqCst);
+                                owed += not_sent.samples.swap(0, Ordering::SeqCst);
+                                // The audio before this message stopped the track when it was
+                                // taken (module docs). Were the track still live, the count
+                                // would wait (`owed`): a live track is never fed silence in
+                                // place of audio it was not sent, and a stream that simply
+                                // ends early is one the final pass finishes from the recording.
                             }
                             ToWorker::Finish => finish = true,
+                        }
+                        if stopped && owed > 0 {
+                            count_unsent(&mut live, std::mem::take(&mut owed), cap, &mut events);
                         }
                         if whole || n < slice {
                             next = inbox.try_recv().ok();
@@ -245,6 +345,10 @@ impl LiveWorker {
                         log.decoded.through = usize::try_from(through).unwrap_or(usize::MAX);
                         log.backend = live.stretches_backend().cloned();
                     }
+                    stopped = stopped || stopped_in(&events);
+                    if stopped && owed > 0 {
+                        count_unsent(&mut live, std::mem::take(&mut owed), cap, &mut events);
+                    }
                     if let Err(panic) = ran {
                         if !events.is_empty() {
                             let _ = outbox.send(FromWorker::Events(std::mem::take(&mut events)));
@@ -271,6 +375,12 @@ impl LiveWorker {
             to,
             from,
             queued,
+            cap,
+            sent: Cell::new(0),
+            largest: Cell::new(0),
+            taken,
+            cut: Cell::new(false),
+            unsent,
             decoded,
             partials,
             cancel,
@@ -285,24 +395,69 @@ impl LiveWorker {
         self.track
     }
 
-    /// Queues the track's next pipeline audio.
+    /// Queues the track's next pipeline audio; past the cap it is only counted (module docs).
     pub(super) fn send(&self, samples: &[Sample]) {
-        self.queued
-            .fetch_add(samples.len() as u64, Ordering::SeqCst);
+        let n = samples.len() as u64;
+        if !self.admit(n) {
+            return;
+        }
+        self.queued.fetch_add(n, Ordering::SeqCst);
         if self.to.send(ToWorker::Audio(samples.to_vec())).is_err() {
             // The worker is gone (it can only end after Finish); nothing will decode this.
-            self.queued
-                .fetch_sub(samples.len() as u64, Ordering::SeqCst);
+            self.queued.fetch_sub(n, Ordering::SeqCst);
+        } else {
+            self.sent_now(n);
         }
     }
 
     /// [`LiveWorker::send`] for audio the session no longer needs.
     pub(super) fn send_owned(&self, samples: Vec<Sample>) {
         let n = samples.len() as u64;
+        if !self.admit(n) {
+            return;
+        }
         self.queued.fetch_add(n, Ordering::SeqCst);
         if self.to.send(ToWorker::Audio(samples)).is_err() {
             self.queued.fetch_sub(n, Ordering::SeqCst);
+        } else {
+            self.sent_now(n);
         }
+    }
+
+    /// Whether the next `n` samples go to the worker. Past its cap they are counted instead, and
+    /// the worker is told once until it has read the count.
+    fn admit(&self, n: u64) -> bool {
+        if !self.cut.get() {
+            return true;
+        }
+        self.unsent.samples.fetch_add(n, Ordering::SeqCst);
+        if !self.unsent.told.swap(true, Ordering::SeqCst) {
+            let _ = self.to.send(ToWorker::Unsent);
+        }
+        false
+    }
+
+    /// Counts `n` samples as sent, and decides whether the worker is past its cap.
+    fn sent_now(&self, n: u64) {
+        self.sent.set(self.sent.get().saturating_add(n));
+        self.largest.set(self.largest.get().max(n));
+        if self.waiting() > cut_at(self.cap, self.largest.get()) {
+            self.cut.set(true);
+        }
+    }
+
+    /// Samples sent that the thread has not taken off its channel (never less than what waits
+    /// there: the thread counts a message right after taking it).
+    pub(super) fn waiting(&self) -> u64 {
+        self.sent
+            .get()
+            .saturating_sub(self.taken.load(Ordering::SeqCst))
+    }
+
+    /// Whether the worker went past its cap and is sent no more audio.
+    #[cfg(test)]
+    pub(super) fn past_cap(&self) -> bool {
+        self.cut.get()
     }
 
     /// Samples sent and not yet decoded.
@@ -418,7 +573,7 @@ impl LiveWorker {
         let mut out = Vec::new();
         let mut switches = Vec::new();
         let mut watch = StallWatch::new(stall);
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let mut messages = 0u64;
         let polls = self.cancel.clone();
         let end = loop {
@@ -461,14 +616,35 @@ impl LiveWorker {
     }
 }
 
-impl Drop for LiveWorker {
-    fn drop(&mut self) {
-        // Not finished (the session failed): stop the decode and let the thread end.
-        if let Some(t) = self.thread.take() {
-            self.cancel();
-            let _ = self.to.send(ToWorker::Finish);
+impl LiveWorker {
+    /// Stops the decode and lets the thread end, waiting at most `wait` for it: a thread stuck
+    /// in a call that never returns is left to end by itself, never joined (T14.21), as a
+    /// stalled catch-up is ([`LiveWorker::finish_watched`]). Returns whether the thread has
+    /// ended (also when it had been finished or left before).
+    pub(super) fn end_within(&mut self, wait: Duration) -> bool {
+        let Some(t) = self.thread.take() else {
+            return true;
+        };
+        self.cancel();
+        let _ = self.to.send(ToWorker::Finish);
+        let limit = Instant::now() + wait;
+        while !t.is_finished() && Instant::now() < limit {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let ended = t.is_finished();
+        if ended {
+            // It has ended: this returns at once.
             let _ = t.join();
         }
+        ended
+    }
+}
+
+impl Drop for LiveWorker {
+    fn drop(&mut self) {
+        // Not finished (the session failed): the thread is waited for only as long as a healthy
+        // decode takes to see the cancel.
+        self.end_within(DROP_WAIT);
     }
 }
 
@@ -529,6 +705,29 @@ mod tests {
         // And within it, once: the token handed to the decode, kept for cancel and polls().
         let me = std::fs::read_to_string(src.join("live").join("worker.rs")).unwrap();
         assert_eq!(me.matches(needle).count(), 1);
+    }
+
+    #[test]
+    fn live_worker_cut_point_leaves_more_than_the_cap_waiting() {
+        // T14.21, clock-free: when the session stops sending, a worker in the middle of taking a
+        // slice may still take the rest of it and one message more, and the count of what it took
+        // may trail by the message in its hands. More than the cap waits even then, so its next
+        // take is whole and stops the track.
+        let slice = PIPELINE_RATE.frames_for(CATCH_UP_SLICE) as u64;
+        for cap in [0, 16_000, 480_000, 30 * 60 * 16_000] {
+            for largest in [0, 160, 1_600, 480_000, 30 * 60 * 16_000] {
+                let waiting = cut_at(cap, largest) + 1;
+                let uncounted = largest;
+                let rest_of_slice = slice + largest;
+                assert!(
+                    waiting - uncounted - rest_of_slice > cap,
+                    "cap {cap}, largest {largest}"
+                );
+            }
+        }
+        // No cap, no cut.
+        assert_eq!(cut_at(u64::MAX, 1_600), u64::MAX);
+        assert_eq!(cut_at(1_600, u64::MAX), u64::MAX);
     }
 
     #[test]
