@@ -3,8 +3,10 @@ import {
   EarshotThemeProvider,
   type Ipc,
   IpcProvider,
+  RootErrorBoundary,
   createTauriIpc,
   isTauri,
+  suppressBrowserKeys,
   suppressBrowserMenu,
 } from "@earshot/ui";
 import { StrictMode } from "react";
@@ -109,6 +111,24 @@ const ipc = inTauri ? createTauriIpc() : await previewIpc();
 // In the app the webview's own right-click menu (Back, Refresh, Print) is hidden except in text
 // fields and over selected text; the browser preview keeps it, for inspecting.
 if (inTauri) suppressBrowserMenu(document);
+// The webview's reload keys would throw the window's state away while the app keeps recording,
+// and its find bar is not the transcript's (T14.14). The preview keeps both, for inspecting.
+if (inTauri) suppressBrowserKeys(window);
+
+// Preview only: `?crash=1` shows what a screen that throws leaves (T14.14), `?crash=recording`
+// the same while a meeting records (the newest sample meeting is listed as recording).
+const crash = inTauri ? null : new URLSearchParams(window.location.search).get("crash");
+function PreviewCrash(): never {
+  throw new Error("The preview's screen that throws");
+}
+const boundaryIpc: Ipc =
+  crash === "recording"
+    ? {
+        ...ipc,
+        listMeetings: async () =>
+          (await ipc.listMeetings()).map((m, i) => (i === 0 ? { ...m, state: "Recording" as const } : m)),
+      }
+    : ipc;
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root");
@@ -116,9 +136,17 @@ if (!root) throw new Error("index.html has no #root");
 createRoot(root).render(
   <StrictMode>
     <EarshotThemeProvider>
-      <IpcProvider ipc={ipc}>
-        <AppShell notice={inTauri ? undefined : "Preview: sample data"} />
-      </IpcProvider>
+      {/* Outside the app's tree and given the app directly: a screen that throws leaves fixed
+          words, Stop recording and Reload instead of a blank window (T14.14). */}
+      <RootErrorBoundary ipc={boundaryIpc}>
+        {crash !== null ? (
+          <PreviewCrash />
+        ) : (
+          <IpcProvider ipc={ipc}>
+            <AppShell notice={inTauri ? undefined : "Preview: sample data"} />
+          </IpcProvider>
+        )}
+      </RootErrorBoundary>
     </EarshotThemeProvider>
   </StrictMode>,
 );
