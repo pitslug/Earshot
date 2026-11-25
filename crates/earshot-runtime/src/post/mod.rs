@@ -807,9 +807,13 @@ pub struct PostProcessor<T, S, E> {
     before_write: Option<BeforeWrite>,
 }
 
+/// Tests only: what [`PostProcessor::with_before_write`] runs.
+#[cfg(test)]
+pub(crate) type BeforeWriteHook = Box<dyn FnMut(&Services) + Send>;
+
 /// Tests only: [`PostProcessor::with_before_write`]'s hook.
 #[cfg(test)]
-struct BeforeWrite(Box<dyn FnMut(&Services) + Send>);
+struct BeforeWrite(BeforeWriteHook);
 
 #[cfg(test)]
 impl fmt::Debug for BeforeWrite {
@@ -1187,7 +1191,7 @@ where
     /// the transaction (T14.48).
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_before_write(mut self, hook: Box<dyn FnMut(&Services) + Send>) -> Self {
+    pub(crate) fn with_before_write(mut self, hook: BeforeWriteHook) -> Self {
         self.before_write = Some(BeforeWrite(hook));
         self
     }

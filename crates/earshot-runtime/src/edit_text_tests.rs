@@ -356,7 +356,7 @@ fn stored_parts(svc: &Services, m: EntityId) -> Vec<(String, u64, u64, String)> 
 fn retranscribe_hooked(
     svc: &Services,
     m: EntityId,
-    hook: Option<Box<dyn FnMut(&Services) + Send>>,
+    hook: Option<crate::post::BeforeWriteHook>,
 ) -> crate::post::PostOutcome {
     let cancel = CancelToken::new();
     let load = || {
