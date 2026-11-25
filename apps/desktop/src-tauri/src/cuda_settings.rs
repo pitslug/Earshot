@@ -1340,29 +1340,34 @@ pub async fn set_cuda_settings(
 /// Starts downloading a part; `CudaEvent`s follow. Refused unless `accepted_terms`.
 #[tauri::command]
 #[specta::specta]
-pub fn start_cuda_download(
+pub async fn start_cuda_download(
     state: State<'_, AppState>,
     jobs: State<'_, CudaJobs>,
     part: CudaPartChoice,
     accepted_terms: bool,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start_download(
-        &services,
-        &earshot_runtime::hardware(),
-        part,
-        accepted_terms,
-    )
+    let jobs = jobs.inner().clone();
+    blocking(move || {
+        jobs.start_download(
+            &services,
+            &earshot_runtime::hardware(),
+            part,
+            accepted_terms,
+        )
+    })
+    .await
 }
 
 /// Cancels a part's download; what arrived is kept.
 #[tauri::command]
 #[specta::specta]
-pub fn cancel_cuda_download(
+pub async fn cancel_cuda_download(
     jobs: State<'_, CudaJobs>,
     part: CudaPartChoice,
 ) -> Result<(), IpcError> {
-    jobs.cancel_download(part)
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.cancel_download(part)).await
 }
 
 /// Removes a part's files.
@@ -1418,13 +1423,19 @@ pub async fn open_cuda_terms(terms: CudaTerms) -> Result<(), IpcError> {
 /// Restarts the app, so a changed switch applies; `busy` while something runs.
 #[tauri::command]
 #[specta::specta]
-pub fn restart_app(
+pub async fn restart_app(
     app: AppHandle,
     gate: State<'_, WorkGate>,
     jobs: State<'_, CudaJobs>,
     update: State<'_, crate::update_settings::UpdateJobs>,
 ) -> Result<(), IpcError> {
-    jobs.claim_for_restart(gate.inner(), update.inner())?;
+    let (gate, jobs, update) = (
+        gate.inner().clone(),
+        jobs.inner().clone(),
+        update.inner().clone(),
+    );
+    // The claim takes the check slot, the update phase and the gate: off the main thread.
+    blocking(move || jobs.claim_for_restart(&gate, &update)).await?;
     // Through the normal exit, so the single-instance plugin lets the new process start. The
     // claim is never given back: `request_restart` returns nothing to act on, and when its exit
     // request fails Tauri 2.12 restarts the process itself (`process::restart`); the app's run

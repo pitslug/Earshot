@@ -74,6 +74,228 @@ fn ipc_blocking_work_that_panics_reaches_the_page_as_fixed_copy() {
     assert_eq!(ok, 7);
 }
 
+/// A command as the source declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclaredCommand {
+    name: String,
+    is_async: bool,
+    /// From `fn` to the body's opening brace: the parameters and the return type.
+    signature: String,
+}
+
+/// The attribute that makes a function a command, split so this file holds no such line.
+const COMMAND_ATTRIBUTE: &str = concat!("#[tauri", "::command]");
+
+/// Every command `text` declares: a line that is [`COMMAND_ATTRIBUTE`], then the next `fn`.
+fn declared_commands(text: &str) -> Vec<DeclaredCommand> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut found = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if line.trim() != COMMAND_ATTRIBUTE {
+            continue;
+        }
+        let Some(start) = (at + 1..lines.len()).find(|&i| {
+            let l = lines[i].trim_start();
+            !l.starts_with("#[") && !l.starts_with("//") && l.contains("fn ")
+        }) else {
+            panic!("a command attribute with no function after it (line {at})");
+        };
+        let head = lines[start];
+        let after_fn = &head[head.find("fn ").unwrap() + 3..];
+        let name: String = after_fn
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let mut signature = String::new();
+        for l in &lines[start..] {
+            match l.find('{') {
+                Some(brace) => {
+                    signature.push_str(&l[..brace]);
+                    break;
+                }
+                None => {
+                    signature.push_str(l);
+                    signature.push('\n');
+                }
+            }
+        }
+        found.push(DeclaredCommand {
+            name,
+            is_async: head[..head.find("fn ").unwrap()].contains("async"),
+            signature,
+        });
+    }
+    found
+}
+
+/// Every command the app's sources declare.
+fn app_commands() -> Vec<DeclaredCommand> {
+    fn scan(dir: &Path, found: &mut Vec<DeclaredCommand>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                found.extend(declared_commands(&std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    scan(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    found
+}
+
+/// The commands that may stay off `async` (T14.10), each with why. A command that is not `async`
+/// runs on the main thread, where a wait freezes the window, the tray and the shortcut: so none
+/// of these reaches a meeting lease, the store, the model jobs' check slot or downloads lock, or
+/// a `WorkGate` pass, directly or through a lock that is held across one.
+const SYNC_COMMANDS: &[(&str, &str)] = &[
+    (
+        "app_info",
+        "reads the version and the data folder's path, both fixed at start; never the services",
+    ),
+    ("crash_logs_folder", "works out a path; takes no lock"),
+    (
+        "set_compact",
+        "window calls, which belong on the main thread; its one lock is its own and nothing else \
+         takes it",
+    ),
+    ("set_window_theme", "one window call"),
+    (
+        "stop_meeting",
+        "sets the recording meeting's stop flag under the meeting driver's own lock",
+    ),
+    (
+        "keep_recording",
+        "sets the recording meeting's keep flag under the meeting driver's own lock; returns \
+         nothing",
+    ),
+    (
+        "cancel_finishing",
+        "sets one meeting's cancel token under the meeting driver's own map; returns nothing",
+    ),
+    (
+        "cancel_audio_check",
+        "sets the check's cancel token under its slot, which a start holds only to take its pass \
+         and start its thread; returns nothing",
+    ),
+    (
+        "cancel_benchmark",
+        "sets the benchmark's cancel token under its slot, which a start holds only to take its \
+         pass and start its thread; returns nothing",
+    ),
+    (
+        "cancel_voice_sample",
+        "sets the sample's cancel token under its slot, which a start holds only to take its \
+         pass and start its thread; returns nothing",
+    ),
+    (
+        "answer_call_start",
+        "closes the question under the shell's own locks; the meeting it starts runs on a \
+         thread of its own",
+    ),
+];
+
+/// State behind the shared locks: a command that takes one of these is `async`.
+const SHARED_LOCK_STATES: &[&str] = &[
+    "ModelJobs",
+    "JobRunner",
+    "WorkGate",
+    "CudaJobs",
+    "UpdateJobs",
+    "SyncHost",
+];
+
+#[test]
+fn ipc_command_scan_tells_async_commands_from_the_others() {
+    let text = [
+        "/// One.",
+        COMMAND_ATTRIBUTE,
+        "#[specta::specta]",
+        "pub async fn first_one(",
+        "    state: State<'_, AppState>,",
+        ") -> Result<(), IpcError> {",
+        "    Ok(())",
+        "}",
+        COMMAND_ATTRIBUTE,
+        "#[specta::specta]",
+        "fn second_one(jobs: State<'_, ModelJobs>) -> bool {",
+        "    true",
+        "}",
+    ]
+    .join("\n");
+    let found = declared_commands(&text);
+    assert_eq!(found.len(), 2);
+    assert_eq!(
+        (found[0].name.as_str(), found[0].is_async),
+        ("first_one", true)
+    );
+    assert!(found[0].signature.contains("AppState"));
+    assert_eq!(
+        (found[1].name.as_str(), found[1].is_async),
+        ("second_one", false)
+    );
+    assert!(found[1].signature.contains("ModelJobs") && !found[1].signature.contains("true"));
+}
+
+#[test]
+fn ipc_commands_that_are_not_async_are_exactly_the_listed_ones() {
+    let commands = app_commands();
+    // The scan reads the real sources: it finds the commands, async ones among them.
+    assert!(commands.len() > 100, "found only {}", commands.len());
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.name == "list_meetings" && c.is_async)
+    );
+    let mut sync: Vec<&str> = commands
+        .iter()
+        .filter(|c| !c.is_async)
+        .map(|c| c.name.as_str())
+        .collect();
+    sync.sort_unstable();
+    let mut listed: Vec<&str> = SYNC_COMMANDS.iter().map(|(name, _)| *name).collect();
+    listed.sort_unstable();
+    assert_eq!(
+        sync, listed,
+        "a command that is not `async` runs on the main thread: make it `async` with \
+         `ipc::blocking`, or list it in SYNC_COMMANDS with the reason it can never wait"
+    );
+    assert!(SYNC_COMMANDS.iter().all(|(_, why)| !why.trim().is_empty()));
+}
+
+#[test]
+fn ipc_commands_that_are_not_async_take_no_state_behind_a_shared_lock() {
+    for c in app_commands().iter().filter(|c| !c.is_async) {
+        for state in SHARED_LOCK_STATES {
+            assert!(
+                !c.signature.contains(state),
+                "{} is not `async` and takes {state}",
+                c.name
+            );
+        }
+        // The services (the store, the leases) are reached only through the app's state.
+        assert!(
+            c.name == "app_info" || !c.signature.contains("AppState"),
+            "{} is not `async` and takes the app's state",
+            c.name
+        );
+    }
+    // The rule finds a real use: commands that are `async` do take them.
+    let commands = app_commands();
+    for state in ["ModelJobs", "JobRunner", "AppState"] {
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.is_async && c.signature.contains(state)),
+            "no command takes {state}"
+        );
+    }
+}
+
 #[test]
 fn list_meetings_returns_live_meetings_newest_first_without_deleted_ones() {
     let dir = TempDir::new("list");

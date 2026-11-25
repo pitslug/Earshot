@@ -499,12 +499,13 @@ pub async fn audio_check(
 /// the voice sample runs.
 #[tauri::command]
 #[specta::specta]
-pub fn start_audio_check(
+pub async fn start_audio_check(
     state: tauri::State<'_, crate::ipc::AppState>,
     jobs: tauri::State<'_, AudioCheckJobs>,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start(&services)
+    let jobs = jobs.inner().clone();
+    crate::ipc::blocking(move || jobs.start(&services)).await
 }
 
 /// Cancels the audio check; nothing is stored.

@@ -1107,26 +1107,28 @@ async fn speaker_sample(
 /// Starts a re-transcription of `meeting` (`JobEvent`s follow).
 #[tauri::command]
 #[specta::specta]
-fn retranscribe(
+async fn retranscribe(
     state: State<'_, AppState>,
     jobs: State<'_, JobRunner>,
     meeting: String,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start(&services, parse_id(&meeting)?, JobKind::Retranscribe)
+    let (jobs, meeting) = (jobs.inner().clone(), parse_id(&meeting)?);
+    blocking(move || jobs.start(&services, meeting, JobKind::Retranscribe)).await
 }
 
 /// Starts a re-summary of `meeting`: the new summary replaces the current one, which is
 /// kept for one undo (`JobEvent`s follow).
 #[tauri::command]
 #[specta::specta]
-fn resummarise(
+async fn resummarise(
     state: State<'_, AppState>,
     jobs: State<'_, JobRunner>,
     meeting: String,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start(&services, parse_id(&meeting)?, JobKind::Resummarise)
+    let (jobs, meeting) = (jobs.inner().clone(), parse_id(&meeting)?);
+    blocking(move || jobs.start(&services, meeting, JobKind::Resummarise)).await
 }
 
 /// Cancels the re-transcription or re-summary of `meeting` (T12.41); its last `JobEvent` follows
@@ -1134,9 +1136,13 @@ fn resummarise(
 /// error.
 #[tauri::command]
 #[specta::specta]
-fn cancel_job(jobs: State<'_, JobRunner>, meeting: String) -> Result<(), IpcError> {
-    jobs.cancel(parse_id(&meeting)?);
-    Ok(())
+async fn cancel_job(jobs: State<'_, JobRunner>, meeting: String) -> Result<(), IpcError> {
+    let (jobs, meeting) = (jobs.inner().clone(), parse_id(&meeting)?);
+    blocking(move || {
+        jobs.cancel(meeting);
+        Ok(())
+    })
+    .await
 }
 
 /// Swaps the current summary with the previous one.
@@ -1246,20 +1252,22 @@ async fn set_model_settings(
 /// downloads, `unknown_model` for a name the catalogue does not have.
 #[tauri::command]
 #[specta::specta]
-fn start_download(
+async fn start_download(
     state: State<'_, AppState>,
     jobs: State<'_, ModelJobs>,
     model: String,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start_download(&services, &model)
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.start_download(&services, &model)).await
 }
 
 /// Cancels the download of `model`; what arrived is kept, so a new start resumes.
 #[tauri::command]
 #[specta::specta]
-fn cancel_download(jobs: State<'_, ModelJobs>, model: String) -> Result<(), IpcError> {
-    jobs.cancel_download(&model)
+async fn cancel_download(jobs: State<'_, ModelJobs>, model: String) -> Result<(), IpcError> {
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.cancel_download(&model)).await
 }
 
 /// Removes `model`'s files; returns the bytes freed. Fails with `model_in_use` for a chosen
@@ -1291,16 +1299,18 @@ async fn remove_model(
 /// runs, or a meeting or a meeting job runs.
 #[tauri::command]
 #[specta::specta]
-fn run_check(state: State<'_, AppState>, jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
+async fn run_check(state: State<'_, AppState>, jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
     let services = state.services()?;
-    jobs.start_check(&services)
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.start_check(&services)).await
 }
 
 /// Cancels the running model check (its process is stopped; a `Failed` follows).
 #[tauri::command]
 #[specta::specta]
-fn cancel_check(jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
-    jobs.cancel_check()
+async fn cancel_check(jobs: State<'_, ModelJobs>) -> Result<(), IpcError> {
+    let jobs = jobs.inner().clone();
+    blocking(move || jobs.cancel_check()).await
 }
 
 /// The Summaries page settings (and stored values this version does not know).
