@@ -33,7 +33,7 @@ const T0: u64 = 1_790_000_000_000;
 /// T9.25: every variable Claude Code documents for another address, provider, credential,
 /// header, proxy or telemetry export). Written out here, not read from the crate, so a name dropped from the
 /// crate's list fails the test.
-const MUST_CLEAR: [&str; 64] = [
+const MUST_CLEAR: [&str; 69] = [
     "CLAUDECODE",
     "CLAUDE_CODE_SIMPLE",
     "ANTHROPIC_BASE_URL",
@@ -99,7 +99,16 @@ const MUST_CLEAR: [&str; 64] = [
     "NODE_TLS_REJECT_UNAUTHORIZED",
     "NODE_OPTIONS",
     "BUN_OPTIONS",
+    "NODE_PATH",
+    "NODE_USE_ENV_PROXY",
+    "NODE_REDIRECT_WARNINGS",
+    "NODE_V8_COVERAGE",
+    "NODE_DEBUG",
 ];
+
+/// T14.33 review: names the provider must clear by their `BUN_CONFIG_` prefix (case ignored),
+/// set in this process and recorded by the fake.
+const BY_PREFIX: [&str; 2] = ["BUN_CONFIG_EARSHOT_TEST", "Bun_Config_Mixed_Test"];
 
 /// A variable `main` sets that the CLI must still see (the rest of the environment stays).
 const KEPT: &str = "EARSHOT_FAKE_KEPT";
@@ -136,6 +145,7 @@ mod fake {
             ["DISABLE_TELEMETRY", super::KEPT]
                 .iter()
                 .chain(super::MUST_CLEAR.iter())
+                .chain(super::BY_PREFIX.iter())
                 .map(|k| format!("{k}={}", env(k)))
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -263,7 +273,7 @@ Options:
 fn assert_cleared(env: &str) {
     let lines: Vec<&str> = env.lines().collect();
     assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
-    for k in MUST_CLEAR {
+    for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
         assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
     }
 }
@@ -1343,7 +1353,7 @@ fn main() {
     // SAFETY: single-threaded here (no case has started); nothing reads the environment
     // concurrently.
     unsafe {
-        for k in MUST_CLEAR {
+        for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
             std::env::set_var(k, "http://127.0.0.1:9/earshot-test");
         }
         std::env::set_var(KEPT, "1");

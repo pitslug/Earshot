@@ -134,15 +134,20 @@ the last user part with only the JSON object it asks for, nothing before or afte
 ///
 /// The JavaScript runtime the CLI runs on (Node.js for the npm package; Bun for the native
 /// build, as far as Earshot knows) reads variables of its own (T14.33): the ones that turn off
-/// certificate checks or load code into the CLI are cleared (the last block). Kept on purpose:
-/// `NODE_EXTRA_CA_CERTS` (Node.js docs, "Command-line API", section "Environment variables",
-/// `NODE_EXTRA_CA_CERTS=file`: extra root certificates added to the bundled ones). Claude
-/// Code's network-config page tells users behind a company TLS-inspecting proxy to set it, so
-/// clearing it would stop summaries there; it only adds trust and names no address, and the
-/// address and proxy variables above are cleared, as Codex keeps its own CA variables
-/// ([`crate::codex::CLEARED_ENV`]). A hostile environment that sets it still needs to be on
-/// the network path to use it. The owner may decide otherwise (T14.33 report).
-pub const CLEARED_ENV: [&str; 64] = [
+/// certificate checks, load code into the CLI, honour proxies or write process data to disk
+/// are cleared (the last block), and so is every variable named with a prefix of
+/// [`CLEARED_PREFIXES`] ([`cleared_env`]).
+///
+/// Kept on purpose, a decision for the owner to confirm (T14.33): `NODE_EXTRA_CA_CERTS` and
+/// `NODE_USE_SYSTEM_CA` (Node.js docs, "Command-line API", section "Environment variables":
+/// extra root certificates, and the operating system's trust store), `SSL_CERT_FILE` and
+/// `SSL_CERT_DIR` (OpenSSL's certificate locations, which Node.js also reads; same page). All
+/// four only add trust and name no address. Claude Code's network-config page tells users
+/// behind a company TLS-inspecting proxy to set the first, so clearing them would stop
+/// summaries there; the address and proxy variables are cleared, as Codex keeps its own CA
+/// variables ([`crate::codex::CLEARED_ENV`]). A hostile environment that sets one still needs
+/// to be on the network path to use it.
+pub const CLEARED_ENV: [&str; 69] = [
     // Not about the network (T7.4ga): the marker of a session started from inside Claude
     // Code, and what `--bare` sets (no OAuth; named by `claude --help`).
     "CLAUDECODE",
@@ -231,7 +236,40 @@ pub const CLEARED_ENV: [&str; 64] = [
     "NODE_TLS_REJECT_UNAUTHORIZED",
     "NODE_OPTIONS",
     "BUN_OPTIONS",
+    // Node.js docs, "Command-line API", section "Environment variables" (T14.33 review):
+    // `NODE_PATH` (folders searched for modules: code loaded into the CLI),
+    // `NODE_USE_ENV_PROXY` (makes Node.js honour the proxy variables, which are cleared
+    // above anyway; listed on that page for recent Node.js versions, not checked offline
+    // for the one Claude Code ships with), `NODE_REDIRECT_WARNINGS` (writes warnings to a
+    // file), `NODE_V8_COVERAGE` (writes coverage data of the process to a folder) and
+    // `NODE_DEBUG` (prints internal debug output, which can carry request details).
+    "NODE_PATH",
+    "NODE_USE_ENV_PROXY",
+    "NODE_REDIRECT_WARNINGS",
+    "NODE_V8_COVERAGE",
+    "NODE_DEBUG",
 ];
+
+/// Name prefixes cleared from the CLI's environment beside [`CLEARED_ENV`] (T14.33 review):
+/// `BUN_CONFIG_` (Bun docs, "Environment variables" page of the runtime section: Bun reads
+/// `BUN_CONFIG_*` variables as configuration, for example its registry and verbosity; not
+/// every name is listed there, so the whole prefix goes, on the documentation's word).
+pub const CLEARED_PREFIXES: [&str; 1] = ["BUN_CONFIG_"];
+
+/// The names to remove from a child's environment: `names`, then every variable of this
+/// process whose name starts with one of [`CLEARED_PREFIXES`] (case ignored, as Windows does;
+/// `env_remove` takes exact names, so the parent's variables are enumerated here).
+#[must_use]
+pub fn cleared_env(names: &[&str]) -> Vec<OsString> {
+    let mut out: Vec<OsString> = names.iter().map(OsString::from).collect();
+    for (k, _) in std::env::vars_os() {
+        let upper = k.to_string_lossy().to_ascii_uppercase();
+        if CLEARED_PREFIXES.iter().any(|p| upper.starts_with(p)) {
+            out.push(k);
+        }
+    }
+    out
+}
 
 /// Variables set in the CLI's environment (module docs).
 const SET_ENV: [(&str, &str); 3] = [
@@ -583,7 +621,7 @@ impl ClaudeCli {
             program: self.program.clone(),
             args: all,
             current_dir: dir.to_path_buf(),
-            env_remove: CLEARED_ENV.iter().map(OsString::from).collect(),
+            env_remove: cleared_env(&CLEARED_ENV),
             env_set: SET_ENV
                 .iter()
                 .map(|(k, v)| (OsString::from(k), OsString::from(v)))

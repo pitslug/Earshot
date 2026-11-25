@@ -37,7 +37,7 @@ const TEST_CLI_ENV: &str = "EARSHOT_TEST_CODEX_CLI";
 /// Variables `main` sets in this process and the CLI must not see (T7.4gc, and T9.25: every
 /// address, credential and proxy variable). Written out here, not read from the crate, so a
 /// name dropped from the crate's list fails the test.
-const MUST_CLEAR: [&str; 20] = [
+const MUST_CLEAR: [&str; 25] = [
     "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
     "OPENAI_API_KEY",
@@ -59,7 +59,16 @@ const MUST_CLEAR: [&str; 20] = [
     "NODE_TLS_REJECT_UNAUTHORIZED",
     "NODE_OPTIONS",
     "BUN_OPTIONS",
+    "NODE_PATH",
+    "NODE_USE_ENV_PROXY",
+    "NODE_REDIRECT_WARNINGS",
+    "NODE_V8_COVERAGE",
+    "NODE_DEBUG",
 ];
+
+/// T14.33 review: names the provider must clear by their `BUN_CONFIG_` prefix (case ignored),
+/// set in this process and recorded by the fake.
+const BY_PREFIX: [&str; 2] = ["BUN_CONFIG_EARSHOT_TEST", "Bun_Config_Mixed_Test"];
 
 /// The features T12.46 added, which an older CLI (0.155.1) may not list. Written out here,
 /// not read from the crate.
@@ -112,6 +121,7 @@ mod fake {
             path,
             std::iter::once(&super::KEPT)
                 .chain(super::MUST_CLEAR.iter())
+                .chain(super::BY_PREFIX.iter())
                 .map(|k| format!("{k}={}", env(k)))
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -658,7 +668,7 @@ fn codex_valid_reply_is_a_summary_after_one_run() {
     // account; the rest is kept (the sign-in is found through it).
     let env = s.read("call-1.env");
     let lines: Vec<&str> = env.lines().collect();
-    for k in MUST_CLEAR {
+    for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
         assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
     }
     assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
@@ -1094,7 +1104,7 @@ fn codex_version_and_sign_in_status_come_from_the_cli() {
     let env = s.read("status.env");
     let lines: Vec<&str> = env.lines().collect();
     assert!(lines.contains(&"EARSHOT_FAKE_KEPT=1"), "{env}");
-    for k in MUST_CLEAR {
+    for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
         assert!(lines.contains(&format!("{k}=<unset>").as_str()), "{env}");
     }
     std::fs::remove_file(s.dir.join("signed-out")).unwrap();
@@ -1379,7 +1389,7 @@ fn main() {
     // SAFETY: single-threaded here (no case has started); nothing reads the environment
     // concurrently.
     unsafe {
-        for k in MUST_CLEAR {
+        for k in MUST_CLEAR.iter().chain(BY_PREFIX.iter()) {
             std::env::set_var(k, "http://127.0.0.1:9/earshot-test");
         }
         std::env::set_var(KEPT, "1");

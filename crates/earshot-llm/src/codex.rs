@@ -288,7 +288,7 @@ const TEMP_PREFIX: &str = "earshot-codex";
 /// codex-cli 0.166.0 `codex.exe`, checked 2026-11-12). Codex has no variable that switches the
 /// provider: `model_provider` and `model_providers` are config keys, and
 /// `--ignore-user-config` leaves the user's `config.toml` unread.
-pub const CLEARED_ENV: [&str; 20] = [
+pub const CLEARED_ENV: [&str; 25] = [
     // Another address for the built-in OpenAI provider (T7.4gc, measured on 0.155.1; the
     // config reference names the matching key `openai_base_url`).
     "OPENAI_BASE_URL",
@@ -325,7 +325,8 @@ pub const CLEARED_ENV: [&str; 20] = [
     "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
     // A JavaScript runtime's own (T14.33), as for Claude Code ([`crate::claude_code::CLEARED_ENV`],
     // where each is cited: Node.js "Command-line API", "Environment variables"; Bun's
-    // "Environment variables" page): certificate checks off, or code loaded into the process.
+    // "Environment variables" page): certificate checks off, code loaded into the process,
+    // proxies honoured, or process data written to disk.
     // The `codex.exe` Earshot runs is a native build (npm's `codex.cmd` shim, which runs
     // Node.js, is never run), so as far as Earshot knows none of these is read today; they are
     // cleared so a Codex that runs on Node.js or Bun cannot be told to. Codex's own CA
@@ -333,6 +334,12 @@ pub const CLEARED_ENV: [&str; 20] = [
     "NODE_TLS_REJECT_UNAUTHORIZED",
     "NODE_OPTIONS",
     "BUN_OPTIONS",
+    "NODE_PATH",
+    "NODE_USE_ENV_PROXY",
+    "NODE_REDIRECT_WARNINGS",
+    "NODE_V8_COVERAGE",
+    "NODE_DEBUG",
+    // `BUN_CONFIG_*` goes too, by prefix (`claude_code::CLEARED_PREFIXES`).
 ];
 
 /// Top-level event types of `codex exec --json` (every one seen in the captures: this host
@@ -674,7 +681,7 @@ impl CodexCli {
             program: self.program.clone(),
             args: all,
             current_dir: dir.to_path_buf(),
-            env_remove: CLEARED_ENV.iter().map(OsString::from).collect(),
+            env_remove: crate::claude_code::cleared_env(&CLEARED_ENV),
             env_set: Vec::new(),
             stdin,
             deadline,
