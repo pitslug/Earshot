@@ -176,9 +176,25 @@ fn places_of(haystack: &[u8], needle: &Needle) -> Vec<usize> {
     places
 }
 
+/// `bytes` with every exact occurrence of an allowed sentence blanked out: Earshot's own copyright
+/// line, which names the owner by the build account's name (the owner's decision, 2026-11-26).
+/// Only the exact bytes are allowed; the name anywhere else (a build path) is still found.
+fn allowed_masked(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    let phrase = super::notices::OWN_COPYRIGHT.as_bytes();
+    let mut from = 0;
+    while let Some(i) = out[from..].windows(phrase.len()).position(|w| w == phrase) {
+        let at = from + i;
+        out[at..at + phrase.len()].fill(b' ');
+        from = at + phrase.len();
+    }
+    out
+}
+
 /// What `bytes` say about the build machine, if anything.
 #[must_use]
 pub fn scan_bytes(file: &Path, bytes: &[u8], needles: &Needles) -> Option<Finding> {
+    let bytes = &allowed_masked(bytes);
     let lower = bytes.to_ascii_lowercase();
     let mut places = 0;
     let mut quotes: Vec<String> = Vec::new();

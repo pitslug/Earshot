@@ -1182,25 +1182,40 @@ pub fn render(title: &str, own_licence: &str, sections: &[Section]) -> String {
     out
 }
 
-/// Where Earshot's own copyright line is, said in place of it.
-pub const OWN_COPYRIGHT: &str = "Earshot's copyright line is in LICENSE in its source repository, \
-                                 https://github.com/pitslug/Earshot.";
-
-/// Earshot's `LICENSE` as the notices hold it: without its copyright lines, which name the owner
+/// Earshot's copyright line, exactly as `LICENSE` holds it (pinned by a test). It names the owner
 /// by the account name the release is built under, a name the install scan refuses in any shipped
-/// file ([`super::paths`], T9.1j). [`OWN_COPYRIGHT`] says where the line is instead.
+/// file ([`super::paths`], T9.1j), so the scan allows this exact sentence and nothing else (the
+/// owner's decision, 2026-11-26).
+pub const OWN_COPYRIGHT: &str = "Copyright (c) 2026 Sluggy";
+
+/// Earshot's `LICENSE` as the notices hold it: its first copyright line written as
+/// [`OWN_COPYRIGHT`] (so the scan's one allowed sentence is the only form of the name), any other
+/// copyright line dropped.
 #[must_use]
 pub fn own_licence(licence: &str) -> String {
+    let mut placed = false;
     let mut text = normalise(licence)
         .lines()
-        .filter(|l| !l.trim_start().starts_with("Copyright"))
-        .map(str::trim_end)
+        .filter_map(|l| {
+            if l.trim_start().starts_with("Copyright") {
+                if placed {
+                    return None;
+                }
+                placed = true;
+                return Some(OWN_COPYRIGHT);
+            }
+            Some(l.trim_end())
+        })
         .collect::<Vec<_>>()
         .join("\n");
     while text.contains("\n\n\n") {
         text = text.replace("\n\n\n", "\n\n");
     }
-    format!("{}\n\n{OWN_COPYRIGHT}", text.trim())
+    if placed {
+        text.trim().to_owned()
+    } else {
+        format!("{}\n\n{OWN_COPYRIGHT}", text.trim())
+    }
 }
 
 /// The `name version` of every package in `expected` whose entry line `text` lacks.

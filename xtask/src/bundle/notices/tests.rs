@@ -461,27 +461,49 @@ fn bundle_notices_list_every_text_once_and_name_each_package() {
 }
 
 #[test]
-fn bundle_notices_hold_earshots_licence_without_its_copyright_line() {
+fn bundle_notices_hold_earshots_licence_with_its_one_allowed_copyright_line() {
     let licence = "MIT License\r\n\r\nCopyright (c) 2026 Invented Owner\r\n\r\nPermission is \
                    hereby granted.\r\n\r\nTHE SOFTWARE IS PROVIDED \"AS IS\".\r\n";
     let own = own_licence(licence);
     assert_eq!(
         own,
         format!(
-            "MIT License\n\nPermission is hereby granted.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\".\
-             \n\n{OWN_COPYRIGHT}"
+            "MIT License\n\n{OWN_COPYRIGHT}\n\nPermission is hereby granted.\n\nTHE SOFTWARE IS \
+             PROVIDED \"AS IS\"."
         )
     );
-    // The real file keeps its terms whole.
+    // The real file's copyright line is exactly the allowed sentence, so the notices quote LICENSE
+    // whole and unchanged.
     let real = std::fs::read_to_string(crate::repo_root().join("LICENSE")).unwrap();
-    let own = own_licence(&real);
-    assert!(!own.contains("Copyright ("), "{own}");
-    for line in normalise(&real)
+    let lines: Vec<String> = normalise(&real)
         .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with("Copyright"))
-    {
+        .filter(|l| l.starts_with("Copyright"))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    assert_eq!(lines, [OWN_COPYRIGHT]);
+    let own = own_licence(&real);
+    for line in normalise(&real).lines().filter(|l| !l.trim().is_empty()) {
         assert!(own.contains(line.trim_end()), "{line}");
     }
+}
+
+#[test]
+fn bundle_paths_scan_allows_only_the_exact_copyright_line() {
+    use super::super::paths::{Needles, scan_bytes};
+    // The owner's name comes from the allowed sentence itself, and the home folder is built at run
+    // time, so no build path is written out in this file.
+    let name = OWN_COPYRIGHT.rsplit(' ').next().unwrap();
+    let home = format!(r"D:\{}\{name}", "home");
+    let needles = Needles::new(name, &home).unwrap();
+    let scan = |s: &str| scan_bytes(Path::new("n.txt"), s.as_bytes(), &needles);
+    assert!(scan(&format!("MIT License\n\n{OWN_COPYRIGHT}\n\nPermission.")).is_none());
+    assert!(scan(&format!(r"built in {home}\src")).is_some());
+    assert!(scan(&format!("by {}", name.to_lowercase())).is_some());
+    assert!(
+        scan(&OWN_COPYRIGHT.to_lowercase()).is_some(),
+        "only the exact bytes are allowed"
+    );
+    assert!(scan(&format!("{OWN_COPYRIGHT}\n{home}")).is_some());
 }
 
 #[test]
