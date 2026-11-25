@@ -913,8 +913,14 @@ pub fn resummarise_view(
     if here.local_installed(services) {
         steps.push(WriterStep::Local);
     }
+    // An Anthropic key counts only for the address it was saved for (T14.31), as on the
+    // Summaries page and in the run itself.
+    let key_usable = || -> Result<bool, IpcError> {
+        Ok(here.key_saved()
+            && earshot_runtime::summary_settings::api_key_bound(&services.store(), &settings)?)
+    };
     if settings.has_endpoint()
-        && (settings.provider != EndpointProvider::Anthropic || here.key_saved())
+        && (settings.provider != EndpointProvider::Anthropic || key_usable()?)
     {
         steps.push(WriterStep::Endpoint);
     }
