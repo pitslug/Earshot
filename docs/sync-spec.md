@@ -159,7 +159,7 @@ Input: a page of opened envelopes with their `seq` and row key, the device's kin
 3. **Future stamp.** `updated_at.wall_ms` more than 24 h past the device clock: `sync_pending`, reason `clock`.
 4. **Leased.** The row's meeting (its own id for a meeting, `meeting_id` otherwise) is in the leased set: `sync_pending`, reason `busy`.
 5. **Parent missing.** A row with a `meeting_id` (or `track_id`, `speaker_id`) that names no local row and no earlier envelope of this page: `sync_pending`, reason `parent`.
-6. **Compare.** No local row, or the remote `updated_at` is later: write the whole row with the remote metadata unchanged. Otherwise ignore it. Exceptions: a meeting tombstone here is kept (a live meeting row never overwrites it), and two copies of a final transcript segment are compared by `text_edited_at` first, then `updated_at` (section 7, rule 4a).
+6. **Compare.** No local row, or the remote `updated_at` is later: write the whole row with the remote metadata unchanged. Otherwise ignore it. Exceptions: a meeting tombstone here is kept (a live meeting row never overwrites it), and two copies of a final transcript segment are compared by `text_edited_at` first, then `updated_at` (section 7, rule 4a). A pulled segment tombstone that holds text is stored cleared and stamped again (section 15.4).
 7. **Side effects of what was written** (section 5.4).
 8. Delete `sync_outbox` entries this transaction's own writes created, for the rows it wrote, right after each write; a row re-stamped afterwards (a kept copy, section 7 rule 4a) keeps its new entry and goes out.
 
@@ -172,7 +172,7 @@ Returned: counts of applied, ignored, pending by reason and unreadable. Never ro
 - **Meeting tombstone** (remote `deleted`, local row live, whatever the two stamps: a meeting row edited here after the deletion must not stay live over the children the deletion cleared; a tombstone stamped more than 24 h ahead deletes nothing and is held): before the page is applied, the client (T11.3) runs the ordinary `Services::delete_meeting` for that meeting, so audio files go before rows, device-local keys are erased and a lease refuses it (the row is then held `busy`) exactly as a local deletion. Its own tombstone, stamped here, is newer than the pulled one, which is then ignored; both say deleted. The rows the other device cleared arrive in the same pull and apply as ordinary rows.
 - **Person tombstone**: `forget_identity_biometrics` for that identity.
 - **Voiceprint tombstone**: the local row's `sum` is zeroed as `forget_voiceprints` does.
-- After a page that erased anything: `Store::flush_erasures`.
+- After a page that erased anything, or changed or emptied a line's text (section 15.8): `Store::flush_erasures`.
 
 A `Busy` after the commit means the page is committed.
 
@@ -253,6 +253,7 @@ Run inside `apply_remote`'s transaction after the page's writes. Each depends on
    - **Format.** `pass_run` changes the segment row's serialised shape, so `ENVELOPE_FORMAT` goes to 4 in the same commit (format 3 has not shipped; 0.4.3 carries both), and every device runs (a) to (c) before it syncs with another; the relay's format pin, the worker and the relay image move with it. Migration 11 follows the AGENTS migration checklist.
    - **Counts.** `Applied::words_dropped_under_edits`, `Applied::lines_rewritten_under_edits`, `Applied::edited_lines_kept` (incoming copies that lost to a local edit by (a)) and `Applied::speakers_revived`, all counts only.
    - `Repo::replace_segments` (no shipped caller) would tombstone edited rows; a scan test keeps it out of shipped code.
+   - **Replaced text** (section 15, T14.47). The tombstones a re-transcription and (b) write hold no text or words. Their cleared form is not an erasure (its confidence is 1.0, an erasure's is 0) and keeps `pass`, `text_edited_at` and `updated_at`, so (a) orders a cleared tombstone exactly as it ordered the tombstone that kept its text: an edit that did not see the replacement still wins (15.5).
 
 A test delivers the same rows to three simulated devices in every order of two pages and requires identical live rows.
 
@@ -389,3 +390,101 @@ Local test servers end connections through the lingering close. No test uses the
 3. The outbox fills even while sync is off (5.2), so turning sync on later needs no scan.
 4. A remote deletion deletes this device's audio for that meeting without asking (5.4). It is the same person's deletion, made on another device.
 5. Judgements carried from the design: online at 150 s, claim within 90 s, stale target at 5 minutes, a stamp more than 24 h ahead is held.
+
+## 15. Replaced transcript text is erased (T14.47)
+
+Status: proposed, spec review pending. The decision is the owner's (2026-11-26): once transcript text is replaced it holds no words, on every device. Until this rule a final pass left the lines it replaced as tombstones with their text and words, and a meeting's draft (its `pass = Live` rows) stayed live with its text after the final transcript was stored; both synced. Summary history (tombstoned summary bodies, which Undo restores) is out of scope and unchanged. No row changes shape: `ENVELOPE_FORMAT` stays 4 and there is no migration.
+
+### 15.1 The cleared form
+
+`SegmentRow::clear_replaced` (earshot-core, the one function every writer below calls) leaves a segment row as: `deleted`, `text` empty, `words` empty, `speaker_id` absent, `confidence` exactly 1.0. Kept: id, meeting, track, `pass`, start, end, `text_edited_at`, `pass_run`, `created_at`, origin device. A row "holds text" when its text or its words are not empty; a cleared row and a deletion's erasure do not.
+
+- **Why 1.0.** A meeting deletion's erasure (section 7 rule 4a, `SegmentRow::is_erasure`) is a tombstone with no text, no words, no speaker and confidence 0, and it is ordered by plain `updated_at` so that it beats an edit. A replaced line must do the opposite: lose to an edit that did not see the replacement. A replaced line can itself have confidence 0 (T14.23 stores a recogniser fault as 0) and no speaker, so keeping its own values would sometimes read as an erasure. The fixed 1.0 makes `is_erasure` false for every cleared row without a new field. `is_erasure` and `delete_meeting` do not change: a deletion still rewrites cleared rows into erasures, as it rewrites every row.
+- `speaker_id` is cleared because nothing reads a tombstoned line's speaker (rule 4c and the final pass follow live lines only), and a cleared row then never waits for a speaker row (`parent`).
+- Everything rule 4a compares (`pass`, `text_edited_at`, `updated_at`) is as it was for the tombstone that kept its text, so rule 4 gives the answers it gave (15.5).
+
+### 15.2 When a row is replaced
+
+A segment row is replaced, and is written in the cleared form in that same write, when:
+
+1. **A final pass replaces it** (first pass or re-transcription): each earlier final line of a processed track that the pass does not keep. An edited line the pass keeps is not replaced and is unchanged; lines of tracks not processed are unchanged.
+2. **Rule 4b drops all its words** (section 7): the tombstone it writes is in the cleared form. A line 4b rewrites with fewer words is an ordinary write in place.
+3. **The draft is replaced.** When the meeting has at least one `pass = Final` row, live or tombstone (`model::draft_replaced`, the one predicate), every `pass = Live` row of the meeting that is live or holds text is cleared, on every track. The final pass applies it in its write transaction, writing the cleared draft rows before its other segment rows, so they are stamped, pushed and pulled first. A pass that fails or is cancelled writes nothing, so nothing is cleared. A pass that stores no final line in a meeting that never had one leaves the draft: it is still what the meeting shows, and nothing replaced it.
+
+`model::replace_segments` (no shipped caller) clears the same way. A row already cleared is never written again, so a second pass, page or sweep writes nothing for it.
+
+### 15.3 Readers
+
+- Draft rows are tombstoned as well as cleared, so readers of live rows need no change and show what they showed: `MeetingView::load` and `shown_lines` (search, export) read live final rows, else live draft rows. `has_live_segment`, the meeting's activity (`rows_activity`: a live final row or the pass's backend record), the retention clock, recovery, `summary_out_of_date`, `store_summary`'s segment check, offload's `segment_count` and re-transcribe (offered by `audio_kept`) read the lines the meeting shows, final rows or device-local records; none reads the text of a draft that a final line has replaced. A re-transcription reads the stored audio, never the draft, and is not offered once the audio is gone, so the draft's words cannot be needed again.
+- One reader changes: live summary reuse (`summary::live_record`) needs each draft row's id, track and times to move a window's citations onto the final lines. It reads the meeting's `pass = Live` rows whatever `deleted` says; the cleared form keeps all it uses.
+- A meeting whose final lines are later all tombstoned (a re-transcription that finds no speech) shows no transcript. Before this rule it fell back to the old draft. The view never falls back to cleared rows, because they are tombstones.
+- `live-stretches/*` and `live-speakers/*` are device-local records the pass already deletes in the same transaction. `word-choices/<meeting>` holds single words of lines: the final pass already drops stale entries in its transaction (`drop_stale_tx`), and the sync client now does the same inside the page's transaction (`ApplyRules::after`) for every meeting the page carries a segment row of. `unknown-lines`, `summary-names`, `speaker-identities` and summary citations hold ids, names or vectors, not transcript words, and are unchanged.
+
+### 15.4 `apply_remote`
+
+Uncleared copies still arrive: rows pushed by 0.4.2 and older that the relay holds, and the unsent rows of a device that has just updated. No older build syncs beside this one: 0.4.2 writes format 2, the first push of this release raises the vault to 4, and the relay then refuses every older build and worker (`update_needed`) on push and pull. So an older build never receives a cleared row and never pushes after one. No released build writes format 3 or 4; this rule ships in the first that does.
+
+- **A pulled tombstone that holds text** (step 6, either pass, when it is the copy to write, whatever the meeting's state): stored in the cleared form, then stamped again with this device's stamp after the incoming stamp is observed, keeping its outbox entry. The cleared copy goes out and replaces the relay's.
+- **The draft repair**, after rules 4b and 4c, for each meeting the page wrote that is not leased here: 15.2 case 3, each cleared row with this device's stamp.
+- Both write only rows that hold text or are live draft rows, and every device writes the same content. A device writes a given row at most once per uncleared copy it meets, and a cleared copy never causes a write, so nothing ping-pongs. A cleared copy is always stamped after the copy it cleared. Nothing writes text into a draft row after the recording; a final line comes back with text only by rule 4a or by a later write to a live copy elsewhere (as before this rule), and is then a live line again.
+- `Applied::text_cleared` counts the rows these two wrote (it joins `TickReport.repaired`). `Applied::text_replaced` counts the segment rows whose stored text or words this page changed or emptied, by any write. Counts of rows, never content.
+
+### 15.5 Rule 4 gives the same answers
+
+Computer A edits line L. Computer B, which has not seen the edit, re-transcribes: L becomes a cleared tombstone on B (no `text_edited_at`), with new lines of another run over its stretch.
+
+- On A, B's tombstone arrives. Both copies are final and neither is an erasure, so rule 4a compares `text_edited_at` first: A's edit stays, stamped again when B's stamp is later. B's new lines apply and 4b drops their words under the edit.
+- On B, A's edit arrives. By the same comparison it replaces the cleared tombstone whatever the stamps (also after being held): L is live again with the user's text, 4b drops B's words under it (a line that loses all its words is cleared, 15.2 case 2) and 4c revives its speaker.
+- Either push order, and a third device that receives both, ends with the same rows: the edit live, B's remaining lines live, every dropped line cleared. Had the cleared tombstone been an erasure, B would have kept it whenever its stamp was later and the edit would be lost. That is why 15.1 keeps the two apart.
+- A split and a move set `text_edited_at` and are kept the same way. A meeting deletion still wins everywhere: its erasures are ordered by `updated_at`, and the pulled meeting tombstone deletes the meeting here.
+
+### 15.6 Meetings stored before this rule
+
+Every finished meeting holds its whole draft with text, and each re-transcription left its replaced lines. A one-off sweep clears them: `earshot_runtime::replaced_text::sweep` (a module the worker's build has too), on its own thread at app start and at the worker's `run`, while device record `replaced-text-swept` is absent.
+
+- Not a migration, which would hold the write lock for its whole run. One meeting per transaction, oldest first: its tombstoned segment rows that hold text, and its draft by 15.2 case 3, with this device's stamps. Then `flush_erasures`, then a pause (2 s, a judgement, through an injected pause) that leaves the store to the app and to a sync pull. A meeting leased here is skipped and tried again; a deleted meeting is already erased. The record is written after a pass over every meeting that skipped none. Stopping anywhere is safe, a second run writes nothing for a cleared row, and an unreadable record counts as absent.
+- It takes no lease and no `WorkPass`: it writes only tombstones and the draft rows of meetings that have final lines, which no job reads for text.
+- The cleared rows are pushed like any change: that is what replaces the sealed text at the relay. Size, an estimate that nothing measured (about 500 draft rows per meeting hour, about 1 KB per sealed cleared row on the wire): 200 meeting hours is about 100,000 rows and 100 MB up once, at up to 10,000 rows a tick, and the same down on each other device. A device that updates later pulls the cleared rows while its own sweep is paced, and its sweep skips what the pull already cleared; a row two devices both clear costs one superseded push, so the worst case is every device sending every row once. The sweep reports the rows it cleared as a count.
+- Safe while other devices are still on 0.4.2: by 15.4 they stop syncing at this release's first push, and they sweep when they update.
+
+### 15.7 The relay
+
+A push with a later stamp replaces the row's sealed body (`ON CONFLICT(key) DO UPDATE`), so once a cleared row is pushed the relay serves no copy of the old text. The relay's database does not zero freed pages, so the old sealed bytes can stay in its file and write-ahead log until that space is reused. They open only with the vault key, which the relay never holds.
+
+### 15.8 Erasing from the file
+
+`secure_delete` zeroes the old text in the database pages when a row is rewritten. The write-ahead log keeps the old page until a truncating checkpoint (`Store::flush_erasures`, best effort: a `Busy` leaves it to the next one or to the closing checkpoint).
+
+- The final pass already runs it right after its write transaction, before `Stored` is reported: no new wait.
+- The sync client runs it after a page with `text_replaced > 0`, as it does for `biometrics_forgotten`, on the sync thread.
+- The sweep runs it after each meeting.
+- A user's text edit (`edit_segment`, `use_word`, `put_back_word`) runs it after its commit, result ignored, so the words an edit removed leave this file then and not at the next close.
+
+### 15.9 Tests
+
+- core `model`: the cleared form; `is_erasure` false for it and true for an erasure; `edit_order` of a cleared tombstone against an edit, a live line, another tombstone and an erasure, both ways; `draft_replaced`; `delete_meeting` over cleared rows ends in erasures; `replace_segments` clears.
+- runtime `post`: a first pass and a re-transcription leave no replaced final line and no draft row that holds text; an edited line is kept with its text; a pass with no final line leaves the draft shown; a failed and a cancelled pass change nothing; live summary partials are still reused after the pass; a second pass writes no draft row; word choices of replaced lines are gone.
+- store `sync` (straight pages) and runtime `sync` (through `LocalRelay`): the rule 4 tests of section 7 unchanged and passing; edit against re-transcription in both push orders and with a third device, a held edit, a split and a move, each also asserting that every tombstone and draft row is cleared on every device; a mixed pair (one device's rows written as 0.4.2 leaves them, tombstones and draft rows with text) converging to cleared rows on both, after which a device joining through the relay pulls no row that holds replaced text; a page split between the draft and the final lines; a meeting deletion before, after and across the pages of a clearing; a second apply of the same pages writes nothing; three devices in every order of two pages end with identical rows.
+- The sweep: a store built in the old form is cleared meeting by meeting; stopped part way and run again; a leased meeting is skipped and done later; a second run writes nothing; the pause is injected.
+- On disk: a needle in a replaced final line, in a draft row and in a word an edit removed is absent from the database file and its write-ahead log after the pass, the page, the sweep and the edit, with a second connection held open (the method of the existing erasure tests).
+- `cargo xtask accept m11` unchanged: no threshold or harness edit.
+
+### 15.10 Limits
+
+- A computer that never updates, or is offline, keeps what it has. So does a held row (`sync_pending` keeps its sealed body until a later copy applies).
+- Backups and snapshots of a computer's data folder or of the relay's volume taken before the clearing, and the relay's freed pages (15.7).
+- Notes already exported to the vault keep the text they were written with until exported again.
+- Summaries, their history and the live summary record (`live-summaries/<meeting>`, deleted when a summary is stored) are summary text, outside this rule. Speaker tombstones keep their names (rule 4c revives them).
+- Truncating the write-ahead log and zeroing pages does not wipe the disk's own freed blocks.
+- The draft is cleared on every track once any track has a final line, also on a track the pass could not process (its audio was lost): that track's words were already shown nowhere.
+
+### 15.11 Considered and not chosen
+
+- **Cleared replaced lines as erasures** (confidence 0): rule 4a would order them by `updated_at` and lose an edit made elsewhere (15.5).
+- **Marking them with `pass_run` or a new field.** `pass_run` is absent on rows from before T12.92 and kept by deletions, so it would need a deletion change and an invented id; a new field is a shape change and a format rise.
+- **Clearing draft rows but leaving them live**: every reader of the draft would have to skip empty lines, and a meeting left with no final line would show an empty draft.
+- **Clearing the draft only on processed tracks**: leaves words the app shows nowhere, which the user cannot see, edit or remove short of deleting the meeting.
+- **Clearing the draft when a pass stores no final line**: the meeting would lose the only transcript it shows. The owner's call if it is wanted.
+- **No stamp on the clearing writes** (each store cleaned silently): the relay would keep the sealed text and hand it to the next device that joins.
+- **Sweeping in a migration, or only after a completed pull**: the first blocks the store for its whole run; the second never runs on a computer whose sync is on and cannot reach the relay.
+- **Deleting the rows**: sync needs the tombstone, or a device that was away would bring the line back.
