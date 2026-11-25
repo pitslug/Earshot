@@ -619,24 +619,37 @@ async fn search_meetings(
     answer
 }
 
-/// What a start from the window asks for: `title` held to the rule a rename is held to
-/// (`edit::clean_title`: trimmed, at most 200 characters, no line break or tab; none or empty is
-/// untitled), so a meeting never starts with a title its own page could not save (T14.13).
-///
-/// # Errors
-/// `invalid_title`, the rename's own refusal.
+/// The title a start from the window gives its meeting (T14.13): `title` made into one the
+/// rename rule takes (`edit::clean_title`), never refused, because a start is never lost over a
+/// title. A control character (a pasted line break or tab) becomes a space, the ends are
+/// trimmed, and a title longer than the rule's limit is cut to it at a character boundary. None
+/// or nothing left is untitled.
+pub(crate) fn start_title(title: Option<&str>) -> String {
+    let spaced: String = title
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let cut: String = spaced
+        .trim()
+        .chars()
+        .take(earshot_runtime::edit::MAX_TITLE_CHARS)
+        .collect();
+    // The rule's own word on the result, which it takes as it is; untitled if it ever did not.
+    earshot_runtime::edit::clean_title(&cut).unwrap_or_default()
+}
+
+/// What a start from the window asks for, with its title as [`start_title`] makes it.
 pub(crate) fn start_request(
     mode: CaptureMode,
     title: Option<&str>,
     keep_local: bool,
-) -> Result<StartRequest, IpcError> {
-    let title = earshot_runtime::edit::clean_title(title.unwrap_or_default())
-        .map_err(RuntimeError::Edit)?;
-    Ok(StartRequest {
+) -> StartRequest {
+    StartRequest {
         mode,
-        title,
+        title: start_title(title),
         keep_local,
-    })
+    }
 }
 
 /// Starts a meeting in `mode` with an optional title and returns its id once it records.
@@ -655,7 +668,7 @@ async fn start_meeting(
 ) -> Result<String, IpcError> {
     let services = state.services()?;
     let driver = driver.inner().clone();
-    let request = start_request(mode, title.as_deref(), keep_local)?;
+    let request = start_request(mode, title.as_deref(), keep_local);
     blocking(move || driver.start(&services, request)).await
 }
 

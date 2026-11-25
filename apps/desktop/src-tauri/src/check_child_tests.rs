@@ -1026,3 +1026,46 @@ fn check_child_slow_trial_that_keeps_making_progress_is_not_cut_and_one_that_sto
     });
     assert_eq!(result.unwrap_err(), no_final_line());
 }
+
+/// T14.13: every message a child's error line can carry is fixed plain copy; the arguments'
+/// problem (only the app starts the mode) is the internal one, with no flag or argument in it.
+#[test]
+fn check_child_bad_arguments_say_fixed_copy() {
+    let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+    for bad in [
+        os(&[MODEL_CHECK_FLAG]),
+        os(&[MODEL_CHECK_FLAG, "--languages", "en"]),
+        os(&[
+            MODEL_CHECK_FLAG,
+            "--languages",
+            "en",
+            "--models",
+            "m",
+            "--zq-flag",
+            "x",
+        ]),
+    ] {
+        assert_eq!(parse_args(&bad), Some(Err(BadArguments)));
+        // What the mode itself writes for them, read as the parent reads it.
+        let mut out = Vec::new();
+        emit(
+            &mut out,
+            &CheckLine::Error {
+                message: crate::plain_text::INTERNAL.into(),
+            },
+        );
+        let e = read_lines(Cursor::new(out), &mut Heard::default(), &mut || {}).unwrap_err();
+        assert_eq!(e.message, crate::plain_text::INTERNAL);
+        assert!(!e.message.contains("--") && !e.message.contains("zq-flag"));
+    }
+    // No message in this module that can reach the page starts in lower case or names a flag.
+    let source = include_str!("check_child.rs");
+    for developer in [
+        concat!("unknown model check ", "argument"),
+        concat!("the model check ", "needs"),
+        concat!("the model check ", "has no output"),
+        concat!("the model check ", "runs on"),
+    ] {
+        assert!(!source.contains(developer), "{developer}");
+    }
+}

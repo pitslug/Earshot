@@ -597,48 +597,60 @@ fn list_meetings_resolves_folders_as_the_runtime_does_in_the_same_read() {
     );
 }
 
-/// T14.13: a title given at the start is held to the rule a rename is held to: trimmed, and
-/// refused with the rename's own error when a rename would refuse it. Nothing is recorded.
+/// T14.13: a title given at the start always becomes one the rename rule takes, and never
+/// refuses the start: control characters become spaces, the ends are trimmed, and a title too
+/// long is cut to the rule's limit at a character boundary.
 #[test]
-fn start_meeting_title_follows_the_rename_rule() {
-    use earshot_runtime::edit::{EditError, MAX_TITLE_CHARS, TextProblem};
+fn start_meeting_title_is_made_to_fit_the_rename_rule_and_never_refuses_the_start() {
+    use earshot_runtime::edit::{MAX_TITLE_CHARS, clean_title};
 
-    let request = |title: Option<&str>| start_request(CaptureMode::Call, title, true);
     assert_eq!(
-        request(Some("  Weekly planning \n")).unwrap(),
+        start_request(CaptureMode::Call, Some("  Weekly planning \n"), true),
         StartRequest {
             mode: CaptureMode::Call,
             title: "Weekly planning".into(),
             keep_local: true,
         }
     );
-    // No title, and one of white space only: untitled, as a rename to nothing is.
-    assert_eq!(request(None).unwrap().title, "");
-    assert_eq!(request(Some("   ")).unwrap().title, "");
-    // The longest title a rename takes is taken; one character more is not.
-    let longest = "a".repeat(MAX_TITLE_CHARS);
-    assert_eq!(request(Some(&longest)).unwrap().title, longest);
-    let dir = TempDir::new("ipc-start-title");
-    let svc = services(&dir);
-    let existing = meeting(&svc, "Before", T0, Some(1), 1);
-    for (bad, problem) in [
-        (format!("{longest}a"), TextProblem::TooLong),
-        (
-            "line one\nline two".to_owned(),
-            TextProblem::ControlCharacter,
-        ),
-        ("a\ttab".to_owned(), TextProblem::ControlCharacter),
-    ] {
-        let refused = request(Some(&bad)).unwrap_err();
-        assert_eq!(
-            refused,
-            IpcError::from(RuntimeError::Edit(EditError::InvalidTitle(problem)))
-        );
-        assert_eq!(refused.kind, "invalid_title");
-        // The rename itself says the same of the same text.
-        let renamed = earshot_runtime::edit::rename_meeting(&svc, existing, &bad).unwrap_err();
-        assert_eq!(refused, IpcError::from(renamed));
+    // No title, and one of white space or control characters only: untitled.
+    for nothing in [None, Some(""), Some("   "), Some("\n\t\r\n")] {
+        assert_eq!(start_title(nothing), "");
     }
+    // A pasted line break or tab is a space, not a refusal.
+    assert_eq!(start_title(Some("line one\nline two")), "line one line two");
+    assert_eq!(start_title(Some("a\ttab\u{0}\u{7f}end")), "a tab  end");
+    // The longest title the rule takes is kept whole; a longer one is cut to the limit, by
+    // characters (never inside one), and a space the cut ends on goes too.
+    let longest = "é".repeat(MAX_TITLE_CHARS);
+    assert_eq!(start_title(Some(&longest)), longest);
+    let too_long = format!("{longest}zzz");
+    assert_eq!(start_title(Some(&too_long)), longest);
+    let ends_on_a_space = format!("{} tail", "a".repeat(MAX_TITLE_CHARS - 1));
+    assert_eq!(
+        start_title(Some(&ends_on_a_space)),
+        "a".repeat(MAX_TITLE_CHARS - 1)
+    );
+    // Whatever comes in, what comes out is a title the rename rule takes as it is.
+    let pasted = format!("\t{}\nsecond line\r\n", "word ".repeat(100));
+    for raw in [
+        "plain",
+        &too_long,
+        &ends_on_a_space,
+        &pasted,
+        "\u{1f}\u{1f}",
+        "tab\tbetween",
+    ] {
+        let title = start_title(Some(raw));
+        assert_eq!(
+            clean_title(&title).as_deref(),
+            Ok(title.as_str()),
+            "{raw:?}"
+        );
+        assert!(title.chars().count() <= MAX_TITLE_CHARS);
+    }
+    // And a rename would refuse the raw text: the start does not.
+    assert!(clean_title("line one\nline two").is_err());
+    assert!(clean_title(&too_long).is_err());
 }
 
 /// T14.13: a window call that fails says fixed copy, never Tauri's or the operating system's

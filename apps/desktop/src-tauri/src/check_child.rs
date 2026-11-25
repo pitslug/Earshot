@@ -226,7 +226,8 @@ pub enum CheckLine {
     },
     /// The check could not run (final line).
     Error {
-        /// What failed.
+        /// What failed, as the page shows it: fixed plain copy only (`plain_text::runtime_text`,
+        /// [`CUDA_CHOICE_NOT_KEPT`], `plain_text::INTERNAL`), never an error's own text.
         message: String,
     },
 }
@@ -242,12 +243,18 @@ pub struct ChildArgs {
     pub cuda_transcription: bool,
 }
 
+/// The hidden mode was started with arguments it cannot use. Only the app starts it, with its
+/// own arguments, so this is a fault inside Earshot: it has no words of its own for the page
+/// (the child's error line says [`crate::plain_text::INTERNAL`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadArguments;
+
 /// The hidden mode's arguments (after the program name), `None` when the first is not
 /// [`MODEL_CHECK_FLAG`] (a normal start).
 ///
 /// # Errors
-/// The text of an error line: a missing or unknown argument.
-pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, String>> {
+/// [`BadArguments`]: a missing or unknown argument.
+pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, BadArguments>> {
     if args.first().is_none_or(|a| a != MODEL_CHECK_FLAG) {
         return None;
     }
@@ -273,7 +280,7 @@ pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, String>> {
                 );
             }
             (Some("--models"), Some(v)) => models = Some(PathBuf::from(v)),
-            _ => return Some(Err(format!("unknown model check argument {a:?}"))),
+            _ => return Some(Err(BadArguments)),
         }
     }
     Some(match (languages, models) {
@@ -282,7 +289,7 @@ pub fn parse_args(args: &[OsString]) -> Option<Result<ChildArgs, String>> {
             models: m,
             cuda_transcription,
         }),
-        _ => Err("the model check needs --languages and --models".into()),
+        _ => Err(BadArguments),
     })
 }
 
@@ -334,8 +341,14 @@ pub fn child_main(args: &[OsString]) -> Option<i32> {
     let mut out = stdout.lock();
     let args = match parsed {
         Ok(a) => a,
-        Err(message) => {
-            emit(&mut out, &CheckLine::Error { message });
+        Err(BadArguments) => {
+            // Fixed copy: an error line's message is shown on the page as it is.
+            emit(
+                &mut out,
+                &CheckLine::Error {
+                    message: crate::plain_text::INTERNAL.into(),
+                },
+            );
             return Some(2);
         }
     };
@@ -754,7 +767,7 @@ pub fn run_child(
         let Some(stdout) = child.stdout.take() else {
             drop(job);
             let _ = child.wait();
-            return Err(child_failed("the model check has no output"));
+            return Err(child_failed(crate::plain_text::INTERNAL));
         };
         let awake = awake_clock();
         // A cancel or a stall kills everything in the job; the pipe then ends, and so the read.
@@ -779,7 +792,7 @@ pub fn run_child(
         let _ = (languages, models, cancel, events);
         Err(IpcError::new(
             "unsupported",
-            "the model check runs on Windows only",
+            "The model check runs on Windows only.",
         ))
     }
 }
