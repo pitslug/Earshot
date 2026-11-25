@@ -45,6 +45,23 @@ fn problem_of_net(e: &NetError) -> SyncProblem {
     }
 }
 
+/// The pull's query parameters, in order. A record that holds only a cursor (what a 0.4.2
+/// client stores) gives exactly the two a 0.4.2 client sends, `after` and `limit`.
+pub(crate) fn pull_query(
+    after: u64,
+    limit: u32,
+    seen: &super::Cursor,
+) -> Vec<(&'static str, String)> {
+    let mut query = vec![("after", after.to_string()), ("limit", limit.to_string())];
+    if seen.seen() > after {
+        query.push(("seen", seen.seen().to_string()));
+    }
+    if let Some(epoch) = &seen.epoch {
+        query.push(("epoch", epoch.text()));
+    }
+    query
+}
+
 /// The problem for a relay error word.
 pub(crate) fn problem_of_word(word: ErrorWord) -> SyncProblem {
     match word {
@@ -176,14 +193,8 @@ impl Relay {
         let mut url = self.url("v1/rows")?;
         {
             let mut query = url.query_pairs_mut();
-            query
-                .append_pair("after", &after.to_string())
-                .append_pair("limit", &limit.to_string());
-            if seen.seen() > after {
-                query.append_pair("seen", &seen.seen().to_string());
-            }
-            if let Some(epoch) = &seen.epoch {
-                query.append_pair("epoch", &epoch.text());
+            for (name, value) in pull_query(after, limit, seen) {
+                query.append_pair(name, &value);
             }
         }
         self.call(Method::GET, url, Some(token), None)

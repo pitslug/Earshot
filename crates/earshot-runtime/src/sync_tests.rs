@@ -3996,6 +3996,141 @@ fn sync_rows_held_for_a_far_clock_apply_once_this_clock_is_right() {
     assert_eq!(a.rows(), b.rows());
 }
 
+// ---- T14.45 review: one tick at a time on a store; a replaced thread stops ----
+
+/// Two ticks on one store never run at once: while one client's tick is in progress (here,
+/// from inside it), a second client's tick is refused, and once the first has ended it runs.
+/// What a tick decides from the cursor record (a changed vault, T14.45) relies on this.
+#[test]
+fn sync_ticks_on_one_store_never_run_at_once() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    meeting(&a.svc, "Planning", 1);
+    let second = Arc::new(a.client());
+    let refused: Arc<std::sync::Mutex<Vec<bool>>> = Arc::default();
+    let first = {
+        let (second, refused) = (Arc::clone(&second), Arc::clone(&refused));
+        a.client().with_in_tick(Arc::new(move || {
+            // Inside the first tick: the second client asks for one of its own.
+            refused.lock().unwrap().push(second.try_tick().is_none());
+        }))
+    };
+    let r = first.tick().unwrap();
+    assert_eq!(r.pushed, 8, "{r:?}");
+    assert_eq!(
+        *refused.lock().unwrap(),
+        vec![true],
+        "a second tick was refused while the first ran"
+    );
+    // Over: the second client's tick runs, and finds the work done.
+    let (r, outcome) = second.try_tick().expect("no tick is in progress now");
+    assert!(outcome.is_ok() && r.pushed == 0, "{r:?}");
+    // Another store's tick is not held up by this one's: each store has its own lock.
+    let other = b.client();
+    let free: Arc<std::sync::Mutex<Vec<bool>>> = Arc::default();
+    let watching = {
+        let free = Arc::clone(&free);
+        a.client().with_in_tick(Arc::new(move || {
+            free.lock().unwrap().push(other.try_tick().is_some());
+        }))
+    };
+    watching.tick().unwrap();
+    assert_eq!(*free.lock().unwrap(), vec![true]);
+}
+
+/// A client that has been stopped does no tick: nothing is pushed, pulled or recorded, however
+/// it comes to tick (a thread that was replaced while it waited its turn).
+#[test]
+fn sync_a_stopped_client_does_no_tick() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    meeting(&a.svc, "Planning", 1);
+    let client = a.client();
+    client
+        .stop_flag()
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (r, outcome) = client.tick_reporting();
+    assert!(outcome.is_ok());
+    assert_eq!(r, TickReport::default());
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 8, "nothing was sent");
+    assert_eq!(
+        sync_status(&a.svc.store()).unwrap(),
+        SyncStatus::default(),
+        "nothing was recorded"
+    );
+    assert!(
+        client.audit_log().entries().is_empty(),
+        "no request was made"
+    );
+}
+
+/// A host that sends each hand-back it is asked for down a channel and refuses it.
+struct RefusesAndTells(std::sync::Mutex<std::sync::mpsc::Sender<()>>);
+
+impl crate::offload::OffloadHost for RefusesAndTells {
+    fn continue_run(&self, _: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
+        let _ = self.0.lock().unwrap().send(());
+        crate::offload::ContinueAnswer::Refused
+    }
+    fn write_for(&self, _: earshot_core::model::SummaryRequest) {}
+}
+
+/// A thread that was turned off goes on handing back what this computer asked for while the
+/// host refuses, for up to half an hour. From the moment another thread takes its place it
+/// stops: it hands nothing more back (the new thread does), and the stop that was waiting for
+/// it returns.
+#[test]
+fn sync_a_thread_that_was_turned_off_stops_when_another_takes_its_place() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked of the other computer", 60);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let (tx, handed) = std::sync::mpsc::channel();
+    let host: Arc<dyn crate::offload::OffloadHost> =
+        Arc::new(RefusesAndTells(std::sync::Mutex::new(tx)));
+    let long = Duration::from_secs(60);
+    let thread = SyncThread::start_offloading(a.client(), quick(), Arc::clone(&host)).unwrap();
+    let superseder = thread.superseder();
+    assert!(!superseder.is_superseded());
+    // Turned off: the stop waits while the thread hands the meeting back and is refused.
+    let (stopped_tx, stopped) = std::sync::mpsc::channel();
+    let stopping = std::thread::spawn(move || {
+        thread.stop_saying_gone();
+        let _ = stopped_tx.send(());
+    });
+    handed.recv_timeout(long).expect("the hand-back was tried");
+    handed
+        .recv_timeout(long)
+        .expect("refused, it is tried again: the thread is still at it");
+    assert!(
+        stopped.try_recv().is_err(),
+        "the stop is still waiting for the hand-backs"
+    );
+    // Another thread takes its place.
+    superseder.supersede();
+    assert!(superseder.is_superseded());
+    stopped
+        .recv_timeout(long)
+        .expect("the superseded thread ended");
+    stopping.join().unwrap();
+    // It hands nothing more back: whatever was already on its way is all there is.
+    while handed.try_recv().is_ok() {}
+    assert!(handed.try_recv().is_err());
+    // The thread that took its place owns the hand-back: its first step hands the meeting
+    // back again, as a thread does after a restart.
+    let next = SyncThread::start_offloading(a.client(), quick(), host).unwrap();
+    handed
+        .recv_timeout(long)
+        .expect("the new thread handed the meeting back");
+    // Superseded while it runs, it ends without being asked to hand anything back for good.
+    let superseder = next.superseder();
+    superseder.supersede();
+    wait_for("the superseded thread ended", || next.ended());
+    superseder.supersede();
+}
+
 // ---- T14.45: a relay restored from a backup is noticed ----
 
 /// A relay whose data can be copied aside and put back, which is what restoring it from a
@@ -4004,18 +4139,36 @@ struct RestorableRelay {
     relay: Option<LocalRelay>,
     dir: TempDir,
     port: u16,
+    /// The relay's clock, Unix seconds: the devices' own start, moved on by the test.
+    clock: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl RestorableRelay {
     fn start() -> Self {
         let dir = TempDir::new("sync-restorable-relay");
-        let relay = LocalRelay::start(RelayServer::open(&relay_config(&dir)).unwrap()).unwrap();
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(
+            crate::testutil::T0 / 1000,
+        ));
+        let relay = LocalRelay::start(Self::open(&dir, &clock)).unwrap();
         let port = relay.addr().port();
         Self {
             relay: Some(relay),
             dir,
             port,
+            clock,
         }
+    }
+
+    fn open(dir: &TempDir, clock: &Arc<std::sync::atomic::AtomicU64>) -> RelayServer {
+        let clock = Arc::clone(clock);
+        let now: earshot_sync_server::Clock =
+            Arc::new(move || clock.load(std::sync::atomic::Ordering::SeqCst));
+        RelayServer::open_with_clock(&relay_config(dir), now).unwrap()
+    }
+
+    /// Moves the relay's clock on by `s` seconds.
+    fn advance(&self, s: u64) {
+        self.clock.fetch_add(s, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn url(&self) -> String {
@@ -4031,7 +4184,7 @@ impl RestorableRelay {
     }
 
     fn start_again(&mut self) {
-        let server = RelayServer::open(&relay_config(&self.dir)).unwrap();
+        let server = Self::open(&self.dir, &self.clock);
         self.relay = Some(LocalRelay::start_on(server, self.port).unwrap());
     }
 
@@ -4171,6 +4324,181 @@ fn sync_a_relay_restored_from_an_older_copy_is_noticed_and_filled_again() {
     assert_eq!(c.title(second).as_deref(), Some("After the backup"));
     assert_eq!(c.title(first).as_deref(), Some("Renamed after the backup"));
     assert_eq!(c.rows(), before);
+}
+
+/// One pull-only tick as a 0.4.2 client makes it (`v0.4.2:crates/earshot-runtime/src/sync/
+/// engine.rs`, `pull`): the request names its cursor and a limit and nothing else, its record
+/// holds the cursor alone, and the cursor moves only forward, to the highest number pulled.
+/// Rows are opened and applied as this build does. Returns how many rows it was sent.
+fn old_client_pull(dev: &Device) -> usize {
+    let client = dev.client();
+    let secrets = dev.vault.load().unwrap().unwrap();
+    let keys = secrets.key.keys();
+    let mut pulled = 0;
+    for _ in 0..50 {
+        let after = pull_cursor(&dev.svc.store()).unwrap();
+        // The whole of what a 0.4.2 client knows of the vault.
+        let record = Cursor {
+            pull_seq: after,
+            ..Cursor::default()
+        };
+        assert_eq!(
+            client::pull_query(after, 200, &record),
+            vec![("after", after.to_string()), ("limit", "200".to_owned())],
+            "the request a 0.4.2 client sends"
+        );
+        let resp = client
+            .relay()
+            .pull(&secrets.token, after, 200, &record)
+            .unwrap();
+        let last = resp.rows.iter().map(|r| r.seq).max();
+        let page: Vec<earshot_store::Incoming> = resp
+            .rows
+            .into_iter()
+            .filter_map(|r| {
+                let node: [u8; 16] = r.node.0.as_slice().try_into().ok()?;
+                let stamp = earshot_core::identity::HlcTimestamp {
+                    wall_ms: r.wall_ms,
+                    logical: r.logical,
+                    node: earshot_core::identity::DeviceId::from_bytes(node),
+                };
+                super::engine::open(&keys, r.seq, &r.key.0, stamp, r.body.0).ok()
+            })
+            .collect();
+        pulled += page.len();
+        {
+            let never = |_: earshot_core::identity::EntityId| false;
+            let rules = earshot_store::ApplyRules {
+                kinds: earshot_store::SyncKinds {
+                    voiceprints: false,
+                    dictionary: true,
+                },
+                leased: &never,
+                now_ms: dev.svc.clock.now_unix_ms(),
+                after: None,
+            };
+            let clock = Arc::clone(&dev.svc.clock);
+            let mut db = dev.svc.store();
+            let (store, hlc) = db.parts();
+            store.apply_remote(&page, &rules, hlc, &*clock).unwrap();
+            if let Some(last) = last
+                && last > after
+            {
+                crate::local::set(
+                    &mut db,
+                    &DeviceRecord::SyncCursor.key(),
+                    &encode_cursor(last),
+                )
+                .unwrap();
+            }
+        }
+        if !resp.more || last.is_none() {
+            return pulled;
+        }
+    }
+    panic!("an old client's pull never ended");
+}
+
+/// One restore is one epoch, with computers on 0.4.2 in the vault (the review's sequence). The
+/// relay is restored; a computer of this build notices, starts over and sends its rows again,
+/// which the relay files above that computer's old cursor. Two 0.4.2 computers whose cursors
+/// are higher still would never pull those rows, and each used to make the relay take yet
+/// another epoch. Now each of them is sent every row filed since the restore, and the computer
+/// of this build starts over exactly once.
+#[test]
+fn sync_old_clients_after_a_restore_get_every_row_and_cost_no_further_epoch() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    let (c, d) = (
+        Device::new("sync-restore-old-c"),
+        Device::new("sync-restore-old-d"),
+    );
+    for old in [&c, &d] {
+        let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+        join_with_code(&old.svc, &*old.vault, &relay.url(), offer.code()).unwrap();
+        assert_eq!(old.svc.store().outbox_len().unwrap(), 0);
+    }
+    // B records; everyone has the first meeting when the copy of the relay is made.
+    meeting(&b.svc, "Before the backup", 1);
+    b.client().tick().unwrap();
+    a.client().tick().unwrap();
+    assert_eq!((old_client_pull(&c), old_client_pull(&d)), (8, 8));
+    let backup = relay.backup();
+    // B goes on recording. A stops pulling first, then C, then D: their cursors differ.
+    for (seeds, pullers) in [
+        (10..11u64, &[&a, &c, &d][..]),
+        (20..23, &[&c, &d][..]),
+        (30..33, &[&d][..]),
+    ] {
+        for seed in seeds {
+            meeting(&b.svc, "After the backup", seed);
+        }
+        b.client().tick().unwrap();
+        for dev in pullers {
+            if std::ptr::eq(*dev, &a) {
+                a.client().tick().unwrap();
+            } else {
+                old_client_pull(dev);
+            }
+        }
+    }
+    let cursor = |dev: &Device| pull_cursor(&dev.svc.store()).unwrap();
+    let (at_a, at_c, at_d) = (cursor(&a), cursor(&c), cursor(&d));
+    assert_eq!((at_c - at_a, at_d - at_c), (24, 24));
+    let epoch = stored_cursor(&a).epoch.expect("A holds the vault's epoch");
+
+    relay.restore(&backup);
+    // A records one more meeting and ticks: it notices, starts over and sends its rows again.
+    let newest = meeting(&a.svc, "Recorded after the restore", 40);
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    settle(&a);
+    let second = stored_cursor(&a).epoch.expect("the new epoch");
+    assert_ne!(second, epoch);
+    assert_eq!(stored_cursor(&a).resets.len(), 1);
+    assert_eq!(c.title(newest), None, "C has not heard of it yet");
+
+    // C, a 0.4.2 computer whose cursor is above everything A sent again: it is sent all of it
+    // (the meeting lost with the restore and the new one), and no epoch is taken for it.
+    relay.advance(earshot_sync_server::CLAIM_EVERY_S + 1);
+    assert_eq!(old_client_pull(&c), 16, "every row filed since the restore");
+    assert_eq!(
+        c.title(newest).as_deref(),
+        Some("Recorded after the restore")
+    );
+    let r = a.client().tick().unwrap();
+    assert!(!r.vault_reset, "A does not start over for it: {r:?}");
+    assert_eq!(stored_cursor(&a).epoch.as_ref(), Some(&second));
+
+    // D, another 0.4.2 computer with a higher cursor still: the same.
+    relay.advance(earshot_sync_server::CLAIM_EVERY_S + 1);
+    assert_eq!(old_client_pull(&d), 16);
+    assert_eq!(
+        d.title(newest).as_deref(),
+        Some("Recorded after the restore")
+    );
+    let reports = settle(&a);
+    assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
+    let now = stored_cursor(&a);
+    assert_eq!(now.epoch.as_ref(), Some(&second), "one restore, one epoch");
+    assert_eq!(now.resets.len(), 1, "A started over exactly once");
+    assert!(now.resets[0] <= a.svc.clock.now_unix_ms());
+
+    // B, which holds the rest, comes back: it starts over by itself (it holds the old epoch),
+    // sends what the relay lost, and everyone ends with the same rows, old clients too.
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    settle(&b);
+    settle(&a);
+    old_client_pull(&c);
+    old_client_pull(&d);
+    settle(&b);
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&second));
+    assert_eq!(stored_cursor(&a).resets.len(), 1);
+    let rows = a.rows();
+    assert_eq!(b.rows(), rows);
+    assert_eq!(c.rows(), rows, "the first old client holds everything");
+    assert_eq!(d.rows(), rows, "the second old client holds everything");
 }
 
 /// A computer updated from a build before the epoch, whose record holds only its cursor, still

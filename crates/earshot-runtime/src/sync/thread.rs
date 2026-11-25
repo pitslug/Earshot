@@ -83,6 +83,67 @@ struct Signal {
     gone: bool,
     /// Back from sleep: send a beat and tick now.
     back: bool,
+    /// A new sync thread has started on this store ([`Superseder`]): this one does nothing
+    /// more, whatever it was asked to finish.
+    superseded: bool,
+}
+
+/// Ends a sync thread from the moment another takes its place, without waiting for it (T14.45
+/// review). A host keeps one for each thread it has retired and not yet seen end, and calls
+/// [`Superseder::supersede`] on all of them before it starts a new thread.
+///
+/// A thread that is stopped still finishes what it was told to finish: a thread turned off
+/// goes on handing back the summaries this device asked for, for up to
+/// [`STOPPED_HANDBACK_LIMIT`]. A superseded thread does not. It starts no further tick (one in
+/// progress ends at its next page, and the new thread's first tick waits for it), sends no
+/// gone presence (the new thread's announcement would be undone) and runs no further offload
+/// step: from then on the new thread owns the hand-backs, and its first step hands back what
+/// is still owed, as a thread does after a restart. Each step of either thread runs under one
+/// lock per store, and the superseded thread looks under that lock before it steps, so the two
+/// never step at once and the old one never steps after the new one has.
+#[derive(Clone)]
+pub struct Superseder {
+    signal: Arc<(Mutex<Signal>, Condvar)>,
+    stop: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for Superseder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Superseder").finish_non_exhaustive()
+    }
+}
+
+impl Superseder {
+    /// Tells the thread a new one has started. Never blocks; safe to call more than once and
+    /// after the thread has ended.
+    pub fn supersede(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let (lock, cv) = &*self.signal;
+        {
+            let mut s = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            s.stop = true;
+            s.superseded = true;
+        }
+        cv.notify_all();
+    }
+
+    /// Whether [`Self::supersede`] was called.
+    #[must_use]
+    pub fn is_superseded(&self) -> bool {
+        self.signal
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .superseded
+    }
+}
+
+fn superseded(signal: &(Mutex<Signal>, Condvar)) -> bool {
+    signal
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .superseded
 }
 
 /// The running sync thread (`earshot-sync`). Stopped and joined by [`SyncThread::stop`] or
@@ -197,6 +258,15 @@ impl SyncThread {
         cv.notify_all();
     }
 
+    /// What ends this thread when another takes its place ([`Superseder`]).
+    #[must_use]
+    pub fn superseder(&self) -> Superseder {
+        Superseder {
+            signal: Arc::clone(&self.signal),
+            stop: Arc::clone(&self.stop),
+        }
+    }
+
     /// Asks for a tick soon (after a local change a host knows of; polling finds the rest).
     pub fn nudge(&self) {
         let (lock, cv) = &*self.signal;
@@ -268,13 +338,22 @@ fn hand_back_until_started(
 ) {
     let (state, host) = offload;
     let deadline = Instant::now() + limit;
+    let steps = super::engine::step_lock(client.device());
     loop {
         // The report is kept whatever the step ends with: what it wrote before an error or a
         // panic still reaches the window (T12.81).
         let mut step = crate::offload::StepReport::default();
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            state.step_sync_stopped_into(services, &**host, &mut step)
-        }));
+        {
+            // A new thread on this store owns the hand-backs from the moment it starts: seen
+            // under the lock every step holds, so this thread never steps after it.
+            let _stepping = steps.lock().unwrap_or_else(PoisonError::into_inner);
+            if superseded(signal) {
+                return;
+            }
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                state.step_sync_stopped_into(services, &**host, &mut step)
+            }));
+        }
         if let Some(changes) = super::SyncChanges::after(None, Some(&step)) {
             client.tell_changes(&changes);
         }
@@ -286,10 +365,12 @@ fn hand_back_until_started(
         let (lock, cv) = signal;
         let s = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let s = cv
-            .wait_timeout_while(s, tick.min(deadline - now), |s| !(honour_stop && s.stop))
+            .wait_timeout_while(s, tick.min(deadline - now), |s| {
+                !(s.superseded || (honour_stop && s.stop))
+            })
             .unwrap_or_else(PoisonError::into_inner)
             .0;
-        if honour_stop && s.stop {
+        if s.superseded || (honour_stop && s.stop) {
             return;
         }
     }
@@ -326,6 +407,7 @@ fn run(
     offload: Option<&(Arc<Offload>, Arc<dyn OffloadHost>)>,
 ) {
     let services = client.services().clone();
+    let steps = super::engine::step_lock(client.device());
     let mut failures: u32 = 0;
     let mut next = Instant::now();
     let mut seen = outbox_len(&services);
@@ -348,8 +430,10 @@ fn run(
                     .0;
             }
             if s.stop {
-                // Saying gone is turning sync off (the one caller of `stop_saying_gone`).
-                let say_gone = s.gone;
+                // Saying gone is turning sync off (the one caller of `stop_saying_gone`). A
+                // thread another has taken the place of says nothing and hands nothing back:
+                // the new thread announces itself and owns the hand-backs ([`Superseder`]).
+                let say_gone = s.gone && !s.superseded;
                 drop(s);
                 // Best effort: the other devices see this one go at once, not after the
                 // online window.
@@ -456,15 +540,21 @@ fn run(
                 return;
             }
             let (state, host) = pair;
-            // Kept whatever the step ends with, as the tick's report is (T12.81).
-            let _ = catch_unwind(AssertUnwindSafe(|| {
-                state.step_into(
-                    &services,
-                    &mut || client.peers().ok(),
-                    &**host,
-                    &mut step_report,
-                )
-            }));
+            // One step at a time on a store, and none once another thread has taken this one's
+            // place (looked at under the lock, so the new thread's first step comes after this
+            // thread's last).
+            let _stepping = steps.lock().unwrap_or_else(PoisonError::into_inner);
+            if !superseded(signal) {
+                // Kept whatever the step ends with, as the tick's report is (T12.81).
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    state.step_into(
+                        &services,
+                        &mut || client.peers().ok(),
+                        &**host,
+                        &mut step_report,
+                    )
+                }));
+            }
         }
         // Once per pass, after the step (T12.81): what the tick applied and what the step wrote
         // as an asker reach the window together, so a page never reads a request that settled

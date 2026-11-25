@@ -33,7 +33,7 @@ use earshot_sync::{KEY_CHECK_LEN, ROW_KEY_LEN, SLOT_LEN};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
-pub use db::DbError;
+pub use db::{CLAIM_EVERY_S, DbError, REFILE_MAX};
 
 /// The shortest setup secret the relay starts with.
 pub const MIN_SECRET_CHARS: usize = 24;
@@ -667,7 +667,7 @@ async fn push(
             body: &r.body.0,
         });
     }
-    let claim = claim_of(req.seen_seq, req.epoch.as_ref())?;
+    let claim = claim_of(&relay, req.seen_seq, req.epoch.as_ref())?;
     let Some(pushed) = relay.db().push(&device, req.format, &rows, &claim)? else {
         return Err(ErrorWord::UpdateNeeded.into());
     };
@@ -686,13 +686,14 @@ async fn push(
 
 /// What a device says it has seen of the vault (T14.45): `bad_request` for a sequence number
 /// past [`MAX_SEEN_SEQ`] or an epoch that is not [`EPOCH_LEN`] bytes.
-fn claim_of(seen: Option<u64>, epoch: Option<&B64>) -> Result<db::Claim, Fail> {
+fn claim_of(relay: &Relay, seen: Option<u64>, epoch: Option<&B64>) -> Result<db::Claim, Fail> {
     if seen.is_some_and(|s| s > MAX_SEEN_SEQ) {
         return Err(ErrorWord::BadRequest.into());
     }
     Ok(db::Claim {
         seen,
         epoch: epoch.map(exact::<EPOCH_LEN>).transpose()?,
+        now_s: relay.now(),
     })
 }
 
@@ -718,7 +719,7 @@ async fn pull(
     let limit = q.limit.unwrap_or(PULL_DEFAULT).clamp(1, PULL_MAX);
     // The cursor is itself something the device has seen (a client from before T14.45 sends
     // nothing else); one past the limit is no claim, and reads as it always did.
-    let mut claim = claim_of(q.seen, q.epoch.as_ref())?;
+    let mut claim = claim_of(&relay, q.seen, q.epoch.as_ref())?;
     if q.after <= MAX_SEEN_SEQ {
         claim.seen = Some(claim.seen.map_or(q.after, |s| s.max(q.after)));
     }

@@ -18,8 +18,8 @@ use std::time::Duration;
 use earshot_runtime::Services;
 use earshot_runtime::offload::OffloadHost;
 use earshot_runtime::sync::{
-    AddressRefused, ChangeListener, SyncChanges, SyncClient, SyncOverview, SyncProblem, SyncThread,
-    SyncTiming, SyncVault, check_address,
+    AddressRefused, ChangeListener, Superseder, SyncChanges, SyncClient, SyncOverview, SyncProblem,
+    SyncThread, SyncTiming, SyncVault, check_address,
 };
 use serde::Serialize;
 use specta::Type;
@@ -141,6 +141,11 @@ pub struct SyncHost {
     /// Who hears what a tick changed here (T12.81): the window, through [`SyncEvent`]. A thread
     /// started without it tells no one.
     changes: Mutex<Option<ChangeListener>>,
+    /// The threads that were turned off and may still be finishing (handing back summaries
+    /// this computer asked for, for up to half an hour): each is told to stop for good the
+    /// moment a new thread starts, which then owns that work (T14.45 review). Taken alone,
+    /// never with the slot or the store.
+    retired: Mutex<Vec<Superseder>>,
 }
 
 /// What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
@@ -189,7 +194,18 @@ impl SyncHost {
             timing,
             offload: Mutex::new(None),
             changes: Mutex::new(None),
+            retired: Mutex::new(Vec::new()),
         }
+    }
+
+    fn retired(&self) -> std::sync::MutexGuard<'_, Vec<Superseder>> {
+        self.retired.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The threads turned off and not yet replaced (tests).
+    #[cfg(test)]
+    pub fn retired_for_test(&self) -> Vec<Superseder> {
+        self.retired().clone()
     }
 
     /// Sets who hears what a tick changed here; threads started from now on tell it after every
@@ -243,6 +259,12 @@ impl SyncHost {
 
     fn start_locked(&self, services: &Services) {
         let old = self.slot().take();
+        // The running thread is told at once that it is replaced (not when the thread that
+        // joins it gets to run): it starts no further tick and runs no further offload step,
+        // so it and the thread started below never work the store together.
+        if let Some(t) = &old {
+            t.superseder().supersede();
+        }
         retire(old);
         let on = {
             let db = services.store();
@@ -259,20 +281,29 @@ impl SyncHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let next = if ready {
-            SyncClient::new(services.clone(), self.vault())
-                .ok()
-                .map(|c| match changes {
-                    Some(l) => c.with_changes(l),
-                    None => c,
-                })
-                .and_then(|c| match offload {
-                    Some(host) => SyncThread::start_offloading(c, self.timing, host).ok(),
-                    None => SyncThread::start(c, self.timing).ok(),
-                })
+        let client = if ready {
+            SyncClient::new(services.clone(), self.vault()).ok()
         } else {
             None
         };
+        let next = client
+            .map(|c| match changes {
+                Some(l) => c.with_changes(l),
+                None => c,
+            })
+            .and_then(|c| {
+                // A thread is about to start: any that was turned off and is still handing
+                // summaries back stops now, and the new one owns that work (its first offload
+                // step hands back what is still owed, as after a restart). Only now: while no
+                // thread starts, the one turned off goes on with it.
+                for earlier in self.retired().drain(..) {
+                    earlier.supersede();
+                }
+                match offload {
+                    Some(host) => SyncThread::start_offloading(c, self.timing, host).ok(),
+                    None => SyncThread::start(c, self.timing).ok(),
+                }
+            });
         *self.slot() = next;
     }
 
@@ -280,6 +311,13 @@ impl SyncHost {
     pub fn stop_soon(&self) {
         let _lifecycle = self.lifecycle();
         let old = self.slot().take();
+        if let Some(t) = &old {
+            // It may go on handing summaries back for a while: remembered, so a thread started
+            // meanwhile can take that over.
+            let mut retired = self.retired();
+            retired.retain(|s| !s.is_superseded());
+            retired.push(t.superseder());
+        }
         retire_saying_gone(old);
     }
 

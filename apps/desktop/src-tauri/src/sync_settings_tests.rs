@@ -447,6 +447,32 @@ fn sync_host_starts_only_when_on_and_set_up() {
     a.host.stop_and_wait();
 }
 
+/// T14.45 review: a thread that was turned off may still be finishing; it is told it has been
+/// replaced only when a new thread really starts, which then owns what it had left to do.
+#[test]
+fn sync_host_tells_a_turned_off_thread_when_a_new_one_takes_its_place() {
+    let env = relay();
+    let a = computer("sync-host-superseded");
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    assert!(a.host.retired_for_test().is_empty());
+    // Turned off: the thread is remembered, not yet replaced.
+    set_on(&a.svc, &a.host, false).unwrap();
+    let off = a.host.retired_for_test();
+    assert_eq!(off.len(), 1);
+    assert!(!off[0].is_superseded());
+    // A start that starts nothing (sync is still off) leaves it at its work.
+    a.host.start_if_on(&a.svc);
+    assert!(!a.host.running());
+    assert!(!off[0].is_superseded());
+    assert_eq!(a.host.retired_for_test().len(), 1);
+    // Turned on again: a new thread runs, and the old one has been told.
+    set_on(&a.svc, &a.host, true).unwrap();
+    assert!(a.host.running());
+    assert!(off[0].is_superseded());
+    assert!(a.host.retired_for_test().is_empty());
+    a.host.stop_and_wait();
+}
+
 /// T12.93: the one-off copy of legacy ignores runs at start only on a computer with no vault;
 /// with a vault it waits for the sync thread's first completed pull, even with sync off.
 #[test]

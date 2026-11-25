@@ -53,7 +53,7 @@ pub use setup::{
     PairingOffer, join_with_code, offer_pairing_code, remove_other_device, remove_this_device,
     set_up_first_device,
 };
-pub use thread::{SyncThread, SyncTiming, backoff};
+pub use thread::{Superseder, SyncThread, SyncTiming, backoff};
 
 /// `settings/sync-server`: the sync server's address.
 pub(crate) const SYNC_SERVER_KEY: &str = "settings/sync-server";

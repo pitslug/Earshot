@@ -205,6 +205,39 @@ pub struct SyncClient {
     /// in tests (a tick that ends with `more == true`).
     pull_pages: usize,
     pull_limit: u32,
+    /// Test only: called inside a tick, once the store's tick lock is held.
+    #[cfg(test)]
+    in_tick: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// How often a tick waiting for another tick on its store looks again (and whether it was
+/// stopped meanwhile).
+const TICK_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// One lock per store, by the store's device id, for as long as the process runs.
+type StoreLocks = std::sync::Mutex<std::collections::BTreeMap<DeviceId, Arc<std::sync::Mutex<()>>>>;
+
+/// Held for a whole tick ([`SyncClient::try_tick`]).
+static TICK_LOCKS: StoreLocks = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Held for one offload step of a sync thread ([`step_lock`]).
+static STEP_LOCKS: StoreLocks = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn store_lock(locks: &StoreLocks, device: DeviceId) -> Arc<std::sync::Mutex<()>> {
+    Arc::clone(
+        locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(device)
+            .or_default(),
+    )
+}
+
+/// The lock a sync thread holds for each offload step on the store of `device`, so two threads
+/// on one store (one replacing the other) never step at once, and a thread that was replaced
+/// finds that out under it before it steps again.
+pub(super) fn step_lock(device: DeviceId) -> Arc<std::sync::Mutex<()>> {
+    store_lock(&STEP_LOCKS, device)
 }
 
 impl std::fmt::Debug for SyncClient {
@@ -412,7 +445,16 @@ impl SyncClient {
             changes: None,
             pull_pages: MAX_PULL_PAGES,
             pull_limit: earshot_sync::wire::PULL_DEFAULT,
+            #[cfg(test)]
+            in_tick: None,
         })
+    }
+
+    /// Test only: `hook` runs inside every tick of this client, with the tick lock held.
+    #[cfg(test)]
+    pub(crate) fn with_in_tick(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.in_tick = Some(hook);
+        self
     }
 
     /// Test only: pull at most `pages` pages of `limit` rows per tick.
@@ -631,7 +673,42 @@ impl SyncClient {
 
     /// [`Self::tick`], keeping what it did even when it ends on a problem (rows applied before
     /// the problem stay applied, and the window must hear of them).
+    ///
+    /// Ticks on one store never run at once (T14.45 review): a second client's tick waits here
+    /// until the first has ended (two sync threads can exist for a moment when one replaces the
+    /// other, and what a tick decides from the cursor record assumes no other tick moves it
+    /// meanwhile). A client that has been stopped does no tick at all: it returns an empty
+    /// report, having pushed, pulled and recorded nothing. Nothing is held while waiting.
     pub fn tick_reporting(&self) -> (TickReport, Result<(), SyncProblem>) {
+        loop {
+            if self.stopping() {
+                return (TickReport::default(), Ok(()));
+            }
+            if let Some(done) = self.try_tick() {
+                return done;
+            }
+            std::thread::sleep(TICK_LOCK_POLL);
+        }
+    }
+
+    /// One tick, unless another tick on this store is in progress (`None`: nothing was done).
+    /// The store's tick lock is held from here to the end of the tick, across its requests,
+    /// and by nothing else: never while a thread is joined or a presence lock is waited for.
+    pub(crate) fn try_tick(&self) -> Option<(TickReport, Result<(), SyncProblem>)> {
+        let lock = store_lock(&TICK_LOCKS, self.device);
+        let _tick = match lock.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        if self.stopping() {
+            // Stopped while it waited: the thread that replaced this one ticks from here on.
+            return Some((TickReport::default(), Ok(())));
+        }
+        #[cfg(test)]
+        if let Some(hook) = &self.in_tick {
+            hook();
+        }
         let mut report = TickReport::default();
         let outcome = self.tick_into(&mut report);
         {
@@ -661,7 +738,7 @@ impl SyncClient {
             }
             let _ = set_sync_status(&mut db, &status);
         }
-        (report, outcome)
+        Some((report, outcome))
     }
 
     fn tick_into(&self, report: &mut TickReport) -> Result<(), SyncProblem> {

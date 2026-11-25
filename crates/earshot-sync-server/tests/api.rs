@@ -1048,8 +1048,10 @@ async fn relay_restored_from_an_older_copy_takes_a_new_epoch_and_numbers_past_wh
         (v["seq"].as_u64(), v["max_seq"].as_u64()),
         (Some(42), Some(41))
     );
-    // A device that holds the old epoch and saw even more: the numbering moves past it, and
-    // the epoch stays (that device reads from the start by itself; the others were told).
+    // A device that holds the old epoch and saw even more, long after: nothing changes for the
+    // vault (that device saw another history and reads from the start by itself when it sees
+    // this epoch; the devices of this epoch were told when it was made).
+    h.advance(3_600);
     let (_, v) = h
         .post(
             "/v1/rows",
@@ -1060,7 +1062,7 @@ async fn relay_restored_from_an_older_copy_takes_a_new_epoch_and_numbers_past_wh
     assert_eq!(v["epoch"], second.as_str());
     assert_eq!(
         (v["seq"].as_u64(), v["max_seq"].as_u64()),
-        (Some(61), Some(42))
+        (Some(43), Some(42))
     );
     // The rows are all there, in order, and a pull says the same epoch.
     let (_, v) = h
@@ -1072,9 +1074,196 @@ async fn relay_restored_from_an_older_copy_takes_a_new_epoch_and_numbers_past_wh
         .iter()
         .map(|r| r["seq"].as_u64().unwrap())
         .collect();
-    assert_eq!(seqs, [1, 2, 3, 41, 42, 61]);
+    assert_eq!(seqs, [1, 2, 3, 41, 42, 43]);
     assert_eq!(v["epoch"], second.as_str());
-    assert_eq!(v["max_seq"], 61);
+    assert_eq!(v["max_seq"], 43);
+}
+
+fn seqs_of(v: &Value) -> Vec<u64> {
+    v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["seq"].as_u64().unwrap())
+        .collect()
+}
+
+/// T14.45 review: one restore is one epoch. After a device of the epoch has made the relay take
+/// a new one and sent its rows again, a client from before the epoch (it says only where its
+/// cursor is, and its cursor only moves forward) with a cursor above those rows would never
+/// pull them. The relay takes no further epoch for it: the rows filed since the epoch was
+/// taken are filed again above its cursor, in order, so its pull brings them. A device of the
+/// epoch sees the same epoch and a higher number, nothing to start over for. A second old
+/// client with a higher cursor is served the same way.
+#[tokio::test]
+async fn relay_files_rows_again_for_old_clients_after_a_restore_without_a_new_epoch() {
+    let h = harness("epoch-refile");
+    let t = h.register(1, 0xC1).await;
+    let plain = |rows: Vec<Value>| json!({"format": 1, "rows": rows});
+    // The relay as restored: three rows, numbers 1 to 3.
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &plain(vec![
+                row(1, 100, 0, b"a"),
+                row(2, 100, 0, b"b"),
+                row(3, 100, 0, b"c"),
+            ]),
+        )
+        .await;
+    let first = v["epoch"].as_str().unwrap().to_owned();
+    // A device of the epoch had seen number 100: a new epoch, and its rows land from 101.
+    let mut again = plain(vec![
+        row(10, 100, 0, b"lost one"),
+        row(11, 100, 0, b"lost two"),
+    ]);
+    again["seen_seq"] = json!(100);
+    again["epoch"] = json!(first);
+    let (_, v) = h.post("/v1/rows", Some(&t), &again).await;
+    let second = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(second, first);
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(102), Some(3))
+    );
+
+    // An old client whose cursor is 120, ten minutes on: no new epoch; the two rows filed in
+    // this epoch are now above its cursor and its pull brings them, in their order.
+    h.advance(601);
+    let (s, v) = h
+        .call(
+            "GET",
+            "/v1/rows?after=120&limit=200",
+            Some(&t),
+            Some(1),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["epoch"], second.as_str(), "one restore, one epoch");
+    assert_eq!(seqs_of(&v), [121, 122]);
+    assert_eq!(v["rows"][0]["body"], b64(b"lost one"));
+    assert_eq!(v["rows"][1]["body"], b64(b"lost two"));
+    assert_eq!(v["max_seq"], 102);
+    // The same pull again finds nothing new and changes nothing.
+    let (_, v) = h
+        .call(
+            "GET",
+            "/v1/rows?after=122&limit=200",
+            Some(&t),
+            Some(1),
+            None,
+        )
+        .await;
+    assert_eq!((seqs_of(&v), v["max_seq"].as_u64()), (vec![], Some(122)));
+
+    // The device of the epoch calls: the same epoch and a higher highest number than it saw
+    // (102): nothing for it to start over for. Its new row is numbered on from there.
+    let mut more = plain(vec![row(12, 100, 0, b"new")]);
+    more["seen_seq"] = json!(102);
+    more["epoch"] = json!(second);
+    let (_, v) = h.post("/v1/rows", Some(&t), &more).await;
+    assert_eq!(v["epoch"], second.as_str());
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(123), Some(122))
+    );
+
+    // A second old client with a higher cursor (150), ten minutes on: again no new epoch, and
+    // everything filed in this epoch, the newest row too, is above its cursor.
+    h.advance(601);
+    let (_, v) = h
+        .call(
+            "GET",
+            "/v1/rows?after=150&limit=200",
+            Some(&t),
+            Some(1),
+            None,
+        )
+        .await;
+    assert_eq!(v["epoch"], second.as_str());
+    assert_eq!(seqs_of(&v), [151, 152, 153]);
+    assert_eq!(v["rows"][2]["body"], b64(b"new"));
+    // The first old client (cursor 122) pulls them again further on; nothing is lost to it.
+    let (_, v) = h
+        .call(
+            "GET",
+            "/v1/rows?after=122&limit=200",
+            Some(&t),
+            Some(1),
+            None,
+        )
+        .await;
+    assert_eq!(seqs_of(&v), [151, 152, 153]);
+    // The rows from before the restore were never touched.
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=0&limit=200", Some(&t), Some(1), None)
+        .await;
+    assert_eq!(seqs_of(&v), [1, 2, 3, 151, 152, 153]);
+    assert_eq!(v["epoch"], second.as_str());
+}
+
+/// T14.45 review: the relay acts on a claim at most once in ten minutes per vault, so a device
+/// that sends ever higher claims cannot make every other device send its store again, or the
+/// relay renumber its rows, over and over. Inside the limit a claim changes nothing at all;
+/// after it the next one is acted on.
+#[tokio::test]
+async fn relay_acts_on_claims_at_most_once_in_ten_minutes() {
+    let h = harness("epoch-limit");
+    let t = h.register(1, 0xC1).await;
+    let claim =
+        |seen: u64, epoch: &str| json!({"format": 1, "rows": [], "seen_seq": seen, "epoch": epoch});
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &json!({"format": 1, "rows": [row(1, 100, 0, b"a")]}),
+        )
+        .await;
+    let first = v["epoch"].as_str().unwrap().to_owned();
+    // The first claim above the vault's rows: a new epoch.
+    let (_, v) = h.post("/v1/rows", Some(&t), &claim(50, &first)).await;
+    let second = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(second, first);
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(50), Some(1))
+    );
+    // Ever higher claims naming the current epoch, for the next ten minutes: nothing changes,
+    // not the epoch and not the numbering.
+    for (step, seen) in [(1u64, 1_000u64), (300, 2_000), (298, 3_000)] {
+        h.advance(step);
+        let (s, v) = h.post("/v1/rows", Some(&t), &claim(seen, &second)).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["epoch"], second.as_str(), "inside the limit: {seen}");
+        assert_eq!(
+            (v["seq"].as_u64(), v["max_seq"].as_u64()),
+            (Some(50), Some(50))
+        );
+        // An old client's cursor above the rows is not acted on either.
+        let (_, v) = h
+            .call(
+                "GET",
+                &format!("/v1/rows?after={seen}"),
+                Some(&t),
+                Some(1),
+                None,
+            )
+            .await;
+        assert_eq!(v["epoch"], second.as_str());
+        assert_eq!(v["max_seq"], 50);
+    }
+    // Ten minutes after the claim that was acted on: the next one is.
+    h.advance(1);
+    let (_, v) = h.post("/v1/rows", Some(&t), &claim(4_000, &second)).await;
+    let third = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(third, second);
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(4_000), Some(50))
+    );
+    assert_eq!(earshot_sync_server::CLAIM_EVERY_S, 600);
 }
 
 /// T14.45: a client from before the epoch says only where its cursor is. A cursor past
