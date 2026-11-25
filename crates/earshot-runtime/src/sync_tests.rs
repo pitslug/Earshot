@@ -1231,6 +1231,7 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         problem: Some(SyncProblem::Unreachable),
         unreadable: 2,
         unsendable: 0,
+        refused: 0,
     };
     set_sync_status(&mut db, &status).unwrap();
     assert_eq!(
@@ -1248,6 +1249,18 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         b"\x01\x00\x00\x00{\"last_success_unix_ms\":5,\"problem\":\"unreachable\",\"unreadable\":2,\"unsendable\":3}"
     );
     assert_eq!(sync_status(&db).unwrap(), damaged);
+    // T14.43: rows that could not be sealed are in the record only when there are some, so a
+    // status without any reads and writes as before (and an older build ignores the field).
+    let refused = SyncStatus {
+        refused: 4,
+        ..status.clone()
+    };
+    set_sync_status(&mut db, &refused).unwrap();
+    assert_eq!(
+        db.local_value(SYNC_STATUS_KEY).unwrap().unwrap(),
+        b"\x01\x00\x00\x00{\"last_success_unix_ms\":5,\"problem\":\"unreachable\",\"unreadable\":2,\"refused\":4}"
+    );
+    assert_eq!(sync_status(&db).unwrap(), refused);
     // Another version, or bytes that do not read, are the defaults.
     db.set_local_value(SYNC_STATUS_KEY, b"\x02\x00\x00\x00{}")
         .unwrap();
@@ -3493,6 +3506,1466 @@ fn sync_ignore_legacy_flag_is_honoured_before_the_copy_and_travels_after_it() {
     assert!(!ignored_on(&a, m, v));
     trade(&a, &b);
     assert!(!ignored_on(&b, m, v));
+}
+
+// ---- T14.42: rows pulled before their parents apply in the tick that brings the parents ----
+
+/// Stamps `m`'s tracks and speakers again and pushes them, then its meeting row: the relay
+/// files a row it accepts at the end, so it then holds the meeting's lines first, its tracks
+/// and speakers after them and the meeting row last (as for any meeting edited after its rows
+/// were first sent).
+fn file_children_before_parents(dev: &Device, m: earshot_core::identity::EntityId) {
+    dev.clock.advance_ms(1_000);
+    {
+        let clock = Arc::clone(&dev.svc.clock);
+        let mut db = dev.svc.store();
+        let (store, hlc) = db.parts();
+        for mut t in store.tracks(m).unwrap() {
+            t.meta.touch(hlc, &*clock);
+            store.put_track(t).unwrap();
+        }
+        for mut s in store.speakers(m).unwrap() {
+            s.meta.touch(hlc, &*clock);
+            store.put_speaker(s).unwrap();
+        }
+    }
+    dev.client().tick().unwrap();
+    dev.clock.advance_ms(1_000);
+    dev.rename(m, "Renamed after its rows were sent");
+    dev.client().tick().unwrap();
+}
+
+/// A first device with two meetings, one of them filed children first, and a second device
+/// that has joined and not yet pulled.
+fn vault_filed_children_first(relay: &TestRelay) -> (Device, Device) {
+    let a = Device::new("sync-parents-a");
+    set_up_first_device(&a.svc, &*a.vault, &relay.relay.url(), SECRET).unwrap();
+    let m = meeting(&a.svc, "Planning", 1);
+    meeting(&a.svc, "Review", 2);
+    a.client().tick().unwrap();
+    file_children_before_parents(&a, m);
+    let b = Device::new("sync-parents-b");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    (a, b)
+}
+
+fn assert_filled_in_one_tick(a: &Device, b: &Device, client: &SyncClient) {
+    let (report, outcome) = client.tick_reporting();
+    assert!(outcome.is_ok() && report.pull_complete, "{report:?}");
+    assert_eq!(
+        b.svc.store().held_rows().unwrap().len(),
+        0,
+        "no row waits for a parent this tick brought: {report:?}"
+    );
+    assert_eq!(report.held, 0, "{report:?}");
+    assert!(!client.holds_rows_for_retry().unwrap());
+    assert_eq!(a.rows(), b.rows(), "one tick fills the new computer in");
+}
+
+/// A new computer pulls a meeting's lines, then its tracks and speakers, then the meeting row,
+/// each in a later page: every row is applied in the tick that brings its parents, not held
+/// for a later tick.
+#[test]
+fn sync_rows_pulled_pages_before_their_parents_apply_in_the_same_tick() {
+    let relay = relay();
+    let (a, b) = vault_filed_children_first(&relay);
+    let client = b.client().with_pull_pages(200, 2);
+    assert_filled_in_one_tick(&a, &b, &client);
+}
+
+/// The same with the whole vault in one page: a row earlier in the page than its parent is
+/// applied in that tick too.
+#[test]
+fn sync_rows_pulled_before_their_parents_in_one_page_apply_in_the_same_tick() {
+    let relay = relay();
+    let (a, b) = vault_filed_children_first(&relay);
+    assert_filled_in_one_tick(&a, &b, &b.client());
+}
+
+/// The retries cost work in proportion to the rows, not to the pages: a new computer pulling
+/// several meetings filed children first, two rows a page, opens each held row at most three
+/// times in the tick (a line waits for its track, which waits for its meeting), however many
+/// pages bring a parent. Twice the meetings is about twice the work, not four times.
+#[test]
+fn sync_rows_held_for_a_parent_are_opened_again_in_proportion_to_their_number() {
+    let filled = |meetings: u64| {
+        let relay = relay();
+        let a = Device::new("sync-parents-linear-a");
+        set_up_first_device(&a.svc, &*a.vault, &relay.relay.url(), SECRET).unwrap();
+        let ids: Vec<_> = (0..meetings)
+            .map(|n| meeting(&a.svc, "Invented meeting", 300 + n))
+            .collect();
+        a.client().tick().unwrap();
+        for m in ids {
+            file_children_before_parents(&a, m);
+        }
+        let b = Device::new("sync-parents-linear-b");
+        let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+        join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+        let client = b.client().with_pull_pages(500, 2);
+        let (report, outcome) = client.tick_reporting();
+        assert!(outcome.is_ok() && report.pull_complete, "{report:?}");
+        assert_eq!(report.held, 0, "{report:?}");
+        assert_eq!(a.rows(), b.rows());
+        assert_eq!(report.pulled as u64, meetings * 8, "{report:?}");
+        report
+    };
+    let four = filled(4);
+    let eight = filled(8);
+    for r in [&four, &eight] {
+        assert!(
+            r.retried <= 3 * r.pulled,
+            "each held row is opened at most once per level: {r:?}"
+        );
+    }
+    assert!(
+        eight.retried <= 2 * four.retried + 8,
+        "twice the rows, about twice the work: {} then {}",
+        four.retried,
+        eight.retried
+    );
+}
+
+/// A row whose parent never arrives stays held and is counted; rows held for other reasons
+/// are not touched by the retries a new parent sets off.
+#[test]
+fn sync_a_row_whose_parent_never_arrives_stays_held_and_is_counted() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Planning", 1);
+    a.client().tick().unwrap();
+    // A track of a meeting no device holds is applied on B as a pulled page: held for its
+    // parent.
+    let first = {
+        let db = a.svc.store();
+        db.tracks(m).unwrap()[0].clone()
+    };
+    let orphan = earshot_store::SyncedRow::Track(earshot_core::model::Track {
+        id: earshot_core::identity::EntityId::from_bytes([0x5a; 16]),
+        meeting_id: earshot_core::identity::EntityId::from_bytes([0x5b; 16]),
+        ..first
+    });
+    let applied = apply_page(&b, &[orphan]);
+    assert_eq!(applied.held[3], 1, "{applied:?}");
+    let client = b.client();
+    let (report, outcome) = client.tick_reporting();
+    assert!(outcome.is_ok(), "{report:?}");
+    assert_eq!(report.held, 1, "the orphan is still held: {report:?}");
+    assert!(client.holds_rows_for_retry().unwrap());
+    assert_eq!(a.rows(), b.rows(), "everything else applied");
+}
+
+// ---- T14.43: rows refused before sealing are counted and shown ----
+
+/// A row that cannot be sealed (here a meeting row over the size limit) stays queued and never
+/// goes. It is counted once per tick, however many push pages read it, kept in the status the
+/// Sync page reads and left out of "waiting to send"; everything else is sent. Once the row
+/// fits again it goes and the count clears.
+#[test]
+fn sync_rows_that_cannot_be_sealed_are_counted_once_and_are_not_waiting() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let big = meeting(&a.svc, "Planning", 1);
+    a.client().tick().unwrap();
+    a.clock.advance_ms(1_000);
+    a.rename(big, &"x".repeat(earshot_sync::MAX_PLAINTEXT + 1));
+    // More rows than one push page, all stamped after it: two pages read the refused row.
+    a.clock.advance_ms(1_000);
+    for seed in 0..30 {
+        meeting(&a.svc, "Invented later meeting", 100 + seed);
+    }
+    let ca = a.client();
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "a refused row is not a problem: {r:?}");
+    assert!(r.pushed >= 240, "the rest went, past the first page: {r:?}");
+    assert_eq!(r.refused, 1, "once, though two push pages read it: {r:?}");
+    assert_eq!(sync_status(&a.svc.store()).unwrap().refused, 1);
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 1, "it stays queued");
+    let view = sync_overview(&a.svc, &*a.vault).unwrap();
+    assert_eq!((view.waiting, view.status.refused), (0, 1));
+    // The next tick refuses it again and says the same.
+    let r = ca.tick().unwrap();
+    assert_eq!((r.pushed, r.refused), (0, 1), "{r:?}");
+    assert_eq!(sync_status(&a.svc.store()).unwrap().refused, 1);
+    // The other computer has every other meeting and still the title from before.
+    b.client().tick().unwrap();
+    assert_eq!(b.title(big).as_deref(), Some("Planning"));
+    assert_eq!(b.svc.store().meetings().unwrap().len(), 31);
+    // Shortened, it goes; nothing is counted or left behind.
+    a.clock.advance_ms(1_000);
+    a.rename(big, "Planning, shorter");
+    let r = ca.tick().unwrap();
+    assert_eq!((r.pushed, r.refused), (1, 0), "{r:?}");
+    let view = sync_overview(&a.svc, &*a.vault).unwrap();
+    assert_eq!((view.waiting, view.status.refused), (0, 0));
+    b.client().tick().unwrap();
+    assert_eq!(b.title(big).as_deref(), Some("Planning, shorter"));
+}
+
+/// A tick that ends on a problem keeps the count the last completed tick found, as it keeps
+/// the damaged count.
+#[test]
+fn sync_a_failed_tick_keeps_the_refused_count_of_the_last_completed_one() {
+    let a = Device::new("sync-refused-kept");
+    let mut db = a.svc.store();
+    let before = SyncStatus {
+        refused: 2,
+        unsendable: 1,
+        ..SyncStatus::default()
+    };
+    set_sync_status(&mut db, &before).unwrap();
+    drop(db);
+    // No address is stored: the client cannot be made, and the thread records the problem.
+    record_problem(&a.svc, SyncProblem::Unreachable);
+    let after = sync_status(&a.svc.store()).unwrap();
+    assert_eq!((after.refused, after.unsendable), (2, 1));
+    assert_eq!(after.problem, Some(SyncProblem::Unreachable));
+}
+
+/// The retry at the start of each tick reads at most a page of held rows and goes on from its
+/// last key next tick, so more held rows than one page are each tried in turn; rows held for a
+/// newer format or a far clock are read too until one pass from the first key has reached the
+/// end, then only rows held for a meeting in use or a parent. Rows held for a far clock are
+/// read again by the first pass that starts an hour or more after the last one that read them
+/// began, or after this device's clock was set back (T14.44); rows held for a newer format
+/// never again.
+#[test]
+fn sync_held_row_retries_take_turns_read_format_once_and_far_clocks_hourly() {
+    use earshot_store::HoldReason;
+    const HOUR: u64 = super::engine::CLOCK_RETRY_MS;
+    assert_eq!(HOUR, 60 * 60 * 1000);
+    let t = 1_792_294_800_000;
+    let mut retry = super::engine::HeldRetry::default();
+    let quick: &[HoldReason] = &[HoldReason::Busy, HoldReason::Parent];
+    let with_clock: &[HoldReason] = &[HoldReason::Clock, HoldReason::Busy, HoldReason::Parent];
+    // The first pass reads every reason from the first key, a full page at a time.
+    assert_eq!(retry.begin(t), (&HoldReason::ALL[..], None));
+    retry.read(3, 3, Some([1; 16]));
+    assert_eq!(retry.begin(t + 1), (&HoldReason::ALL[..], Some([1; 16])));
+    retry.read(3, 3, Some([2; 16]));
+    assert_eq!(retry.begin(t + 2), (&HoldReason::ALL[..], Some([2; 16])));
+    // A short page is the end: the slow reasons are done, and the next retry starts over.
+    retry.read(1, 3, Some([3; 16]));
+    assert_eq!(retry.begin(t + 3), (quick, None));
+    retry.read(3, 3, Some([1; 16]));
+    assert_eq!(
+        retry.begin(t + 4),
+        (quick, Some([1; 16])),
+        "on from the last key"
+    );
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(t + 5), (quick, None), "and round again");
+    retry.read(0, 3, None);
+
+    // Just under an hour after the pass that read them began: not yet.
+    assert_eq!(retry.begin(t + HOUR - 1), (quick, None));
+    retry.read(0, 3, None);
+    // An hour after it began: the rows held for a far clock are read again, format rows not.
+    assert_eq!(retry.begin(t + HOUR), (with_clock, None));
+    // The pass keeps its reasons until it ends, however long that takes.
+    retry.read(3, 3, Some([4; 16]));
+    assert_eq!(retry.begin(t + HOUR + 1), (with_clock, Some([4; 16])));
+    retry.read(2, 3, Some([5; 16]));
+    // The hour counts from when that pass began.
+    assert_eq!(retry.begin(t + 2 * HOUR - 1), (quick, None));
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(t + 2 * HOUR), (with_clock, None));
+    retry.read(0, 3, None);
+    // The clock was set back (it reads earlier than when they were last read): read them now,
+    // since a corrected clock is what clears them.
+    assert_eq!(retry.begin(t + HOUR), (with_clock, None));
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(t + HOUR + 1), (quick, None));
+    // A pass that is under way when the hour comes round is not changed; the next one reads
+    // them.
+    retry.read(3, 3, Some([6; 16]));
+    assert_eq!(retry.begin(t + 3 * HOUR), (quick, Some([6; 16])));
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(t + 3 * HOUR), (with_clock, None));
+}
+
+// ---- T14.44: a clock far ahead cannot poison a vault ----
+
+/// A relay whose clock is the test's own (Unix ms in `now`), so "a day past the relay's clock"
+/// is exact.
+fn relay_on_clock(now: &Arc<std::sync::atomic::AtomicU64>) -> TestRelay {
+    let dir = TempDir::new("sync-relay-clock");
+    let now = Arc::clone(now);
+    let clock: earshot_sync_server::Clock =
+        Arc::new(move || now.load(std::sync::atomic::Ordering::SeqCst) / 1000);
+    let server = RelayServer::open_with_clock(&relay_config(&dir), clock).unwrap();
+    TestRelay {
+        relay: LocalRelay::start(server).unwrap(),
+        _dir: dir,
+    }
+}
+
+const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// The relay's window and the window a device holds pulled rows by are one figure: a row the
+/// relay accepts is one every device with a right clock applies.
+#[test]
+fn sync_the_relay_and_the_devices_hold_far_stamps_by_the_same_window() {
+    assert_eq!(
+        earshot_sync::wire::MAX_STAMP_AHEAD_MS,
+        earshot_store::MAX_CLOCK_AHEAD_MS
+    );
+    assert_eq!(earshot_store::MAX_CLOCK_AHEAD_MS, DAY_MS);
+}
+
+/// A computer whose clock jumped three days ahead and was put right: what it wrote meanwhile,
+/// and everything it writes after (its stamps go on from the jump), is not sent. The tick
+/// still sends the older rows, pulls, counts as a sync and says why rows wait. The vault is
+/// not poisoned: the other computer's later edit of the same meeting is the relay's copy and
+/// reaches a third computer.
+#[test]
+fn sync_rows_stamped_far_ahead_are_not_sent_and_the_vault_keeps_later_edits() {
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(crate::testutil::T0));
+    let relay = relay_on_clock(&now);
+    let (a, b) = pair(&relay);
+    let shared = meeting(&a.svc, "Planning", 1);
+    trade(&a, &b);
+    assert_eq!(b.title(shared).as_deref(), Some("Planning"));
+
+    // A's clock jumps, A renames the meeting and records another, and the clock is put right.
+    a.clock.advance_ms(3 * DAY_MS);
+    a.rename(shared, "Renamed while the clock was wrong");
+    let late = meeting(&a.svc, "Recorded while the clock was wrong", 2);
+    a.clock.set_ms(crate::testutil::T0 + 1_000);
+    // A healthy-looking edit made after the correction is stamped past the jump too.
+    let after = meeting(&a.svc, "Recorded after the clock was put right", 3);
+    let queued = a.svc.store().outbox_len().unwrap();
+    assert!(queued >= 17, "{queued}");
+
+    let ca = a.client();
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "the tick itself did not fail: {r:?}");
+    assert_eq!((r.pushed, r.superseded), (0, 0), "{r:?}");
+    assert_eq!(r.clock_ahead as u64, queued, "{r:?}");
+    assert!(r.pull_complete, "it still pulled: {r:?}");
+    let status = sync_status(&a.svc.store()).unwrap();
+    assert_eq!(status.problem, Some(SyncProblem::ClockAhead));
+    assert_eq!(
+        status.last_success_unix_ms,
+        Some(crate::testutil::T0 + 1_000)
+    );
+    assert!(!SyncProblem::ClockAhead.stops(), "it is retried");
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        queued,
+        "all still queued"
+    );
+
+    // Nothing of it reached the relay: B has the old title and neither new meeting.
+    b.clock.advance_ms(5_000);
+    now.store(
+        crate::testutil::T0 + 5_000,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    b.client().tick().unwrap();
+    assert_eq!(b.title(shared).as_deref(), Some("Planning"));
+    assert_eq!(b.title(late), None);
+    assert_eq!(b.title(after), None);
+
+    // B edits the meeting later, by a right clock: the relay takes it (no far stamp shadows
+    // it) and a third computer gets B's title.
+    b.rename(shared, "Renamed by a computer whose clock is right");
+    let rb = b.client().tick().unwrap();
+    assert_eq!((rb.pushed, rb.superseded), (1, 0), "{rb:?}");
+    let c = Device::new("sync-clock-c");
+    let offer = offer_pairing_code(&b.svc, b.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.relay.url(), offer.code()).unwrap();
+    c.client().tick().unwrap();
+    assert_eq!(
+        c.title(shared).as_deref(),
+        Some("Renamed by a computer whose clock is right")
+    );
+
+    // Once real time has passed the far stamps, A's rows go.
+    a.clock.set_ms(crate::testutil::T0 + 3 * DAY_MS);
+    now.store(
+        crate::testutil::T0 + 3 * DAY_MS,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "{r:?}");
+    assert_eq!((r.clock_ahead, r.pushed as u64), (0, queued), "{r:?}");
+    assert_eq!(sync_status(&a.svc.store()).unwrap().problem, None);
+}
+
+/// A computer whose clock is wrong now (three days ahead) cannot tell by itself: the relay
+/// refuses its push by its own clock, with a word of its own, and stores nothing. The rows stay
+/// queued and are sent once the clocks agree. A row at the edge of the window is accepted.
+/// The refused computer is not cut off: the same tick goes on to pull what the other computer
+/// sent, counts as a sync and leaves the word in the status.
+#[test]
+fn sync_a_push_the_relay_refuses_for_its_far_stamp_keeps_the_rows_queued_and_still_pulls() {
+    let t0 = crate::testutil::T0;
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(t0));
+    let relay = relay_on_clock(&now);
+    let (a, b) = pair(&relay);
+    // The other computer, whose clock is right, has sent a meeting.
+    let theirs = meeting(&b.svc, "Recorded by a clock that is right", 2);
+    b.client().tick().unwrap();
+    a.clock.advance_ms(3 * DAY_MS);
+    let m = meeting(&a.svc, "Recorded by a clock that is wrong now", 1);
+    let queued = a.svc.store().outbox_len().unwrap();
+    let ca = a.client();
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "the tick went on: {r:?}");
+    assert!(r.clock_refused, "{r:?}");
+    assert_eq!((r.pushed, r.clock_ahead), (0, 0), "{r:?}");
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        queued,
+        "nothing was lost"
+    );
+    // It pulled in the same tick.
+    assert!(r.pull_complete && r.written == 8, "{r:?}");
+    assert_eq!(
+        a.title(theirs).as_deref(),
+        Some("Recorded by a clock that is right")
+    );
+    let status = sync_status(&a.svc.store()).unwrap();
+    assert_eq!(status.problem, Some(SyncProblem::ClockAhead));
+    assert!(status.last_success_unix_ms.is_some());
+    b.client().tick().unwrap();
+    assert_eq!(b.title(m), None, "the relay stored none of it");
+    // The relay's clock at exactly a day behind the stamps: accepted.
+    let newest = {
+        let db = a.svc.store();
+        db.outbox(1_000)
+            .unwrap()
+            .iter()
+            .map(|r| r.meta().updated_at.wall_ms)
+            .max()
+            .unwrap()
+    };
+    assert_eq!(newest % 1000, 0, "the relay's clock counts whole seconds");
+    now.store(newest - DAY_MS - 1_000, std::sync::atomic::Ordering::SeqCst);
+    let (r, outcome) = ca.tick_reporting();
+    assert!(
+        outcome.is_ok() && r.clock_refused && r.pushed == 0,
+        "a second short: {r:?}"
+    );
+    now.store(newest - DAY_MS, std::sync::atomic::Ordering::SeqCst);
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "{r:?}");
+    assert_eq!(r.pushed as u64, queued, "{r:?}");
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
+    assert_eq!(sync_status(&a.svc.store()).unwrap().problem, None);
+}
+
+/// The word the relay refuses a far stamp with is not one a 0.4.2 client knows (its list is
+/// copied here from `v0.4.2:crates/earshot-sync/src/wire.rs`), and that client reads any
+/// answer with an unknown word as `server`: a failed push that it retries with its rows still
+/// queued (`v0.4.2:crates/earshot-runtime/src/sync/client.rs`, `call_within`). This build's
+/// own handling of an unknown word is the same, pinned here.
+#[test]
+fn sync_the_clock_word_is_a_failed_push_to_a_client_from_before_it() {
+    const V042_WORDS: [&str; 11] = [
+        "bad_request",
+        "unknown_device",
+        "bad_secret",
+        "no_slot",
+        "not_found",
+        "key_mismatch",
+        "update_needed",
+        "device_exists",
+        "too_large",
+        "slow_down",
+        "internal",
+    ];
+    let word = earshot_sync::wire::ErrorWord::ClockAhead.word();
+    assert_eq!(word, "clock_ahead");
+    assert!(!V042_WORDS.contains(&word));
+    // Every word 0.4.2 knows is still a word, with the meaning it had.
+    for w in V042_WORDS {
+        assert!(earshot_sync::wire::ErrorWord::from_word(w).is_some(), "{w}");
+    }
+    assert_eq!(
+        earshot_sync::wire::ErrorWord::ALL.len(),
+        V042_WORDS.len() + 1
+    );
+    assert_eq!(
+        earshot_sync::wire::ErrorWord::from_word("a_word_from_a_later_relay"),
+        None
+    );
+    assert_eq!(
+        client::problem_of_word(earshot_sync::wire::ErrorWord::ClockAhead),
+        SyncProblem::ClockAhead
+    );
+    assert!(!SyncProblem::Server.stops() && !SyncProblem::ClockAhead.stops());
+}
+
+/// Rows a computer holds because their stamps are far ahead of its clock (here its own clock is
+/// days behind) are applied by the same running client once its clock is right, not only after
+/// a restart: they are tried again when an hour has passed by its clock.
+#[test]
+fn sync_rows_held_for_a_far_clock_apply_once_this_clock_is_right() {
+    let t0 = crate::testutil::T0;
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(t0 + 3 * DAY_MS));
+    let relay = relay_on_clock(&now);
+    let (a, b) = pair(&relay);
+    // A's clock is right (the relay's); B's is three days behind.
+    a.clock.set_ms(t0 + 3 * DAY_MS);
+    let m = meeting(&a.svc, "Planning", 1);
+    a.client().tick().unwrap();
+    let cb = b.client();
+    let r = cb.tick().unwrap();
+    assert_eq!((r.written, r.held), (0, 8), "all held for the clock: {r:?}");
+    assert_eq!(b.title(m), None);
+    assert_eq!(
+        b.svc
+            .store()
+            .held_count(&[earshot_store::HoldReason::Clock])
+            .unwrap(),
+        8
+    );
+    // Half an hour later by B's clock, still days behind: nothing changes.
+    b.clock.advance_ms(30 * 60 * 1000);
+    let r = cb.tick().unwrap();
+    assert_eq!(r.written, 0, "{r:?}");
+    // B's clock is put right. The same client applies the held rows at its next tick.
+    b.clock.set_ms(t0 + 3 * DAY_MS + 60_000);
+    let r = cb.tick().unwrap();
+    assert_eq!(r.written, 8, "{r:?}");
+    assert_eq!(b.title(m).as_deref(), Some("Planning"));
+    assert_eq!(
+        b.svc
+            .store()
+            .held_count(&earshot_store::HoldReason::ALL)
+            .unwrap(),
+        0
+    );
+    assert_eq!(a.rows(), b.rows());
+}
+
+// ---- T14.45 review: one tick at a time on a store; a replaced thread stops ----
+
+/// Two ticks on one store never run at once: while one client's tick is in progress (here,
+/// from inside it), a second client's tick is refused, and once the first has ended it runs.
+/// What a tick decides from the cursor record (a changed vault, T14.45) relies on this.
+#[test]
+fn sync_ticks_on_one_store_never_run_at_once() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    meeting(&a.svc, "Planning", 1);
+    let second = Arc::new(a.client());
+    let refused: Arc<std::sync::Mutex<Vec<bool>>> = Arc::default();
+    let first = {
+        let (second, refused) = (Arc::clone(&second), Arc::clone(&refused));
+        a.client().with_in_tick(Arc::new(move || {
+            // Inside the first tick: the second client asks for one of its own.
+            refused.lock().unwrap().push(second.try_tick().is_none());
+        }))
+    };
+    let r = first.tick().unwrap();
+    assert_eq!(r.pushed, 8, "{r:?}");
+    assert_eq!(
+        *refused.lock().unwrap(),
+        vec![true],
+        "a second tick was refused while the first ran"
+    );
+    // Over: the second client's tick runs, and finds the work done.
+    let (r, outcome) = second.try_tick().expect("no tick is in progress now");
+    assert!(outcome.is_ok() && r.pushed == 0, "{r:?}");
+    // Another store's tick is not held up by this one's: each store has its own lock.
+    let other = b.client();
+    let free: Arc<std::sync::Mutex<Vec<bool>>> = Arc::default();
+    let watching = {
+        let free = Arc::clone(&free);
+        a.client().with_in_tick(Arc::new(move || {
+            free.lock().unwrap().push(other.try_tick().is_some());
+        }))
+    };
+    watching.tick().unwrap();
+    assert_eq!(*free.lock().unwrap(), vec![true]);
+}
+
+/// A client that has been stopped does no tick: nothing is pushed, pulled or recorded, however
+/// it comes to tick (a thread that was replaced while it waited its turn).
+#[test]
+fn sync_a_stopped_client_does_no_tick() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    meeting(&a.svc, "Planning", 1);
+    let client = a.client();
+    client
+        .stop_flag()
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (r, outcome) = client.tick_reporting();
+    assert!(outcome.is_ok());
+    assert_eq!(r, TickReport::default());
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 8, "nothing was sent");
+    assert_eq!(
+        sync_status(&a.svc.store()).unwrap(),
+        SyncStatus::default(),
+        "nothing was recorded"
+    );
+    assert!(
+        client.audit_log().entries().is_empty(),
+        "no request was made"
+    );
+}
+
+/// A host that sends each hand-back it is asked for down a channel and refuses it.
+struct RefusesAndTells(std::sync::Mutex<std::sync::mpsc::Sender<()>>);
+
+impl crate::offload::OffloadHost for RefusesAndTells {
+    fn continue_run(&self, _: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
+        let _ = self.0.lock().unwrap().send(());
+        crate::offload::ContinueAnswer::Refused
+    }
+    fn write_for(&self, _: earshot_core::model::SummaryRequest) {}
+}
+
+/// A thread that was turned off goes on handing back what this computer asked for while the
+/// host refuses, for up to half an hour. From the moment another thread takes its place it
+/// stops: it hands nothing more back (the new thread does), and the stop that was waiting for
+/// it returns.
+#[test]
+fn sync_a_thread_that_was_turned_off_stops_when_another_takes_its_place() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Asked of the other computer", 60);
+    crate::offload::ask(&a.svc, m, b.svc.store().device())
+        .unwrap()
+        .unwrap();
+    let (tx, handed) = std::sync::mpsc::channel();
+    let host: Arc<dyn crate::offload::OffloadHost> =
+        Arc::new(RefusesAndTells(std::sync::Mutex::new(tx)));
+    let long = Duration::from_secs(60);
+    let thread = SyncThread::start_offloading(a.client(), quick(), Arc::clone(&host)).unwrap();
+    let superseder = thread.superseder();
+    assert!(!superseder.is_superseded());
+    // Turned off: the stop waits while the thread hands the meeting back and is refused.
+    let (stopped_tx, stopped) = std::sync::mpsc::channel();
+    let stopping = std::thread::spawn(move || {
+        thread.stop_saying_gone();
+        let _ = stopped_tx.send(());
+    });
+    handed.recv_timeout(long).expect("the hand-back was tried");
+    handed
+        .recv_timeout(long)
+        .expect("refused, it is tried again: the thread is still at it");
+    assert!(
+        stopped.try_recv().is_err(),
+        "the stop is still waiting for the hand-backs"
+    );
+    // Another thread takes its place.
+    superseder.supersede();
+    assert!(superseder.is_superseded());
+    stopped
+        .recv_timeout(long)
+        .expect("the superseded thread ended");
+    stopping.join().unwrap();
+    // The old thread has ended, so it hands nothing more back. What it sent before it ended is
+    // taken off the channel here, so the hand-back heard below can only be the new thread's.
+    while handed.try_recv().is_ok() {}
+    // The thread that took its place owns the hand-back: its first step hands the meeting
+    // back again, as a thread does after a restart.
+    let next = SyncThread::start_offloading(a.client(), quick(), host).unwrap();
+    handed
+        .recv_timeout(long)
+        .expect("the new thread handed the meeting back");
+    // Superseded while it runs, it ends without being asked to hand anything back for good.
+    let superseder = next.superseder();
+    superseder.supersede();
+    wait_for("the superseded thread ended", || next.ended());
+    superseder.supersede();
+}
+
+/// Nothing that signals the sync thread waits for a presence send (T14.45 review). The thread
+/// took up a resume while a gone was on the wire (the presence lock held, here by the test),
+/// and used to wait for that lock with its signal lock still held: a nudge, a resume, a stop
+/// request or a superseding then waited as long as the send did.
+#[test]
+fn sync_thread_signals_never_wait_for_a_presence_send() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    let thread = SyncThread::start(a.client(), quick()).unwrap();
+    wait_for("the first tick", || {
+        sync_status(&a.svc.store())
+            .unwrap()
+            .last_success_unix_ms
+            .is_some()
+    });
+    let beats = thread.beats_for_test();
+    let superseder = thread.superseder();
+    let (tx, signalled) = std::sync::mpsc::channel();
+    let in_time = std::thread::scope(|scope| {
+        // A presence send in flight holds the lock.
+        let sending = beats.lock().unwrap();
+        thread.back();
+        scope.spawn(|| {
+            // The thread takes the resume up, then waits for the presence lock.
+            while thread.back_pending() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            thread.nudge();
+            thread.back();
+            superseder.supersede();
+            let _ = tx.send(superseder.is_superseded());
+        });
+        let in_time = signalled.recv_timeout(Duration::from_secs(5));
+        drop(sending);
+        in_time
+    });
+    assert_eq!(in_time, Ok(true), "a signal waited for the presence lock");
+    wait_for("the superseded thread ended", || thread.ended());
+}
+
+/// A thread started held is a thread that exists and has done nothing: a host knows it can be
+/// started before it lets the threads it replaces go (T14.45 review). Stopped as it is, it ends
+/// without having read or sent anything; begun, it ticks at once.
+#[test]
+fn sync_a_thread_started_held_does_nothing_until_it_is_begun() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Recorded before the thread", 61);
+    let queued = a.svc.store().outbox_len().unwrap();
+    assert!(queued > 0);
+    let untouched = |what: &str| {
+        assert_eq!(a.svc.store().outbox_len().unwrap(), queued, "{what}");
+        assert_eq!(
+            sync_status(&a.svc.store()).unwrap(),
+            SyncStatus::default(),
+            "{what}"
+        );
+    };
+
+    // Stopped while held: joined, and nothing was ever done.
+    let held = SyncThread::start_held(a.client(), quick(), None).unwrap();
+    assert!(!held.ended());
+    held.stop();
+    untouched("a held thread that was stopped ticked");
+    // Superseded while held: the same.
+    let held = SyncThread::start_held(a.client(), quick(), None).unwrap();
+    held.superseder().supersede();
+    wait_for("the superseded held thread ended", || held.ended());
+    untouched("a held thread that was superseded ticked");
+    drop(held);
+
+    // Begun: it ticks at once.
+    let thread = SyncThread::start_held(a.client(), quick(), None).unwrap();
+    untouched("a held thread ticked before it was begun");
+    thread.begin();
+    wait_for("the begun thread sent the meeting", || {
+        a.svc.store().outbox_len().unwrap() == 0
+    });
+    thread.begin();
+    thread.stop();
+    b.client().tick().unwrap();
+    assert_eq!(b.title(m).as_deref(), Some("Recorded before the thread"));
+}
+
+// ---- T14.45: a relay restored from a backup is noticed ----
+
+/// A relay whose data can be copied aside and put back, which is what restoring it from a
+/// backup does: the same address and tokens, an older set of rows.
+struct RestorableRelay {
+    relay: Option<LocalRelay>,
+    dir: TempDir,
+    port: u16,
+    /// The relay's clock, Unix seconds: the devices' own start, moved on by the test.
+    clock: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl RestorableRelay {
+    fn start() -> Self {
+        let dir = TempDir::new("sync-restorable-relay");
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(
+            crate::testutil::T0 / 1000,
+        ));
+        let relay = LocalRelay::start(Self::open(&dir, &clock)).unwrap();
+        let port = relay.addr().port();
+        Self {
+            relay: Some(relay),
+            dir,
+            port,
+            clock,
+        }
+    }
+
+    fn open(dir: &TempDir, clock: &Arc<std::sync::atomic::AtomicU64>) -> RelayServer {
+        let clock = Arc::clone(clock);
+        let now: earshot_sync_server::Clock =
+            Arc::new(move || clock.load(std::sync::atomic::Ordering::SeqCst));
+        RelayServer::open_with_clock(&relay_config(dir), now).unwrap()
+    }
+
+    /// Moves the relay's clock on by `s` seconds.
+    fn advance(&self, s: u64) {
+        self.clock.fetch_add(s, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn data(&self) -> std::path::PathBuf {
+        self.dir.0.join("relay")
+    }
+
+    fn stop(&mut self) {
+        self.relay = None;
+    }
+
+    fn start_again(&mut self) {
+        let server = Self::open(&self.dir, &self.clock);
+        self.relay = Some(LocalRelay::start_on(server, self.port).unwrap());
+    }
+
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        }
+    }
+
+    /// A copy of the relay's data as it is now.
+    fn backup(&mut self) -> TempDir {
+        self.stop();
+        let backup = TempDir::new("sync-relay-backup");
+        Self::copy(&self.data(), &backup.0);
+        self.start_again();
+        backup
+    }
+
+    /// The relay's data replaced by `backup`.
+    fn restore(&mut self, backup: &TempDir) {
+        self.stop();
+        std::fs::remove_dir_all(self.data()).unwrap();
+        Self::copy(&backup.0, &self.data());
+        self.start_again();
+    }
+
+    /// Gives the vault a new epoch behind the relay's back, as a relay that answers oddly
+    /// would (two relays behind one address).
+    fn change_epoch(&self, to: u8) {
+        let c = rusqlite::Connection::open(self.data().join("relay.db")).unwrap();
+        c.busy_timeout(Duration::from_secs(5)).unwrap();
+        c.execute("UPDATE vault SET epoch = ?1 WHERE id = 1", [vec![to; 16]])
+            .unwrap();
+    }
+}
+
+fn pair_on(relay: &RestorableRelay) -> (Device, Device) {
+    let a = Device::new("sync-restore-a");
+    let b = Device::new("sync-restore-b");
+    set_up_first_device(&a.svc, &*a.vault, &relay.url(), SECRET).unwrap();
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.url(), offer.code()).unwrap();
+    (a, b)
+}
+
+fn stored_cursor(dev: &Device) -> Cursor {
+    cursor_record(&dev.svc.store()).unwrap()
+}
+
+/// Ticks `dev` until a tick neither pushes, writes nor resets (at most ten).
+fn settle(dev: &Device) -> Vec<TickReport> {
+    let mut reports = Vec::new();
+    for _ in 0..10 {
+        let r = dev.client().tick().unwrap();
+        let quiet = r.pushed == 0 && r.written == 0 && !r.vault_reset;
+        reports.push(r);
+        if quiet {
+            return reports;
+        }
+    }
+    panic!("never settled: {reports:?}");
+}
+
+/// The relay is restored from a copy made before two computers went on syncing. Their tokens
+/// still work and nothing fails, but the relay holds fewer rows than they have seen. Each
+/// notices at its next tick, queues every row again and reads the vault from the start; the
+/// relay ends up holding everything again, and a computer that joins afterwards gets it all.
+#[test]
+fn sync_a_relay_restored_from_an_older_copy_is_noticed_and_filled_again() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    let first = meeting(&a.svc, "Before the backup", 1);
+    trade(&a, &b);
+    let epoch = stored_cursor(&a)
+        .epoch
+        .expect("the first epoch was taken in");
+    assert_eq!(epoch.0.len(), 16);
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&epoch));
+    assert!(stored_cursor(&a).resets.is_empty() && stored_cursor(&b).resets.is_empty());
+
+    let backup = relay.backup();
+    // Both go on: a new meeting on A, a rename on B, each reaching the other.
+    let second = meeting(&a.svc, "After the backup", 2);
+    trade(&a, &b);
+    b.clock.advance_ms(5_000);
+    b.rename(first, "Renamed after the backup");
+    trade(&b, &a);
+    assert_eq!(a.rows(), b.rows());
+    let before = a.rows();
+    assert_eq!(
+        stored_cursor(&a).epoch.as_ref(),
+        Some(&epoch),
+        "a restart changes nothing"
+    );
+    assert!(stored_cursor(&a).resets.is_empty());
+
+    relay.restore(&backup);
+
+    // A's next tick: nothing fails; it notices and starts over.
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    let after_reset = stored_cursor(&a);
+    assert_eq!(after_reset.pull_seq, 0);
+    assert_ne!(
+        after_reset.epoch.as_ref(),
+        Some(&epoch),
+        "the relay took a new epoch"
+    );
+    assert_eq!(after_reset.resets.len(), 1);
+    assert_eq!(
+        a.svc.store().outbox_len().unwrap(),
+        16,
+        "every row of both meetings is queued again"
+    );
+    // B holds the old epoch and so does the same, by itself.
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert_eq!(stored_cursor(&b).epoch, after_reset.epoch);
+
+    for dev in [&a, &b, &a, &b] {
+        let reports = settle(dev);
+        assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
+    }
+    assert_eq!(a.rows(), before, "nothing was lost or changed here");
+    assert_eq!(b.rows(), before);
+    assert_eq!(stored_cursor(&a).resets.len(), 1, "once");
+    assert_eq!(stored_cursor(&b).resets.len(), 1);
+    assert_eq!(sync_status(&a.svc.store()).unwrap().problem, None);
+
+    // The relay holds everything again: a computer joining now gets what the copy lacked.
+    let c = Device::new("sync-restore-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.title(second).as_deref(), Some("After the backup"));
+    assert_eq!(c.title(first).as_deref(), Some("Renamed after the backup"));
+    assert_eq!(c.rows(), before);
+}
+
+/// The relay takes a new epoch at most once in ten minutes, and a restore inside that time is
+/// still filled again: each computer that saw more than the relay now holds starts over by
+/// itself, in the epoch it has. Past the ten minutes a restore is a new epoch again.
+#[test]
+fn sync_a_restore_soon_after_another_is_filled_again_without_a_new_epoch() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    meeting(&a.svc, "Before the first copy", 1);
+    trade(&a, &b);
+    let first_copy = relay.backup();
+    meeting(&a.svc, "After the first copy", 2);
+    trade(&a, &b);
+    // The first restore: one new epoch, both start over.
+    relay.restore(&first_copy);
+    for dev in [&a, &b] {
+        let r = dev.client().tick().unwrap();
+        assert!(r.vault_reset, "{r:?}");
+    }
+    for dev in [&a, &b, &a] {
+        settle(dev);
+    }
+    let second = stored_cursor(&a)
+        .epoch
+        .expect("the epoch taken for the restore");
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&second));
+
+    // A copy made now, more rows, and a minute later the relay is put back to it.
+    let second_copy = relay.backup();
+    b.clock.advance_ms(5_000);
+    meeting(&b.svc, "After the second copy", 3);
+    trade(&b, &a);
+    let before = a.rows();
+    assert_eq!(b.rows(), before);
+    relay.advance(60);
+    relay.restore(&second_copy);
+    for dev in [&a, &b] {
+        let r = dev.client().tick().unwrap();
+        assert!(r.vault_reset, "by the numbers alone: {r:?}");
+        assert_eq!(
+            stored_cursor(dev).epoch.as_ref(),
+            Some(&second),
+            "no further epoch inside the ten minutes"
+        );
+    }
+    for dev in [&a, &b, &a] {
+        let reports = settle(dev);
+        assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
+    }
+    assert_eq!((a.rows(), b.rows()), (before.clone(), before.clone()));
+    let c = Device::new("sync-restore-twice-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.rows(), before, "the relay holds everything again");
+
+    // The same copy put back once the ten minutes are over: a new epoch.
+    relay.advance(earshot_sync_server::CLAIM_EVERY_S);
+    relay.restore(&second_copy);
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    let third = stored_cursor(&a).epoch.expect("an epoch");
+    assert_ne!(third, second);
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&third));
+    for dev in [&a, &b, &a] {
+        settle(dev);
+    }
+    assert_eq!((a.rows(), b.rows()), (before.clone(), before));
+    assert_eq!(stored_cursor(&a).resets.len(), MAX_VAULT_RESETS);
+}
+
+/// A computer updated from a build before the epoch, whose record holds only its cursor, still
+/// notices a relay restored while it was away: its cursor is past everything the relay holds.
+#[test]
+fn sync_a_computer_from_before_the_epoch_notices_a_restored_relay_by_its_cursor() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    meeting(&a.svc, "Before the backup", 1);
+    trade(&a, &b);
+    let backup = relay.backup();
+    let second = meeting(&a.svc, "After the backup", 2);
+    trade(&a, &b);
+    let before = b.rows();
+    // B's record as a 0.4.2 build left it: the cursor alone.
+    let cursor = stored_cursor(&b).pull_seq;
+    {
+        let mut db = b.svc.store();
+        crate::local::set(
+            &mut db,
+            &DeviceRecord::SyncCursor.key(),
+            &encode_cursor(cursor),
+        )
+        .unwrap();
+    }
+    relay.restore(&backup);
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert_eq!(b.svc.store().outbox_len().unwrap(), 16);
+    settle(&b);
+    // The relay has B's copy of everything again: a new computer gets the later meeting.
+    let c = Device::new("sync-restore-upgraded-c");
+    let offer = offer_pairing_code(&b.svc, b.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.title(second).as_deref(), Some("After the backup"));
+    assert_eq!(c.rows(), before);
+}
+
+/// What the restore handling rests on (T14.45, third review), through the real relay: a 0.4.2
+/// client announces envelope format 2, and this release pushes format 4. From the first push of
+/// a device of this release the 0.4.2 client is refused `update_needed` on every pull and
+/// push, wherever its cursor is, and nothing it says is heard: the devices of this release see
+/// the same epoch and the same numbering afterwards. The same holds after the relay is put back
+/// to a copy from before that push: a device of this release notices, starts over and pushes,
+/// which raises the format again, and the 0.4.2 client is refused as before. So no row a device
+/// of this release files after a restore is ever owed to a 0.4.2 client.
+#[test]
+fn sync_a_0_4_2_client_is_locked_out_once_this_release_has_pushed_restore_or_not() {
+    use earshot_sync::wire::{B64, PushRequest, WireRow};
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    let c = Device::new("sync-locked-out-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    // C's calls as 0.4.2 makes them (`v0.4.2:crates/earshot-runtime/src/sync/client.rs` and
+    // `engine.rs`): format 2 in the header and in a push, a pull that names its cursor and a
+    // limit and nothing else, a push that names no epoch and nothing seen. A client for each
+    // call, as each tick has (the relay is stopped and started between them here).
+    let url = relay.url();
+    let old = || {
+        client::Relay::new(check_address(&url).unwrap(), Arc::clone(&c.svc.clock))
+            .unwrap()
+            .announcing(2)
+    };
+    let token = c.vault.load().unwrap().unwrap().token;
+    let old_pull = |after: u64| {
+        let record = Cursor {
+            pull_seq: after,
+            ..Cursor::default()
+        };
+        assert_eq!(client::pull_query(after, 200, &record).len(), 2);
+        old().pull(&token, after, 200, &record)
+    };
+    let old_push = || {
+        old().push(
+            &token,
+            &PushRequest {
+                format: 2,
+                rows: vec![WireRow {
+                    key: B64(vec![0x42; 16]),
+                    wall_ms: crate::testutil::T0,
+                    logical: 0,
+                    node: B64(vec![9; 16]),
+                    body: B64(b"an invented sealed row".to_vec()),
+                }],
+                seen_seq: None,
+                epoch: None,
+            },
+        )
+    };
+    let refused = |what: &str| {
+        for after in [0, 1, 8, 16, 17, 10_000, u64::MAX] {
+            assert_eq!(
+                old_pull(after).err(),
+                Some(SyncProblem::UpdateNeeded),
+                "{what}: a pull after {after}"
+            );
+        }
+        assert_eq!(
+            old_push().err(),
+            Some(SyncProblem::UpdateNeeded),
+            "{what}: a push"
+        );
+    };
+
+    // No device of this release has pushed a row: the 0.4.2 client is let in.
+    let answer = old_pull(0).expect("let in while the vault's format is its own");
+    assert!(answer.vault_format <= 2, "{}", answer.vault_format);
+    let backup = relay.backup();
+
+    // A, of this release, records and syncs: the vault's format is 4.
+    meeting(&a.svc, "Recorded on this release", 1);
+    trade(&a, &b);
+    let before = a.rows();
+    assert_eq!(b.rows(), before);
+    let settled = (stored_cursor(&a), stored_cursor(&b));
+    refused("after the first push of this release");
+    // Nothing it said was heard: the same epoch and the same numbering for A and B.
+    for dev in [&a, &b] {
+        let r = dev.client().tick().unwrap();
+        assert!(!r.vault_reset, "{r:?}");
+        assert_eq!((r.pushed, r.written), (0, 0), "{r:?}");
+    }
+    assert_eq!((stored_cursor(&a), stored_cursor(&b)), settled);
+
+    // The relay is put back to the copy from before that push. A notices and starts over; its
+    // push raises the format again.
+    relay.restore(&backup);
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    settle(&a);
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    settle(&b);
+    settle(&a);
+    let settled = (stored_cursor(&a), stored_cursor(&b));
+    assert_ne!(settled.0.epoch, None);
+    assert_eq!(settled.0.epoch, settled.1.epoch, "one restore, one epoch");
+    refused("after the restore and the next push of this release");
+    for dev in [&a, &b] {
+        let r = dev.client().tick().unwrap();
+        assert!(!r.vault_reset, "{r:?}");
+        assert_eq!((r.pushed, r.written), (0, 0), "{r:?}");
+    }
+    assert_eq!((stored_cursor(&a), stored_cursor(&b)), settled);
+    assert_eq!((a.rows(), b.rows()), (before.clone(), before));
+}
+
+/// Reading the vault again from a restored relay never brings back what was deleted here: the
+/// copy still holds a meeting both computers deleted afterwards, live, with its lines. It stays
+/// deleted on both, and the relay is told again.
+#[test]
+fn sync_a_restored_relay_does_not_bring_back_a_meeting_deleted_since() {
+    let mut relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    let gone = meeting(&a.svc, "Deleted after the backup", 1);
+    let kept = meeting(&a.svc, "Kept", 2);
+    trade(&a, &b);
+    let backup = relay.backup();
+    // The meeting as the copy holds it: live, with its lines.
+    let live_rows = meeting_rows(&a, gone);
+    a.clock.advance_ms(5_000);
+    a.svc.delete_meeting(gone).unwrap();
+    trade(&a, &b);
+    assert_eq!((a.title(gone), b.title(gone)), (None, None));
+
+    relay.restore(&backup);
+    for dev in [&b, &a, &b, &a] {
+        settle(dev);
+    }
+    assert_eq!((a.title(gone), b.title(gone)), (None, None));
+    // The copy's live rows as a pulled page of their own (a tick pushes before it pulls, so
+    // through the relay they arrive after this computer's tombstones went out again): none is
+    // written on either computer.
+    for dev in [&a, &b] {
+        let applied = apply_page(dev, &live_rows);
+        assert_eq!(applied.written, 0, "{applied:?}");
+    }
+    assert_eq!((a.title(gone), b.title(gone)), (None, None));
+    for dev in [&a, &b] {
+        let db = dev.svc.store();
+        assert!(
+            db.segments(gone)
+                .unwrap()
+                .iter()
+                .all(|s| s.meta.deleted && s.segment.text.is_empty()),
+            "no line of the deleted meeting came back"
+        );
+        assert!(db.meeting(gone).unwrap().unwrap().meta.deleted);
+    }
+    assert_eq!(a.title(kept).as_deref(), Some("Kept"));
+    assert_eq!(a.rows(), b.rows());
+    // A computer that joins now is given the deletion, not the copy's live meeting.
+    let c = Device::new("sync-restore-deleted-c");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&c.svc, &*c.vault, &relay.url(), offer.code()).unwrap();
+    settle(&c);
+    assert_eq!(c.title(gone), None);
+    assert_eq!(c.title(kept).as_deref(), Some("Kept"));
+}
+
+/// A relay that keeps naming another epoch (two relays behind one address) makes this computer
+/// start over a bounded number of times: three in a day, then the tick fails with a word it
+/// retries on, and nothing is queued or reset until a day has passed.
+#[test]
+fn sync_a_relay_that_keeps_changing_its_epoch_resets_this_computer_a_bounded_number_of_times() {
+    let relay = RestorableRelay::start();
+    let (a, _b) = pair_on(&relay);
+    meeting(&a.svc, "Planning", 1);
+    settle(&a);
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 0);
+    for n in 0..MAX_VAULT_RESETS {
+        relay.change_epoch(0x10 + u8::try_from(n).unwrap());
+        a.clock.advance_ms(60_000);
+        let r = a.client().tick().unwrap();
+        assert!(r.vault_reset, "reset {n}: {r:?}");
+        settle(&a);
+    }
+    assert_eq!(stored_cursor(&a).resets.len(), MAX_VAULT_RESETS);
+    let settled = stored_cursor(&a);
+
+    // A fourth and a fifth change inside the day: reported, and nothing else happens.
+    for n in 0..2u8 {
+        relay.change_epoch(0x40 + n);
+        a.clock.advance_ms(60_000);
+        let (r, outcome) = a.client().tick_reporting();
+        assert_eq!(outcome, Err(SyncProblem::Server), "{r:?}");
+        assert!(!r.vault_reset);
+        assert_eq!(
+            a.svc.store().outbox_len().unwrap(),
+            0,
+            "nothing queued again"
+        );
+        assert_eq!(stored_cursor(&a), settled, "the record is as it was");
+    }
+    assert_eq!(
+        sync_status(&a.svc.store()).unwrap().problem,
+        Some(SyncProblem::Server)
+    );
+    assert!(!SyncProblem::Server.stops(), "it goes on trying");
+
+    // A day after the first of the three, one more is allowed.
+    a.clock.advance_ms(VAULT_RESET_WINDOW_MS);
+    let r = a.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    assert!(stored_cursor(&a).resets.len() <= MAX_VAULT_RESETS);
+}
+
+/// A computer updated from a build before the epoch has a cursor and no epoch. It takes the
+/// first epoch the relay names without reading anything again or queueing anything, keeps its
+/// cursor, and its record is then more than the old one; a record without any of the new parts
+/// is byte for byte the old one.
+#[test]
+fn sync_a_computer_from_before_the_epoch_takes_the_first_one_without_starting_over() {
+    let relay = RestorableRelay::start();
+    let (a, b) = pair_on(&relay);
+    meeting(&a.svc, "Planning", 1);
+    trade(&a, &b);
+    let now = stored_cursor(&b);
+    assert!(now.pull_seq > 0 && now.epoch.is_some());
+    // B's record as a 0.4.2 build wrote it: the cursor alone.
+    {
+        let mut db = b.svc.store();
+        crate::local::set(
+            &mut db,
+            &DeviceRecord::SyncCursor.key(),
+            &encode_cursor(now.pull_seq),
+        )
+        .unwrap();
+        assert_eq!(
+            db.local_value(SYNC_CURSOR_KEY).unwrap().unwrap(),
+            format!("\u{1}\0\0\0{{\"pull_seq\":{}}}", now.pull_seq).into_bytes()
+        );
+    }
+    let r = b.client().tick().unwrap();
+    assert!(!r.vault_reset, "{r:?}");
+    assert_eq!((r.pushed, r.written), (0, 0), "{r:?}");
+    assert_eq!(b.svc.store().outbox_len().unwrap(), 0);
+    let after = stored_cursor(&b);
+    assert_eq!(after.pull_seq, now.pull_seq, "the cursor is kept");
+    assert_eq!(after.epoch, now.epoch, "the epoch is taken in");
+    assert!(after.resets.is_empty());
+    // The full record's bytes, pinned.
+    let full = Cursor {
+        pull_seq: 7,
+        seen_seq: 9,
+        epoch: Some(earshot_sync::wire::B64(vec![1; 16])),
+        resets: vec![5, 6],
+    };
+    assert_eq!(
+        encode_cursor_record(&full),
+        b"\x01\x00\x00\x00{\"pull_seq\":7,\"seen_seq\":9,\"epoch\":\"AQEBAQEBAQEBAQEBAQEBAQ==\",\"resets\":[5,6]}"
+    );
+    assert_eq!(decode_cursor(Some(encode_cursor_record(&full))), full);
+    // Turning a switch on starts the pull over and keeps what is known of the vault.
+    set_sync_voiceprints(&b.svc, true).unwrap();
+    let restarted = stored_cursor(&b);
+    assert_eq!(restarted.pull_seq, 0);
+    assert_eq!(
+        (restarted.epoch, restarted.seen_seq),
+        (after.epoch, after.seen_seq)
+    );
+}
+
+/// The decision itself, without a relay (T14.45): what each kind of answer means against each
+/// stored record. A relay from before the epoch names none and no number from before the
+/// request; the client then goes by the push answer's own highest number.
+#[test]
+fn sync_vault_answers_are_judged_by_epoch_and_by_what_was_seen() {
+    let b64 = |n: u8| earshot_sync::wire::B64(vec![n; 16]);
+    let stored = Cursor {
+        pull_seq: 40,
+        seen_seq: 50,
+        epoch: Some(b64(1)),
+        resets: Vec::new(),
+    };
+    let now = 1_000_000;
+    const SAME: &[u8] = &[1u8; 16];
+    const OTHER: &[u8] = &[2u8; 16];
+    let (same, other) = (SAME, OTHER);
+    let seen = |epoch: Option<&&'static [u8]>, before: Option<u64>, now: Option<u64>| VaultSeen {
+        epoch: epoch.copied(),
+        before,
+        now,
+    };
+    // The same epoch and at least as many rows as seen: nothing to do, or a higher number.
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&same), Some(50), Some(50)), now),
+        VaultVerdict::Same(None)
+    );
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&same), Some(50), Some(53)), now),
+        VaultVerdict::Same(Some(Cursor {
+            seen_seq: 53,
+            ..stored.clone()
+        }))
+    );
+    // Another epoch: start over with it, whatever the numbers say.
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&other), Some(90), Some(91)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 91,
+            epoch: Some(b64(2)),
+            resets: vec![now],
+        })
+    );
+    // The same epoch but fewer rows than seen: start over.
+    assert_eq!(
+        judge_vault(&stored, seen(Some(&same), Some(49), Some(49)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 49,
+            epoch: Some(b64(1)),
+            resets: vec![now],
+        })
+    );
+    // A relay from before the epoch (0.4.2): no epoch in its answers. A pull says nothing; a
+    // push answer's highest number does (what `send` derives `before` from).
+    assert_eq!(
+        judge_vault(&stored, seen(None, None, None), now),
+        VaultVerdict::Same(None)
+    );
+    assert_eq!(
+        judge_vault(&stored, seen(None, Some(60), Some(62)), now),
+        VaultVerdict::Same(Some(Cursor {
+            seen_seq: 62,
+            ..stored.clone()
+        }))
+    );
+    assert_eq!(
+        judge_vault(&stored, seen(None, Some(10), Some(12)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 12,
+            epoch: Some(b64(1)),
+            resets: vec![now],
+        })
+    );
+    // Never seen an epoch: the first is taken in without starting over,
+    let fresh = Cursor {
+        pull_seq: 40,
+        seen_seq: 0,
+        ..Cursor::default()
+    };
+    assert_eq!(
+        judge_vault(&fresh, seen(Some(&other), Some(44), Some(44)), now),
+        VaultVerdict::Same(Some(Cursor {
+            pull_seq: 40,
+            seen_seq: 44,
+            epoch: Some(b64(2)),
+            resets: Vec::new(),
+        }))
+    );
+    // unless the numbers already say rows were lost. A record from before the epoch holds only
+    // its cursor, and the cursor is itself a number this device has seen.
+    let upgraded = Cursor {
+        pull_seq: 40,
+        ..Cursor::default()
+    };
+    assert_eq!(upgraded.seen(), 40);
+    assert_eq!(
+        judge_vault(&upgraded, seen(Some(&other), Some(20), Some(40)), now),
+        VaultVerdict::Reset(Cursor {
+            pull_seq: 0,
+            seen_seq: 40,
+            epoch: Some(b64(2)),
+            resets: vec![now],
+        })
+    );
+    // Three resets inside a day are the limit; older ones, and ones dated after now (the clock
+    // was set back), do not count.
+    let day = VAULT_RESET_WINDOW_MS;
+    let busy = Cursor {
+        resets: vec![now + day - 3, now + day - 2, now + day - 1],
+        ..stored.clone()
+    };
+    assert_eq!(
+        judge_vault(&busy, seen(Some(&other), Some(90), Some(91)), now + day),
+        VaultVerdict::TooOften
+    );
+    let VaultVerdict::Reset(next) = judge_vault(
+        &busy,
+        seen(Some(&other), Some(90), Some(91)),
+        now + 2 * day - 3,
+    ) else {
+        panic!("a day after the first of three, one more is allowed");
+    };
+    assert_eq!(
+        next.resets,
+        vec![now + day - 2, now + day - 1, now + 2 * day - 3]
+    );
+    let VaultVerdict::Reset(next) = judge_vault(&busy, seen(Some(&other), Some(90), Some(91)), now)
+    else {
+        panic!("resets dated after now do not count");
+    };
+    assert_eq!(next.resets, vec![now]);
+    assert_eq!(MAX_VAULT_RESETS, 3);
 }
 
 #[path = "sync_edit_tests.rs"]

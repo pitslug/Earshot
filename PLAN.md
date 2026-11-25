@@ -2755,19 +2755,19 @@ Lane engines (runtime `model_settings.rs`, `cuda_switch.rs`, `lib.rs`, `model_be
 
 Lane sync (`earshot-sync`, `earshot-sync-server`, runtime `sync/`, store `sync.rs`, desktop `sync_settings.rs`, the Sync page):
 
-- [ ] T14.42 A new computer's rows apply in the tick that brings their parents
+- [x] T14.42 A new computer's rows apply in the tick that brings their parents
   - do: after each pull page held `parent` rows are applied again in the same tick until none moves; held rows are counted and selected by reason in SQL.
   - accept: `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.43 Rows refused before sealing are shown
+- [x] T14.43 Rows refused before sealing are shown
   - do: `TickReport.refused` reaches `SyncStatus` and the Sync page as a note with a count (copy in `sync_copy_cases.json`), as `unsendable` does.
   - accept: `cargo test -p earshot-runtime sync`; `cargo test -p earshot-desktop --bin earshot sync`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] T14.44 A clock far ahead cannot poison a vault
+- [x] T14.44 A clock far ahead cannot poison a vault
   - do: the relay refuses a pushed stamp more than 24 hours past its own clock and the client refuses to push while its own clock is that far ahead (a problem word shown on the Sync page); rows held `clock` are retried hourly. Older clients still sync: the refusal is a word they already know or one they treat as a failed push.
   - accept: `cargo test -p earshot-sync-server`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.45 A relay restored from a backup is noticed
+- [x] T14.45 A relay restored from a backup is noticed
   - do: pull and push answers carry a vault epoch and the largest `seq` (fields older clients ignore: confirm their parsers do, else stop and report); a client seeing an epoch change or a `seq` below its cursor resets its cursor and queues everything.
   - accept: `cargo test -p earshot-sync-server`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.46 Relay hardening
+- [x] T14.46 Relay hardening
   - do: the token is checked before the body is read; the key check and the setup secret compare in constant time; the push format check runs inside the push's transaction.
   - accept: `cargo test -p earshot-sync-server`
 

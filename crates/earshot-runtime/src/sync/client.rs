@@ -30,6 +30,9 @@ pub(crate) struct Relay {
     net: NetClient,
     runtime: tokio::runtime::Runtime,
     base: Url,
+    /// The envelope format every call announces: [`ENVELOPE_FORMAT`], except in a test that
+    /// stands in for an older build.
+    format: u32,
 }
 
 fn problem_of_net(e: &NetError) -> SyncProblem {
@@ -45,6 +48,23 @@ fn problem_of_net(e: &NetError) -> SyncProblem {
     }
 }
 
+/// The pull's query parameters, in order. A record that holds only a cursor (what a 0.4.2
+/// client stores) gives exactly the two a 0.4.2 client sends, `after` and `limit`.
+pub(crate) fn pull_query(
+    after: u64,
+    limit: u32,
+    seen: &super::Cursor,
+) -> Vec<(&'static str, String)> {
+    let mut query = vec![("after", after.to_string()), ("limit", limit.to_string())];
+    if seen.seen() > after {
+        query.push(("seen", seen.seen().to_string()));
+    }
+    if let Some(epoch) = &seen.epoch {
+        query.push(("epoch", epoch.text()));
+    }
+    query
+}
+
 /// The problem for a relay error word.
 pub(crate) fn problem_of_word(word: ErrorWord) -> SyncProblem {
     match word {
@@ -55,6 +75,7 @@ pub(crate) fn problem_of_word(word: ErrorWord) -> SyncProblem {
         ErrorWord::UpdateNeeded => SyncProblem::UpdateNeeded,
         ErrorWord::DeviceExists => SyncProblem::DeviceExists,
         ErrorWord::TooLarge => SyncProblem::TooLarge,
+        ErrorWord::ClockAhead => SyncProblem::ClockAhead,
         ErrorWord::SlowDown => SyncProblem::SlowDown,
         ErrorWord::BadRequest | ErrorWord::NotFound | ErrorWord::Internal => SyncProblem::Server,
     }
@@ -71,7 +92,20 @@ impl Relay {
             .enable_all()
             .build()
             .map_err(|_| SyncProblem::Internal)?;
-        Ok(Self { net, runtime, base })
+        Ok(Self {
+            net,
+            runtime,
+            base,
+            format: ENVELOPE_FORMAT,
+        })
+    }
+
+    /// This client announcing `format` on every call, as a build that writes that envelope
+    /// format does (0.4.2: 2).
+    #[cfg(test)]
+    pub(crate) fn announcing(mut self, format: u32) -> Self {
+        self.format = format;
+        self
     }
 
     /// Every request made, one entry per hop.
@@ -102,7 +136,7 @@ impl Relay {
         timeout: Duration,
     ) -> Result<Resp, SyncProblem> {
         let mut req = NetRequest::new(method, url)
-            .header(FORMAT_HEADER, ENVELOPE_FORMAT.to_string())
+            .header(FORMAT_HEADER, self.format.to_string())
             .timeout(timeout);
         if let Some(token) = token {
             req = req.header("Authorization", format!("Bearer {}", token.as_str()));
@@ -162,17 +196,23 @@ impl Relay {
         self.post("v1/rows", Some(token), req)
     }
 
-    /// `GET /v1/rows?after=<after>&limit=<limit>` (`PULL_DEFAULT` outside tests).
+    /// `GET /v1/rows?after=<after>&limit=<limit>` (`PULL_DEFAULT` outside tests), with what
+    /// this device has seen of the vault when it has seen more than its cursor says (`seen`,
+    /// `epoch`; T14.45). A relay from before those ignores them.
     pub(crate) fn pull(
         &self,
         token: &DeviceToken,
         after: u64,
         limit: u32,
+        seen: &super::Cursor,
     ) -> Result<PullResponse, SyncProblem> {
         let mut url = self.url("v1/rows")?;
-        url.query_pairs_mut()
-            .append_pair("after", &after.to_string())
-            .append_pair("limit", &limit.to_string());
+        {
+            let mut query = url.query_pairs_mut();
+            for (name, value) in pull_query(after, limit, seen) {
+                query.append_pair(name, &value);
+            }
+        }
         self.call(Method::GET, url, Some(token), None)
     }
 

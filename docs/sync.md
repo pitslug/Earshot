@@ -100,6 +100,7 @@ Losing every device loses the key, and the server's data is then unreadable. Any
 - The server assigns `seq` when it accepts a row, so a pull cursor never depends on a client clock.
 - Tombstones are kept for good, so a device that was away for months still hears about deletions.
 - The vault's `format` is the highest row format any device has pushed. A device whose own format is lower refuses to sync and says to update Earshot: an older client would otherwise write a whole row back without the fields it does not know.
+- Running the relay: once a relay newer than 0.4.2 has opened its data, the 0.4.2 image no longer starts on it (the database is at schema 2, docs/sync-spec.md section 4), so keep a copy of the data folder before updating if going back must stay possible. The relay host's clock must be right: the relay refuses any push stamped more than 24 hours past its own clock, so a host whose clock is days behind refuses every push until it is set.
 
 ### Pairing
 
