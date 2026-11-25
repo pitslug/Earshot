@@ -798,23 +798,38 @@ fn with_gpus(gpus: Vec<Gpu>) -> Hardware {
 }
 
 #[test]
-fn settings_cuda_reads_the_nvidia_card_and_vulkan_the_largest_discrete_card() {
+fn settings_cuda_reads_the_nvidia_card_and_vulkan_the_smallest_discrete_card() {
+    let mut unknown_memory = discrete(AMD, 16);
+    unknown_memory.dedicated_memory = None;
     let cases = [
-        // (gpus, CUDA's card, Vulkan's card)
+        // (gpus, CUDA's card, Vulkan's card). Which discrete card Vulkan's first device is cannot
+        // be known, so with several the smallest counts; CUDA reads the NVIDIA card alone.
         (
             vec![discrete(AMD, 16), discrete(NVIDIA, 6)],
             Some(6),
-            Some(16),
+            Some(6),
         ),
         (
             vec![discrete(NVIDIA, 16), discrete(AMD, 6)],
             Some(16),
-            Some(16),
+            Some(6),
         ),
+        (
+            vec![discrete(AMD, 6), discrete(NVIDIA, 16)],
+            Some(16),
+            Some(6),
+        ),
+        (vec![discrete(AMD, 16), discrete(AMD, 8)], None, Some(8)),
         // Which NVIDIA card is CUDA's device 0 cannot be known: the smaller one counts.
         (
             vec![discrete(NVIDIA, 16), discrete(NVIDIA, 6)],
             Some(6),
+            Some(6),
+        ),
+        // A second card whose memory cannot be read is left out, as before.
+        (
+            vec![unknown_memory, discrete(NVIDIA, 16)],
+            Some(16),
             Some(16),
         ),
         // An integrated GPU counts for neither.
@@ -865,7 +880,7 @@ fn settings_cuda_fit_is_judged_on_the_nvidia_card_beside_a_larger_card() {
         &large_nvidia,
     );
     assert_eq!(p.order, [Accelerator::Cuda, Accelerator::Cpu]);
-    // Whisper forced onto the card on Vulkan keeps the largest discrete card's reading.
+    // Whisper forced onto the card on Vulkan reads the smallest discrete card: small.en fits 2 GiB.
     let p = transcription_placement(
         "small.en",
         Part::GraphicsCard,
@@ -882,8 +897,15 @@ fn settings_cuda_fit_is_judged_on_the_nvidia_card_beside_a_larger_card() {
     assert!(s.note.unwrap().contains("too big"));
     let s = placement_when(true, &four, Part::GraphicsCard, cuda, &large_nvidia).unwrap();
     assert_eq!((s.gpu, s.note), (true, None));
-    // On Vulkan the same machine keeps today's reading: the largest discrete card.
-    let s = on_vulkan(&four, Part::GraphicsCard, &small_nvidia);
+    // On Vulkan either machine reads its smaller card (which discrete device Vulkan takes cannot be
+    // known), so the 4B fits neither 16 + 2 pair there; one 16 GiB card alone takes it.
+    for hw in [&small_nvidia, &large_nvidia] {
+        let s = on_vulkan(&four, Part::GraphicsCard, hw);
+        assert!(!s.gpu);
+        assert!(s.note.unwrap().contains("too big"));
+    }
+    let one_card = with_gpus(vec![discrete(AMD, 16)]);
+    let s = on_vulkan(&four, Part::GraphicsCard, &one_card);
     assert_eq!((s.gpu, s.note), (true, None));
     // The card memory the run's model choice reads is the card the summary runs on.
     let s = placement_when(
@@ -895,8 +917,79 @@ fn settings_cuda_fit_is_judged_on_the_nvidia_card_beside_a_larger_card() {
     )
     .unwrap();
     assert_eq!(s.card_memory, Some(2 * GIB));
-    let s = on_vulkan(&ModelPick::Automatic, Part::GraphicsCard, &small_nvidia);
+    let s = placement_when(
+        true,
+        &ModelPick::Automatic,
+        Part::GraphicsCard,
+        cuda,
+        &large_nvidia,
+    )
+    .unwrap();
     assert_eq!(s.card_memory, Some(16 * GIB));
+    let s = on_vulkan(&ModelPick::Automatic, Part::GraphicsCard, &large_nvidia);
+    assert_eq!(s.card_memory, Some(2 * GIB));
+}
+
+/// The two-card machines through the callers: the summary model planned is the one run and
+/// advised, and previews follow the CUDA card.
+#[test]
+fn settings_two_card_machines_plan_and_run_the_same_summary_model() {
+    use crate::backends::{PREVIEW_MIN_CARD_MEMORY, preview_backend};
+    use crate::preview_settings::PreviewChoice;
+    use earshot_core::asr::BackendKind;
+    let cuda = &[Accelerator::Cuda, Accelerator::Cpu];
+    let two_cards = |amd: u64, nvidia: u64| {
+        let mut hw = with_gpus(vec![discrete(AMD, amd), discrete(NVIDIA, nvidia)]);
+        hw.total_memory = Some(64 * GIB);
+        hw
+    };
+    // AMD 16 + NVIDIA 6: on CUDA the 9B (needs about 2 x its size) does not fit the 6 GiB card, so
+    // automatic plans the 4B there, and the run picks the 4B too.
+    for (hw, want) in [
+        (two_cards(16, 6), LOW_MEMORY_SUMMARY_MODEL),
+        (two_cards(6, 16), DEFAULT_SUMMARY_MODEL),
+    ] {
+        let placement =
+            placement_when(true, &ModelPick::Automatic, Part::Automatic, cuda, &hw).unwrap();
+        assert!(placement.gpu, "{hw:?}");
+        assert_eq!(
+            host::summary_model_for(&placement, &hw).unwrap().model.id,
+            want,
+            "{hw:?}"
+        );
+        // The advice names what a run of this build would use, on both orders.
+        for order in [cuda.as_slice(), VULKAN] {
+            let placement =
+                summary_placement(&ModelPick::Automatic, Part::Automatic, order, &hw).unwrap();
+            assert_eq!(
+                crate::recommend::advise(&hw, order, &["en"], None)
+                    .unwrap()
+                    .summary
+                    .model
+                    .id,
+                host::summary_model_for(&placement, &hw).unwrap().model.id,
+                "{hw:?} {order:?}"
+            );
+        }
+    }
+    // Previews on a CUDA track read the NVIDIA card: 6 GiB is under the card limit, 16 is not.
+    const { assert!(6 * GIB < PREVIEW_MIN_CARD_MEMORY && 16 * GIB >= PREVIEW_MIN_CARD_MEMORY) };
+    assert_eq!(
+        preview_backend(
+            BackendKind::Cuda,
+            &two_cards(16, 6),
+            PreviewChoice::Everyone
+        ),
+        Ok(BackendKind::Cpu)
+    );
+    assert_eq!(
+        preview_backend(
+            BackendKind::Cuda,
+            &two_cards(6, 16),
+            PreviewChoice::Everyone
+        ),
+        Ok(BackendKind::Cuda)
+    );
 }
 
 /// Counts the reads of the hardware cache test's cache; the machine it reads gains a card after

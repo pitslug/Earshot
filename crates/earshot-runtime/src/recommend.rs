@@ -408,18 +408,19 @@ pub fn advise(
     languages: &[&str],
     check: Option<&StoredCheck>,
 ) -> Result<ModelsAdvice, RuntimeError> {
-    let summary_on_gpu = crate::model_settings::summary_placement(
+    let placement = crate::model_settings::summary_placement(
         &crate::model_settings::ModelPick::Automatic,
         crate::model_settings::Part::Automatic,
         order,
         hardware,
-    )?
-    .gpu;
+    )?;
+    let summary_on_gpu = placement.gpu;
+    // The card the placement judged, so the advice names the model a run would use (T14.40).
     let summary = summary_model::choose_summary_model_on(
         None,
         hardware.total_memory,
         summary_on_gpu,
-        crate::model_settings::graphics_memory(hardware),
+        placement.card_memory,
     )?;
     Ok(ModelsAdvice {
         transcription: recommend_transcription(hardware, order, languages),

@@ -408,16 +408,20 @@ pub struct Placement {
     pub note: Option<String>,
 }
 
-/// The dedicated memory of the largest discrete (or unknown) graphics card, `None` when
-/// the read found none with a known size. Vulkan's reading ([`card_memory`]); CUDA reads
-/// [`cuda_card_memory`].
+/// The dedicated memory of the discrete (or unknown-kind) graphics card, `None` when the read
+/// found none with a known size: Vulkan's reading ([`card_memory`]); CUDA reads
+/// [`cuda_card_memory`]. With one such card, that card. With more than one, the smallest, the
+/// safe reading (T14.40): llama.cpp and whisper.cpp take the first discrete Vulkan device, and
+/// which adapter that is cannot be told from the OS's list. A card whose memory cannot be read is
+/// left out. Since every NVIDIA card is among these, this is never above [`cuda_card_memory`]:
+/// a fit here holds on whichever card a GPU backend lands on.
 pub(crate) fn graphics_memory(hardware: &Hardware) -> Option<u64> {
     hardware
         .gpus
         .iter()
         .filter(|g| g.integrated != Some(true))
         .filter_map(|g| g.dedicated_memory)
-        .max()
+        .min()
 }
 
 /// The dedicated memory of the card CUDA runs on: an NVIDIA card that is not integrated, never
@@ -436,8 +440,7 @@ pub fn cuda_card_memory(hardware: &Hardware) -> Option<u64> {
 }
 
 /// The dedicated memory of the card work on `on` lands on: [`cuda_card_memory`] for CUDA, else
-/// the largest discrete card ([`graphics_memory`]; Vulkan takes a discrete device first, and
-/// which of two it takes is left as it was).
+/// [`graphics_memory`] (the discrete card, the smallest of several).
 #[must_use]
 pub fn card_memory(hardware: &Hardware, on: Accelerator) -> Option<u64> {
     match on {
@@ -473,8 +476,9 @@ pub fn integrated_gpu_names(hardware: &Hardware) -> Vec<String> {
 /// and summaries, the model check's [`MEMORY_FACTOR`] (twice the file size: weights plus
 /// activations or, for a summary, the context's KV cache) within the card's dedicated
 /// memory. A judgement, not a measurement on the cards; unknown memory is not held against
-/// a model. This reads the largest discrete card; a caller that knows the accelerator uses
-/// [`fits_card`], which reads the card that accelerator runs on.
+/// a model. This reads [`graphics_memory`], which no GPU backend's card is smaller than, so it
+/// is the fit for a caller that does not know whether CUDA or Vulkan will run the work; a caller
+/// that knows uses [`fits_card`].
 #[must_use]
 pub fn fits_graphics_card(size: u64, hardware: &Hardware) -> bool {
     fits_memory(size, graphics_memory(hardware))

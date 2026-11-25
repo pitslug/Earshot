@@ -1320,7 +1320,8 @@ pub fn preview_backend_or_refusal(
     let (runs_on, memory_limit) = match backend {
         BackendKind::Cpu => (BackendKind::Cpu, PREVIEW_MIN_MEMORY),
         BackendKind::Cuda => {
-            let card = crate::model_settings::graphics_memory(hardware);
+            // The NVIDIA card CUDA runs on, never a larger card of another vendor (T14.40).
+            let card = crate::model_settings::card_memory(hardware, Accelerator::Cuda);
             if card.is_none_or(|m| m < PREVIEW_MIN_CARD_MEMORY) {
                 (BackendKind::Cpu, PREVIEW_MIN_MEMORY)
             } else {
