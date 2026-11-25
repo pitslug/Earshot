@@ -12,7 +12,9 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use earshot_sync::wire::{FORMAT_HEADER, MAX_PRESENCE, MAX_REQUEST, MAX_ROW_BODY, SLOT_TTL_S};
+use earshot_sync::wire::{
+    FORMAT_HEADER, MAX_PRESENCE, MAX_REQUEST, MAX_ROW_BODY, MAX_STAMP_AHEAD_MS, SLOT_TTL_S,
+};
 use earshot_sync_server::{Clock, Config, Relay, router};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -733,9 +735,16 @@ fn relay_reopens_its_database_and_refuses_a_newer_one() {
     };
     drop(Relay::open(&config).unwrap());
     drop(Relay::open(&config).unwrap());
+    let written: u32 = rusqlite_open(&dir.0.join("relay.db"))
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        written, 2,
+        "the schema this build writes (T14.45: the epoch)"
+    );
     {
         let c = rusqlite_open(&dir.0.join("relay.db"));
-        c.pragma_update(None, "user_version", 2).unwrap();
+        c.pragma_update(None, "user_version", written + 1).unwrap();
     }
     let e = Relay::open(&config).err().unwrap();
     assert_eq!(e.kind(), "newer");
@@ -743,6 +752,915 @@ fn relay_reopens_its_database_and_refuses_a_newer_one() {
 
 fn rusqlite_open(p: &std::path::Path) -> rusqlite::Connection {
     rusqlite::Connection::open(p).unwrap()
+}
+
+/// The relay's database as every relay up to 0.4.2 made it (schema 1, copied from
+/// `v0.4.2:crates/earshot-sync-server/src/db.rs`), holding a vault with two devices, three rows
+/// and a pairing slot. Every value is invented; device 1's token is `TOKEN_V1`.
+const RELAY_V1_SQL: &str = "
+CREATE TABLE vault (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    format INTEGER NOT NULL,
+    key_check BLOB,
+    next_seq INTEGER NOT NULL
+) STRICT;
+INSERT INTO vault VALUES (1, 0, NULL, 1);
+CREATE TABLE device (
+    device_id BLOB PRIMARY KEY NOT NULL,
+    token_sha256 BLOB NOT NULL UNIQUE,
+    created_unix_s INTEGER NOT NULL,
+    last_seen_unix_s INTEGER NOT NULL,
+    presence BLOB,
+    presence_unix_s INTEGER,
+    revoked INTEGER NOT NULL
+) STRICT;
+CREATE TABLE row (
+    key BLOB PRIMARY KEY NOT NULL,
+    wall_ms INTEGER NOT NULL,
+    logical INTEGER NOT NULL,
+    node BLOB NOT NULL,
+    seq INTEGER NOT NULL UNIQUE,
+    device_id BLOB NOT NULL,
+    body BLOB NOT NULL
+) STRICT;
+CREATE TABLE pairing (
+    slot BLOB PRIMARY KEY NOT NULL,
+    wrapped BLOB,
+    expires_unix_s INTEGER NOT NULL,
+    taken INTEGER NOT NULL
+) STRICT;
+UPDATE vault SET format = 2, key_check = zeroblob(32), next_seq = 6 WHERE id = 1;
+INSERT INTO device VALUES (x'01010101010101010101010101010101', ?1, 1700000000, 1700000100,
+    x'A1A2', 1700000050, 0);
+INSERT INTO device VALUES (x'02020202020202020202020202020202', zeroblob(32), 1700000001,
+    1700000101, NULL, NULL, 1);
+INSERT INTO row VALUES (x'0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A', 100, 0,
+    x'09090909090909090909090909090909', 2, x'01010101010101010101010101010101', x'6F6E65');
+INSERT INTO row VALUES (x'0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B', 101, 0,
+    x'09090909090909090909090909090909', 4, x'01010101010101010101010101010101', x'74776F');
+INSERT INTO row VALUES (x'0C0C0C0C0C0C0C0C0C0C0C0C0C0C0C0C', 102, 3,
+    x'09090909090909090909090909090909', 5, x'02020202020202020202020202020202', x'7468726565');
+INSERT INTO pairing VALUES (x'0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D', x'EE', 99999999999, 0);
+PRAGMA user_version = 1;
+";
+
+const TOKEN_V1: &str = "an-invented-token-from-before-the-epoch";
+
+/// A harness over the relay database in `dir` (opened, and so brought up to this build's
+/// schema, here).
+fn harness_in(dir: TempDir) -> Harness {
+    let now = Arc::new(AtomicU64::new(1_800_000_000));
+    let clock: Clock = {
+        let now = Arc::clone(&now);
+        Arc::new(move || now.load(Ordering::SeqCst))
+    };
+    let config = Config {
+        setup_secret: SECRET.into(),
+        data: dir.0.clone(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+    };
+    let relay = Relay::open_with_clock(&config, clock).unwrap();
+    let app = router(relay).layer(MockConnectInfo(SocketAddr::from(([192, 0, 2, 7], 4000))));
+    Harness {
+        app,
+        now,
+        _dir: dir,
+    }
+}
+
+fn relay_v1_dir(name: &str) -> TempDir {
+    use sha2::Digest as _;
+    let dir = TempDir::new(name);
+    let c = rusqlite_open(&dir.0.join("relay.db"));
+    let hash: [u8; 32] = sha2::Sha256::digest(TOKEN_V1.as_bytes()).into();
+    // The one statement with a parameter is run by itself; the rest as a batch.
+    for statement in RELAY_V1_SQL.split(';') {
+        let statement = statement.trim();
+        if statement.is_empty() {
+            continue;
+        }
+        if statement.contains("?1") {
+            c.execute(statement, [&hash[..]]).unwrap();
+        } else {
+            c.execute_batch(statement).unwrap();
+        }
+    }
+    dir
+}
+
+/// T14.45: a database from a relay before the epoch (schema 1, with devices, rows and a slot
+/// in it) is brought to schema 2 on opening: the vault gets an epoch, nothing else changes, the
+/// devices' tokens still work, and the epoch is the same after a restart.
+#[tokio::test]
+async fn relay_gives_a_vault_from_before_the_epoch_one_and_keeps_it_across_restarts() {
+    let dir = relay_v1_dir("epoch-migrate");
+    let db = dir.0.join("relay.db");
+    let dump = |p: &std::path::Path| -> Vec<String> {
+        let c = rusqlite_open(p);
+        let mut out = Vec::new();
+        for (table, cols) in [
+            ("vault", "id, format, hex(key_check), next_seq"),
+            (
+                "device",
+                "hex(device_id), hex(token_sha256), created_unix_s, hex(presence), \
+                 presence_unix_s, revoked",
+            ),
+            (
+                "row",
+                "hex(key), wall_ms, logical, hex(node), seq, hex(device_id), hex(body)",
+            ),
+            ("pairing", "hex(slot), hex(wrapped), expires_unix_s, taken"),
+        ] {
+            let width = cols.split(", ").count();
+            let mut st = c
+                .prepare(&format!("SELECT {cols} FROM {table} ORDER BY 1"))
+                .unwrap();
+            let rows = st
+                .query_map([], |r| {
+                    Ok((0..width)
+                        .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                        .collect::<Vec<_>>()
+                        .join("|"))
+                })
+                .unwrap();
+            for row in rows {
+                out.push(format!("{table}: {}", row.unwrap()));
+            }
+        }
+        out
+    };
+    let before = dump(&db);
+    assert_eq!(before.len(), 1 + 2 + 3 + 1);
+
+    let h = harness_in(dir);
+    // Everything that was there is there, unchanged; the version is this build's.
+    assert_eq!(dump(&db), before);
+    let c = rusqlite_open(&db);
+    let version: u32 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    let stored: Vec<u8> = c
+        .query_row("SELECT epoch FROM vault WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored.len(), 16);
+    assert_ne!(stored, vec![0u8; 16], "a random epoch, not a blank one");
+    // Schema 2 adds the epoch and when one was last taken to the vault, and nothing else: a
+    // database brought up from 0.4.2 has the columns of one this build creates.
+    let columns = |c: &rusqlite::Connection, table: &str| -> Vec<String> {
+        let mut st = c
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        columns(&c, "vault"),
+        [
+            "id",
+            "format",
+            "key_check",
+            "next_seq",
+            "epoch",
+            "claim_unix_s"
+        ]
+    );
+    assert_eq!(
+        columns(&c, "device"),
+        [
+            "device_id",
+            "token_sha256",
+            "created_unix_s",
+            "last_seen_unix_s",
+            "presence",
+            "presence_unix_s",
+            "revoked"
+        ],
+        "as 0.4.2 made it"
+    );
+    let fresh = harness("epoch-migrate-fresh");
+    let created = rusqlite_open(&fresh._dir.0.join("relay.db"));
+    for table in ["vault", "device", "row", "pairing"] {
+        assert_eq!(columns(&created, table), columns(&c, table), "{table}");
+    }
+    drop((created, fresh));
+    drop(c);
+
+    // The old token works; the pull carries the rows, the epoch and the highest number.
+    let (s, v) = h
+        .call("GET", "/v1/rows?after=0", Some(TOKEN_V1), Some(2), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let seqs: Vec<u64> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, [2, 4, 5]);
+    assert_eq!(v["epoch"], b64(&stored));
+    assert_eq!(v["max_seq"], 5);
+    assert_eq!(v["vault_format"], 2);
+    // A push answers with the same epoch and numbers on from where the old relay stopped.
+    let (s, v) = h
+        .call(
+            "POST",
+            "/v1/rows",
+            Some(TOKEN_V1),
+            Some(2),
+            Some(
+                serde_json::to_vec(&json!({"format": 2, "rows": [row(0x1F, 200, 0, b"new")]}))
+                    .unwrap(),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(6), Some(5))
+    );
+    assert_eq!(v["epoch"], b64(&stored));
+
+    // A restart (the same data folder opened again) keeps the epoch.
+    let Harness { app, now, _dir } = h;
+    drop((app, now));
+    let h = harness_in(_dir);
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=6", Some(TOKEN_V1), Some(2), None)
+        .await;
+    assert_eq!(v["epoch"], b64(&stored), "the epoch survives a restart");
+    assert_eq!(v["max_seq"], 6);
+}
+
+/// T14.45: a device that has seen a sequence number the vault has not reached proves the relay
+/// lost rows (it was restored from an older copy). The relay then takes a new epoch and moves
+/// its numbering past what the device saw, once: the same claim again changes nothing.
+#[tokio::test]
+async fn relay_restored_from_an_older_copy_takes_a_new_epoch_and_numbers_past_what_was_seen() {
+    let h = harness("epoch-rollback");
+    let t = h.register(1, 0xC1).await;
+    let push = |rows: Vec<Value>, seen: Option<u64>, epoch: Option<&str>| {
+        let mut body = json!({"format": 1, "rows": rows});
+        if let Some(seen) = seen {
+            body["seen_seq"] = json!(seen);
+        }
+        if let Some(epoch) = epoch {
+            body["epoch"] = json!(epoch);
+        }
+        body
+    };
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(1, 100, 0, b"a"), row(2, 100, 0, b"b")], None, None),
+        )
+        .await;
+    let first = v["epoch"].as_str().unwrap().to_owned();
+    assert_eq!(STANDARD.decode(&first).unwrap().len(), 16);
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(2), Some(0))
+    );
+
+    // Nothing lost: what the device has seen is what the vault holds. Nothing changes.
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(3, 100, 0, b"c")], Some(2), Some(&first)),
+        )
+        .await;
+    assert_eq!(v["epoch"], first.as_str());
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(3), Some(2))
+    );
+    let (_, v) = h
+        .call(
+            "GET",
+            &format!(
+                "/v1/rows?after=3&seen=3&epoch={}",
+                first
+                    .replace('+', "%2B")
+                    .replace('=', "%3D")
+                    .replace('/', "%2F")
+            ),
+            Some(&t),
+            Some(1),
+            None,
+        )
+        .await;
+    assert_eq!(v["epoch"], first.as_str());
+    assert_eq!(v["max_seq"], 3);
+
+    // The device has seen number 40, with this epoch: the relay holds less than it once did.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(4, 100, 0, b"d")], Some(40), Some(&first)),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let second = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(second, first, "a new epoch");
+    assert_eq!(
+        v["max_seq"], 3,
+        "the highest number before the claim was heard"
+    );
+    assert_eq!(
+        v["seq"], 41,
+        "the pushed row is numbered past what the device saw"
+    );
+    // The same claim again, from a device that still holds the old epoch (another device of
+    // the vault, or this one before it took the new epoch in): nothing more happens.
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(5, 100, 0, b"e")], Some(40), Some(&first)),
+        )
+        .await;
+    assert_eq!(v["epoch"], second.as_str());
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(42), Some(41))
+    );
+    // A device that holds the old epoch and saw even more, long after: nothing changes for the
+    // vault (that device saw another history and reads from the start by itself when it sees
+    // this epoch; the devices of this epoch were told when it was made).
+    h.advance(3_600);
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(6, 100, 0, b"f")], Some(60), Some(&first)),
+        )
+        .await;
+    assert_eq!(v["epoch"], second.as_str());
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(43), Some(42))
+    );
+    // The rows are all there, in order, and a pull says the same epoch.
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=0", Some(&t), Some(1), None)
+        .await;
+    let seqs: Vec<u64> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, [1, 2, 3, 41, 42, 43]);
+    assert_eq!(v["epoch"], second.as_str());
+    assert_eq!(v["max_seq"], 43);
+}
+
+fn seqs_of(v: &Value) -> Vec<u64> {
+    v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["seq"].as_u64().unwrap())
+        .collect()
+}
+
+/// T14.45 review: the vault takes a new epoch at most once in ten minutes, so a device that
+/// sends ever higher claims cannot make every other device send its store again over and
+/// over. Inside the limit a claim changes nothing at all; after it the next one is acted on.
+#[tokio::test]
+async fn relay_acts_on_claims_at_most_once_in_ten_minutes() {
+    let h = harness("epoch-limit");
+    let t = h.register(1, 0xC1).await;
+    let claim =
+        |seen: u64, epoch: &str| json!({"format": 1, "rows": [], "seen_seq": seen, "epoch": epoch});
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &json!({"format": 1, "rows": [row(1, 100, 0, b"a")]}),
+        )
+        .await;
+    let first = v["epoch"].as_str().unwrap().to_owned();
+    // The first claim above the vault's rows: a new epoch.
+    let (_, v) = h.post("/v1/rows", Some(&t), &claim(50, &first)).await;
+    let second = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(second, first);
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(50), Some(1))
+    );
+    // Ever higher claims naming the current epoch, for the next ten minutes: nothing changes,
+    // not the epoch and not the numbering.
+    for (step, seen) in [(1u64, 1_000u64), (300, 2_000), (298, 3_000)] {
+        h.advance(step);
+        let (s, v) = h.post("/v1/rows", Some(&t), &claim(seen, &second)).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["epoch"], second.as_str(), "inside the limit: {seen}");
+        assert_eq!(
+            (v["seq"].as_u64(), v["max_seq"].as_u64()),
+            (Some(50), Some(50))
+        );
+        // A cursor above the rows that names no epoch is never acted on.
+        let (_, v) = h
+            .call(
+                "GET",
+                &format!("/v1/rows?after={seen}"),
+                Some(&t),
+                Some(1),
+                None,
+            )
+            .await;
+        assert_eq!(v["epoch"], second.as_str());
+        assert_eq!(v["max_seq"], 50);
+    }
+    // Ten minutes after the claim that was acted on: the next one is.
+    h.advance(1);
+    let (_, v) = h.post("/v1/rows", Some(&t), &claim(4_000, &second)).await;
+    let third = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(third, second);
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(4_000), Some(50))
+    );
+    assert_eq!(earshot_sync_server::CLAIM_EVERY_S, 600);
+}
+
+/// T14.45 (third review): what a device says it has seen is heard only with the epoch it
+/// belongs to. A claim that names no epoch (a client from before the epoch, which says only
+/// where its cursor is, or a device's first call) changes nothing at the relay, however far
+/// past the vault's rows it is and on a pull or a push: no new epoch, the numbering as it was,
+/// exactly as a relay from before the epoch answered such a client. The answer still carries
+/// the epoch and the highest number, by which a device of this release that has seen more
+/// starts over by itself. The same number with the vault's own epoch is the proof of a
+/// restore (the control).
+#[tokio::test]
+async fn relay_changes_nothing_for_a_claim_that_names_no_epoch() {
+    let h = harness("epoch-old-client");
+    let db = h._dir.0.join("relay.db");
+    let t = h.register(1, 0xC1).await;
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &json!({"format": 1, "rows": [row(1, 100, 0, b"a")]}),
+        )
+        .await;
+    let first = v["epoch"].as_str().unwrap().to_owned();
+    let before = relay_state(&db);
+    // A cursor at the vault's highest number, past it, far past it, and the same said as
+    // `seen`: answered with the epoch and the highest number, and nothing else happens.
+    for (uri, rows) in [
+        ("/v1/rows?after=0".to_owned(), 1),
+        ("/v1/rows?after=1".to_owned(), 0),
+        ("/v1/rows?after=25".to_owned(), 0),
+        ("/v1/rows?after=25&limit=200".to_owned(), 0),
+        ("/v1/rows?after=0&seen=25".to_owned(), 1),
+        (format!("/v1/rows?after={}", u64::MAX), 0),
+    ] {
+        for _ in 0..2 {
+            let (s, v) = h.call("GET", &uri, Some(&t), Some(1), None).await;
+            assert_eq!(s, StatusCode::OK, "{uri}: {v}");
+            assert_eq!(v["epoch"], first.as_str(), "{uri}");
+            assert_eq!(v["max_seq"], 1, "{uri}");
+            assert_eq!(v["rows"].as_array().unwrap().len(), rows, "{uri}");
+        }
+    }
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &json!({"format": 1, "rows": [], "seen_seq": 25}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (
+            v["epoch"].as_str(),
+            v["seq"].as_u64(),
+            v["max_seq"].as_u64()
+        ),
+        (Some(first.as_str()), Some(1), Some(1))
+    );
+    assert_eq!(relay_state(&db), before, "nothing changed at the relay");
+    // A row pushed now is numbered on from the vault's own rows.
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &json!({"format": 1, "rows": [row(2, 100, 0, b"b")]}),
+        )
+        .await;
+    assert_eq!(
+        (v["seq"].as_u64(), v["epoch"].as_str()),
+        (Some(2), Some(first.as_str()))
+    );
+
+    // The control: the same cursor with the vault's own epoch proves a restore. A new epoch,
+    // and the next row is numbered past the cursor.
+    let named = first
+        .replace('+', "%2B")
+        .replace('=', "%3D")
+        .replace('/', "%2F");
+    let (s, v) = h
+        .call(
+            "GET",
+            &format!("/v1/rows?after=25&epoch={named}"),
+            Some(&t),
+            Some(1),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let second = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(second, first);
+    assert_eq!(
+        v["max_seq"], 2,
+        "the highest number before the claim was heard"
+    );
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &json!({"format": 1, "rows": [row(3, 100, 0, b"c")]}),
+        )
+        .await;
+    assert_eq!(
+        (v["seq"].as_u64(), v["epoch"].as_str()),
+        (Some(26), Some(second.as_str()))
+    );
+
+    // An epoch is 16 bytes.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &json!({"format": 1, "rows": [], "epoch": b64(&[1; 8])}),
+        )
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::BAD_REQUEST, "bad_request"));
+}
+
+/// T14.45 review: no claim can put the vault's numbering out of reach. A device that says it
+/// has seen the largest number there is (a fault, or a token in the wrong hands) is not
+/// refused, and is not followed further than `MAX_CLAIM_JUMP` above the vault's own rows:
+/// every other device goes on pushing and pulling, with numbers nowhere near what the
+/// database can count to, and what they then say they have seen is accepted in turn.
+#[tokio::test]
+async fn relay_a_hostile_claim_leaves_the_vault_usable() {
+    let h = harness("epoch-hostile");
+    let hostile = h.register(1, 0xC1).await;
+    let honest = h.register(2, 0xC1).await;
+    let jump = u64::try_from(earshot_sync_server::MAX_CLAIM_JUMP).unwrap();
+    assert_eq!(jump, 1 << 30);
+    let (_, v) = h
+        .post(
+            "/v1/rows",
+            Some(&honest),
+            &json!({"format": 1, "rows": [row(1, 100, 0, b"a")]}),
+        )
+        .await;
+    let first = v["epoch"].as_str().unwrap().to_owned();
+    // The largest number there is, on a push and on a pull, with and without the epoch.
+    for body in [
+        json!({"format": 1, "rows": [], "seen_seq": u64::MAX, "epoch": first}),
+        json!({"format": 1, "rows": [], "seen_seq": u64::MAX}),
+        json!({"format": 1, "rows": [], "seen_seq": i64::MAX as u64}),
+    ] {
+        let (s, v) = h.post("/v1/rows", Some(&hostile), &body).await;
+        assert_eq!(s, StatusCode::OK, "not refused: {v}");
+        assert!(v["seq"].as_u64().unwrap() <= 1 + jump, "{v}");
+    }
+    for uri in [
+        format!("/v1/rows?after={}", u64::MAX),
+        format!("/v1/rows?after=0&seen={}", u64::MAX),
+    ] {
+        let (s, v) = h.call("GET", &uri, Some(&hostile), Some(1), None).await;
+        assert_eq!(s, StatusCode::OK, "not refused: {v}");
+    }
+    // The other device goes on: its row is stored, numbered at most the jump above the rows,
+    // and its pull brings both rows.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&honest),
+            &json!({"format": 1, "rows": [row(2, 100, 0, b"b")]}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let seq = v["seq"].as_u64().unwrap();
+    assert_eq!(
+        seq,
+        1 + jump + 1,
+        "one jump past the vault's one row, then this row"
+    );
+    let epoch = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(
+        epoch, first,
+        "the first claim was taken for a restore: one new epoch"
+    );
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=0", Some(&honest), Some(1), None)
+        .await;
+    assert_eq!(seqs_of(&v), [1, seq]);
+    // What the honest device has now seen is a number it may send back: it is accepted, and
+    // changes nothing.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&honest),
+            &json!({"format": 1, "rows": [row(3, 100, 0, b"c")], "seen_seq": seq, "epoch": epoch}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["seq"].as_u64(), v["epoch"].as_str()),
+        (Some(seq + 1), Some(epoch.as_str()))
+    );
+    // More of the same from the hostile device, at once and later: at most one more jump each
+    // ten minutes, never a refusal, and the honest device is never stopped.
+    for round in 0..3u64 {
+        h.advance(601);
+        let (s, _) = h
+            .post(
+                "/v1/rows",
+                Some(&hostile),
+                &json!({"format": 1, "rows": [], "seen_seq": u64::MAX, "epoch": epoch}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, v) = h
+            .post(
+                "/v1/rows",
+                Some(&honest),
+                &json!({"format": 1, "rows": [row(10 + u8::try_from(round).unwrap(), 100, 0, b"d")]}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(v["seq"].as_u64().unwrap() < (round + 3) * (jump + 8), "{v}");
+    }
+    assert!(
+        (jump + 8) * 6 < u64::MAX / 1_000_000_000,
+        "far from the top"
+    );
+}
+
+/// Everything the relay keeps of its vault, devices and rows, by column name (whatever columns
+/// this build's schema has), but for when each device last called.
+fn relay_state(db: &std::path::Path) -> Vec<String> {
+    let c = rusqlite_open(db);
+    let mut out = Vec::new();
+    for table in ["vault", "device", "row"] {
+        let mut st = c
+            .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
+            .unwrap();
+        let names: Vec<String> = st.column_names().into_iter().map(str::to_owned).collect();
+        let rows = st
+            .query_map([], |r| {
+                Ok(names
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, name)| *name != "last_seen_unix_s")
+                    .map(|(i, name)| format!("{name}={:?}", r.get_ref(i).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join("|"))
+            })
+            .unwrap();
+        for row in rows {
+            out.push(format!("{table}: {}", row.unwrap()));
+        }
+    }
+    out
+}
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+    }
+}
+
+/// One call exactly as a 0.4.2 client makes it: it announces envelope format 2 (the header, and
+/// `format` in a push), names its cursor and a limit on a pull and nothing else, and says
+/// nothing of an epoch or of what it has seen.
+async fn call_as_0_4_2(h: &Harness, token: &str, pull_after: Option<u64>) -> (StatusCode, Value) {
+    match pull_after {
+        Some(after) => {
+            h.call(
+                "GET",
+                &format!("/v1/rows?after={after}&limit=200"),
+                Some(token),
+                Some(2),
+                None,
+            )
+            .await
+        }
+        None => {
+            h.call(
+                "POST",
+                "/v1/rows",
+                Some(token),
+                Some(2),
+                Some(
+                    serde_json::to_vec(
+                        &json!({"format": 2, "rows": [row(0x42, 900, 0, b"from 0.4.2")]}),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .await
+        }
+    }
+}
+
+/// One push as this release makes it: envelope format 4, with what it has seen and the epoch.
+async fn push_as_this_release(
+    h: &Harness,
+    token: &str,
+    rows: Vec<Value>,
+    seen: u64,
+    epoch: Option<&str>,
+) -> Value {
+    let mut body = json!({"format": 4, "rows": rows, "seen_seq": seen});
+    if let Some(epoch) = epoch {
+        body["epoch"] = json!(epoch);
+    }
+    let (s, v) = h
+        .call(
+            "POST",
+            "/v1/rows",
+            Some(token),
+            Some(4),
+            Some(serde_json::to_vec(&body).unwrap()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+
+/// T14.45 (third review), what the restore handling rests on: a 0.4.2 client announces envelope
+/// format 2 and this release pushes format 4. Once a device of this release has pushed to a
+/// vault, a 0.4.2 client is refused `update_needed` on every pull and every push, and what it
+/// says of its cursor is never heard: not the epoch, not the numbering, not a row and nothing
+/// kept of the device changes, wherever its cursor is. So no row filed in a vault that a
+/// device of this release pushes to is ever owed to a 0.4.2 client.
+#[tokio::test]
+async fn relay_refuses_a_0_4_2_client_whole_once_this_release_has_pushed() {
+    let h = harness("old-client-locked-out");
+    let db = h._dir.0.join("relay.db");
+    let old = h.register(1, 0xC1).await;
+    let new = h.register(2, 0xC1).await;
+    // A vault only 0.4.2 has pushed to: the old client pushes and pulls.
+    let (s, v) = call_as_0_4_2(&h, &old, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["seq"], 1);
+    let epoch = v["epoch"].as_str().unwrap().to_owned();
+    let (s, v) = call_as_0_4_2(&h, &old, Some(0)).await;
+    assert_eq!((s, seqs_of(&v)), (StatusCode::OK, vec![1]));
+    assert_eq!(v["vault_format"], 2);
+
+    // A device of this release pushes: the vault's format is 4.
+    let v = push_as_this_release(&h, &new, vec![row(2, 100, 0, b"b")], 1, Some(&epoch)).await;
+    assert_eq!(
+        (v["seq"].as_u64(), v["epoch"].as_str()),
+        (Some(2), Some(epoch.as_str()))
+    );
+    let before = relay_state(&db);
+
+    // The 0.4.2 client: refused on every pull, wherever its cursor is (below the rows, at
+    // them, above them, as high as a number goes), and on a push. Nothing is heard.
+    for after in [0, 1, 2, 3, 500, u64::MAX] {
+        let (s, v) = call_as_0_4_2(&h, &old, Some(after)).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::CONFLICT, "update_needed"),
+            "a pull after {after}"
+        );
+        assert!(v.get("rows").is_none() && v.get("epoch").is_none(), "{v}");
+    }
+    let (s, v) = call_as_0_4_2(&h, &old, None).await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "update_needed"));
+    assert_eq!(
+        relay_state(&db),
+        before,
+        "no epoch, no numbering, no row and nothing of the device changed"
+    );
+    // The device of this release goes on in the same epoch, numbered on from its last row.
+    let v = push_as_this_release(&h, &new, vec![row(3, 100, 0, b"c")], 2, Some(&epoch)).await;
+    assert_eq!(
+        (
+            v["seq"].as_u64(),
+            v["max_seq"].as_u64(),
+            v["epoch"].as_str()
+        ),
+        (Some(3), Some(2), Some(epoch.as_str()))
+    );
+}
+
+/// The same after a restore (T14.45, third review). The relay is put back to a copy made while
+/// the vault's format was still 2. A device of this release pushes: it proves the restore (a new
+/// epoch) and raises the format again in that same push. From then on the 0.4.2 client is refused
+/// as before, so the rows filed after the restore are never owed to it, whatever its cursor.
+#[tokio::test]
+async fn relay_refuses_a_0_4_2_client_again_after_a_restore_once_this_release_has_pushed() {
+    let h = harness("old-client-locked-out-restored");
+    let db = h._dir.0.join("relay.db");
+    let old = h.register(1, 0xC1).await;
+    let new = h.register(2, 0xC1).await;
+    let (_, v) = call_as_0_4_2(&h, &old, None).await;
+    let epoch = v["epoch"].as_str().unwrap().to_owned();
+    // The copy: one row, format 2.
+    let Harness { app, now, _dir } = h;
+    drop((app, now));
+    let copy = TempDir::new("old-client-locked-out-copy");
+    copy_dir(&_dir.0, &copy.0);
+    let h = harness_in(_dir);
+    // After the copy: the device of this release pushes two rows (format 4), which the old
+    // client can no longer pull.
+    let v = push_as_this_release(
+        &h,
+        &new,
+        vec![row(2, 100, 0, b"b"), row(3, 100, 0, b"c")],
+        1,
+        Some(&epoch),
+    )
+    .await;
+    assert_eq!(v["seq"], 3);
+    let (s, v) = call_as_0_4_2(&h, &old, Some(1)).await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "update_needed"));
+
+    // The restore: the copy's files in place of the relay's.
+    let Harness { app, now, _dir } = h;
+    drop((app, now));
+    std::fs::remove_dir_all(&_dir.0).unwrap();
+    copy_dir(&copy.0, &_dir.0);
+    let h = harness_in(_dir);
+    let restored = relay_state(&db);
+    assert!(
+        restored
+            .iter()
+            .any(|l| l.starts_with("vault: ") && l.contains("format=Integer(2)")),
+        "{restored:?}"
+    );
+    assert_eq!(
+        restored.iter().filter(|l| l.starts_with("row: ")).count(),
+        1
+    );
+    // Until a device of this release pushes again the copy's format lets the 0.4.2 client in.
+    // Whatever its cursor, it changes nothing: it names no epoch.
+    for after in [1, 3, 900] {
+        let (s, v) = call_as_0_4_2(&h, &old, Some(after)).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(
+            (v["epoch"].as_str(), v["max_seq"].as_u64()),
+            (Some(epoch.as_str()), Some(1))
+        );
+    }
+    assert_eq!(relay_state(&db), restored);
+
+    // The device of this release pushes: it has seen 3 and the relay holds 1. A new epoch, the
+    // rows numbered past what it saw, and the format is 4 again, all in that push.
+    let v = push_as_this_release(&h, &new, vec![row(4, 100, 0, b"d")], 3, Some(&epoch)).await;
+    let second = v["epoch"].as_str().unwrap().to_owned();
+    assert_ne!(second, epoch);
+    assert_eq!(
+        (v["seq"].as_u64(), v["max_seq"].as_u64()),
+        (Some(4), Some(1))
+    );
+    let before = relay_state(&db);
+    assert!(
+        before
+            .iter()
+            .any(|l| l.starts_with("vault: ") && l.contains("format=Integer(4)")),
+        "{before:?}"
+    );
+
+    // The 0.4.2 client, whose cursor is 1 (or anything else): refused, and nothing is heard.
+    for after in [0, 1, 3, 4, 5, 900] {
+        let (s, v) = call_as_0_4_2(&h, &old, Some(after)).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::CONFLICT, "update_needed"),
+            "a pull after {after}"
+        );
+    }
+    let (s, v) = call_as_0_4_2(&h, &old, None).await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "update_needed"));
+    assert_eq!(relay_state(&db), before, "nothing changed for it");
+    let v = push_as_this_release(&h, &new, vec![row(5, 100, 0, b"e")], 4, Some(&second)).await;
+    assert_eq!(
+        (
+            v["seq"].as_u64(),
+            v["max_seq"].as_u64(),
+            v["epoch"].as_str()
+        ),
+        (Some(5), Some(4), Some(second.as_str()))
+    );
 }
 
 #[tokio::test]
@@ -825,6 +1743,81 @@ async fn relay_push_must_announce_the_format_it_carries() {
     assert_eq!((s, error_of(&v)), (StatusCode::BAD_REQUEST, "bad_request"));
     let (_, v) = h.call("GET", "/v1/rows", Some(&t), Some(1), None).await;
     assert_eq!(v["vault_format"], 0, "the vault's format did not move");
+}
+
+/// T14.44: a push carrying a stamp more than a day past the relay's own clock is refused whole
+/// with a fixed word and stores nothing, so a row from a far future never shadows later edits
+/// from computers whose clocks are right. At the limit it is accepted, and so is the same row
+/// once the relay's clock has caught up.
+#[tokio::test]
+async fn relay_refuses_a_push_stamped_more_than_a_day_past_its_clock() {
+    let h = harness("clock-ahead");
+    let t = h.register(1, 0xC1).await;
+    let now_ms = h.now.load(Ordering::SeqCst) * 1000;
+    let limit = now_ms + MAX_STAMP_AHEAD_MS;
+    assert_eq!(MAX_STAMP_AHEAD_MS, 24 * 60 * 60 * 1000);
+    let push = |rows: Vec<Value>| json!({"format": 1, "rows": rows});
+    // One row of the push is too far ahead: none of its rows is stored.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![
+                row(1, now_ms, 0, b"now"),
+                row(2, limit + 1, 0, b"far ahead"),
+            ]),
+        )
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "clock_ahead"));
+    assert_eq!(
+        v,
+        json!({"error": "clock_ahead"}),
+        "the word and nothing else"
+    );
+    let (_, v) = h
+        .call("GET", "/v1/rows?after=0", Some(&t), Some(1), None)
+        .await;
+    assert_eq!(v["rows"].as_array().unwrap().len(), 0, "nothing was stored");
+    // Exactly at the limit, and anything earlier, is accepted.
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![
+                row(1, now_ms, 0, b"now"),
+                row(3, limit, 0, b"at the limit"),
+            ]),
+        )
+        .await;
+    assert_eq!(
+        (s, v["accepted"].as_u64()),
+        (StatusCode::OK, Some(2)),
+        "{v}"
+    );
+    // The relay's clock moves on a second: the refused row is now inside the window.
+    h.advance(1);
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(2, limit + 1, 0, b"far ahead")]),
+        )
+        .await;
+    assert_eq!(
+        (s, v["accepted"].as_u64()),
+        (StatusCode::OK, Some(1)),
+        "{v}"
+    );
+    // A stamp at the far end of what the wire can carry is refused the same way, not as a
+    // malformed request (an older client treats either as a failed push and keeps its rows).
+    let (s, v) = h
+        .post(
+            "/v1/rows",
+            Some(&t),
+            &push(vec![row(4, i64::MAX as u64, 0, b"the far end")]),
+        )
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "clock_ahead"));
 }
 
 /// Offers and takes pairing slot `n` from device `token`; returns the slot to register with.
@@ -994,4 +1987,298 @@ async fn relay_a_format_one_pull_racing_the_raise_never_gets_a_pushed_row() {
         assert_eq!((s, error_of(&v)), (StatusCode::CONFLICT, "update_needed"));
     }
     println!("format-1 pulls: {before} before the raise, {refused} refused update_needed");
+}
+
+// ---- T14.46: relay hardening ----
+
+/// A relay whose clock counts how often it is read. Checking a token reads it once (to record
+/// when the device was seen), so the count tells whether the token was checked yet.
+fn counting_harness(name: &str) -> (Harness, Arc<AtomicU64>) {
+    let dir = TempDir::new(name);
+    let reads = Arc::new(AtomicU64::new(0));
+    let clock: Clock = {
+        let reads = Arc::clone(&reads);
+        Arc::new(move || {
+            reads.fetch_add(1, Ordering::SeqCst);
+            1_800_000_000
+        })
+    };
+    let config = Config {
+        setup_secret: SECRET.into(),
+        data: dir.0.clone(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+    };
+    let relay = Relay::open_with_clock(&config, clock).unwrap();
+    let app = router(relay).layer(MockConnectInfo(SocketAddr::from(([192, 0, 2, 7], 4000))));
+    let harness = Harness {
+        app,
+        now: Arc::new(AtomicU64::new(1_800_000_000)),
+        _dir: dir,
+    };
+    (harness, reads)
+}
+
+/// Sends `body` to `uri` with `token` and returns the answer and how often the relay's clock
+/// had been read at the moment the relay took the body off the request (`u64::MAX`: it never
+/// took it).
+async fn send_watching_the_body(
+    h: &Harness,
+    reads: &Arc<AtomicU64>,
+    uri: &str,
+    token: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Value, u64) {
+    let at_body = Arc::new(AtomicU64::new(u64::MAX));
+    let watched = {
+        let (reads, at_body) = (Arc::clone(reads), Arc::clone(&at_body));
+        // The frame is handed over only when the relay reads the request's body.
+        http_body_util::Full::new(axum::body::Bytes::from(body)).map_frame(move |frame| {
+            let _ = at_body.compare_exchange(
+                u64::MAX,
+                reads.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            frame
+        })
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header(FORMAT_HEADER, "1")
+        .header("content-type", "application/json")
+        .body(Body::new(watched))
+        .unwrap();
+    let res = h.app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        at_body.load(Ordering::SeqCst),
+    )
+}
+
+/// The token is checked before the body is read: on every call that takes a token and a body,
+/// the relay has looked the token up (which reads its clock) by the time it takes the body, for
+/// a device it knows and for a caller it refuses alike. A refused caller's body is never parsed:
+/// the answer is `unknown_device` whatever it holds.
+#[tokio::test]
+async fn relay_checks_the_token_before_it_reads_the_body() {
+    let (h, reads) = counting_harness("auth-first");
+    let token = h.register(1, 0xC1).await;
+    let presence = serde_json::to_vec(&json!({"blob": b64(b"sealed presence")})).unwrap();
+    let rows = serde_json::to_vec(&json!({"format": 1, "rows": [row(1, 100, 0, b"one")]})).unwrap();
+    let slot =
+        serde_json::to_vec(&json!({"slot": b64(&[7; 16]), "wrapped": b64(&[1; 73])})).unwrap();
+    let revoke = serde_json::to_vec(&json!({"device_id": b64(&[9; 16])})).unwrap();
+    for (uri, body) in [
+        ("/v1/presence", presence),
+        ("/v1/rows", rows),
+        ("/v1/pairing", slot),
+        ("/v1/devices/revoke", revoke),
+    ] {
+        // A caller the relay refuses.
+        let before = reads.load(Ordering::SeqCst);
+        let (s, v, at_body) =
+            send_watching_the_body(&h, &reads, uri, "not-a-token-the-relay-gave", body.clone())
+                .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::UNAUTHORIZED, "unknown_device"),
+            "{uri}"
+        );
+        assert!(
+            at_body == u64::MAX || at_body > before,
+            "{uri}: the body was read before the token was checked"
+        );
+        // The same from a refused caller with a body the call could never take.
+        let (s, v, _) = send_watching_the_body(
+            &h,
+            &reads,
+            uri,
+            "not-a-token-the-relay-gave",
+            b"{ not json at all".to_vec(),
+        )
+        .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::UNAUTHORIZED, "unknown_device"),
+            "{uri}"
+        );
+        // A device it knows: the token is looked up first, then the body is read and used.
+        let before = reads.load(Ordering::SeqCst);
+        let (s, v, at_body) = send_watching_the_body(&h, &reads, uri, &token, body).await;
+        assert_eq!(s, StatusCode::OK, "{uri}: {v}");
+        assert!(
+            at_body != u64::MAX && at_body > before,
+            "{uri}: the body was read before the token was checked"
+        );
+    }
+    // A call with no token at all is refused the same way.
+    let (s, v) = h
+        .call("POST", "/v1/rows", None, Some(1), Some(b"{}".to_vec()))
+        .await;
+    assert_eq!(
+        (s, error_of(&v)),
+        (StatusCode::UNAUTHORIZED, "unknown_device")
+    );
+}
+
+/// A caller the relay refuses gets its answer whole even while it is sending a large body, over
+/// a real connection: the relay takes what is sent and drops it rather than closing on unread
+/// bytes (which can lose the answer on the way, leaving a removed computer to read "could not
+/// be reached" for "this computer was removed").
+#[test]
+fn relay_answers_a_refused_caller_whole_while_it_sends_a_large_body() {
+    use std::io::{Read as _, Write as _};
+    let dir = TempDir::new("auth-large-body");
+    let config = Config {
+        setup_secret: SECRET.into(),
+        data: dir.0.clone(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+    };
+    let relay = earshot_sync_server::LocalRelay::start(Relay::open(&config).unwrap()).unwrap();
+    for size in [0usize, 64 * 1024, 3 * 1024 * 1024] {
+        let mut s = std::net::TcpStream::connect(relay.addr()).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(60)))
+            .unwrap();
+        write!(
+            s,
+            "POST /v1/rows HTTP/1.1\r\nHost: relay.invalid\r\nAuthorization: Bearer \
+             not-a-token-the-relay-gave\r\n{FORMAT_HEADER}: 1\r\nContent-Type: application/json\r\n\
+             Content-Length: {size}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        s.write_all(&vec![b'x'; size]).unwrap();
+        let mut answer = Vec::new();
+        s.read_to_end(&mut answer).unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(
+            answer.starts_with("HTTP/1.1 401 "),
+            "{size} bytes: {answer}"
+        );
+        assert!(
+            answer.ends_with(r#"{"error":"unknown_device"}"#),
+            "{size} bytes: {answer}"
+        );
+    }
+}
+
+/// The calls that take no token hold little for a caller: a body over 16 KiB is refused as too
+/// large, where a push may be megabytes. A registration of ordinary size, with a long secret,
+/// still fits.
+#[tokio::test]
+async fn relay_holds_little_for_a_caller_with_no_token() {
+    let h = harness("open-limit");
+    let limit = earshot_sync_server::MAX_OPEN_REQUEST;
+    assert_eq!(limit, 16 * 1024);
+    for uri in ["/v1/devices", "/v1/pairing/take"] {
+        let padded =
+            serde_json::to_vec(&json!({"slot": b64(&[1; 16]), "pad": "x".repeat(limit)})).unwrap();
+        assert!(padded.len() > limit && padded.len() < MAX_REQUEST);
+        let (s, v) = h.call("POST", uri, None, Some(1), Some(padded)).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::PAYLOAD_TOO_LARGE, "too_large"),
+            "{uri}"
+        );
+    }
+    // Under the limit the calls read their body as before (a wrong long secret is a wrong
+    // secret, an unknown slot is no slot).
+    let (s, v) = h
+        .post(
+            "/v1/devices",
+            None,
+            &json!({"device_id": b64(&[1; 16]), "key_check": b64(&[0xC1; 32]),
+                    "setup_secret": "s".repeat(8 * 1024)}),
+        )
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::FORBIDDEN, "bad_secret"));
+    let (s, v) = h
+        .post("/v1/pairing/take", None, &json!({"slot": b64(&[1; 16])}))
+        .await;
+    assert_eq!((s, error_of(&v)), (StatusCode::NOT_FOUND, "no_slot"));
+    // A call with a token still takes a body of megabytes.
+    let t = h.register(1, 0xC1).await;
+    let rows: Vec<Value> = (0..8u8)
+        .map(|k| row(k + 1, 1, 0, &vec![k; MAX_ROW_BODY]))
+        .collect();
+    let (s, v) = h
+        .post("/v1/rows", Some(&t), &json!({"format": 1, "rows": rows}))
+        .await;
+    assert_eq!(
+        (s, v["accepted"].as_u64()),
+        (StatusCode::OK, Some(8)),
+        "{v}"
+    );
+}
+
+/// The setup secret is compared whole, whatever part of it a guess gets right: a prefix of it,
+/// it with more after it, and a guess of its length that differs in one place are all refused
+/// the same way; only the secret itself (spaces around it aside, as before) registers.
+#[tokio::test]
+async fn relay_refuses_every_near_miss_of_the_setup_secret_and_the_key_check() {
+    let h = harness("near-miss");
+    let mut one_off = SECRET.to_owned().into_bytes();
+    *one_off.last_mut().unwrap() ^= 1;
+    let guesses = [
+        SECRET[..SECRET.len() - 1].to_owned(),
+        format!("{SECRET}x"),
+        String::from_utf8(one_off).unwrap(),
+        String::new(),
+        SECRET.to_uppercase(),
+    ];
+    for guess in guesses {
+        let (s, v) = h
+            .post(
+                "/v1/devices",
+                None,
+                &json!({"device_id": b64(&[1; 16]), "key_check": b64(&[0xC1; 32]),
+                        "setup_secret": guess}),
+            )
+            .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::FORBIDDEN, "bad_secret"),
+            "{guess:?}"
+        );
+    }
+    let (s, _) = h
+        .post(
+            "/v1/devices",
+            None,
+            &json!({"device_id": b64(&[1; 16]), "key_check": b64(&[0xC1; 32]),
+                    "setup_secret": format!("  {SECRET}\n")}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // The vault's key check is compared whole too: one bit off anywhere is another vault.
+    for flip in [0usize, 15, 31] {
+        let mut check = [0xC1u8; 32];
+        check[flip] ^= 0x80;
+        let (s, v) = h
+            .post(
+                "/v1/devices",
+                None,
+                &json!({"device_id": b64(&[2; 16]), "key_check": b64(&check),
+                        "setup_secret": SECRET}),
+            )
+            .await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::CONFLICT, "key_mismatch"),
+            "byte {flip}"
+        );
+    }
+    let (s, _) = h
+        .post(
+            "/v1/devices",
+            None,
+            &json!({"device_id": b64(&[2; 16]), "key_check": b64(&[0xC1; 32]),
+                    "setup_secret": SECRET}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
 }

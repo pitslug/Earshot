@@ -532,3 +532,139 @@ fn sync_segment_row_carries_its_pass_run_and_a_format_three_row_reads_none() {
     let plain = serde_json::to_value(earshot_core::identity::sync_envelope(&s)).unwrap();
     assert!(plain["record"].get("pass_run").is_none());
 }
+
+// ---- T14.45: the vault epoch travels in fields a 0.4.2 build never sees ----
+
+/// The relay's row calls as 0.4.2 declared them (`v0.4.2:crates/earshot-sync/src/wire.rs`): the
+/// same fields, the same derives, and no `deny_unknown_fields`, so serde skips what they do not
+/// name. Frozen here: they are what a released client and relay parse with.
+mod v042 {
+    use serde::{Deserialize, Serialize};
+
+    use crate::wire::{B64, PulledRow, WireRow};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PushRequest {
+        pub format: u32,
+        pub rows: Vec<WireRow>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PushResponse {
+        pub accepted: u32,
+        pub superseded: Vec<B64>,
+        pub seq: u64,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PullResponse {
+        pub rows: Vec<PulledRow>,
+        pub more: bool,
+        pub vault_format: u32,
+    }
+}
+
+fn wire_row_of(n: u8) -> wire::WireRow {
+    wire::WireRow {
+        key: wire::B64(vec![n; 16]),
+        wall_ms: 1_800_000_000_000 + u64::from(n),
+        logical: 2,
+        node: wire::B64(vec![9; 16]),
+        body: wire::B64(vec![n, n, n]),
+    }
+}
+
+/// What this build sends and answers is read by a 0.4.2 client and relay as before: the new
+/// fields are skipped and every old one carries what it did.
+#[test]
+fn sync_wire_a_0_4_2_build_reads_this_builds_rows_calls() {
+    let epoch = wire::B64(vec![7; wire::EPOCH_LEN]);
+    // A push from this build, as a 0.4.2 relay parses it.
+    let request = wire::PushRequest {
+        format: 2,
+        rows: vec![wire_row_of(1), wire_row_of(2)],
+        seen_seq: Some(41),
+        epoch: Some(epoch.clone()),
+    };
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains("\"seen_seq\":41") && json.contains("\"epoch\":\""));
+    let old: v042::PushRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!((old.format, &old.rows), (2, &request.rows));
+    // A push answer from this build's relay, as a 0.4.2 client parses it.
+    let answer = wire::PushResponse {
+        accepted: 1,
+        superseded: vec![wire::B64(vec![2; 16])],
+        seq: 43,
+        epoch: Some(epoch.clone()),
+        max_seq: Some(41),
+    };
+    let json = serde_json::to_string(&answer).unwrap();
+    let old: v042::PushResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        (old.accepted, &old.superseded, old.seq),
+        (1, &answer.superseded, 43)
+    );
+    // A pull answer from this build's relay, as a 0.4.2 client parses it.
+    let page = wire::PullResponse {
+        rows: vec![wire::PulledRow {
+            seq: 5,
+            key: wire::B64(vec![1; 16]),
+            wall_ms: 10,
+            logical: 0,
+            node: wire::B64(vec![9; 16]),
+            body: wire::B64(vec![1]),
+        }],
+        more: true,
+        vault_format: 2,
+        epoch: Some(epoch),
+        max_seq: Some(9),
+    };
+    let json = serde_json::to_string(&page).unwrap();
+    let old: v042::PullResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        (&old.rows, old.more, old.vault_format),
+        (&page.rows, true, 2)
+    );
+}
+
+/// What a 0.4.2 client sends and a 0.4.2 relay answers is read by this build: the fields they
+/// lack read as absent, never as an error. A request of this build with nothing to say of the
+/// vault is byte for byte a 0.4.2 request.
+#[test]
+fn sync_wire_this_build_reads_a_0_4_2_builds_rows_calls() {
+    let old_request = v042::PushRequest {
+        format: 2,
+        rows: vec![wire_row_of(3)],
+    };
+    let json = serde_json::to_string(&old_request).unwrap();
+    let new: wire::PushRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!((new.format, &new.rows), (2, &old_request.rows));
+    assert!(new.seen_seq.is_none() && new.epoch.is_none());
+    let plain = wire::PushRequest {
+        format: 2,
+        rows: vec![wire_row_of(3)],
+        seen_seq: None,
+        epoch: None,
+    };
+    assert_eq!(serde_json::to_string(&plain).unwrap(), json);
+
+    let old_answer = v042::PushResponse {
+        accepted: 2,
+        superseded: Vec::new(),
+        seq: 12,
+    };
+    let json = serde_json::to_string(&old_answer).unwrap();
+    assert_eq!(json, r#"{"accepted":2,"superseded":[],"seq":12}"#);
+    let new: wire::PushResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!((new.accepted, new.seq), (2, 12));
+    assert!(new.epoch.is_none() && new.max_seq.is_none());
+
+    let json = r#"{"rows":[],"more":false,"vault_format":2}"#;
+    let new: wire::PullResponse = serde_json::from_str(json).unwrap();
+    assert!(new.rows.is_empty() && !new.more);
+    assert!(new.epoch.is_none() && new.max_seq.is_none());
+    // The epoch as a query parameter is the text its JSON field carries.
+    let epoch = wire::B64(vec![0xFB, 0xFF, 0xFE]);
+    assert_eq!(epoch.text(), "+//+");
+    assert_eq!(serde_json::to_string(&epoch).unwrap(), "\"+//+\"");
+}

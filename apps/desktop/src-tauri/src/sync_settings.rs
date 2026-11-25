@@ -18,8 +18,8 @@ use std::time::Duration;
 use earshot_runtime::Services;
 use earshot_runtime::offload::OffloadHost;
 use earshot_runtime::sync::{
-    AddressRefused, ChangeListener, SyncChanges, SyncClient, SyncOverview, SyncProblem, SyncThread,
-    SyncTiming, SyncVault, check_address,
+    AddressRefused, ChangeListener, Superseder, SyncChanges, SyncClient, SyncOverview, SyncProblem,
+    SyncThread, SyncTiming, SyncVault, check_address,
 };
 use serde::Serialize;
 use specta::Type;
@@ -32,6 +32,25 @@ pub const SYNC_ERROR_KIND: &str = "sync";
 /// Shown when the last sync skipped queued items it could not read (T12.77b8: a damaged voice
 /// sample row); names no content (`unsendable_note` in `fixtures/ui/sync_copy_cases.json`).
 pub const UNSENDABLE_NOTE: &str = "Some items on this computer are damaged and could not be sent, so they were skipped. Everything else syncs as usual.";
+
+/// Shown when the last sync left one queued item unsent because it cannot be sealed (T14.43:
+/// over the size limit, or holding an audio file's signature); names no content
+/// (`refused_note.one` in `fixtures/ui/sync_copy_cases.json`).
+pub const REFUSED_NOTE_ONE: &str = "1 item on this computer cannot be synced because it is too large or looks like audio, so it was not sent. Your other computers do not get it. Everything else syncs as usual.";
+
+/// [`REFUSED_NOTE_ONE`] for more than one item; `{count}` is the number (`refused_note.many`).
+pub const REFUSED_NOTE_MANY: &str = "{count} items on this computer cannot be synced because they are too large or look like audio, so they were not sent. Your other computers do not get them. Everything else syncs as usual.";
+
+/// The note for `count` queued items the last sync could not seal ([`REFUSED_NOTE_ONE`],
+/// [`REFUSED_NOTE_MANY`]); `None` for none. Fixed copy and a count, never what an item holds.
+#[must_use]
+pub fn refused_note(count: u64) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(REFUSED_NOTE_ONE.to_owned()),
+        n => Some(REFUSED_NOTE_MANY.replace("{count}", &n.to_string())),
+    }
+}
 
 /// Fixed copy for each problem (the words in `fixtures/ui/sync_copy_cases.json`).
 #[must_use]
@@ -53,6 +72,9 @@ pub fn problem_copy(problem: SyncProblem) -> &'static str {
         SyncProblem::SlowDown => "Too many tries. Wait a minute, then try again.",
         SyncProblem::TooLarge => {
             "Something was too large for the sync server. Earshot will try again."
+        }
+        SyncProblem::ClockAhead => {
+            "Some changes on this computer are dated more than a day in the future, so they were not sent. Check the date and time on this computer and on the sync server. Earshot will try again."
         }
         SyncProblem::BadSecret => "That setup secret is not the server's.",
         SyncProblem::NoSlot => {
@@ -77,7 +99,7 @@ pub fn problem_copy(problem: SyncProblem) -> &'static str {
 
 /// Fixed copy for a button press that failed (the words in the table's `command_problems`).
 /// [`problem_copy`] is the status line's, which may say Earshot will try again: nothing retries
-/// a button press, so these four say what to do instead.
+/// a button press, so these say what to do instead.
 #[must_use]
 pub fn command_copy(problem: SyncProblem) -> &'static str {
     match problem {
@@ -88,6 +110,9 @@ pub fn command_copy(problem: SyncProblem) -> &'static str {
             "The sync server gave an answer Earshot does not understand. Check the address and try again."
         }
         SyncProblem::TooLarge => "Something was too large for the sync server. Try again.",
+        SyncProblem::ClockAhead => {
+            "Some changes on this computer are dated more than a day in the future, so they were not sent. Check the date and time on this computer and on the sync server, then try again."
+        }
         SyncProblem::Store => "Earshot could not read or save its own data for sync. Try again.",
         other => problem_copy(other),
     }
@@ -116,6 +141,14 @@ pub struct SyncHost {
     /// Who hears what a tick changed here (T12.81): the window, through [`SyncEvent`]. A thread
     /// started without it tells no one.
     changes: Mutex<Option<ChangeListener>>,
+    /// The threads that were turned off and may still be finishing (handing back summaries
+    /// this computer asked for, for up to half an hour): each is told to stop for good the
+    /// moment a new thread starts, which then owns that work (T14.45 review). Taken alone,
+    /// never with the slot or the store.
+    retired: Mutex<Vec<Superseder>>,
+    /// Tests: the next threads cannot be started, as when the system has no thread to give.
+    #[cfg(test)]
+    refuse_start: std::sync::atomic::AtomicBool,
 }
 
 /// What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
@@ -164,7 +197,33 @@ impl SyncHost {
             timing,
             offload: Mutex::new(None),
             changes: Mutex::new(None),
+            retired: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            refuse_start: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    fn retired(&self) -> std::sync::MutexGuard<'_, Vec<Superseder>> {
+        self.retired.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// What would tell the running thread it has been replaced, when one is in place (tests).
+    #[cfg(test)]
+    pub fn running_superseder_for_test(&self) -> Option<Superseder> {
+        self.slot().as_ref().map(SyncThread::superseder)
+    }
+
+    /// Makes every start fail to get a thread, or lets them through again (tests).
+    #[cfg(test)]
+    pub fn refuse_start_for_test(&self, refuse: bool) {
+        self.refuse_start
+            .store(refuse, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The threads turned off and not yet replaced (tests).
+    #[cfg(test)]
+    pub fn retired_for_test(&self) -> Vec<Superseder> {
+        self.retired().clone()
     }
 
     /// Sets who hears what a tick changed here; threads started from now on tell it after every
@@ -209,16 +268,37 @@ impl SyncHost {
     }
 
     /// Starts the thread when sync is on and this device is set up, replacing a running one
-    /// (the old one is stopped first, on a thread of its own). A device that cannot start (no
-    /// usable address) stays stopped; the page says why.
+    /// (the old one is told and stopped only once the new one exists, and joined on a thread
+    /// of its own; when no thread can be started the old one stays in place). A device that
+    /// cannot start (no usable address) stays stopped; the page says why.
     pub fn start_if_on(&self, services: &Services) {
         let _lifecycle = self.lifecycle();
         self.start_locked(services);
     }
 
+    /// A new sync thread, held: it exists and has done nothing yet ([`SyncThread::start_held`]).
+    /// `None` when the thread could not be started.
+    fn spawn_held(
+        &self,
+        client: SyncClient,
+        offload: Option<Arc<dyn OffloadHost>>,
+    ) -> Option<SyncThread> {
+        #[cfg(test)]
+        if self.refuse_start.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        SyncThread::start_held(client, self.timing, offload).ok()
+    }
+
+    /// Remembers a thread that is being stopped and may still be finishing, so the next
+    /// thread that really starts can tell it so.
+    fn remember_retired(&self, thread: &SyncThread) {
+        let mut retired = self.retired();
+        retired.retain(|s| !s.is_superseded());
+        retired.push(thread.superseder());
+    }
+
     fn start_locked(&self, services: &Services) {
-        let old = self.slot().take();
-        retire(old);
         let on = {
             let db = services.store();
             earshot_runtime::sync::sync_settings(&db).is_ok_and(|s| s.on)
@@ -234,27 +314,61 @@ impl SyncHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let next = if ready {
-            SyncClient::new(services.clone(), self.vault())
-                .ok()
-                .map(|c| match changes {
-                    Some(l) => c.with_changes(l),
-                    None => c,
-                })
-                .and_then(|c| match offload {
-                    Some(host) => SyncThread::start_offloading(c, self.timing, host).ok(),
-                    None => SyncThread::start(c, self.timing).ok(),
-                })
+        let client = if ready {
+            SyncClient::new(services.clone(), self.vault()).ok()
         } else {
             None
         };
-        *self.slot() = next;
+        let Some(client) = client else {
+            // Nothing is to run: sync is off, this computer is not set up, or it has no usable
+            // address. A thread still running is stopped (it says nothing and hands nothing
+            // back, as a replaced thread always did) and remembered until it has ended, so a
+            // thread started later tells it before either works the store.
+            let old = self.slot().take();
+            if let Some(t) = &old {
+                self.remember_retired(t);
+            }
+            retire(old);
+            return;
+        };
+        let client = match changes {
+            Some(l) => client.with_changes(l),
+            None => client,
+        };
+        let Some(new) = self.spawn_held(client, offload) else {
+            // No thread could be started. Nothing was told and nothing was stopped, so
+            // whatever runs keeps what it owns: the running thread stays in the slot and goes
+            // on ticking and stepping, and a thread that was turned off goes on handing
+            // summaries back. The next start tries again.
+            return;
+        };
+        // The new thread exists and has done nothing yet. Only now are the threads it takes
+        // over from told: the running one (at once, not when the thread that joins it gets to
+        // run) and any that was turned off and is still handing summaries back. Each starts no
+        // further tick and runs no further offload step, so none works the store together
+        // with the new thread, which owns the hand-backs from its first offload step (it hands
+        // back what is still owed, as after a restart).
+        let old = self.slot().take();
+        if let Some(t) = &old {
+            t.superseder().supersede();
+        }
+        for earlier in self.retired().drain(..) {
+            earlier.supersede();
+        }
+        new.begin();
+        retire(old);
+        *self.slot() = Some(new);
     }
 
     /// Stops the thread without waiting for it.
     pub fn stop_soon(&self) {
         let _lifecycle = self.lifecycle();
         let old = self.slot().take();
+        if let Some(t) = &old {
+            // It may go on handing summaries back for a while: remembered, so a thread started
+            // meanwhile can take that over.
+            self.remember_retired(t);
+        }
         retire_saying_gone(old);
     }
 
@@ -371,10 +485,14 @@ pub struct SyncView {
     pub stopped: bool,
     /// Rows from other devices that could not be read, in all.
     pub unreadable: u64,
-    /// Rows changed here and not yet sent (damaged ones the last sync skipped left out).
+    /// Rows changed here and not yet sent (damaged ones the last sync skipped and ones it could
+    /// not seal left out).
     pub waiting: u64,
     /// [`UNSENDABLE_NOTE`] when the last sync skipped damaged queued rows.
     pub unsendable_note: Option<String>,
+    /// [`refused_note`] when the last sync left queued rows unsent because they cannot be sealed
+    /// (too large, or holding an audio file's signature): fixed copy with their count (T14.43).
+    pub refused_note: Option<String>,
     /// Rows from other devices held for later.
     pub held: u64,
     /// "Write summaries for my other computers" (T11.3db).
@@ -403,6 +521,7 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         unreadable: o.status.unreadable,
         waiting: o.waiting,
         unsendable_note: (o.status.unsendable > 0).then(|| UNSENDABLE_NOTE.to_owned()),
+        refused_note: refused_note(o.status.refused),
         held: o.held,
         offers_summaries: o.settings.offers_summaries,
         device_name: o.settings.device_name,

@@ -14,6 +14,7 @@ import {
   type SyncCommandName,
   canonicalCode,
   createSyncMock,
+  refusedNote,
 } from "./mockSync";
 
 async function refusal(work: Promise<unknown>): Promise<IpcFailure | null> {
@@ -95,6 +96,15 @@ describe("the Sync mock", () => {
     const view = await createSyncMock({ setUp: true, problem: "key_mismatch" }).syncView();
     expect(view.problem).toBe(table.problems.key_mismatch);
     expect(view.stopped).toBe(true);
+  });
+
+  it("words the items it could not seal from the table, with their count (T14.43)", async () => {
+    expect(refusedNote(0)).toBeNull();
+    expect(refusedNote(1)).toBe(table.refused_note.one);
+    expect(refusedNote(12)).toBe(table.refused_note.many.replace("{count}", () => "12"));
+    expect((await createSyncMock({ setUp: true }).syncView()).refused_note).toBeNull();
+    const view = await createSyncMock({ setUp: true, refused: 2 }).syncView();
+    expect(view.refused_note).toBe(table.refused_note.many.replace("{count}", () => "2"));
   });
 
   it("removes another computer and refuses this one or an unknown id with the table's copy (T11.6c)", async () => {

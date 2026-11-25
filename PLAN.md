@@ -2755,30 +2755,30 @@ Lane engines (runtime `model_settings.rs`, `cuda_switch.rs`, `lib.rs`, `model_be
 
 Lane sync (`earshot-sync`, `earshot-sync-server`, runtime `sync/`, store `sync.rs`, desktop `sync_settings.rs`, the Sync page):
 
-- [ ] T14.42 A new computer's rows apply in the tick that brings their parents
+- [x] T14.42 A new computer's rows apply in the tick that brings their parents
   - do: after each pull page held `parent` rows are applied again in the same tick until none moves; held rows are counted and selected by reason in SQL.
   - accept: `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.43 Rows refused before sealing are shown
+- [x] T14.43 Rows refused before sealing are shown
   - do: `TickReport.refused` reaches `SyncStatus` and the Sync page as a note with a count (copy in `sync_copy_cases.json`), as `unsendable` does.
   - accept: `cargo test -p earshot-runtime sync`; `cargo test -p earshot-desktop --bin earshot sync`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] T14.44 A clock far ahead cannot poison a vault
+- [x] T14.44 A clock far ahead cannot poison a vault
   - do: the relay refuses a pushed stamp more than 24 hours past its own clock and the client refuses to push while its own clock is that far ahead (a problem word shown on the Sync page); rows held `clock` are retried hourly. Older clients still sync: the refusal is a word they already know or one they treat as a failed push.
   - accept: `cargo test -p earshot-sync-server`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.45 A relay restored from a backup is noticed
+- [x] T14.45 A relay restored from a backup is noticed
   - do: pull and push answers carry a vault epoch and the largest `seq` (fields older clients ignore: confirm their parsers do, else stop and report); a client seeing an epoch change or a `seq` below its cursor resets its cursor and queues everything.
   - accept: `cargo test -p earshot-sync-server`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
-- [ ] T14.46 Relay hardening
+- [x] T14.46 Relay hardening
   - do: the token is checked before the body is read; the key check and the setup secret compare in constant time; the push format check runs inside the push's transaction.
   - accept: `cargo test -p earshot-sync-server`
 
 Second wave (after the lanes above are merged):
 
 - [ ] T14.47 Replaced transcript text is erased
+  - status (2026-11-26): held out of 0.9.0 by the coordinator. The rule is written as docs/sync-spec.md section 15 ("proposed, not built"): one clearing function with one predicate, nothing cleared ahead of what replaces it, no shape change and no migration. Two spec reviews each blocked it (the first: a pushed prefix could leave another computer with no transcript; the second: counting tombstoned final lines could blank a meeting everywhere); the third revision answers both and has not been reviewed yet. Why held: it destroys words for good on every device, and three behaviours are the owner's to confirm (section 15.11: a pass that finds no speech keeps the draft; a side with no final line keeps its hidden draft words, still synced; a re-transcription that finds nothing on a side keeps that side's lines). Next: a third spec review, the owner's three answers, then the build with its own lane review.
   - deps: T14.42, T14.23
   - do: a rule in docs/sync-spec.md first (spec-reviewed): when a final pass replaces segments their tombstones hold no text or words, and once a final transcript is stored the meeting's Live-pass rows hold none either, on every device, without being read as a meeting deletion's erasure (`SegmentRow::is_erasure`, rule 4's order) and without a `ENVELOPE_FORMAT` change unless the row's shape changes. Summary history used by Undo is kept. Tests through `LocalRelay` and straight pages.
   - accept: `cargo test -p earshot-core model`; `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime post`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
 - [ ] T14.48 Speaker labelling runs before the write transaction
-  - deps: T14.47
   - do: `label_segment_speakers` runs with the store lock free (or sweeps with a pointer), with the same labels on the existing tests.
   - accept: `cargo test -p earshot-core diar`; `cargo test -p earshot-runtime post`
 - [ ] T14.49 A removed person or folder stays removed

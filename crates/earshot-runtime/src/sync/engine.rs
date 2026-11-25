@@ -23,8 +23,8 @@ use earshot_sync::{
 
 use super::client::Relay;
 use super::{
-    SyncProblem, SyncVault, advance_cursor, check_address, pull_cursor, set_sync_status,
-    sync_settings, sync_status,
+    SyncProblem, SyncVault, VaultSeen, advance_cursor, check_address, cursor_record, observe_vault,
+    set_sync_status, sync_settings, sync_status,
 };
 use crate::services::Services;
 
@@ -34,7 +34,8 @@ const PUSH_PAGE: usize = 200;
 const MAX_PUSH_PAGES: usize = 50;
 /// The most pull pages in one tick.
 const MAX_PULL_PAGES: usize = 50;
-/// The most held rows tried again in one tick.
+/// Held rows read, opened and applied at a time, and the most the retry at the start of a
+/// tick tries (it goes on from there next tick, so every held row gets its turn).
 const MAX_RETRY: usize = 500;
 /// Sealed bytes per push request, under the relay's 4 MiB request limit after base64 and JSON.
 const PUSH_BYTES: usize = 2 * 1024 * 1024;
@@ -46,19 +47,41 @@ pub struct TickReport {
     pub pushed: usize,
     /// Rows sent that the relay already held at the same or a later stamp.
     pub superseded: usize,
-    /// Rows left queued because they could not be sealed (over the size limit, or audio).
+    /// Rows left queued because they could not be sealed (over the size limit, or audio): each
+    /// such row once, however many push pages read it. Shown on the Sync page through
+    /// [`super::SyncStatus::refused`] (T14.43).
     pub refused: usize,
     /// Queued rows this device could not read to send (a damaged voice sample row), left
     /// queued and skipped; the most found in one push page.
     pub unsendable: usize,
+    /// Queued rows stamped more than [`MAX_CLOCK_AHEAD_MS`] past this device's clock (its
+    /// clock was far ahead when they were written), left queued and not sent (T14.44): the
+    /// relay would keep such a row over every later edit of it. A tick that finds any ends
+    /// with [`SyncProblem::ClockAhead`] in the status, though it pushed the rest and pulled.
+    /// Counted in the push page that reached them (rows are read oldest stamp first, so
+    /// every later one is ahead too and is not read).
+    pub clock_ahead: usize,
+    /// The relay refused a push because a row in it is stamped too far past the relay's clock
+    /// (this device's clock is wrong now, or the relay's): the rows of that push and every
+    /// later one stay queued, nothing more was pushed this tick, and the tick went on to pull.
+    /// It ends with [`SyncProblem::ClockAhead`] in the status, like [`Self::clock_ahead`].
+    pub clock_refused: bool,
     /// Rows pulled (held rows tried again not included).
     pub pulled: usize,
     /// Rows written here.
     pub written: usize,
     /// Rows not newer than the copy here.
     pub ignored: usize,
-    /// Rows held for later ([`earshot_store::HoldReason`]).
+    /// Rows this tick left held for later ([`earshot_store::HoldReason`]): each row it held
+    /// because its meeting is in use, its stamp is far ahead or a newer Earshot wrote it, and
+    /// every row that still waits for a parent when the tick ends (a row whose parent a later
+    /// page of the same tick brought is applied in that tick and not counted, T14.42).
     pub held: usize,
+    /// Held rows read from the store and opened again in this tick, each time it happened
+    /// (the retry at the start, and the retry of rows waiting for a parent at the end): the
+    /// work the retries cost, which stays in proportion to the rows held, not to the pages
+    /// pulled.
+    pub retried: usize,
     /// Rows that could not be opened or read.
     pub unreadable: usize,
     /// Meetings deleted here because they were deleted on another device.
@@ -73,6 +96,10 @@ pub struct TickReport {
     pub meetings: BTreeSet<EntityId>,
     /// Whether a person row was written here or "Me" people merged.
     pub people: bool,
+    /// The relay's history changed (it was restored from an older copy, or replaced): this
+    /// device queued every synced row again and set its cursor to the start, and the tick ended
+    /// there (T14.45). The next tick sends and reads everything.
+    pub vault_reset: bool,
     /// The pull reached the end of what the relay holds: its last page said `more == false`
     /// (T12.93: with no problem in the tick, no row held and none waiting for a retry, the
     /// one-off copy of legacy ignores may run, [`crate::ignore_copy`]).
@@ -164,9 +191,8 @@ pub struct SyncClient {
     device: DeviceId,
     /// Set by the sync thread's stop: a tick ends at its next page.
     stop: Arc<AtomicBool>,
-    /// Whether rows held for a newer format or a far clock were tried again yet (once per
-    /// client: they clear only after an update or with time).
-    retried_all: AtomicBool,
+    /// Where the retry of held rows at the start of each tick is ([`HeldRetry`]).
+    retry: std::sync::Mutex<HeldRetry>,
     /// A summary worker's presence ([`SyncClient::as_summary_worker`]): kind `server` and the
     /// writer it names, asked at every send; `None` for the app.
     worker: Option<WorkerWriter>,
@@ -179,11 +205,131 @@ pub struct SyncClient {
     /// in tests (a tick that ends with `more == true`).
     pull_pages: usize,
     pull_limit: u32,
+    /// Test only: called inside a tick, once the store's tick lock is held.
+    #[cfg(test)]
+    in_tick: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// How often a tick waiting for another tick on its store looks again (and whether it was
+/// stopped meanwhile).
+const TICK_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// One lock per store, by the store's device id, for as long as the process runs.
+type StoreLocks = std::sync::Mutex<std::collections::BTreeMap<DeviceId, Arc<std::sync::Mutex<()>>>>;
+
+/// Held for a whole tick ([`SyncClient::try_tick`]).
+static TICK_LOCKS: StoreLocks = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Held for one offload step of a sync thread ([`step_lock`]).
+static STEP_LOCKS: StoreLocks = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn store_lock(locks: &StoreLocks, device: DeviceId) -> Arc<std::sync::Mutex<()>> {
+    Arc::clone(
+        locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(device)
+            .or_default(),
+    )
+}
+
+/// The lock a sync thread holds for each offload step on the store of `device`, so two threads
+/// on one store (one replacing the other) never step at once, and a thread that was replaced
+/// finds that out under it before it steps again.
+pub(super) fn step_lock(device: DeviceId) -> Arc<std::sync::Mutex<()>> {
+    store_lock(&STEP_LOCKS, device)
 }
 
 impl std::fmt::Debug for SyncClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SyncClient").finish_non_exhaustive()
+    }
+}
+
+/// Where the retry of held rows at the start of each tick is. At most [`MAX_RETRY`] rows are
+/// tried per tick, in row-key order from where the last tick stopped, so a store holding more
+/// than that still tries each of them in turn (never the same first rows every tick).
+///
+/// The retry goes through the held rows in passes: a pass starts at the first key and ends
+/// when a read comes back short. Rows held because their meeting is in use or a parent is
+/// missing are read by every pass. A pass also reads the rows held for a newer format if no
+/// pass of this client has yet (they clear only after an update), and the rows held for a far
+/// clock if none has, or the last one that did began [`CLOCK_RETRY_MS`] or more ago by this
+/// device's clock, or that clock now reads earlier than it did then (it was set).
+#[derive(Debug, Default)]
+pub(super) struct HeldRetry {
+    /// The row key the next retry starts after; `None`: from the first.
+    after: Option<[u8; ROW_KEY_LEN]>,
+    /// The pass under way; `None` before the first and between passes.
+    pass: Option<RetryPass>,
+    /// Whether a pass of this client has read the rows held for a newer format.
+    format_done: bool,
+    /// When (this device's clock, Unix ms) the last finished pass that read the rows held for
+    /// a far clock began.
+    clock_at: Option<u64>,
+}
+
+/// One pass of [`HeldRetry`].
+#[derive(Debug, Clone, Copy)]
+struct RetryPass {
+    format: bool,
+    clock: bool,
+    began_ms: u64,
+}
+
+/// How often rows held because their stamp is far ahead of this device's clock are tried again
+/// (T14.44; before it, once per app start). An hour, a judgement: such a row clears when this
+/// device's clock is put right or simply with time, the limit it waits for is 24 hours wide, and
+/// a retry opens every such row, so more often buys little.
+pub(super) const CLOCK_RETRY_MS: u64 = 60 * 60 * 1000;
+
+impl HeldRetry {
+    /// The reasons this tick's retry reads and the key it starts after; `now_ms` is this
+    /// device's clock.
+    pub(super) fn begin(
+        &mut self,
+        now_ms: u64,
+    ) -> (&'static [HoldReason], Option<[u8; ROW_KEY_LEN]>) {
+        use HoldReason::{Busy, Clock, Format, Parent};
+        let pass = match self.pass {
+            Some(pass) => pass,
+            None => {
+                let clock = self
+                    .clock_at
+                    .is_none_or(|at| now_ms < at || now_ms - at >= CLOCK_RETRY_MS);
+                let pass = RetryPass {
+                    format: !self.format_done,
+                    clock,
+                    began_ms: now_ms,
+                };
+                self.pass = Some(pass);
+                self.after = None;
+                pass
+            }
+        };
+        let reasons: &'static [HoldReason] = match (pass.format, pass.clock) {
+            (true, true) => &HoldReason::ALL,
+            (true, false) => &[Format, Busy, Parent],
+            (false, true) => &[Clock, Busy, Parent],
+            (false, false) => &[Busy, Parent],
+        };
+        (reasons, self.after)
+    }
+
+    /// The retry read `read` rows of at most `limit`, the last with key `last`.
+    pub(super) fn read(&mut self, read: usize, limit: usize, last: Option<[u8; ROW_KEY_LEN]>) {
+        if read < limit {
+            // The end of the held rows: the pass is over and the next retry starts a new one.
+            self.after = None;
+            if let Some(pass) = self.pass.take() {
+                self.format_done |= pass.format;
+                if pass.clock {
+                    self.clock_at = Some(pass.began_ms);
+                }
+            }
+        } else {
+            self.after = last;
+        }
     }
 }
 
@@ -293,13 +439,22 @@ impl SyncClient {
             relay,
             device,
             stop: Arc::new(AtomicBool::new(false)),
-            retried_all: AtomicBool::new(false),
+            retry: std::sync::Mutex::new(HeldRetry::default()),
             worker: None,
             model_place: None,
             changes: None,
             pull_pages: MAX_PULL_PAGES,
             pull_limit: earshot_sync::wire::PULL_DEFAULT,
+            #[cfg(test)]
+            in_tick: None,
         })
+    }
+
+    /// Test only: `hook` runs inside every tick of this client, with the tick lock held.
+    #[cfg(test)]
+    pub(crate) fn with_in_tick(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.in_tick = Some(hook);
+        self
     }
 
     /// Test only: pull at most `pages` pages of `limit` rows per tick.
@@ -320,9 +475,8 @@ impl SyncClient {
         Ok(self
             .services
             .store()
-            .held_rows()?
-            .iter()
-            .any(|h| matches!(h.reason, HoldReason::Busy | HoldReason::Parent)))
+            .held_count(&[HoldReason::Busy, HoldReason::Parent])?
+            > 0)
     }
 
     /// The client for the relay at `address` rather than the stored one: the summary worker
@@ -519,26 +673,72 @@ impl SyncClient {
 
     /// [`Self::tick`], keeping what it did even when it ends on a problem (rows applied before
     /// the problem stay applied, and the window must hear of them).
+    ///
+    /// Ticks on one store never run at once (T14.45 review): a second client's tick waits here
+    /// until the first has ended (two sync threads can exist for a moment when one replaces the
+    /// other, and what a tick decides from the cursor record assumes no other tick moves it
+    /// meanwhile). A client that has been stopped does no tick at all: it returns an empty
+    /// report, having pushed, pulled and recorded nothing. Nothing is held while waiting.
     pub fn tick_reporting(&self) -> (TickReport, Result<(), SyncProblem>) {
+        loop {
+            if self.stopping() {
+                return (TickReport::default(), Ok(()));
+            }
+            if let Some(done) = self.try_tick() {
+                return done;
+            }
+            std::thread::sleep(TICK_LOCK_POLL);
+        }
+    }
+
+    /// One tick, unless another tick on this store is in progress (`None`: nothing was done).
+    /// The store's tick lock is held from here to the end of the tick, across its requests,
+    /// and by nothing else: never while a thread is joined or a presence lock is waited for.
+    pub(crate) fn try_tick(&self) -> Option<(TickReport, Result<(), SyncProblem>)> {
+        let lock = store_lock(&TICK_LOCKS, self.device);
+        let _tick = match lock.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        if self.stopping() {
+            // Stopped while it waited: the thread that replaced this one ticks from here on.
+            return Some((TickReport::default(), Ok(())));
+        }
+        #[cfg(test)]
+        if let Some(hook) = &self.in_tick {
+            hook();
+        }
         let mut report = TickReport::default();
         let outcome = self.tick_into(&mut report);
         {
             let mut db = self.services.store();
+            // Rows still waiting for a parent when the tick ends, whenever they were pulled.
+            report.held = report.held.saturating_add(
+                db.held_count(&[HoldReason::Parent])
+                    .ok()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(0),
+            );
             let mut status = sync_status(&db).unwrap_or_default();
             status.unreadable = status
                 .unreadable
                 .saturating_add(u64::try_from(report.unreadable).unwrap_or(u64::MAX));
             match &outcome {
                 Ok(()) => {
-                    status.problem = None;
+                    // A tick that left rows unsent for their far stamps did everything else,
+                    // so it counts as a sync; the status still says why those rows wait.
+                    status.problem = (report.clock_ahead > 0 || report.clock_refused)
+                        .then_some(SyncProblem::ClockAhead);
                     status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
                     status.unsendable = u64::try_from(report.unsendable).unwrap_or(u64::MAX);
+                    status.refused = u64::try_from(report.refused).unwrap_or(u64::MAX);
                 }
                 Err(p) => status.problem = Some(*p),
             }
             let _ = set_sync_status(&mut db, &status);
         }
-        (report, outcome)
+        Some((report, outcome))
     }
 
     fn tick_into(&self, report: &mut TickReport) -> Result<(), SyncProblem> {
@@ -550,9 +750,29 @@ impl SyncClient {
             // anything is pulled, so the list rebuilt after a page never loses them.
             crate::vocabulary::reconcile(&self.services)?;
         }
-        self.push(&keys, &secrets.token, kinds, report)?;
-        self.retry_held(&keys, kinds, report)?;
-        self.pull(&keys, &secrets.token, report)
+        match self.push(&keys, &secrets.token, kinds, report) {
+            // The relay refused the push for a far stamp: this device's clock is wrong now, or
+            // the relay's is. The rows stay queued, as when this device finds such rows itself,
+            // and the tick goes on to receive: a wrong clock must not cut a device off from
+            // what the others send (T14.44).
+            Err(SyncProblem::ClockAhead) => report.clock_refused = true,
+            other => other?,
+        }
+        if report.vault_reset {
+            // Everything is queued again and the cursor is at the start: the next tick sends
+            // and reads it all (it comes soon, the queue having grown).
+            return Ok(());
+        }
+        let mut parents = self.retry_held(&keys, kinds, report)?;
+        let pulled = self.pull(&keys, &secrets.token, report, &mut parents);
+        // Rows pulled before a parent this tick brought apply now, not next tick (T14.42):
+        // once, after the last page, also when the pull ended on a problem part of the way.
+        let retried = if parents > 0 {
+            self.retry_parents(&keys, kinds, report)
+        } else {
+            Ok(())
+        };
+        pulled.and(retried)
     }
 
     fn push(
@@ -565,6 +785,19 @@ impl SyncClient {
         // Queued rows that cannot be read (a damaged voice sample row) stay queued and are
         // reported, never sent: one damaged row never stops every push.
         let mut unreadable = 0;
+        // Rows that cannot be sealed stay queued too, so a later page of this tick reads them
+        // again: each is counted once.
+        let mut refused: BTreeSet<EntityId> = BTreeSet::new();
+        // Rows stamped further past this device's clock than any device applies (T14.44) are
+        // not sent: the relay keeps the latest stamp, so such a row would shadow every later
+        // edit of it made where the clock is right. They stay queued and go once time has
+        // passed them. (The relay refuses them too: this device's clock may itself be wrong.)
+        let mut ahead: BTreeSet<EntityId> = BTreeSet::new();
+        let latest_ms = self
+            .services
+            .clock
+            .now_unix_ms()
+            .saturating_add(MAX_CLOCK_AHEAD_MS);
         let result = (|| {
             for _ in 0..MAX_PUSH_PAGES {
                 if self.stopping() {
@@ -588,16 +821,23 @@ impl SyncClient {
                 let mut batch = Vec::new();
                 let mut bytes = 0;
                 for row in &rows {
+                    if row.meta().updated_at.wall_ms > latest_ms {
+                        ahead.insert(row.id());
+                        continue;
+                    }
                     let sealed = match seal(keys, row) {
                         Ok(s) => s,
                         Err(SealError::Refused(_)) => {
-                            report.refused += 1;
+                            refused.insert(row.id());
                             continue;
                         }
                         Err(_) => return Err(SyncProblem::Internal),
                     };
                     if bytes + sealed.body.len() > PUSH_BYTES && !batch.is_empty() {
                         self.send(token, std::mem::take(&mut batch), &mut sent, report)?;
+                        if report.vault_reset {
+                            return Ok(());
+                        }
                         bytes = 0;
                     }
                     bytes += sealed.body.len();
@@ -606,13 +846,20 @@ impl SyncClient {
                 if !batch.is_empty() {
                     self.send(token, batch, &mut sent, report)?;
                 }
-                if sent.is_empty() || !full {
+                if report.vault_reset {
+                    return Ok(());
+                }
+                // A page is read oldest stamp first, so every row after one that is too far
+                // ahead is too far ahead as well: nothing more to send this tick.
+                if sent.is_empty() || !full || !ahead.is_empty() {
                     return Ok(());
                 }
             }
             Ok(())
         })();
         report.unsendable = unreadable;
+        report.refused = refused.len();
+        report.clock_ahead = ahead.len();
         result
     }
 
@@ -646,11 +893,16 @@ impl SyncClient {
             rows.push(row);
         }
         let keys: BTreeSet<Vec<u8>> = rows.iter().map(|r| r.key.0.clone()).collect();
+        // What this device has seen of the vault goes with the push (T14.45): a relay that
+        // holds less was restored from an older copy, and says so in its answer.
+        let seen = cursor_record(&self.services.store())?;
         let resp = self.relay.push(
             token,
             &PushRequest {
                 format: ENVELOPE_FORMAT,
                 rows,
+                seen_seq: (seen.seen() > 0).then_some(seen.seen()),
+                epoch: seen.epoch,
             },
         )?;
         // Every row sent is stored or superseded; any other answer is not a relay's, and the
@@ -665,35 +917,128 @@ impl SyncClient {
         report.pushed += accepted;
         self.services.store().outbox_sent(&marks)?;
         sent.extend(marks);
+        // The relay's history, as this answer shows it. A relay from before T14.45 names no
+        // epoch and no number from before the request; its highest number after storing the
+        // rows it accepted gives that one.
+        let before = resp
+            .max_seq
+            .unwrap_or_else(|| resp.seq.saturating_sub(u64::from(resp.accepted)));
+        if observe_vault(
+            &self.services,
+            VaultSeen {
+                epoch: resp.epoch.as_ref().map(|e| e.0.as_slice()),
+                before: Some(before),
+                now: Some(resp.seq),
+            },
+        )? {
+            report.vault_reset = true;
+        }
         Ok(())
     }
 
-    /// Opens held rows again and applies them as one page: rows held because their meeting was
-    /// in use or a parent was missing, every tick; rows held for a newer format or a clock far
-    /// ahead, once per client (they clear only after an update or with time). A held row that
-    /// no longer opens (sealed under a vault this device left) is not retried.
+    /// Opens held rows again and applies them as one page, at most [`MAX_RETRY`] a tick, going
+    /// on next tick from where this one stopped ([`HeldRetry`]): rows held because their
+    /// meeting was in use or a parent was missing, every tick; rows held for a newer format,
+    /// once per client (they clear only after an update); rows held for a clock far ahead,
+    /// once per client and then every hour (they clear with time, or when this device's clock
+    /// is put right). The rows are selected by reason in SQL, never all read into memory. A
+    /// held row that no longer opens (sealed under a vault this device left) is not retried.
+    ///
+    /// Returns how many rows other rows belong to it wrote for the first time (a track whose
+    /// meeting came meanwhile): the tick's last step tries the rows waiting for them.
     fn retry_held(
         &self,
         keys: &Keys,
         kinds: SyncKinds,
         report: &mut TickReport,
-    ) -> Result<(), SyncProblem> {
-        let held = self.services.store().held_rows()?;
-        let all = !self.retried_all.swap(true, Ordering::Relaxed);
-        let page: Vec<Incoming> = held
+    ) -> Result<usize, SyncProblem> {
+        let now_ms = self.services.clock.now_unix_ms();
+        let (reasons, after) = self.retry_state().begin(now_ms);
+        let held = self
+            .services
+            .store()
+            .held_page(reasons, after.as_ref(), MAX_RETRY)?;
+        self.retry_state()
+            .read(held.len(), MAX_RETRY, held.last().map(|h| h.key));
+        self.apply_held(keys, held, kinds, report)
+    }
+
+    fn retry_state(&self) -> std::sync::MutexGuard<'_, HeldRetry> {
+        self.retry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Opens `held` and applies it as one page in the order it was pulled; returns how many
+    /// rows other rows belong to it wrote for the first time.
+    fn apply_held(
+        &self,
+        keys: &Keys,
+        held: Vec<earshot_store::Held>,
+        kinds: SyncKinds,
+        report: &mut TickReport,
+    ) -> Result<usize, SyncProblem> {
+        report.retried += held.len();
+        let mut page: Vec<Incoming> = held
             .into_iter()
-            .filter(|h| all || matches!(h.reason, HoldReason::Busy | HoldReason::Parent))
-            .take(MAX_RETRY)
             .filter_map(|h| open(keys, h.seq, &h.key, h.stamp, h.body).ok())
             .collect();
+        page.sort_by_key(|inc| inc.seq);
         self.apply(&page, kinds, report)
     }
 
+    /// Applies again, in this tick, every row held because a row it belongs to had not arrived
+    /// (T14.42): called once, after the tick's last page, when the tick wrote such a row for
+    /// the first time (a meeting, a track, a speaker). A pass reads every row held for a
+    /// parent, [`MAX_RETRY`] at a time; passes repeat until one frees no further parent (a line
+    /// waits for its track, which waits for its meeting), so a held row is opened at most once
+    /// per level it waits on, whatever the number of pages: the work is in proportion to the
+    /// rows held. (Run after every page that brought a parent, as it first was, it opened every
+    /// held row once per such page.) The held table does not record which row a held row waits
+    /// for, so the rows to try cannot be picked out in SQL. Each pass that goes on wrote a held
+    /// row, so the passes end. Without this a new computer, which pulls most rows before the
+    /// meeting row they belong to (the relay files a row at the end each time it changes),
+    /// filled in a tick at a time.
+    fn retry_parents(
+        &self,
+        keys: &Keys,
+        kinds: SyncKinds,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        loop {
+            let mut after: Option<[u8; ROW_KEY_LEN]> = None;
+            let mut freed = 0;
+            loop {
+                if self.stopping() {
+                    return Ok(());
+                }
+                let held = self.services.store().held_page(
+                    &[HoldReason::Parent],
+                    after.as_ref(),
+                    MAX_RETRY,
+                )?;
+                let Some(last) = held.last() else { break };
+                after = Some(last.key);
+                let full = held.len() >= MAX_RETRY;
+                freed += self.apply_held(keys, held, kinds, report)?;
+                if !full {
+                    break;
+                }
+            }
+            if freed == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Pulls pages after the cursor and applies them. `parents` gains the rows other rows
+    /// belong to that a page wrote for the first time.
     fn pull(
         &self,
         keys: &Keys,
         token: &super::DeviceToken,
         report: &mut TickReport,
+        parents: &mut usize,
     ) -> Result<(), SyncProblem> {
         for _ in 0..self.pull_pages {
             if self.stopping() {
@@ -701,19 +1046,36 @@ impl SyncClient {
             }
             // The cursor and the kind switches are read together: turning a switch on resets
             // the cursor, and the page is applied under the switches it was pulled for.
-            let (after, kinds) = {
+            let (cursor, kinds) = {
                 let db = self.services.store();
-                (pull_cursor(&db)?, sync_settings(&db)?.kinds())
+                (cursor_record(&db)?, sync_settings(&db)?.kinds())
             };
+            let after = cursor.pull_seq;
             let PullResponse {
                 rows,
                 more,
                 vault_format,
-            } = self.relay.pull(token, after, self.pull_limit)?;
+                epoch,
+                max_seq,
+            } = self.relay.pull(token, after, self.pull_limit, &cursor)?;
             if vault_format > ENVELOPE_FORMAT {
                 return Err(SyncProblem::UpdateNeeded);
             }
             let last = rows.iter().map(|r| r.seq).max();
+            // The relay's history, as this answer shows it (T14.45). If it changed, this
+            // page was read from a cursor that means nothing in it: nothing of the page is
+            // applied, and the next tick reads the vault from the start.
+            if observe_vault(
+                &self.services,
+                VaultSeen {
+                    epoch: epoch.as_ref().map(|e| e.0.as_slice()),
+                    before: max_seq,
+                    now: max_seq.max(last),
+                },
+            )? {
+                report.vault_reset = true;
+                return Ok(());
+            }
             report.pulled += rows.len();
             let mut page = Vec::with_capacity(rows.len());
             for r in rows {
@@ -725,7 +1087,7 @@ impl SyncClient {
                     Err(()) => report.unreadable += 1,
                 }
             }
-            self.apply(&page, kinds, report)?;
+            *parents += self.apply(&page, kinds, report)?;
             if let Some(last) = last
                 && last > after
                 && !advance_cursor(&mut self.services.store(), after, last)?
@@ -745,14 +1107,16 @@ impl SyncClient {
     }
 
     /// Runs this device's deletion of every meeting the page deletes, then applies the page.
+    /// Returns how many rows other rows belong to the page wrote for the first time
+    /// ([`earshot_store::Applied::parents_written`]).
     fn apply(
         &self,
         page: &[Incoming],
         kinds: SyncKinds,
         report: &mut TickReport,
-    ) -> Result<(), SyncProblem> {
+    ) -> Result<usize, SyncProblem> {
         if page.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         for meeting in self.meetings_deleted_elsewhere(page)? {
             match self.services.delete_meeting(meeting) {
@@ -803,7 +1167,14 @@ impl SyncClient {
         }
         report.written += applied.written;
         report.ignored += applied.ignored + applied.skipped;
-        report.held += applied.held.iter().sum::<usize>();
+        // Rows held for a parent are counted once, from the store, when the tick ends: a later
+        // page of this tick may bring the parent.
+        report.held += HoldReason::ALL
+            .iter()
+            .zip(applied.held)
+            .filter(|(reason, _)| **reason != HoldReason::Parent)
+            .map(|(_, n)| n)
+            .sum::<usize>();
         report.repaired += applied.mes_merged
             + applied.summaries_replaced
             + applied.withdrawals_kept
@@ -812,7 +1183,7 @@ impl SyncClient {
             + applied.speakers_revived;
         report.meetings.extend(applied.meetings);
         report.people |= applied.people;
-        Ok(())
+        Ok(applied.parents_written)
     }
 
     /// Meetings this page deletes that are live here, whatever the stamps: a meeting row
