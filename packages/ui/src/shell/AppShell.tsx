@@ -1422,6 +1422,11 @@ export function AppShell({
               // The job's last event says how it ended; a cancel that could not be sent leaves it running.
               ipc.cancelJob(id).catch(() => markJobCancelling(id, false));
             }}
+            onManagePeople={() => {
+              setSettingsSection("People");
+              setView("settings");
+              onOpenSettings();
+            }}
           />
         )}
       </main>
@@ -1827,6 +1832,7 @@ function Detail({
   onJobStarted,
   onJobDismissed,
   onJobCancel,
+  onManagePeople,
 }: {
   load: Load;
   selected: MeetingListItem | null;
@@ -1843,6 +1849,8 @@ function Detail({
   onJobStarted: (id: string, job: JobKind) => void;
   onJobDismissed: (id: string) => void;
   onJobCancel: (id: string) => void;
+  /** The Speakers panel's "Manage people": Settings on the People page. */
+  onManagePeople: () => void;
 }) {
   const styles = useStyles();
   if (load.status === "loading") {
@@ -1893,6 +1901,7 @@ function Detail({
       onJobStarted={(job) => onJobStarted(selected.id, job)}
       onJobDismissed={() => onJobDismissed(selected.id)}
       onJobCancel={() => onJobCancel(selected.id)}
+      onManagePeople={onManagePeople}
     />
   );
 }
