@@ -8,10 +8,17 @@ use earshot_sync::wire::{
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 /// The schema this build writes. A database with a higher `user_version` is refused.
-const SCHEMA_VERSION: u32 = 1;
+///
+/// 2 (T14.45): `vault.epoch`, the vault's epoch. A relay from before it refuses a version 2
+/// database ("written by a newer relay"), so a relay cannot go back to an older image once
+/// this one has opened its data.
+const SCHEMA_VERSION: u32 = 2;
 
+/// Version 1, as every relay up to 0.4.2 created it. Never edited: a later version is a step
+/// in [`Db::open`].
 const SCHEMA: &str = "
 CREATE TABLE vault (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -46,6 +53,35 @@ CREATE TABLE pairing (
 ) STRICT;
 ";
 
+/// Version 2 (T14.45): the vault's epoch (absent until [`Db::open`] gives the vault one) and
+/// when an epoch was last taken (`claim_unix_s`, 0 for never). Columns added with no default
+/// to compute: the step costs the same however many rows the relay holds, and rewrites none
+/// of them.
+const SCHEMA_2: &str = "
+ALTER TABLE vault ADD COLUMN epoch BLOB;
+ALTER TABLE vault ADD COLUMN claim_unix_s INTEGER NOT NULL DEFAULT 0;
+";
+
+/// How often, at most, the vault takes a new epoch: once in ten minutes, a judgement. A new
+/// epoch makes every device that names one send its whole store again, a restore is one
+/// event, and this is what keeps a device that sends ever higher claims (a fault, or a token
+/// in the wrong hands) from doing that to the others more than six times an hour. Inside the
+/// limit such a claim changes nothing and is answered like any call: a device that saw more
+/// than the vault holds still starts over by itself (it reads the vault's highest number
+/// below its own).
+pub const CLAIM_EVERY_S: u64 = 10 * 60;
+
+/// The furthest above the vault's own highest number a claim may move its numbering: about a
+/// thousand million (2^30), a judgement. A real cursor is a number this relay once gave out,
+/// so it is above what the relay holds now by no more than the rows lost with a restore; a
+/// restored relay cannot know that figure, but no vault loses a thousand million rows (each is
+/// a sealed row of hundreds of bytes). A claim further out is taken to be at this distance,
+/// never refused and never followed: one call naming a number near the top of what the
+/// database can count to would otherwise put every later row there, and the vault could not
+/// be used again. At this step it would take thousands of millions of such claims, one every
+/// ten minutes, to run out of numbers.
+pub const MAX_CLAIM_JUMP: i64 = 1 << 30;
+
 /// A database problem.
 #[derive(Debug)]
 pub enum DbError {
@@ -55,6 +91,8 @@ pub enum DbError {
     Sqlite(rusqlite::Error),
     /// Written by a newer relay: update the container.
     Newer(u32),
+    /// The operating system's random number generator failed (a new epoch could not be made).
+    Random,
 }
 
 impl DbError {
@@ -65,6 +103,7 @@ impl DbError {
             Self::Io(_) => "io",
             Self::Sqlite(_) => "sqlite",
             Self::Newer(_) => "newer",
+            Self::Random => "random",
         }
     }
 }
@@ -74,6 +113,7 @@ impl std::fmt::Display for DbError {
         match self {
             Self::Io(e) => write!(f, "{e}"),
             Self::Sqlite(e) => write!(f, "{e}"),
+            Self::Random => f.write_str("the system's random number generator failed"),
             Self::Newer(v) => write!(
                 f,
                 "the database was written by a newer relay (schema {v}); update the container"
@@ -122,6 +162,85 @@ pub(crate) struct Pushed {
     pub accepted: u32,
     pub superseded: Vec<[u8; 16]>,
     pub seq: u64,
+    /// The vault's epoch after the push.
+    pub epoch: [u8; 16],
+    /// The vault's highest sequence number before the push (and before its claim was heard).
+    pub max_seq_before: u64,
+}
+
+/// What a device says it has seen of the vault (T14.45).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Claim {
+    /// The highest sequence number it has seen.
+    pub seen: Option<u64>,
+    /// The vault epoch it last saw.
+    pub epoch: Option<[u8; 16]>,
+    /// The relay's clock when the call came (Unix seconds).
+    pub now_s: u64,
+}
+
+/// A new vault epoch: 16 bytes from the operating system's generator. Not a secret; it only has
+/// to differ from every earlier one.
+fn new_epoch() -> Result<[u8; 16], DbError> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).map_err(|_| DbError::Random)?;
+    Ok(b)
+}
+
+/// Hears `claim` inside the caller's transaction (T14.45) and returns the vault's highest
+/// sequence number before it and the vault's epoch after it.
+///
+/// A device that has seen a sequence number of this vault's epoch that the vault has not
+/// reached proves the relay lost rows: it was restored from an older copy. One restore is one
+/// new epoch. What the relay does depends on the epoch the device names:
+///
+/// - **The vault's own epoch**, having seen more than the vault holds: the vault takes a new
+///   epoch (at most once in [`CLAIM_EVERY_S`]), so every device that names an epoch sends its
+///   rows again and reads from the start, once. The numbering moves past what the device saw
+///   (never more than [`MAX_CLAIM_JUMP`] above the vault's rows).
+/// - **Another epoch**: nothing. The device saw another history and starts over by itself when
+///   it reads this vault's epoch in the answer.
+/// - **No epoch** (a client from before the epoch, or a device's first call): nothing. A number
+///   with no epoch says nothing of which history it belongs to. The answer carries the epoch
+///   and the highest number, and a device of this release that has seen more starts over by
+///   itself.
+///
+/// A client from before this release (0.4.2 and earlier, envelope format 2) is heard only in
+/// a vault no device of this release has pushed to: after such a push the vault's format is
+/// above its own and it is refused before this is reached (`Db::push`, `Db::pull`). So rows a
+/// device of this release files after a restore are never owed to such a client, and nothing
+/// is kept or done here for it.
+fn hear_claim(tx: &rusqlite::Transaction<'_>, claim: &Claim) -> Result<(u64, [u8; 16]), DbError> {
+    let (next, epoch, taken_at): (i64, Vec<u8>, i64) = tx.query_row(
+        "SELECT next_seq, epoch, claim_unix_s FROM vault WHERE id = 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let highest = next - 1;
+    let max = u64_of(highest);
+    let epoch = blob16(epoch);
+    if claim.epoch != Some(epoch) {
+        return Ok((max, epoch));
+    }
+    // What the device has seen, taken to be at most MAX_CLAIM_JUMP above what the vault holds.
+    let seen = claim
+        .seen
+        .map(|seen| i64_of(seen).min(highest.saturating_add(MAX_CLAIM_JUMP)));
+    let Some(seen) = seen.filter(|seen| *seen > highest) else {
+        return Ok((max, epoch));
+    };
+    // A restore: a new epoch, unless one was taken a moment ago. (A clock that reads earlier
+    // than the last time does not hold one back.)
+    let taken_at = u64_of(taken_at);
+    if taken_at != 0 && claim.now_s >= taken_at && claim.now_s - taken_at < CLAIM_EVERY_S {
+        return Ok((max, epoch));
+    }
+    let epoch = new_epoch()?;
+    tx.execute(
+        "UPDATE vault SET next_seq = ?1, epoch = ?2, claim_unix_s = ?3 WHERE id = 1",
+        params![seen.saturating_add(1), &epoch[..], i64_of(claim.now_s)],
+    )?;
+    Ok((max, epoch))
 }
 
 /// The outcome of a registration.
@@ -162,13 +281,25 @@ impl Db {
         c.busy_timeout(std::time::Duration::from_secs(5))?;
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        match version {
-            0 => {
-                tx.execute_batch(SCHEMA)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            SCHEMA_VERSION => {}
-            v => return Err(DbError::Newer(v)),
+        if version > SCHEMA_VERSION {
+            return Err(DbError::Newer(version));
+        }
+        // Each step runs once, in this one transaction with the version it leaves: a database
+        // is at a whole version or the one before, never between.
+        if version < 1 {
+            tx.execute_batch(SCHEMA)?;
+        }
+        if version < 2 {
+            // The epoch of a vault that already holds rows starts here: its devices have seen
+            // none yet and take the first they are given without reading anything again.
+            tx.execute_batch(SCHEMA_2)?;
+            tx.execute(
+                "UPDATE vault SET epoch = ?1 WHERE id = 1",
+                params![&new_epoch()?[..]],
+            )?;
+        }
+        if version < SCHEMA_VERSION {
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         tx.commit()?;
         Ok(Self(c))
@@ -259,7 +390,11 @@ impl Db {
         let stored: Option<Vec<u8>> =
             tx.query_row("SELECT key_check FROM vault WHERE id = 1", [], |r| r.get(0))?;
         match stored {
-            Some(s) if s.as_slice() != check.as_slice() => return Ok(Registered::KeyMismatch),
+            // Compared in constant time (T14.46): a device that does not hold the vault's key
+            // learns nothing of its check from how long a refusal took.
+            Some(s) if !bool::from(s.as_slice().ct_eq(check.as_slice())) => {
+                return Ok(Registered::KeyMismatch);
+            }
             Some(_) => {}
             None => {
                 tx.execute(
@@ -372,16 +507,27 @@ impl Db {
     }
 
     /// Stores each row whose stamp is later than the one held for its key, numbering it with
-    /// the next sequence; raises the vault's format to `format`.
+    /// the next sequence; raises the vault's format to `format`. `None`, with nothing stored
+    /// and nothing changed, when `format` is below the vault's: checked here, in the
+    /// transaction that stores the rows (T14.46), so a device that passed an earlier check
+    /// cannot store rows of an older format after another device raised the vault's. The
+    /// device's `claim` is heard next, in the same transaction (`hear_claim`).
     pub(crate) fn push(
         &mut self,
         device: &[u8; 16],
         format: u32,
         rows: &[NewRow<'_>],
-    ) -> Result<Pushed, DbError> {
+        claim: &Claim,
+    ) -> Result<Option<Pushed>, DbError> {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let vault_format: u32 =
+            tx.query_row("SELECT format FROM vault WHERE id = 1", [], |r| r.get(0))?;
+        if format < vault_format {
+            return Ok(None);
+        }
+        let (max_seq_before, epoch) = hear_claim(&tx, claim)?;
         let mut next: i64 =
             tx.query_row("SELECT next_seq FROM vault WHERE id = 1", [], |r| r.get(0))?;
         let mut accepted = 0u32;
@@ -431,24 +577,28 @@ impl Db {
             params![next, format],
         )?;
         tx.commit()?;
-        Ok(Pushed {
+        Ok(Some(Pushed {
             accepted,
             superseded,
             seq: u64_of(next - 1),
-        })
+            epoch,
+            max_seq_before,
+        }))
     }
 
     /// Rows with a sequence above `after`, ascending: at most `limit` rows and at most
     /// `max_bytes` of bodies (always at least one row when there is one). `None` when
     /// `caller_format` is below the vault's: checked in the one read transaction that reads the
     /// rows, so a push raising the format (which commits with its rows) is seen whole or not at
-    /// all.
+    /// all. The device's `claim` is heard in the same transaction, once the format has let it
+    /// in (`hear_claim`); a device below the vault's format changes nothing.
     pub(crate) fn pull(
         &mut self,
         caller_format: u32,
         after: u64,
         limit: u32,
         max_bytes: usize,
+        claim: &Claim,
     ) -> Result<Option<PullResponse>, DbError> {
         let tx = self.0.transaction()?;
         let vault_format: u32 =
@@ -456,6 +606,7 @@ impl Db {
         if caller_format < vault_format {
             return Ok(None);
         }
+        let (max_seq_before, epoch) = hear_claim(&tx, claim)?;
         let mut st = tx.prepare(
             "SELECT seq, key, wall_ms, logical, node, body FROM row
              WHERE seq > ?1 ORDER BY seq LIMIT ?2",
@@ -488,6 +639,8 @@ impl Db {
             rows,
             more,
             vault_format,
+            epoch: Some(B64(epoch.to_vec())),
+            max_seq: Some(max_seq_before),
         }))
     }
 
@@ -544,5 +697,102 @@ impl Db {
             vault_format: self.vault_format()?,
             devices,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(key: u8) -> NewRow<'static> {
+        NewRow {
+            key: [key; 16],
+            stamp: Stamp {
+                wall_ms: 5,
+                logical: 0,
+                node: [9; 16],
+            },
+            body: b"sealed",
+        }
+    }
+
+    /// The vault's format, next sequence number, epoch and row count.
+    fn state(db: &Db) -> (u32, i64, Vec<u8>, i64) {
+        let (format, next, epoch) =
+            db.0.query_row(
+                "SELECT format, next_seq, epoch FROM vault WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        let rows =
+            db.0.query_row("SELECT count(*) FROM row", [], |r| r.get(0))
+                .unwrap();
+        (format, next, epoch, rows)
+    }
+
+    /// T14.46: the push itself refuses a format below the vault's, in the transaction that
+    /// would store its rows. The call's earlier check reads the vault's format under another
+    /// lock hold, so a device can pass it just before another device raises the vault; its
+    /// push then reaches the database with the old format and must store nothing and change
+    /// nothing (not the numbering, not the epoch, whatever it says it has seen).
+    #[test]
+    fn relay_push_refuses_an_older_format_inside_its_own_transaction() {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "earshot-relay-db-format-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut db = Db::open(&dir.join("relay.db")).unwrap();
+        let device = [1u8; 16];
+        // A format-1 device passes the early check: the vault is still at 0.
+        assert!(1 >= db.vault_format().unwrap());
+        // Another device's format-2 push raises the vault first.
+        let pushed = db
+            .push(&device, 2, &[row(1)], &Claim::default())
+            .unwrap()
+            .expect("a push at the vault's format or above is stored");
+        assert_eq!((pushed.accepted, pushed.seq), (1, 1));
+        let before = state(&db);
+        assert_eq!((before.0, before.1, before.3), (2, 2, 1));
+        // The format-1 push arrives now: refused, with everything as it was.
+        assert!(
+            db.push(&device, 1, &[row(2)], &Claim::default())
+                .unwrap()
+                .is_none()
+        );
+        // Nor is what it says it has seen heard, with the vault's own epoch or with none: a
+        // claim that would take a new epoch from a device the format lets in.
+        let epoch = blob16(before.2.clone());
+        for named in [Some(epoch), None] {
+            let claim = Claim {
+                seen: Some(50),
+                epoch: named,
+                now_s: 1_800_000_000,
+            };
+            assert!(db.push(&device, 1, &[row(3)], &claim).unwrap().is_none());
+            assert!(db.pull(1, 50, 10, usize::MAX, &claim).unwrap().is_none());
+            assert_eq!(state(&db), before);
+        }
+        // At the vault's format it is stored.
+        let pushed = db
+            .push(&device, 2, &[row(2)], &Claim::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!((pushed.accepted, pushed.seq), (1, 2));
+        // And there the same claim is heard: a new epoch, the numbering past it. (The control
+        // for the refusals above.)
+        let claim = Claim {
+            seen: Some(50),
+            epoch: Some(epoch),
+            now_s: 1_800_000_000,
+        };
+        let pushed = db.push(&device, 2, &[row(3)], &claim).unwrap().unwrap();
+        assert_ne!(pushed.epoch, epoch);
+        assert_eq!((pushed.seq, pushed.max_seq_before), (51, 2));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

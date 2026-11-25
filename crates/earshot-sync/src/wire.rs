@@ -30,9 +30,27 @@ pub const PULL_MAX: u32 = 500;
 /// How long a pairing slot lives, in seconds.
 pub const SLOT_TTL_S: u64 = 600;
 
+/// How far past the relay's own clock a pushed row's stamp may be before the push is refused
+/// ([`ErrorWord::ClockAhead`], T14.44). 24 hours, a judgement: wide enough for any time zone
+/// or daylight-saving mistake and for clocks that drift, far too narrow for a clock set to the
+/// wrong day, month or year. It equals the window a device holds a pulled row by
+/// (`earshot_store::MAX_CLOCK_AHEAD_MS`, pinned to this by a runtime test): the relay keeps
+/// the copy with the latest stamp, so one row stamped in a far future would shadow every
+/// later edit of it from a computer whose clock is right.
+pub const MAX_STAMP_AHEAD_MS: u64 = 24 * 60 * 60 * 1000;
+
 /// Bytes sent as standard padded base64.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct B64(pub Vec<u8>);
+
+impl B64 {
+    /// The bytes as the standard padded base64 text they are sent as (for a query parameter,
+    /// which the caller percent-encodes).
+    #[must_use]
+    pub fn text(&self) -> String {
+        STANDARD.encode(&self.0)
+    }
+}
 
 impl std::fmt::Debug for B64 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,16 +156,35 @@ pub struct WireRow {
     pub body: B64,
 }
 
+/// The length of a vault epoch ([`PushResponse::epoch`]).
+pub const EPOCH_LEN: usize = 16;
+
 /// `POST /v1/rows`.
+///
+/// `seen_seq` and `epoch` are new in T14.45 and optional both ways: a relay from before them
+/// ignores fields it does not know (its request types never refused unknown fields), and a
+/// client from before them sends neither.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushRequest {
     /// The highest envelope format the device writes.
     pub format: u32,
     /// The rows.
     pub rows: Vec<WireRow>,
+    /// The highest sequence number of this vault the device has seen (its pull cursor, or what
+    /// an earlier answer named). A relay that holds less has lost rows: it was restored from an
+    /// older copy (T14.45).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_seq: Option<u64>,
+    /// The vault epoch the device last saw, when it has seen one. The relay hears
+    /// [`Self::seen_seq`] only together with the vault's own epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<B64>,
 }
 
 /// The answer to [`PushRequest`].
+///
+/// `epoch` and `max_seq` are new in T14.45; a client from before them ignores fields it does
+/// not know, and a relay from before them sends neither.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushResponse {
     /// Rows stored.
@@ -156,6 +193,17 @@ pub struct PushResponse {
     pub superseded: Vec<B64>,
     /// The vault's highest sequence number.
     pub seq: u64,
+    /// The vault's epoch ([`EPOCH_LEN`] bytes): the same for as long as the relay's history is
+    /// unbroken, across restarts and updates; new when the relay finds it has lost rows a device
+    /// had seen. A device that sees it change reads the vault from the start and sends every
+    /// row again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<B64>,
+    /// The vault's highest sequence number before this request (before any of its rows was
+    /// stored, and before the relay moved its numbering past what the device said it had
+    /// seen). Below what the device has seen, the relay lost rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seq: Option<u64>,
 }
 
 /// A row as pulled.
@@ -175,7 +223,9 @@ pub struct PulledRow {
     pub body: B64,
 }
 
-/// The answer to `GET /v1/rows?after=<seq>&limit=<n>`.
+/// The answer to `GET /v1/rows?after=<seq>&limit=<n>` (since T14.45 a device may add
+/// `&seen=<seq>&epoch=<base64>`, the pull's [`PushRequest::seen_seq`] and
+/// [`PushRequest::epoch`]; a relay from before them ignores both).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullResponse {
     /// Rows after the cursor, ascending.
@@ -184,6 +234,12 @@ pub struct PullResponse {
     pub more: bool,
     /// The vault's format.
     pub vault_format: u32,
+    /// The vault's epoch ([`PushResponse::epoch`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<B64>,
+    /// The vault's highest sequence number before this request ([`PushResponse::max_seq`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seq: Option<u64>,
 }
 
 /// `POST /v1/presence`.
@@ -274,6 +330,10 @@ pub enum ErrorWord {
     /// 409: a pairing code cannot register a device id that is registered and not revoked (a
     /// revoked one comes back with a code); only the setup secret re-registers a live one.
     DeviceExists,
+    /// 409: a pushed row is stamped more than [`MAX_STAMP_AHEAD_MS`] past the relay's clock
+    /// (T14.44); nothing of the push is stored. A client from before this word existed reads
+    /// it as an answer it does not understand: a failed push it retries, its rows still queued.
+    ClockAhead,
     /// 413: over a size limit.
     TooLarge,
     /// 429: too many failed attempts from this address; wait a minute.
@@ -284,7 +344,7 @@ pub enum ErrorWord {
 
 impl ErrorWord {
     /// Every word, for tests and the client's copy table.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::BadRequest,
         Self::UnknownDevice,
         Self::BadSecret,
@@ -293,6 +353,7 @@ impl ErrorWord {
         Self::KeyMismatch,
         Self::UpdateNeeded,
         Self::DeviceExists,
+        Self::ClockAhead,
         Self::TooLarge,
         Self::SlowDown,
         Self::Internal,
@@ -310,6 +371,7 @@ impl ErrorWord {
             Self::KeyMismatch => "key_mismatch",
             Self::UpdateNeeded => "update_needed",
             Self::DeviceExists => "device_exists",
+            Self::ClockAhead => "clock_ahead",
             Self::TooLarge => "too_large",
             Self::SlowDown => "slow_down",
             Self::Internal => "internal",
@@ -324,7 +386,7 @@ impl ErrorWord {
             Self::UnknownDevice => 401,
             Self::BadSecret => 403,
             Self::NoSlot | Self::NotFound => 404,
-            Self::KeyMismatch | Self::UpdateNeeded | Self::DeviceExists => 409,
+            Self::KeyMismatch | Self::UpdateNeeded | Self::DeviceExists | Self::ClockAhead => 409,
             Self::TooLarge => 413,
             Self::SlowDown => 429,
             Self::Internal => 500,
