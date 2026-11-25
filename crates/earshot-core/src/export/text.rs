@@ -80,20 +80,58 @@ pub(super) fn neutralise(s: &str) -> String {
     s.replace("<!--", "&lt;!--")
 }
 
-/// Makes generated text (summary fields, speaker names, transcript lines) unable to form
-/// an image or embed, raw HTML or an HTML comment in the note (T14.28): every `<` is
-/// written `&lt;` and the `[` of every `![` is written `&#91;`. Obsidian's reading view
-/// shows both as the original characters, so ordinary prose reads as it was written. This
-/// includes everything [`neutralise`] does (`<!--` becomes `&lt;!--`, as before).
+/// Makes generated text (summary fields, speaker names, transcript lines; one line each)
+/// unable to fetch, embed or hide anything in the note (T14.28):
 ///
-/// Entities rather than backslash escapes: a backslash already in the text before an
-/// inserted one would turn it into a literal backslash and bring the trigger back
-/// (`\![x](u)` would become `\\![x](u)`, an image), and `\<!--` still holds the marker's
-/// bytes. An entity is never part of Markdown structure, whatever comes before it.
-/// Plain links (`[text](url)`, `[[Note]]`) are left as written: they fetch nothing until
-/// clicked.
+/// - a `<` that could start HTML, an autolink or a comment (followed by an ASCII letter,
+///   `/`, `!` or `?`) is written `&lt;`; any other `<` (`<5% over`) is kept, so prose reads
+///   the same in Live Preview and in search. `<!--` becomes `&lt;!--`, as [`neutralise`]
+///   does;
+/// - the `[` of every `![` (an image or `![[embed]]`) is written `&#91;`;
+/// - the second `%` of every `%%` (an Obsidian comment, which hides everything up to the
+///   next `%%`, unclosed to the end of the note) is written `&#37;`;
+/// - the second `$` of every `$$` (display maths, which can run on over later lines) is
+///   written `&#36;`;
+/// - a run of three or more backticks or tildes at the start of the text, after spaces,
+///   has its first character written `&#96;` or `&#126;`: there (a line of its own, or a
+///   list item's first text) it would open a code fence that runs to the end of the note.
+///   Elsewhere in the line a fence cannot open, so runs there are kept.
+///
+/// Obsidian's reading view shows every entity as the original character. Entities rather
+/// than backslash escapes: a backslash already in the text before an inserted one would
+/// turn it into a literal backslash and bring the trigger back (`\![x](u)` would become
+/// `\\![x](u)`, an image), and `\<!--` still holds the marker's bytes. An entity is never
+/// part of Markdown structure, whatever comes before it. Plain links (`[text](url)`,
+/// `[[Note]]`) are left as written: they fetch nothing until clicked. The function is
+/// idempotent (it never writes a trigger), and `merge::plain_form` undoes every escape it
+/// writes.
 pub(super) fn neutralise_generated(s: &str) -> String {
-    s.replace('<', "&lt;").replace("![", "!&#91;")
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        let html = c == '<'
+            && chars
+                .peek()
+                .is_some_and(|n| n.is_ascii_alphabetic() || matches!(n, '/' | '!' | '?'));
+        if html {
+            out.push_str("&lt;");
+        } else {
+            out.push(c);
+        }
+    }
+    let mut out = out
+        .replace("![", "!&#91;")
+        .replace("%%", "%&#37;")
+        .replace("$$", "$&#36;");
+    let start = out.len() - out.trim_start_matches(' ').len();
+    let rest = &out[start..];
+    for (fence, entity) in [("```", "&#96;"), ("~~~", "&#126;")] {
+        if rest.starts_with(fence) {
+            out.replace_range(start..start + 1, entity);
+            break;
+        }
+    }
+    out
 }
 
 /// A YAML double-quoted scalar.

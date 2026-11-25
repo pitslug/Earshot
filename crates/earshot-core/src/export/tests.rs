@@ -901,10 +901,91 @@ fn export_ordinary_prose_with_the_trigger_characters_still_reads_naturally() {
     let r = render(&input(&f), &opts()).unwrap();
     assert!(
         r.region
-            .contains("Costs fell! [Budget] is &lt;5% over, a -> b, and 3 > 2.\n"),
+            .contains("\nCosts fell! [Budget] is <5% over, a -> b, and 3 > 2.\n"),
         "{}",
         r.region
     );
+    // Single markers and short runs are prose too.
+    f.summary.tldr = "Up 5% to $10, a ~ b, `x` and `` y ``.".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    assert!(
+        r.region
+            .contains("\nUp 5% to $10, a ~ b, `x` and `` y ``.\n"),
+        "{}",
+        r.region
+    );
+}
+
+/// Text that would hide the rest of the note if written raw at the start of a line or a
+/// list item's text.
+const HIDING: [&str; 6] = [
+    "%% everything after this is a comment",
+    "```",
+    "~~~~ notes",
+    "  ```rust",
+    "$$ x",
+    "a %%% b $$$ c",
+];
+
+#[test]
+fn export_generated_text_cannot_hide_the_users_text_after_the_region() {
+    for hiding in HIDING {
+        let mut f = fixture();
+        f.summary.tldr = hiding.into();
+        f.summary.enhanced_notes[0].heading = hiding.into();
+        f.summary.enhanced_notes[0].bullets[0].text = hiding.into();
+        f.summary.decisions[0].text = hiding.into();
+        f.summary.action_items[0].owner = hiding.into();
+        f.summary.action_items[0].task = hiding.into();
+        f.summary.action_items[0].due = Some(hiding.into());
+        f.summary.open_questions[0] = hiding.into();
+        f.speakers[1].display_name = hiding.into();
+        f.segments[0].text = hiding.into();
+        let r = render(&input(&f), &opts()).unwrap();
+        let doc = format!("{}\nMy own words after the region.\n", r.to_file());
+        let region = &r.region;
+        assert!(!region.contains("%%"), "{hiding:?}: {region}");
+        assert!(!region.contains("$$"), "{hiding:?}: {region}");
+        // No line of the region, nor a list item's text, opens a fence.
+        for line in region.lines() {
+            let text = line
+                .trim_start_matches(' ')
+                .strip_prefix("- ")
+                .unwrap_or(line)
+                .trim_start_matches(' ');
+            assert!(
+                !text.starts_with("```") && !text.starts_with("~~~"),
+                "{hiding:?}: {line:?}"
+            );
+        }
+        assert!(doc.ends_with("<!-- earshot:end -->\n\nMy own words after the region.\n"));
+        assert_eq!(merge(&doc, &r).unwrap(), doc, "{hiding:?}");
+    }
+    // Mid-line runs cannot open a fence and are kept.
+    let mut f = fixture();
+    f.summary.tldr = "use ``` to fence".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    assert!(r.region.contains("\nuse ``` to fence\n"), "{}", r.region);
+}
+
+#[test]
+fn export_the_generated_escapes_are_idempotent_and_undone_by_the_plain_form() {
+    let samples = [
+        HOSTILE.join(" "),
+        HIDING.join(" "),
+        "```x".to_owned(),
+        "~~~".to_owned(),
+        "<5% and <b> and &lt;i>".to_owned(),
+    ];
+    for s in samples {
+        let once = text::neutralise_generated(&s);
+        assert_eq!(text::neutralise_generated(&once), once, "{s:?}");
+        assert_eq!(
+            merge::plain_form(&once),
+            merge::plain_form(&s),
+            "{s:?} -> {once:?}"
+        );
+    }
 }
 
 #[test]

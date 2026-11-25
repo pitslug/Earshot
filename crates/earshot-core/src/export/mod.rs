@@ -25,12 +25,15 @@
 //! Escaping rule (T14.28): generated text (summary fields, speaker names and transcript
 //! lines, all of which can come from a model, a recogniser or another computer) cannot
 //! form an image or embed (`![...](...)`, `![[...]]`), raw HTML or an HTML comment, so
-//! opening a note never fetches anything: every `<` is written `&lt;` and the `[` of
-//! every `![` is written `&#91;`. Entities, not backslash escapes, because a backslash
-//! already in the text would cancel an inserted one; Obsidian's reading view shows both
-//! entities as the original characters. Plain links and wikilinks are kept (they fetch
-//! nothing until clicked). The user's own notes are the user's text and are written as
-//! typed, with only the `<!--` rule applied.
+//! opening a note never fetches anything, and cannot hide the rest of the note behind an
+//! Obsidian comment (`%%`), a code fence or display maths (`$$`): a `<` that could start
+//! HTML is written `&lt;`, the `[` of every `![` `&#91;`, and so on (`text::neutralise_generated`
+//! has the whole list). Entities, not backslash escapes, because a backslash already in
+//! the text would cancel an inserted one; Obsidian's reading view shows every entity as
+//! the original character. Plain links and wikilinks are kept (they fetch nothing until
+//! clicked). The user's own notes are the user's text and are written as typed, with only
+//! the `<!--` rule applied. An accepted limit: third-party plugins that run inline code
+//! spans (for example Dataview inline queries) are not neutralised against.
 //!
 //! The frontmatter is written by hand, not by a YAML library: strings are double-quoted
 //! with escapes, and merging works on top-level key blocks (a key line plus its indented
