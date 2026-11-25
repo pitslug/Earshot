@@ -277,13 +277,21 @@ impl TrackEmitter {
     /// A raw mic could not be re-opened raw at `qpc` and records the default stream from now on
     /// (T12.36): one note on this track.
     pub fn raw_fell_back(&mut self, qpc: u64, sink: &mut dyn CaptureSink) {
+        self.note(qpc, EndpointWarning::RawMicRefused, sink);
+    }
+
+    /// A raw mic that had fallen back was opened raw again at `qpc` (T12.36a): one note on this
+    /// track, after the re-open's `DeviceChanged` marker.
+    pub fn raw_restored(&mut self, qpc: u64, sink: &mut dyn CaptureSink) {
+        self.note(qpc, EndpointWarning::RawMicRestored, sink);
+    }
+
+    fn note(&mut self, qpc: u64, warning: EndpointWarning, sink: &mut dyn CaptureSink) {
         sink.discontinuity(
             self.track,
             Discontinuity {
                 at: DeviceTime::from_ticks(qpc),
-                kind: DiscontinuityKind::Note {
-                    warning: EndpointWarning::RawMicRefused,
-                },
+                kind: DiscontinuityKind::Note { warning },
             },
         );
     }
@@ -483,6 +491,10 @@ impl<E> TrackObserver for EmitterTrack<E> {
 
     fn raw_fell_back(&mut self, qpc: u64) {
         self.emitter.raw_fell_back(qpc, &mut self.sink);
+    }
+
+    fn raw_restored(&mut self, qpc: u64) {
+        self.emitter.raw_restored(qpc, &mut self.sink);
     }
 
     fn track_ended(&mut self, qpc: u64, _hresult: i32) {
@@ -1300,6 +1312,51 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn live_a_raw_mic_back_to_raw_is_a_device_change_then_one_note() {
+        // T12.36a: the move onto the raw stream is a re-open (the stream changed), then the one
+        // note that says raw is back.
+        let (tx, rx) = mpsc::channel::<LiveMsg<()>>();
+        let mut track = EmitterTrack {
+            emitter: emitter(),
+            sink: ChannelSink::new(tx),
+        };
+        TrackObserver::packet(&mut track, pkt(T0, 480), &ramp(480));
+        let opened = ReopenOutcome::Opened {
+            device_name: "Mic",
+            device_format: fmt48(),
+            rate: 48_000,
+            endpoint: None,
+            gave_up: None,
+        };
+        TrackObserver::reopened(&mut track, T0 + PQ, ReopenReason::RawRestored, opened);
+        TrackObserver::raw_restored(&mut track, T0 + PQ);
+        let events: Vec<CaptureEvent> = rx
+            .try_iter()
+            .map(|m| match m {
+                LiveMsg::Event(e) => e,
+                LiveMsg::Failed(()) => panic!("a return to raw is not a failed capture"),
+            })
+            .collect();
+        let kinds: Vec<DiscontinuityKind> = markers(&events).into_iter().map(|d| d.kind).collect();
+        assert!(
+            matches!(
+                kinds.as_slice(),
+                [
+                    DiscontinuityKind::DeviceChanged {
+                        device_name: Some(n),
+                        warning: None,
+                        ..
+                    },
+                    DiscontinuityKind::Note {
+                        warning: EndpointWarning::RawMicRestored,
+                    },
+                ] if n == "Mic"
+            ),
+            "{kinds:?}"
+        );
     }
 
     #[test]

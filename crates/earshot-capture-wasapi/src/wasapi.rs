@@ -78,7 +78,7 @@ use crate::call_output::{CallOutput, CallOutputFollower};
 use crate::devices::{AudioDevice, DeviceChoice, DeviceFallback, DeviceList, DeviceSelection};
 use crate::endpoint::{EndpointProperties, HandsFreeMic, MicProcessing, RawRefusal, raw_refusal};
 use crate::follow::{
-    self, DefaultDeviceChange, Flow, OpenFailure, ReopenReason, Role, StreamFollower,
+    self, DefaultDeviceChange, Flow, OpenFailure, RawRetry, ReopenReason, Role, StreamFollower,
 };
 use crate::format::{
     ChannelMode, FormatError, MixFormat, check_delivered, conversion_target, float_waveformat_bytes,
@@ -1810,9 +1810,14 @@ struct Track<S, O> {
     /// re-open and the track never mixes raw and processed audio.
     processing: MicProcessing,
     /// A raw mic whose re-open cannot get raw asks for the default stream instead and keeps
-    /// it (T12.36, the live source); `false` for the raw recorder, whose refused re-open
-    /// leaves silence.
+    /// it until a timed try opens it raw again (T12.36, T12.36a; the live source); `false` for
+    /// the raw recorder, whose refused re-open leaves silence.
     raw_fallback: bool,
+    /// When a live mic that fell back tries raw again (T12.36a); idle otherwise.
+    raw_retry: RawRetry,
+    /// The live start already fell back to the default stream: the first pass of the loop
+    /// schedules the first raw try ([`Track::try_raw`]).
+    raw_from_start: bool,
     stream: Option<S>,
     follower: StreamFollower,
     /// The last stream error that was neither a device loss nor a programming fault (T9.21):
@@ -1845,6 +1850,8 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             channels,
             processing: MicProcessing::Default,
             raw_fallback: false,
+            raw_retry: RawRetry::default(),
+            raw_from_start: false,
             stream: Some(stream),
             follower,
             stream_error: None,
@@ -1862,12 +1869,16 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     }
 
     /// The live source's mic (T12.36): a re-open that cannot get a raw stream
-    /// ([`CaptureError::raw_falls_back`]) opens the default stream at once and keeps it for
-    /// the rest of the capture, telling the observer once
-    /// ([`TrackObserver::raw_fell_back`]), so a setting never costs the recording. Without
-    /// it a refused raw re-open leaves the track without a stream (the raw recorder).
-    fn with_raw_fallback(mut self) -> Self {
+    /// ([`CaptureError::raw_falls_back`]) opens the default stream at once, telling the
+    /// observer ([`TrackObserver::raw_fell_back`]), so a setting never costs the recording.
+    /// Without it a refused raw re-open leaves the track without a stream (the raw recorder).
+    ///
+    /// After a fallback, here or at the start (`fell_back_at_start`: the start opened the
+    /// default stream because raw failed), the track keeps the default stream across re-opens
+    /// and tries raw again on the [`RawRetry`] schedule ([`Track::try_raw`], T12.36a).
+    fn with_raw_fallback(mut self, fell_back_at_start: bool) -> Self {
         self.raw_fallback = true;
+        self.raw_from_start = fell_back_at_start && self.processing == MicProcessing::Default;
         self
     }
 
@@ -1921,6 +1932,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             let _ = old.drain(&mut |p, s| observer.packet(p, s));
         }
         self.end_reported = true;
+        self.raw_retry.stop();
         let hresult = self.stream_error.map_or(0, |(_, hr)| hr);
         self.observer.track_ended(now, hresult);
     }
@@ -2002,7 +2014,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 );
                 self.stream = Some(s);
                 if fell_back {
-                    self.observer.raw_fell_back(now);
+                    self.raw_fell_back(now);
                 }
             }
             Err(e) => {
@@ -2016,20 +2028,92 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 self.observer
                     .reopened(now, reason, ReopenOutcome::Failed { error: &error });
                 if fell_back {
-                    self.observer.raw_fell_back(now);
+                    self.raw_fell_back(now);
                 }
                 if matches!(e, CaptureError::RawMic(_)) {
                     self.observer.raw_refused(now);
                 }
                 self.end_if_over(now);
-                if self.follower.give_up_chosen(now)
-                    && let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
-                    && !std::mem::take(&mut self.followed_call)
-                {
-                    self.gave_up = Some(name);
+                if self.follower.give_up_chosen(now) {
+                    // Giving the device up ends the tries for raw on it (T12.36a); a later
+                    // fallback on the default starts them again.
+                    self.raw_retry.stop();
+                    if let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
+                        && !std::mem::take(&mut self.followed_call)
+                    {
+                        self.gave_up = Some(name);
+                    }
                 }
             }
         }
+    }
+
+    /// The live mic fell back to the default stream at `now` (T12.36): the observer hears it
+    /// once and the tries for raw start ([`RawRetry::fell_back`]).
+    fn raw_fell_back(&mut self, now: u64) {
+        self.raw_retry.fell_back(now);
+        self.observer.raw_fell_back(now);
+    }
+
+    /// For a live mic that fell back to the default stream (T12.36a): when a try is due
+    /// ([`RawRetry`]), opens the same endpoint raw at the track's rate and starts it before the
+    /// running stream is touched, as [`move_output`](Self::move_output) does, so a refused try
+    /// changes nothing (the next one waits longer) and an accepted one swaps the streams with
+    /// the least gap: the observer hears the move as a re-open
+    /// ([`ReopenReason::RawRestored`]), then [`TrackObserver::raw_restored`], and the track is
+    /// raw again (a later refusal falls back again). Nothing happens while the track has no
+    /// stream (the follower re-opens it first) or after it ended. Never for the raw recorder.
+    fn try_raw<D: LoopDriver<Stream = S>>(&mut self, driver: &mut D, now: u64) {
+        if std::mem::take(&mut self.raw_from_start) {
+            self.raw_retry.fell_back(now);
+            return;
+        }
+        if !self.raw_fallback
+            || self.processing == MicProcessing::Raw
+            || self.stream.is_none()
+            || self.follower.ended()
+            || !self.raw_retry.due(now)
+        {
+            return;
+        }
+        let opened = driver
+            .open(
+                self.endpoint,
+                self.device.id(),
+                Some(self.rate),
+                self.channels,
+                MicProcessing::Raw,
+            )
+            .and_then(|s| {
+                s.start()?;
+                Ok(s)
+            });
+        let Ok(new) = opened else {
+            self.raw_retry.refused(now);
+            return;
+        };
+        if let Some(mut old) = self.stream.take() {
+            let _ = old.stop();
+            let observer = &mut self.observer;
+            observer.set_horizon(now.saturating_add(QPC_LIMIT_MARGIN));
+            let _ = old.drain(&mut |p, s| observer.packet(p, s));
+        }
+        self.follower.opened(new.device_id().map(str::to_owned));
+        self.processing = MicProcessing::Raw;
+        self.raw_retry.stop();
+        self.observer.reopened(
+            now,
+            ReopenReason::RawRestored,
+            ReopenOutcome::Opened {
+                device_name: new.device_name(),
+                device_format: new.device_format(),
+                rate: new.format().sample_rate,
+                endpoint: new.endpoint_properties(),
+                gave_up: None,
+            },
+        );
+        self.stream = Some(new);
+        self.observer.raw_restored(now);
     }
 
     /// Moves a device loopback onto the output a call plays on (T6.15). The new stream is opened
@@ -2414,6 +2498,7 @@ fn run_capture<D: LoopDriver, M: TrackObserver, L: TrackObserver>(
         if let Some(reason) = mic.follower.take_reopen(now) {
             mic.reopen(driver, reason, now);
         }
+        mic.try_raw(driver, now);
         if let Some(lb) = loopback.as_deref_mut()
             && let Some(reason) = lb.follower.take_reopen(now)
         {
@@ -2700,7 +2785,10 @@ fn track_info(s: &CaptureStream<'_>) -> Result<TrackInfo, CaptureError> {
 ///   refuses raw, at the start or on a re-open, records the default stream instead: at the
 ///   start [`raw_refused`](Self::raw_refused) says why, on a re-open one
 ///   `EndpointWarning::RawMicRefused` note follows, and the track keeps the default stream
-///   for the rest of the capture. (The raw recorder refuses instead, [`record_raw`].)
+///   across re-opens while it tries raw again on a backing-off schedule (T12.36a,
+///   [`follow::RawRetry`]); a try that opens raw moves the track onto it (a `DeviceChanged`
+///   marker, then one `EndpointWarning::RawMicRestored` note). (The raw recorder refuses
+///   instead and never retries, [`record_raw`].)
 /// - Frames: `f32` at the device's native rate (normally 48 kHz); the pipeline
 ///   resamples (PLAN.md 3.3). The mic is mono; the reference keeps the loopback's
 ///   channels interleaved (stereo on a desktop; `TrackInfo::channels`), and consumers
@@ -3029,14 +3117,16 @@ fn live_capture(
         .emitter
         .with_mic_warnings(started.mic_properties.as_ref());
     let lb_obs = lb_info.as_ref().map(|i| emitter(TrackId::Reference, i));
+    let raw_refused_at_start = started.raw_refused.is_some();
     if ready.send(Ok(started)).is_err() {
         return;
     }
     // A raw mic stays raw across re-opens, and one that cannot be re-opened raw records the
-    // default stream (T12.36).
+    // default stream (T12.36) and tries raw again from time to time (T12.36a), as does a mic
+    // whose start already fell back.
     let mut mic = mic_track(mic_stream, request.mic_role, mic_device, mic_obs)
         .with_processing(mic_processing)
-        .with_raw_fallback();
+        .with_raw_fallback(raw_refused_at_start);
     // `opened` and `lb_obs` are both present exactly when a loopback was requested.
     let mut lb = opened.zip(lb_obs).map(|(o, obs)| o.into_track(obs));
     let mut driver = Wasapi {
@@ -3455,6 +3545,72 @@ mod device_tests {
                 eprintln!("refused: {refused}");
             }
         }
+    }
+
+    /// T12.36a: which raw opens of the default mic a re-open's request is refused, on this
+    /// machine: raw as the start opens it (the mix format as it is), raw at the track's rate as a
+    /// re-open asks (no conversion when the rate is the mix rate), raw at another rate (the audio
+    /// engine converting), each while the first raw stream is held and after it is closed, and
+    /// raw beside a processed stream (as the timed raw try opens it). Prints each outcome as the
+    /// failed call and HRESULT number only. Asserts only what every machine must give.
+    #[test]
+    #[ignore = "opens the microphone: cargo test -p earshot-capture-wasapi raw_reopen_requests_on_the_default_mic -- --ignored --nocapture"]
+    fn raw_reopen_requests_on_the_default_mic() {
+        let com = ComApartment::init_mta().unwrap();
+        let mic = Endpoint::Microphone(MicRole::Console);
+        let says = CaptureStream::open_default(&com, mic)
+            .unwrap()
+            .endpoint_properties()
+            .map(crate::endpoint::raw_support);
+        eprintln!("raw support: {says:?}");
+        let outcome = |r: &Result<CaptureStream<'_>, CaptureError>| match r {
+            Ok(s) => format!(
+                "opened ({} Hz, {} ch)",
+                s.format().sample_rate,
+                s.format().channels
+            ),
+            Err(e) => format!("refused: {}", e.detail()),
+        };
+        let first = CaptureStream::open_with(&com, mic, None, None, None, MicProcessing::Raw);
+        eprintln!("raw, mix format as it is: {}", outcome(&first));
+        let Ok(first) = first else {
+            assert!(
+                !matches!(says, Some(crate::endpoint::RawSupport::Supported)),
+                "a mic that says it supports raw opens raw"
+            );
+            return;
+        };
+        first.start().unwrap();
+        let rate = first.format().sample_rate;
+        let other = if rate == 48_000 { 44_100 } else { 48_000 };
+        let raw_at =
+            |r: u32| CaptureStream::open_with(&com, mic, None, Some(r), None, MicProcessing::Raw);
+        let same_held = raw_at(rate);
+        eprintln!("raw at {rate} Hz, first held: {}", outcome(&same_held));
+        let other_held = raw_at(other);
+        eprintln!("raw at {other} Hz, first held: {}", outcome(&other_held));
+        drop((same_held, other_held));
+        first.stop().unwrap();
+        drop(first);
+        let same = raw_at(rate);
+        eprintln!("raw at {rate} Hz, first closed: {}", outcome(&same));
+        assert!(same.is_ok(), "the start's own format opens raw again");
+        drop(same);
+        let other_closed = raw_at(other);
+        eprintln!(
+            "raw at {other} Hz, first closed: {}",
+            outcome(&other_closed)
+        );
+        drop(other_closed);
+        let processed =
+            CaptureStream::open_with(&com, mic, None, Some(rate), None, MicProcessing::Default)
+                .unwrap();
+        processed.start().unwrap();
+        let beside = raw_at(rate);
+        eprintln!(
+            "raw at {rate} Hz beside a processed stream: {}",
+            outcome(&beside)
+        );
     }
 
     #[test]

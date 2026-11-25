@@ -1496,6 +1496,30 @@ fn meeting_events_provisional_words_say_nothing_when_nobody_asked_for_them() {
     assert!(m.map(&report, now).is_empty());
 }
 
+/// T12.36a: a raw mic that fell back keeps trying raw; when it is raw again the banner goes, and
+/// a later fallback shows it again.
+#[test]
+fn meeting_events_a_raw_mic_back_to_raw_clears_its_banner() {
+    let mut m = EventMapper::new(CaptureMode::Call);
+    let now = Instant::now();
+    let refused = RuntimeEvent::Warning(RuntimeWarning::RawMicRefused);
+    let restored = RuntimeEvent::Warning(RuntimeWarning::RawMicRestored);
+    let shown = |events: Vec<MeetingEvent>| matches!(events.as_slice(), [MeetingEvent::Warning { key, .. }] if key == RAW_MIC_KEY);
+    assert!(shown(m.map(&refused, now)));
+    assert_eq!(
+        m.map(&restored, now),
+        vec![MeetingEvent::WarningCleared {
+            key: RAW_MIC_KEY.into(),
+        }]
+    );
+    assert!(
+        shown(m.map(&refused, now)),
+        "a later fallback shows it again"
+    );
+    let (_, _, message) = banner(&RuntimeWarning::RawMicRefused);
+    assert!(message.contains("keeps trying"), "{message}");
+}
+
 /// T12.69: a live load waiting for the start-up NPU compile shows its own banner in fixed copy,
 /// which goes when the load starts.
 #[test]

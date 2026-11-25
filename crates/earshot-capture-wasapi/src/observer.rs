@@ -77,11 +77,22 @@ pub trait TrackObserver {
     }
 
     /// A live mic asked for raw processing (T12.36) could not be re-opened raw at `qpc`, so the
-    /// track asked for the default stream instead and keeps it for the rest of the capture.
-    /// Called once, right after the [`reopened`](Self::reopened) of that attempt (whether the
-    /// default stream opened or not). Never called for the raw recorder's mic, which refuses
-    /// ([`raw_refused`](Self::raw_refused)). Default: ignored.
+    /// track asked for the default stream instead and keeps it until a later try opens it raw
+    /// again ([`raw_restored`](Self::raw_restored), T12.36a). Called once per fallback, right
+    /// after the [`reopened`](Self::reopened) of that attempt (whether the default stream opened
+    /// or not). Never called for the raw recorder's mic, which refuses
+    /// ([`raw_refused`](Self::raw_refused)), nor for a mic whose raw request falls back quietly.
+    /// Default: ignored.
     fn raw_fell_back(&mut self, qpc: u64) {
+        let _ = qpc;
+    }
+
+    /// A live mic that had fallen back to the default stream ([`raw_fell_back`](Self::raw_fell_back))
+    /// was opened raw again at `qpc` and the track moved onto the raw stream (T12.36a). Called
+    /// once per return, right after the [`reopened`](Self::reopened) that reported the move
+    /// ([`ReopenReason::RawRestored`]); a refused try changes nothing and calls nothing. Never
+    /// called for a mic whose raw request falls back quietly. Default: ignored.
+    fn raw_restored(&mut self, qpc: u64) {
         let _ = qpc;
     }
 
@@ -116,6 +127,7 @@ mod tests {
             ReopenReason::StreamError,
             ReopenReason::Retry,
             ReopenReason::CallOutputMoved,
+            ReopenReason::RawRestored,
         ] {
             assert!(reopen_is_reported(reason, true), "{reason:?}");
         }

@@ -286,6 +286,8 @@ struct Ear {
     heard: Vec<Heard>,
     /// When the track said a raw re-open fell back to the default stream (T12.36).
     fell_back: Vec<u64>,
+    /// When the track said a fallen-back mic is raw again (T12.36a).
+    restored: Vec<u64>,
 }
 
 impl Ear {
@@ -344,6 +346,10 @@ impl TrackObserver for Ear {
 
     fn raw_fell_back(&mut self, at: u64) {
         self.fell_back.push(at);
+    }
+
+    fn raw_restored(&mut self, at: u64) {
+        self.restored.push(at);
     }
 }
 
@@ -1182,7 +1188,7 @@ fn drive_mic<O: TrackObserver>(
     )
     .with_processing(processing);
     if raw_fallback {
-        mic = mic.with_raw_fallback();
+        mic = mic.with_raw_fallback(false);
     }
     let mut lb = Track::new(
         lb_stream,
@@ -1429,8 +1435,8 @@ fn capture_loop_a_live_raw_mic_reopened_on_a_mic_without_raw_records_the_default
 #[test]
 fn capture_loop_a_live_mic_that_fell_back_keeps_the_default_stream() {
     // After the fallback the mic is lost twice more; even once a raw mic is back (from 1 s)
-    // the track keeps the default stream it fell back to, so a meeting holds at most one
-    // switch of processing and one warning.
+    // its re-opens keep the default stream it fell back to: only the timed try for raw
+    // (T12.36a, first one 10 s after the fallback, past this 4 s take) goes back to raw.
     let losses = [
         Fault::on(
             Call::Drain(TrackId::Mic),
@@ -1672,6 +1678,258 @@ fn capture_loop_a_device_lost_inside_the_raw_calls_is_retried_raw() {
     );
 }
 
+/// Runs the loop for `seconds` on a fake live mic (raw fallback on) opened with `processing`
+/// and a default-device loopback; `fell_back_at_start` as `Track::with_raw_fallback` takes it.
+/// `each(now, platform)` runs on every pass, before the loop decides, to script default-device
+/// changes and raw support. Raw is supported unless `each` says otherwise.
+fn run_live_scripted(
+    processing: MicProcessing,
+    fell_back_at_start: bool,
+    seconds: u64,
+    faults: &[Fault],
+    mut each: impl FnMut(u64, &Platform),
+) -> Run {
+    let platform = Rc::new(Platform {
+        faults: faults.to_vec(),
+        ..Platform::default()
+    });
+    let mut driver = FakeDriver {
+        platform: Rc::clone(&platform),
+    };
+    let mic_endpoint = Endpoint::Microphone(MicRole::Console);
+    let mic_stream = FakeStream::new(&platform, mic_endpoint, 1);
+    let lb_stream = FakeStream::new(&platform, Endpoint::Loopback, 2);
+    mic_stream.start().unwrap();
+    lb_stream.start().unwrap();
+    let mut mic = Track::new(
+        mic_stream,
+        mic_endpoint,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Capture, Role::Console, true),
+        Ear::default(),
+    )
+    .with_processing(processing)
+    .with_raw_fallback(fell_back_at_start);
+    let mut lb = Track::new(
+        lb_stream,
+        Endpoint::Loopback,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Render, Role::Console, true),
+        Ear::default(),
+    );
+    let end = seconds * QPC_UNITS_PER_SEC;
+    let result = run_capture(&mut driver, &mut mic, Some(&mut lb), None, |now| {
+        each(now, &platform);
+        now >= end
+    });
+    Run {
+        result,
+        mic: mic.observer,
+        reference: lb.observer,
+        platform,
+    }
+}
+
+/// A new default mic, as Windows announces it.
+fn new_default_mic(platform: &Platform, id: &str) {
+    platform.changes.borrow_mut().push(DefaultDeviceChange {
+        flow: Flow::Capture,
+        role: Role::Console,
+        device_id: Some(id.into()),
+    });
+}
+
+/// When each reported re-open of `ear` happened, with its reason and whether it opened.
+fn reopens_at(ear: &Ear) -> Vec<(u64, ReopenReason, bool)> {
+    ear.heard
+        .iter()
+        .filter_map(|h| match h {
+            Heard::Reopened { at, reason, opened }
+                if crate::observer::reopen_is_reported(*reason, *opened) =>
+            {
+                Some((*at, *reason, *opened))
+            }
+            Heard::Reopened { .. } | Heard::Audio { .. } | Heard::Ended { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn capture_loop_a_live_raw_mic_reopened_raw_after_a_stream_error_stays_raw() {
+    // T12.36a, the observed sequence: a raw mic, a stream error that is not a device loss,
+    // then a raw re-open that is accepted. The track stays raw and nothing is said.
+    let error = Fault::on(Call::Drain(TrackId::Mic), 50, AUDCLNT_E_CPUUSAGE_EXCEEDED);
+    let run = run_live_scripted(MicProcessing::Raw, false, 3, &[error], |_, _| {});
+    assert!(run.result.is_ok());
+    assert_eq!(asked_for(&run.platform, TrackId::Mic), [MicProcessing::Raw]);
+    assert_eq!(run.mic.reopens(), [(ReopenReason::StreamError, true)]);
+    assert!(run.mic.fell_back.is_empty());
+    assert!(run.mic.restored.is_empty());
+}
+
+#[test]
+fn capture_loop_a_live_mic_that_fell_back_tries_raw_again_until_it_opens() {
+    // T12.36a: raw is refused at a default-device change (announced at 1 s, re-opened on the
+    // next pass) and stays refused until 15 s. The fallback is said once; the try 10 s later is
+    // refused and changes nothing (no re-open, no note); the try 20 s after that opens raw: one
+    // re-open onto it, one note, and the track is raw again with no gap in the recording.
+    let refused_until = 15 * QPC_UNITS_PER_SEC;
+    let run = run_live_scripted(MicProcessing::Raw, false, 40, &[], |now, p| {
+        if now == QPC_UNITS_PER_SEC {
+            p.mic_without_raw.set(true);
+            new_default_mic(p, "another-mic");
+        }
+        if now >= refused_until {
+            p.mic_without_raw.set(false);
+        }
+    });
+    assert!(run.result.is_ok());
+    let first = QPC_UNITS_PER_SEC + WAIT_QPC;
+    assert_eq!(run.mic.fell_back, [first]);
+    let tried = first + follow::RAW_RETRY_INTERVAL_QPC;
+    let back = tried + 2 * follow::RAW_RETRY_INTERVAL_QPC;
+    assert_eq!(
+        asked_for(&run.platform, TrackId::Mic),
+        [
+            MicProcessing::Raw,
+            MicProcessing::Default,
+            MicProcessing::Raw,
+            MicProcessing::Raw,
+        ]
+    );
+    assert_eq!(
+        reopens_at(&run.mic),
+        [
+            (first, ReopenReason::DefaultDeviceChanged, true),
+            (back, ReopenReason::RawRestored, true),
+        ]
+    );
+    assert_eq!(run.mic.restored, [back]);
+    assert_eq!(
+        run.mic.audio(),
+        40 * QPC_UNITS_PER_SEC,
+        "no gap: each new stream opens before the old one closes"
+    );
+    // Raw again: no more tries.
+    assert_eq!(run.platform.count(Call::Open(TrackId::Mic)), 4);
+}
+
+#[test]
+fn capture_loop_a_live_mic_back_to_raw_falls_back_again_and_says_so_again() {
+    // T12.36a: after raw is back, a later refusal at a device change falls back and is said
+    // again, and the tries start over from the first wait.
+    let run = run_live_scripted(MicProcessing::Raw, false, 40, &[], |now, p| {
+        let s = QPC_UNITS_PER_SEC;
+        if now == s || now == 20 * s {
+            p.mic_without_raw.set(true);
+            new_default_mic(p, if now == s { "mic-b" } else { "mic-c" });
+        }
+        if now == 5 * s || now == 25 * s {
+            p.mic_without_raw.set(false);
+        }
+    });
+    assert!(run.result.is_ok());
+    let s = QPC_UNITS_PER_SEC;
+    let r = follow::RAW_RETRY_INTERVAL_QPC;
+    let w = WAIT_QPC;
+    assert_eq!(run.mic.fell_back, [s + w, 20 * s + w]);
+    assert_eq!(run.mic.restored, [s + w + r, 20 * s + w + r]);
+    assert_eq!(run.mic.audio(), 40 * s);
+}
+
+#[test]
+fn capture_loop_a_live_mic_that_fell_back_at_the_start_tries_raw_too() {
+    // T12.36a: the start opened the default stream because raw failed; the track tries raw on
+    // the same schedule, from its first pass.
+    let run = run_live_scripted(MicProcessing::Default, true, 12, &[], |_, _| {});
+    assert!(run.result.is_ok());
+    let first_pass = WAIT_QPC;
+    let back = first_pass + follow::RAW_RETRY_INTERVAL_QPC;
+    assert_eq!(asked_for(&run.platform, TrackId::Mic), [MicProcessing::Raw]);
+    assert_eq!(
+        reopens_at(&run.mic),
+        [(back, ReopenReason::RawRestored, true)]
+    );
+    assert_eq!(run.mic.restored, [back]);
+    assert!(run.mic.fell_back.is_empty(), "the start said it already");
+}
+
+#[test]
+fn capture_loop_a_live_mic_tries_raw_only_when_raw_was_asked_for() {
+    // The live source's processed mic (raw never asked for) and a raw mic that never fell
+    // back open nothing on their own.
+    for (processing, fell_back_at_start) in
+        [(MicProcessing::Default, false), (MicProcessing::Raw, false)]
+    {
+        let run = run_live_scripted(processing, fell_back_at_start, 30, &[], |_, _| {});
+        assert!(run.result.is_ok());
+        assert_eq!(
+            run.platform.count(Call::Open(TrackId::Mic)),
+            0,
+            "{processing:?}"
+        );
+        assert!(run.mic.restored.is_empty());
+    }
+}
+
+#[test]
+fn capture_loop_a_raw_try_waits_while_the_mic_has_no_stream() {
+    // T12.36a: a mic that fell back and then lost its device (every open fails as a gone
+    // device from 2 s on) tries no raw while it has no stream: only the follower's re-opens,
+    // all asking for the default stream it fell back to.
+    let gone = Fault::from(
+        Call::Open(TrackId::Mic),
+        3,
+        follow::AUDCLNT_E_DEVICE_INVALIDATED,
+    );
+    let lost = Fault::from(
+        Call::Drain(TrackId::Mic),
+        100,
+        follow::AUDCLNT_E_DEVICE_INVALIDATED,
+    );
+    let run = run_live_scripted(MicProcessing::Raw, false, 15, &[gone, lost], |now, p| {
+        if now == QPC_UNITS_PER_SEC {
+            p.mic_without_raw.set(true);
+            new_default_mic(p, "mic-b");
+        }
+    });
+    assert!(run.result.is_ok());
+    assert_eq!(run.mic.fell_back, [QPC_UNITS_PER_SEC + WAIT_QPC]);
+    let asked = asked_for(&run.platform, TrackId::Mic);
+    assert_eq!(
+        asked,
+        [MicProcessing::Raw, MicProcessing::Default],
+        "{asked:?}"
+    );
+    assert!(
+        run.platform.count(Call::Open(TrackId::Mic)) > 3,
+        "the follower kept re-opening"
+    );
+    assert!(run.mic.restored.is_empty());
+}
+
+#[test]
+fn capture_loop_the_raw_recorder_never_tries_raw_on_its_own() {
+    // The raw recorder refuses and never falls back, so it has nothing to try again: a mic
+    // without raw for 15 s of a 30 s take asks only for raw, every attempt a follower re-open.
+    let (result, mic, _, platform) = drive_default_changes(
+        MicProcessing::Raw,
+        15 * QPC_UNITS_PER_SEC,
+        30,
+        &[],
+        Ear::default(),
+    );
+    assert!(result.is_ok());
+    let asked = asked_for(&platform, TrackId::Mic);
+    assert!(asked.iter().all(|p| *p == MicProcessing::Raw), "{asked:?}");
+    assert!(mic.restored.is_empty() && mic.fell_back.is_empty());
+    assert!(
+        !mic.reopens()
+            .iter()
+            .any(|(reason, _)| *reason == ReopenReason::RawRestored)
+    );
+}
+
 #[test]
 fn capture_loop_the_live_start_keeps_a_chosen_mic_that_refuses_raw() {
     // What each open was asked for: (device, processing).
@@ -1880,7 +2138,7 @@ fn raw_mic_is_made_only_by_the_raw_recorder() {
     assert_eq!(live.matches("== MicProcessing::Raw").count(), 1);
     assert!(!live.contains("open_with("));
     assert_eq!(live.matches(".with_processing(").count(), 1);
-    assert_eq!(live.matches(".with_raw_fallback()").count(), 1);
+    assert_eq!(live.matches(".with_raw_fallback(").count(), 1);
     // The shared default openers pass the default processing.
     let openers = between("fn open_chosen", "fn open_chosen_as");
     assert!(openers.contains("MicProcessing::Default"));
@@ -1891,7 +2149,7 @@ fn raw_mic_is_made_only_by_the_raw_recorder() {
         "two callers: record_raw and the live source"
     );
     assert_eq!(
-        shipped.matches(".with_raw_fallback()").count(),
+        shipped.matches(".with_raw_fallback(").count(),
         1,
         "only the live source falls back"
     );

@@ -218,9 +218,14 @@ pub enum EndpointWarning {
     TrackEnded,
     /// The microphone was to be recorded without Windows' own signal processing (T12.36, the
     /// Audio page's raw setting), but a re-open could not get that stream, so the track records
-    /// the default (processed) stream for the rest of the capture. Sent as a `Note` on the mic
-    /// track right after the re-open's `DeviceChanged` marker, at most once per capture.
+    /// the default (processed) stream until a later try opens it raw again
+    /// ([`EndpointWarning::RawMicRestored`], T12.36a). Sent as a `Note` on the mic track right
+    /// after the re-open's `DeviceChanged` marker, once per fallback.
     RawMicRefused,
+    /// A microphone that had fallen back to the default stream ([`EndpointWarning::RawMicRefused`])
+    /// was opened raw again and the track records the raw stream from here (T12.36a). Sent as a
+    /// `Note` on the mic track right after the move's `DeviceChanged` marker, once per return.
+    RawMicRestored,
 }
 
 /// Why a source ended.
