@@ -543,6 +543,42 @@ fn edit_speaker_sample_is_the_longest_segment_from_the_recording() {
     );
 }
 
+/// T14.25: the sample decodes only its own span, and holds exactly the samples the whole
+/// recording's read gives for that span, capped or not.
+#[test]
+fn edit_speaker_sample_reads_only_its_span_as_the_whole_read_gives_it() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 320);
+    let s = remote_speakers(&svc, m)[0].clone();
+    let segment = view(&svc, m)
+        .segments
+        .into_iter()
+        .find(|x| x.speaker_id == Some(s.id))
+        .unwrap();
+    let file = svc
+        .store()
+        .audio_files(m)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.track_id == segment.track)
+        .unwrap();
+    let path = svc.data.resolve(&file.path).unwrap();
+    let (rate, audio) = earshot_store::read_flac(&path).unwrap();
+    let at = |ms: u64| usize::try_from(ms * u64::from(rate) / 1000).unwrap();
+    for max_ms in [1, 100, 60_000] {
+        let sample = speaker_sample(&svc, m, s.id, max_ms).unwrap().unwrap();
+        let (from, to) = (at(sample.start.as_millis()), at(sample.end.as_millis()));
+        assert!(to > from && to <= audio.len(), "{max_ms}");
+        let expected: Vec<i16> = audio[from..to]
+            .iter()
+            .map(|&x| earshot_core::audio::f32_to_i16(x))
+            .collect();
+        assert_eq!(sample.samples, expected, "{max_ms}");
+        assert!(sample.samples.len() < audio.len(), "only the span is held");
+    }
+}
+
 /// Post settings that make the level fakes' model enrollable: its threshold, and
 /// `min_new_speech` (zero for `any`, else the default).
 fn calibrated(any: bool) -> PostConfig {

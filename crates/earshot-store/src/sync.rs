@@ -1049,14 +1049,37 @@ impl Store {
                 if !matches!(row, SyncedRow::Meeting(_))
                     && !row.meta().deleted
                     && let Some(m) = row.meeting()
-                    && crate::repo::synced_by_id(&tx.conn, "meeting", m)?
-                        .is_some_and(|l| l.meta().deleted)
+                    // A local meeting row that does not read is judged by its `deleted` column
+                    // (T14.26).
+                    && match crate::repo::synced_by_id_or_damaged(&tx.conn, "meeting", m)? {
+                        Ok(l) => l.is_some_and(|l| l.meta().deleted),
+                        Err(()) => crate::repo::row_reads_deleted(&tx.conn, "meeting", m)?,
+                    }
                 {
                     unhold(tx, inc)?;
                     out.deletions_kept += 1;
                     continue;
                 }
-                let local = crate::repo::synced_by_id(&tx.conn, row.table(), row.id())?;
+                // A local row that does not read (T14.26) is replaced by the pulled one, as an
+                // absent row is; only a meeting tombstone here stays final against a live copy.
+                let local = match crate::repo::synced_by_id_or_damaged(
+                    &tx.conn,
+                    row.table(),
+                    row.id(),
+                )? {
+                    Ok(local) => local,
+                    Err(()) => {
+                        if matches!(row, SyncedRow::Meeting(_))
+                            && !row.meta().deleted
+                            && crate::repo::row_reads_deleted(&tx.conn, "meeting", row.id())?
+                        {
+                            unhold(tx, inc)?;
+                            out.ignored += 1;
+                            continue;
+                        }
+                        None
+                    }
+                };
                 // A meeting deletion is final: a live copy edited elsewhere after it (pushed
                 // before that device heard of the deletion, so the relay kept the edit) never
                 // brings the meeting back. The tombstone here is stamped again, after the edit,

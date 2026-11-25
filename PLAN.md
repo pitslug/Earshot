@@ -2683,13 +2683,13 @@ Lane live (`earshot-core` asr, `earshot-runtime` live, `earshot-capture-wasapi`,
 
 Lane store (`earshot-store`, runtime `search.rs`, `retention.rs`, `delete.rs`, `folders.rs`, the sample read in `edit.rs`):
 
-- [ ] T14.24 Search reads text, not whole meetings
+- [x] T14.24 Search reads text, not whole meetings
   - do: a repo read (in `repo_contract`, every implementation) of the texts `MeetingView` would show for a meeting (final else live draft, live rows only, no `words`), used by `search_meetings` with one short lock per meeting and the same matches as today on the existing search tests; an unreadable row is skipped and counted, never a failed search.
   - accept: `cargo test -p earshot-core model`; `cargo test -p earshot-store`; `cargo test -p earshot-runtime search`
-- [ ] T14.25 FLAC reads are bounded
+- [x] T14.25 FLAC reads are bounded
   - do: a speaker sample decodes only up to its end frame (a streaming read), and `read_flac` never allocates more than the file could hold.
   - accept: `cargo test -p earshot-store flac`; `cargo test -p earshot-runtime edit`
-- [ ] T14.26 Small store fixes
+- [x] T14.26 Small store fixes
   - do: retention deletes after a clock step only when two runs in a row agree the audio is due; `delete.rs` reads leases before taking the store lock; a folder's deletion counts `Busy` after commit as done; a meeting with an unreadable segment row can still be deleted.
   - accept: `cargo test -p earshot-store`; `cargo test -p earshot-runtime retention`; `cargo test -p earshot-runtime folders`; `cargo test -p earshot-runtime delete`
 

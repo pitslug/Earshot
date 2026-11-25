@@ -5,8 +5,9 @@ use earshot_core::diar::EmbeddingModelId;
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
     AudioFile, AudioFileRepo, DictionaryRepo, DictionaryWord, ExportRecord, ExportRepo, Folder,
-    FolderRepo, Meeting, MeetingRepo, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
-    SummaryRequest, SummaryRequestRepo, Track, TranscriptPass, VaultPath,
+    FolderRepo, Meeting, MeetingRepo, Note, RepoError, RequestState, SegmentRow, ShownLine,
+    ShownLines, ShownSummary, Speaker, Summary, SummaryRequest, SummaryRequestRepo, Track,
+    TranscriptPass, VaultPath,
 };
 use earshot_core::voiceprint::{
     Person, SampleRecord, Voiceprint, VoiceprintError, VoiceprintRepo, VoiceprintSample,
@@ -422,6 +423,305 @@ pub(crate) fn segments_of(c: &Connection, meeting: EntityId) -> Result<Vec<Segme
     query(c, &sql, &[id_value(meeting)], segment_row)
 }
 
+/// The segment rows of `meeting` in [`segments_of`]'s order, split into those that read and
+/// the SQLite rowids of those whose stored values do not convert (damaged rows, T14.26).
+pub(crate) fn segments_or_damaged(
+    c: &Connection,
+    meeting: EntityId,
+) -> Result<(Vec<SegmentRow>, Vec<i64>), RepoError> {
+    split_rows(
+        c,
+        "segment",
+        synced_cols(&SEGMENT),
+        "WHERE meeting_id = ?1 ORDER BY start_ms, id",
+        &[id_value(meeting)],
+        segment_row,
+    )
+}
+
+/// The rows of `table` that `tail` selects with `params`, split into those `decode` reads and
+/// the SQLite rowids of those whose stored values do not convert (T14.26). Any other error
+/// fails the read.
+fn split_rows<T>(
+    c: &Connection,
+    table: &str,
+    mut cols: Vec<&'static str>,
+    tail: &str,
+    params: &[Value],
+    decode: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<(Vec<T>, Vec<i64>), RepoError> {
+    let rowid_at = cols.len();
+    cols.push("rowid");
+    let sql = select_sql(table, &cols, tail);
+    let rows = query(c, &sql, params, |r| {
+        Ok((decode(r), r.get::<_, i64>(rowid_at)?))
+    })?;
+    let (mut readable, mut damaged) = (Vec::new(), Vec::new());
+    for (row, rowid) in rows {
+        match row {
+            Ok(row) => readable.push(row),
+            Err(e) if is_unreadable(&e) => damaged.push(rowid),
+            Err(e) => return Err(storage(e)),
+        }
+    }
+    Ok((readable, damaged))
+}
+
+/// What one meeting's deletion reads of each table (T14.26): the rows that read, and the
+/// rowids of the damaged ones. Same orders as the plain readers.
+pub(crate) mod for_deletion {
+    use super::*;
+    use earshot_core::capture::TrackId;
+    use earshot_core::diar::SpeakerRole;
+    use earshot_core::model::ClockDomain;
+    use earshot_core::prompt::Template;
+
+    /// `col` kept when it is an integer in `lo..=hi`, else `fallback` (an SQL expression).
+    fn int_in(col: &str, lo: i64, hi: i64, fallback: &str) -> String {
+        format!(
+            "{col} = CASE WHEN typeof({col}) = 'integer' AND {col} BETWEEN {lo} AND {hi} \
+             THEN {col} ELSE {fallback} END"
+        )
+    }
+
+    /// `col` kept when it is a 16-byte blob (an id), else `fallback`.
+    fn id_or(col: &str, fallback: &str) -> String {
+        format!(
+            "{col} = CASE WHEN typeof({col}) = 'blob' AND length({col}) = 16 \
+             THEN {col} ELSE {fallback} END"
+        )
+    }
+
+    /// `col` kept when it is one of `names` (a unit enum's stored names), else the first.
+    fn one_of<T: Serialize>(col: &str, names: &[T]) -> Result<String, RepoError> {
+        let names = names
+            .iter()
+            .map(|v| match enum_name(v)? {
+                Value::Text(s) => Ok(format!("'{s}'")),
+                _ => Err(storage("not a unit enum")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(format!(
+            "{col} = CASE WHEN {col} IN ({}) THEN {col} ELSE {} END",
+            names.join(", "),
+            names[0]
+        ))
+    }
+
+    /// The canonical tombstone of a damaged row of `table` (T14.26), run after its content was
+    /// erased and its `updated_*` stamped: every value that does not convert is replaced by
+    /// the one a fresh tombstone of the table would hold (created stamps and origin from the
+    /// new stamp), so the row reads and syncs. Ids and parent links are kept (a row whose
+    /// `id` or `meeting_id` does not read cannot be helped). Valid values are left as they are.
+    pub(crate) fn canonicalise(c: &Connection, table: &str, rowid: i64) -> Result<(), RepoError> {
+        const U32: i64 = u32::MAX as i64;
+        let mut sets = vec![
+            int_in("created_wall", 0, i64::MAX, "updated_wall"),
+            int_in("created_logical", 0, U32, "updated_logical"),
+            id_or("created_node", "updated_node"),
+            id_or("origin_device", "updated_node"),
+        ];
+        let ms = |col: &str| int_in(col, 0, i64::MAX, "0");
+        let opt_ms = |col: &str| {
+            format!(
+                "{col} = CASE WHEN {col} IS NULL OR (typeof({col}) = 'integer' AND {col} >= 0) \
+                 THEN {col} ELSE NULL END"
+            )
+        };
+        match table {
+            "meeting" => {
+                sets.push(ms("started_unix_ms"));
+                sets.push(int_in(
+                    "utc_offset_minutes",
+                    i64::from(i32::MIN),
+                    i64::from(i32::MAX),
+                    "0",
+                ));
+                sets.push(opt_ms("duration_ms"));
+                let names: Vec<&str> = Template::ALL.iter().map(|t| t.name()).collect();
+                sets.push(format!(
+                    "template = CASE WHEN template IN ({}) THEN template ELSE '{}' END",
+                    names
+                        .iter()
+                        .map(|n| format!("'{n}'"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    Template::General.name()
+                ));
+                sets.push(int_in("summary_kept_local", 0, 1, "0"));
+            }
+            "track" => {
+                sets.push(one_of("kind", &[TrackId::Mic, TrackId::Reference])?);
+                sets.push(one_of(
+                    "clock_domain",
+                    &[
+                        ClockDomain::Qpc,
+                        ClockDomain::AndroidMonotonic,
+                        ClockDomain::Replay,
+                    ],
+                )?);
+            }
+            "speaker" => sets.push(one_of(
+                "role",
+                &[
+                    SpeakerRole::Remote,
+                    SpeakerRole::Me,
+                    SpeakerRole::Local,
+                    SpeakerRole::Room,
+                ],
+            )?),
+            "segment" => {
+                sets.push(one_of(
+                    "pass",
+                    &[TranscriptPass::Final, TranscriptPass::Live],
+                )?);
+                sets.push(ms("start_ms"));
+                sets.push(ms("end_ms"));
+                // The edit mark reads only whole: any part that does not read clears it.
+                let edit_ok = format!(
+                    "(edited_wall IS NULL OR (typeof(edited_wall) = 'integer' AND edited_wall >= 0 \
+                     AND typeof(edited_logical) = 'integer' AND edited_logical BETWEEN 0 AND {U32} \
+                     AND typeof(edited_node) = 'blob' AND length(edited_node) = 16))"
+                );
+                for col in ["edited_wall", "edited_logical", "edited_node"] {
+                    sets.push(format!(
+                        "{col} = CASE WHEN {edit_ok} THEN {col} ELSE NULL END"
+                    ));
+                }
+                sets.push(id_or("pass_run", "NULL"));
+            }
+            "note" => sets.push(ms("at_ms")),
+            "summary" => {
+                sets.push(int_in("schema_version", 0, U32, "1"));
+                let names: Vec<String> = Template::ALL
+                    .iter()
+                    .map(|t| format!("'{}'", t.name()))
+                    .collect();
+                sets.push(format!(
+                    "template = CASE WHEN template IN ({}) THEN template ELSE '{}' END",
+                    names.join(", "),
+                    Template::General.name()
+                ));
+            }
+            other => return Err(storage(format!("no canonical tombstone for {other}"))),
+        }
+        exec(
+            c,
+            &format!("UPDATE {table} SET {} WHERE rowid = ?1", sets.join(", ")),
+            &[Value::Integer(rowid)],
+        )?;
+        Ok(())
+    }
+
+    /// Whether the row `rowid` of `table` reads.
+    pub(crate) fn reads(c: &Connection, table: &str, rowid: i64) -> Result<bool, RepoError> {
+        let p = [Value::Integer(rowid)];
+        let tail = "WHERE rowid = ?1";
+        let bad = match table {
+            "meeting" => split_rows(c, table, synced_cols(&MEETING), tail, &p, meeting_row)?.1,
+            "track" => split_rows(c, table, synced_cols(&TRACK), tail, &p, track_row)?.1,
+            "speaker" => split_rows(c, table, synced_cols(&SPEAKER), tail, &p, speaker_row)?.1,
+            "segment" => split_rows(c, table, synced_cols(&SEGMENT), tail, &p, segment_row)?.1,
+            "note" => split_rows(c, table, synced_cols(&NOTE), tail, &p, note_row)?.1,
+            "summary" => split_rows(c, table, synced_cols(&SUMMARY), tail, &p, summary_row)?.1,
+            other => return Err(storage(format!("no reader for {other}"))),
+        };
+        Ok(bad.is_empty())
+    }
+
+    /// The meeting row: `None` when absent, else the row or the rowid of a damaged one.
+    pub(crate) fn meeting(
+        c: &Connection,
+        id: EntityId,
+    ) -> Result<Option<Result<Meeting, i64>>, RepoError> {
+        let (mut ok, mut bad) = split_rows(
+            c,
+            "meeting",
+            synced_cols(&MEETING),
+            "WHERE id = ?1",
+            &[id_value(id)],
+            meeting_row,
+        )?;
+        Ok(ok.pop().map(Ok).or_else(|| bad.pop().map(Err)))
+    }
+
+    pub(crate) fn segments(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<SegmentRow>, Vec<i64>), RepoError> {
+        super::segments_or_damaged(c, m)
+    }
+
+    pub(crate) fn tracks(c: &Connection, m: EntityId) -> Result<(Vec<Track>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY CASE kind WHEN 'mic' THEN 0 ELSE 1 END, id";
+        split_rows(
+            c,
+            "track",
+            synced_cols(&TRACK),
+            tail,
+            &[id_value(m)],
+            track_row,
+        )
+    }
+
+    pub(crate) fn speakers(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<Speaker>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY created_wall, created_logical, created_node, id";
+        split_rows(
+            c,
+            "speaker",
+            synced_cols(&SPEAKER),
+            tail,
+            &[id_value(m)],
+            speaker_row,
+        )
+    }
+
+    pub(crate) fn notes(c: &Connection, m: EntityId) -> Result<(Vec<Note>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY at_ms, id";
+        split_rows(
+            c,
+            "note",
+            synced_cols(&NOTE),
+            tail,
+            &[id_value(m)],
+            note_row,
+        )
+    }
+
+    pub(crate) fn summaries(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<Summary>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY created_wall, created_logical, created_node, id";
+        split_rows(
+            c,
+            "summary",
+            synced_cols(&SUMMARY),
+            tail,
+            &[id_value(m)],
+            summary_row,
+        )
+    }
+
+    pub(crate) fn audio(
+        c: &Connection,
+        m: EntityId,
+    ) -> Result<(Vec<AudioFile>, Vec<i64>), RepoError> {
+        let tail = "WHERE meeting_id = ?1 ORDER BY id";
+        split_rows(
+            c,
+            "audio_file",
+            AUDIO.to_vec(),
+            tail,
+            &[id_value(m)],
+            audio_row,
+        )
+    }
+}
+
 /// The query of [`has_live_segment`]: `?1` the meeting id, `?2` the pass name.
 pub(crate) const HAS_LIVE_SEGMENT_SQL: &str =
     "SELECT 1 FROM segment WHERE meeting_id = ?1 AND pass = ?2 AND deleted = 0 LIMIT 1";
@@ -439,6 +739,48 @@ fn has_live_segment(
         HAS_LIVE_SEGMENT_SQL,
         &[id_value(meeting), enum_name(&pass)?],
     )
+}
+
+/// The query of [`shown_lines`]: `?1` the meeting id, `?2` the pass name. Only id, start and
+/// text: never the words, which a long meeting holds most of its bytes in.
+pub(crate) const SHOWN_LINES_SQL: &str = "SELECT id, start_ms, text FROM segment \
+     WHERE meeting_id = ?1 AND pass = ?2 AND deleted = 0 ORDER BY start_ms, id";
+
+/// The transcript `meeting` shows, without words (T14.24, the rule of
+/// `earshot_core::model::shown_lines_of`): the pass is chosen from the `segment_live` index,
+/// then that pass's live rows are read one by one, and a row whose values do not convert is
+/// left out and counted rather than failing the read.
+fn shown_lines(c: &Connection, meeting: EntityId) -> Result<ShownLines, RepoError> {
+    let mut out = ShownLines::default();
+    for pass in [TranscriptPass::Final, TranscriptPass::Live] {
+        if !has_live_segment(c, meeting, pass)? {
+            continue;
+        }
+        let params = [id_value(meeting), enum_name(&pass)?];
+        let mut st = c.prepare_cached(SHOWN_LINES_SQL).map_err(storage)?;
+        let rows = st
+            .query_map(params_from_iter(params.iter()), |r| {
+                Ok(ShownLine {
+                    id: get_id(r, 0)?,
+                    start: MeetingTime::from_millis(get_u64(r, 1)?),
+                    text: r.get(2)?,
+                })
+            })
+            .map_err(storage)?;
+        for row in rows {
+            match row {
+                Ok(line) => out.lines.push(line),
+                Err(e) if is_unreadable(&e) => out.unreadable += 1,
+                Err(e) => return Err(storage(e)),
+            }
+        }
+        out.pass = Some(pass);
+        // SQLite orders ids as bytes, as `EntityId` does; sorting again keeps the rule's order
+        // whatever the query plan.
+        out.lines.sort_by_key(|l| (l.start, l.id));
+        return Ok(out);
+    }
+    Ok(out)
 }
 
 fn put_segment(c: &Connection, row: &SegmentRow) -> Result<(), RepoError> {
@@ -606,6 +948,36 @@ pub(crate) fn current_summary_id(
     })?
     .into_iter()
     .next())
+}
+
+/// [`CURRENT_SUMMARY_SQL`] giving the row's rowid, which reads whatever the row's values.
+const CURRENT_SUMMARY_ROWID_SQL: &str = "SELECT rowid FROM summary \
+     WHERE meeting_id = ?1 AND deleted = 0 \
+     ORDER BY updated_wall DESC, updated_logical DESC, updated_node DESC, \
+     created_wall DESC, created_logical DESC, created_node DESC, id DESC LIMIT 1";
+
+/// The body of `meeting`'s current summary (T14.24): that one row, chosen as
+/// [`current_summary_id`] chooses it; a current row that does not read gives no body and
+/// `unreadable` 1, never an older summary.
+fn shown_summary(c: &Connection, meeting: EntityId) -> Result<ShownSummary, RepoError> {
+    let Some(rowid) = query(c, CURRENT_SUMMARY_ROWID_SQL, &[id_value(meeting)], |r| {
+        r.get::<_, i64>(0)
+    })?
+    .pop() else {
+        return Ok(ShownSummary::default());
+    };
+    let (mut ok, bad) = split_rows(
+        c,
+        "summary",
+        synced_cols(&SUMMARY),
+        "WHERE rowid = ?1",
+        &[Value::Integer(rowid)],
+        summary_row,
+    )?;
+    Ok(ShownSummary {
+        summary: ok.pop().map(|s| s.summary),
+        unreadable: bad.len(),
+    })
 }
 
 pub(crate) fn put_summary(c: &Connection, s: &Summary) -> Result<(), RepoError> {
@@ -1139,13 +1511,43 @@ pub(crate) fn synced_by_id_or_damaged(
 ) -> Result<Result<Option<crate::sync::SyncedRow>, ()>, RepoError> {
     match synced_by_id_raw(c, table, id) {
         Ok(row) => Ok(Ok(row)),
-        Err(
-            rusqlite::Error::FromSqlConversionFailure(..)
-            | rusqlite::Error::IntegralValueOutOfRange(..)
-            | rusqlite::Error::InvalidColumnType(..),
-        ) => Ok(Err(())),
+        Err(e) if is_damaged(&e) => Ok(Err(())),
         Err(e) => Err(storage(e)),
     }
+}
+
+/// Whether the row `id` of the synced `table` is a tombstone, read from its `deleted` column
+/// alone, so a row whose other values do not convert still answers (T14.26). `false` when
+/// absent or when that column itself does not read.
+pub(crate) fn row_reads_deleted(
+    c: &Connection,
+    table: &str,
+    id: EntityId,
+) -> Result<bool, RepoError> {
+    let rows = query(
+        c,
+        &format!("SELECT deleted FROM {table} WHERE id = ?1"),
+        &[id_value(id)],
+        |r| Ok(r.get::<_, i64>(0).is_ok_and(|d| d != 0)),
+    )?;
+    Ok(rows.first().copied().unwrap_or(false))
+}
+
+/// Whether `e` says a row's stored values do not convert (a damaged row), not that the store
+/// failed.
+fn is_damaged(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::InvalidColumnType(..)
+    )
+}
+
+/// [`is_damaged`], or text that is not UTF-8: a row this crate's own readers leave out and
+/// count (T14.24, T14.26). The sync outbox keeps [`is_damaged`] alone.
+fn is_unreadable(e: &rusqlite::Error) -> bool {
+    is_damaged(e) || matches!(e, rusqlite::Error::Utf8Error(..))
 }
 
 fn synced_by_id_raw(
@@ -1241,6 +1643,9 @@ macro_rules! impl_repos {
             ) -> Result<bool, RepoError> {
                 has_live_segment(&self.conn, meeting, pass)
             }
+            fn shown_lines(&self, meeting: EntityId) -> Result<ShownLines, RepoError> {
+                shown_lines(&self.conn, meeting)
+            }
             fn put_segment(&mut self, segment: SegmentRow) -> Result<(), RepoError> {
                 put_segment(&self.conn, &segment)
             }
@@ -1261,6 +1666,9 @@ macro_rules! impl_repos {
             }
             fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
                 current_summary_id(&self.conn, meeting)
+            }
+            fn shown_summary(&self, meeting: EntityId) -> Result<ShownSummary, RepoError> {
+                shown_summary(&self.conn, meeting)
             }
             fn put_summary(&mut self, summary: Summary) -> Result<(), RepoError> {
                 put_summary(&self.conn, &summary)
@@ -1419,6 +1827,9 @@ impl MeetingRepo for ReadOnlyStore {
     fn has_live_segment(&self, meeting: EntityId, pass: TranscriptPass) -> Result<bool, RepoError> {
         has_live_segment(&self.conn, meeting, pass)
     }
+    fn shown_lines(&self, meeting: EntityId) -> Result<ShownLines, RepoError> {
+        shown_lines(&self.conn, meeting)
+    }
     fn put_segment(&mut self, _segment: SegmentRow) -> Result<(), RepoError> {
         Err(read_only())
     }
@@ -1439,6 +1850,9 @@ impl MeetingRepo for ReadOnlyStore {
     }
     fn current_summary_id(&self, meeting: EntityId) -> Result<Option<EntityId>, RepoError> {
         current_summary_id(&self.conn, meeting)
+    }
+    fn shown_summary(&self, meeting: EntityId) -> Result<ShownSummary, RepoError> {
+        shown_summary(&self.conn, meeting)
     }
     fn put_summary(&mut self, _summary: Summary) -> Result<(), RepoError> {
         Err(read_only())

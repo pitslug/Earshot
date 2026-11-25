@@ -92,7 +92,7 @@ pub fn ask(
     jobs: &JobRunner,
     meeting: EntityId,
 ) -> Result<DeleteAsk, IpcError> {
-    let activity = svc.meeting_activity(meeting)?;
+    let activity = svc.deletion_activity(meeting)?;
     if activity == Some(MeetingActivity::Recording) {
         return Ok(DeleteAsk::Recording);
     }
@@ -178,7 +178,7 @@ pub fn delete(
                     }
                     // Work that still holds it was left behind: no need to wait any longer.
                     if matches!(
-                        svc.meeting_activity(meeting)?,
+                        svc.deletion_activity(meeting)?,
                         Some(MeetingActivity::Processing | MeetingActivity::Waiting)
                     ) {
                         return Err(refused("meeting_needs_restart", NEEDS_RESTART, false));

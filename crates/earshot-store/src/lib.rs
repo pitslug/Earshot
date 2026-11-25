@@ -42,7 +42,8 @@ pub use export::{
     validate_vault,
 };
 pub use flac::{
-    FinishedFlac, FlacTrackWriter, PartRecovery, WriteFault, describe_flac, read_flac, recover_part,
+    FinishedFlac, FlacTrackWriter, PartRecovery, WriteFault, describe_flac, read_flac,
+    read_flac_span, recover_part,
 };
 pub use fsutil::total_memory;
 pub use layout::DataDir;

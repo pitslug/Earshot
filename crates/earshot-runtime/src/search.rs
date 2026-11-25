@@ -1,21 +1,22 @@
 //! Finding meetings by their text (T9.7), on this computer only.
 //!
-//! What is searched is what a meeting shows ([`MeetingView`]): its title, its transcript (the
-//! final pass, else the live draft) and its current summary. Tombstoned rows hold replaced text
-//! and are never read. There is no index: each search reads the meetings newest first, one short
-//! store lock per meeting, and matches with the lock free. The text searched for is never logged,
-//! stored or put in an error.
+//! What is searched is what a meeting shows (`crate::view::MeetingView`): its title, its
+//! transcript (the final pass, else the live draft) and its current summary. Tombstoned rows hold
+//! replaced text and are never read. There is no index: each search reads the meetings newest
+//! first, one short store lock per meeting, and matches with the lock free. The transcript is read
+//! through [`MeetingRepo::shown_lines`] (T14.24): its lines' text only, never their words, and a
+//! row that cannot be read is left out and counted ([`SearchResults::unreadable`]) rather than
+//! failing the search. The text searched for is never logged, stored or put in an error.
 
 use std::sync::{Mutex, PoisonError};
 
 use earshot_core::asr::CancelToken;
 use earshot_core::identity::EntityId;
-use earshot_core::model::MeetingRepo;
+use earshot_core::model::{Meeting, MeetingRepo, RepoError, ShownLine};
 use earshot_core::summary::SummaryV1;
 
 use crate::RuntimeError;
 use crate::services::Services;
-use crate::view::MeetingView;
 
 /// The most meetings one search returns.
 pub const MAX_RESULTS: usize = 50;
@@ -65,6 +66,41 @@ pub struct SearchResults {
     pub hits: Vec<SearchHit>,
     /// Whether more meetings matched than `hits` holds.
     pub capped: bool,
+    /// Rows of the meetings read that could not be read and were left out of the search (a
+    /// damaged row): transcript lines, and a current summary (searched as if the meeting had
+    /// none). 0 normally.
+    pub unreadable: usize,
+}
+
+/// What one meeting shows, as search reads it: what `crate::view::MeetingView::load` would
+/// give for the title, the transcript lines and the current summary, without words.
+pub(crate) struct Searched {
+    /// The meeting row.
+    pub(crate) meeting: Meeting,
+    /// The transcript's lines (final pass, else the live draft), by start, then id.
+    pub(crate) lines: Vec<ShownLine>,
+    /// Transcript rows, and a current summary row, left out because they could not be read.
+    pub(crate) unreadable: usize,
+    /// The current summary's body.
+    pub(crate) summary: Option<SummaryV1>,
+}
+
+/// Reads what `meeting` shows; `None` if it does not exist or is deleted.
+pub(crate) fn searched<R: MeetingRepo + ?Sized>(
+    repo: &R,
+    meeting: EntityId,
+) -> Result<Option<Searched>, RepoError> {
+    let Some(m) = repo.meeting(meeting)?.filter(|m| !m.meta.deleted) else {
+        return Ok(None);
+    };
+    let shown = repo.shown_lines(meeting)?;
+    let summary = repo.shown_summary(meeting)?;
+    Ok(Some(Searched {
+        meeting: m,
+        lines: shown.lines,
+        unreadable: shown.unreadable + summary.unreadable,
+        summary: summary.summary,
+    }))
 }
 
 /// The live meetings whose title, transcript or summary contains `query`: literal text, case
@@ -105,10 +141,11 @@ pub fn search_meetings_unless(
         }
         // One short lock per meeting; matching runs without it. `None`: deleted since the read
         // above.
-        let Some(view) = MeetingView::load(&**services.store(), meeting.id)? else {
+        let Some(read) = searched(&**services.store(), meeting.id)? else {
             continue;
         };
-        let Some(hit) = hit_in(&view, &query) else {
+        results.unreadable += read.unreadable;
+        let Some(hit) = hit_in(&read, &query) else {
             continue;
         };
         if results.hits.len() == MAX_RESULTS {
@@ -184,25 +221,25 @@ impl Searches {
     }
 }
 
-/// The first match in `view`, if any.
-fn hit_in(view: &MeetingView, query: &Query) -> Option<SearchHit> {
-    let (matched, snippet, line_ms) = if let Some(snippet) = query.snippet(&view.meeting.title) {
+/// The first match in `read`, if any.
+fn hit_in(read: &Searched, query: &Query) -> Option<SearchHit> {
+    let (matched, snippet, line_ms) = if let Some(snippet) = query.snippet(&read.meeting.title) {
         (MatchedIn::Title, snippet, None)
-    } else if let Some((snippet, at)) = view
-        .segments
+    } else if let Some((snippet, at)) = read
+        .lines
         .iter()
         .find_map(|s| Some((query.snippet(&s.text)?, s.start.as_millis())))
     {
         (MatchedIn::Transcript, snippet, Some(at))
     } else {
-        let summary = &view.summary.as_ref()?.summary;
+        let summary = read.summary.as_ref()?;
         let snippet = summary_texts(summary).find_map(|text| query.snippet(text))?;
         (MatchedIn::Summary, snippet, None)
     };
     Some(SearchHit {
-        meeting: view.meeting.id,
-        title: view.meeting.title.clone(),
-        started_unix_ms: view.meeting.started_unix_ms,
+        meeting: read.meeting.id,
+        title: read.meeting.title.clone(),
+        started_unix_ms: read.meeting.started_unix_ms,
         matched,
         snippet,
         line_ms,

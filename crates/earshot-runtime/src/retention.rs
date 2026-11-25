@@ -22,6 +22,10 @@
 //!   claim, like [`Services::delete_meeting`]'s, is per process: a job of another process on
 //!   the same data directory (a CLI run) is not seen. A meeting whose deletion fails (a file
 //!   in use) is counted and tried again by a later run.
+//! - After the wall clock steps forward while the app runs (T14.26), [`run`] deletes a meeting
+//!   that only the step made due one run later, when that run still finds it due; the memory of
+//!   the previous run is per process, so the first run after a start trusts the clock.
+//!   [`run_choice`] (a saved setting) applies at once.
 //! - [`preview`] counts the meetings whose recordings a setting would delete now, with the
 //!   plan of the run (meetings a job holds counted apart).
 
@@ -299,6 +303,9 @@ pub struct RetentionRun {
     pub missing_files: usize,
     /// Due meetings skipped because a job holds them (they go in a later run).
     pub busy: usize,
+    /// Meetings due only because the wall clock stepped forward since the previous
+    /// unattended run (T14.26): kept until the next run agrees they are due.
+    pub waiting: usize,
     /// Due meetings whose recordings could not all be deleted (a file in use, a store
     /// error); what could be deleted is gone, the rest is tried again by a later run.
     pub failed: usize,
@@ -315,17 +322,66 @@ pub struct RetentionRun {
 }
 
 impl RetentionRun {
-    /// Some due recordings are still there (held by a job, or their deletion failed).
+    /// Some due recordings are still there (held by a job, waiting for a second run after a
+    /// clock step, or their deletion failed).
     #[must_use]
     pub fn some_left(&self) -> bool {
-        self.busy > 0 || self.failed > 0 || self.sweep_failed
+        self.busy > 0 || self.waiting > 0 || self.failed > 0 || self.sweep_failed
     }
 }
 
 /// One run at a time in this process.
 static RUN_LOCK: Mutex<()> = Mutex::new(());
 
-/// Deletes the recordings the stored setting makes due now (module docs).
+/// How far the wall clock may run ahead of the time that passed between two runs before
+/// [`run`] counts it as a step forward (T14.26): above the slewing and small corrections a
+/// time service makes, far below a run's period. A judgement.
+pub const CLOCK_STEP_TOLERANCE_MS: u64 = 60_000;
+
+/// What an unattended run ([`run`]) remembers of the run before it, in memory only: a
+/// restart starts again with no previous run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LastRun {
+    /// The wall clock then (Unix ms).
+    wall_ms: u64,
+    /// The time since this process's anchor then, which no clock step moves.
+    since_start: std::time::Duration,
+}
+
+/// The unattended runs' memory, per data folder (one in the app; one per test).
+static LAST_RUNS: Mutex<BTreeMap<std::path::PathBuf, LastRun>> = Mutex::new(BTreeMap::new());
+
+/// The anchor of [`LastRun::since_start`]. `Instant` counts time asleep on Windows, as the wall
+/// clock does, so a sleep is not a step there; where it does not (Linux), a run after a
+/// suspend waits one period.
+fn since_start() -> std::time::Duration {
+    static ANCHOR: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    ANCHOR.get_or_init(std::time::Instant::now).elapsed()
+}
+
+/// The wall-clock time a run at `wall_ms` should trust (T14.26): `wall_ms` itself, unless the
+/// wall clock ran more than [`CLOCK_STEP_TOLERANCE_MS`] ahead of the time that passed since
+/// `last` (a step forward), then the last run's wall clock plus that time. `None` when there is
+/// no step to distrust: the first run, or a clock that kept time.
+fn stepped_from(
+    last: Option<&LastRun>,
+    wall_ms: u64,
+    since_start: std::time::Duration,
+) -> Option<u64> {
+    let last = last?;
+    let passed =
+        u64::try_from(since_start.saturating_sub(last.since_start).as_millis()).unwrap_or(u64::MAX);
+    let trusted = last.wall_ms.saturating_add(passed);
+    (wall_ms.saturating_sub(trusted) > CLOCK_STEP_TOLERANCE_MS).then_some(trusted)
+}
+
+/// Deletes the recordings the stored setting makes due now (module docs), as the app does at
+/// start-up and then periodically. After the wall clock stepped forward since the previous run
+/// of this process (T14.26), a meeting that only the step made due is not deleted by this run:
+/// it waits ([`RetentionRun::waiting`]) for the next run to agree that it is due, so a clock set
+/// wrong for a moment deletes nothing. Meetings due by the time that truly passed go as before
+/// (which takes in every meeting the previous run found due: the due rule only grows with
+/// time). The first run of a process trusts the clock.
 ///
 /// # Errors
 /// Store errors reading the setting or the plan. A meeting whose deletion fails is counted
@@ -333,12 +389,14 @@ static RUN_LOCK: Mutex<()> = Mutex::new(());
 /// [`RetentionRun::sweep_failed`], with the deletions before it still counted.
 pub fn run(services: &Services) -> Result<RetentionRun, RuntimeError> {
     let (choice, unknown) = audio_retention(&services.store())?;
-    let mut out = run_choice(services, choice)?;
+    let mut out = run_with(services, choice, Some(since_start()))?;
     out.unknown_setting = unknown;
     Ok(out)
 }
 
-/// [`run`] with `choice` instead of the stored setting.
+/// [`run`] with `choice` instead of the stored setting, applied at once: the run after the user
+/// saves a setting, whose [`preview`] they were shown. It neither waits after a clock step nor
+/// counts as an unattended run.
 ///
 /// # Errors
 /// As [`run`].
@@ -346,14 +404,47 @@ pub fn run_choice(
     services: &Services,
     choice: AudioRetention,
 ) -> Result<RetentionRun, RuntimeError> {
+    run_with(services, choice, None)
+}
+
+/// A run of `choice`; with `unattended` (the time since the process anchor), one of [`run`]'s,
+/// judged against the previous one (T14.26).
+fn run_with(
+    services: &Services,
+    choice: AudioRetention,
+    unattended: Option<std::time::Duration>,
+) -> Result<RetentionRun, RuntimeError> {
     let _one = RUN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let now = services.clock.now_unix_ms();
     let clocks_started = start_missing_clocks(services, now)?;
-    let plan = plan(services, choice, now)?;
+    let mut plan = plan(services, choice, now)?;
+    let mut waiting = 0;
+    if let Some(at) = unattended {
+        let root = services.data.root().to_path_buf();
+        let mut last_runs = LAST_RUNS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(trusted) = stepped_from(last_runs.get(&root), now, at) {
+            let truly_due: BTreeSet<EntityId> =
+                earshot_store::due_audio(&services.store(), choice.policy(), trusted)?
+                    .meetings
+                    .into_keys()
+                    .collect();
+            let before = plan.ready.len();
+            plan.ready.retain(|m, _| truly_due.contains(m));
+            waiting = before - plan.ready.len();
+        }
+        last_runs.insert(
+            root,
+            LastRun {
+                wall_ms: now,
+                since_start: at,
+            },
+        );
+    }
     let mut out = RetentionRun {
         choice,
         clocks_started,
         busy: plan.busy,
+        waiting,
         unreadable_clocks: plan.unreadable_clocks,
         ..RetentionRun::default()
     };
