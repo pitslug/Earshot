@@ -1321,15 +1321,12 @@ fn bundle_check_cuda_imports_are_held_by_the_install_the_folder_or_windows() {
         Vec::<String>::new()
     );
     // Without the library in the install, the gap shows, by its name as imported.
-    let mut without = vc_runtime_dlls(X64).to_vec();
-    without.retain(|d| *d != "msvcp140_atomic_wait.dll");
-    let held = |name: &str| {
-        windows(name)
-            || without.iter().any(|d| d.eq_ignore_ascii_case(name))
-            || names.iter().any(|n| n.eq_ignore_ascii_case(name))
-    };
-    let gap: Vec<&String> = provider.imports.iter().filter(|i| !held(i)).collect();
-    assert_eq!(gap, ["MSVCP140_ATOMIC_WAIT.dll"]);
+    let mut without = expected_files(X64);
+    without.retain(|f| f != Path::new("msvcp140_atomic_wait.dll"));
+    assert_eq!(
+        cuda_imports_unheld_in(&provider, &names, &without, &windows),
+        ["MSVCP140_ATOMIC_WAIT.dll"]
+    );
     // Something nobody holds is named.
     let stray = Pe {
         imports: vec!["nowhere.dll".to_owned()],
@@ -1376,21 +1373,57 @@ fn bundle_check_the_cuda_pins_hold_the_provider_and_the_runtime_preloads_what_sh
     }
 }
 
-/// T14.38 on this machine: the installed CUDA files' imports, when they are here with their pinned
-/// bytes. Reads about 1.5 GB.
+/// T14.38 on this machine: every pinned CUDA library's imports, read from the installed folder with
+/// its pinned bytes. Reads about 1.5 GB. A folder that is missing or holds other bytes fails: the
+/// check must have read every pinned library to say anything.
 #[test]
 #[ignore = "reads the installed CUDA folder: cargo test -p xtask bundle_check_installed_cuda -- --ignored"]
 fn bundle_check_installed_cuda_files_import_only_what_is_held() {
     let root = crate::repo_root();
+    let folder = crate::models::cache_dir().unwrap().join("cuda");
+    assert!(
+        folder.is_dir(),
+        "{} is missing: download both CUDA parts in the app (Settings, System), or point \
+         EARSHOT_MODELS at a models folder that holds them",
+        folder.display()
+    );
     let mut all = true;
-    check_cuda_imports(
-        &mut all,
-        &root,
-        X64,
-        &crate::models::cache_dir().unwrap().join("cuda"),
-    )
-    .unwrap();
+    let counts = check_cuda_imports(&mut all, &root, X64, &folder).unwrap();
+    let pinned = cuda_pinned_libraries(&root).unwrap();
+    assert!(pinned > 0);
+    assert_eq!(
+        counts,
+        CudaImportsChecked {
+            checked: pinned,
+            skipped: 0
+        },
+        "every pinned library read with its pinned bytes (download the CUDA parts again in the \
+         app if some differ)"
+    );
     assert!(all);
+}
+
+#[test]
+fn bundle_check_cuda_imports_count_what_they_skip() {
+    let root = crate::repo_root();
+    let empty = tmp("cuda-empty");
+    let mut all = true;
+    let counts = check_cuda_imports(&mut all, &root, X64, &empty).unwrap();
+    assert_eq!(
+        counts,
+        CudaImportsChecked {
+            checked: 0,
+            skipped: cuda_pinned_libraries(&root).unwrap()
+        }
+    );
+    assert_eq!(
+        counts.summary(),
+        format!("CUDA imports: 0 checked, {} skipped", counts.skipped)
+    );
+    // ARM64 has none to check or skip.
+    let arm = check_cuda_imports(&mut all, &root, ARM64_WINDOWS, &empty).unwrap();
+    assert_eq!(arm, CudaImportsChecked::default());
+    let _ = std::fs::remove_dir_all(&empty);
 }
 
 #[test]

@@ -1030,7 +1030,17 @@ pub fn cuda_imports_unheld(
     target: &str,
     windows: &dyn Fn(&str) -> bool,
 ) -> Vec<String> {
-    let installed = expected_files(target);
+    cuda_imports_unheld_in(pe, cuda_names, &expected_files(target), windows)
+}
+
+/// [`cuda_imports_unheld`] against the install's files `installed`.
+#[must_use]
+pub fn cuda_imports_unheld_in(
+    pe: &Pe,
+    cuda_names: &[String],
+    installed: &[PathBuf],
+    windows: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
     pe.imports
         .iter()
         .filter(|i| {
@@ -1057,10 +1067,15 @@ pub fn cuda_pins(root: &Path) -> Result<Vec<manifest::CudaFile>> {
 /// pinned library in `folder` with its pinned bytes is read; one missing or with other bytes is
 /// listed as skipped, so a machine without the files says what it did not check. x64 only: ARM64
 /// has no CUDA files.
-fn check_cuda_imports(all: &mut bool, root: &Path, target: &str, folder: &Path) -> Result<()> {
+fn check_cuda_imports(
+    all: &mut bool,
+    root: &Path,
+    target: &str,
+    folder: &Path,
+) -> Result<CudaImportsChecked> {
     if target != X64_WINDOWS {
         println!("bundle-check: skipped: the CUDA files' imports: {target} has no CUDA files");
-        return Ok(());
+        return Ok(CudaImportsChecked::default());
     }
     let pins = cuda_pins(root)?;
     let names: Vec<String> = pins.iter().map(|p| p.name.clone()).collect();
@@ -1068,6 +1083,7 @@ fn check_cuda_imports(all: &mut bool, root: &Path, target: &str, folder: &Path) 
         .join("System32");
     let windows = |name: &str| is_windows_library(name, &system32);
     let mut skipped = Vec::new();
+    let mut checked = 0;
     for pin in pins
         .iter()
         .filter(|p| p.name.to_ascii_lowercase().ends_with(".dll"))
@@ -1084,6 +1100,7 @@ fn check_cuda_imports(all: &mut bool, root: &Path, target: &str, folder: &Path) 
             skipped.push(pin.name.as_str());
             continue;
         }
+        checked += 1;
         let unheld = read_pe(&path).map(|pe| cuda_imports_unheld(&pe, &names, target, &windows));
         verdict(
             all,
@@ -1107,7 +1124,43 @@ fn check_cuda_imports(all: &mut bool, root: &Path, target: &str, folder: &Path) 
             folder.display()
         );
     }
-    Ok(())
+    let counts = CudaImportsChecked {
+        checked,
+        skipped: skipped.len(),
+    };
+    println!("bundle-check: {}", counts.summary());
+    Ok(counts)
+}
+
+/// How many pinned CUDA libraries [`check_cuda_imports`] read, and how many it could not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CudaImportsChecked {
+    /// Read with their pinned bytes and judged.
+    pub checked: usize,
+    /// Missing, or with other bytes: not judged.
+    pub skipped: usize,
+}
+
+impl CudaImportsChecked {
+    /// The release log's line saying whether the check really ran.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "CUDA imports: {} checked, {} skipped",
+            self.checked, self.skipped
+        )
+    }
+}
+
+/// The pinned CUDA libraries (`.dll` files of [`cuda_pins`]).
+///
+/// # Errors
+/// As [`cuda_pins`].
+pub fn cuda_pinned_libraries(root: &Path) -> Result<usize> {
+    Ok(cuda_pins(root)?
+        .iter()
+        .filter(|p| p.name.to_ascii_lowercase().ends_with(".dll"))
+        .count())
 }
 
 /// The silent NSIS command line. `/D=` must come last and unquoted (NSIS reads to the end of the
@@ -2111,7 +2164,8 @@ fn check_saved(
         &notices.meeting,
         &notices.shipped,
     )?;
-    check_cuda_imports(
+    // The counts are printed as the summary line; the verdicts above already judged what ran.
+    let _counts = check_cuda_imports(
         &mut all,
         root,
         triple,
