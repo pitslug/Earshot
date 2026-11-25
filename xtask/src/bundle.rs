@@ -21,7 +21,8 @@
 //!
 //! What an install holds: the exe (the benchmark meeting is compiled into it), llama.cpp's DLLs,
 //! the exe's public symbols for crash logs ([`APP_SYMBOLS`]) and one notice crediting the meeting
-//! and the common words compiled into the exe ([`install_notice`], T12.15ee). Nothing
+//! and the common words compiled into the exe ([`install_notice`], T12.15ee), and the third-party
+//! notices written from the shipped dependency graph ([`notices`], T14.37). Nothing
 //! in it names the build user ([`paths`]). No model, no ONNX Runtime (it lives in the models folder), no
 //! CUDA library, no QNN library on x64 ([`refused_in_install`]), no updater. The ARM64 install also
 //! holds Qualcomm's QNN execution provider and the libraries the manifest pins for it, with their
@@ -44,8 +45,10 @@ use crate::llama_dlls;
 use crate::manifest::{self, Manifest};
 use crate::proc::run_with_timeout;
 
+pub mod notices;
 pub mod paths;
 pub mod registry;
+use notices::NOTICES_FILE;
 use registry::{Reg, RegistryGuard};
 
 /// The `@tauri-apps/cli` the pins below belong to (tauri-bundler 2.10.3 inside it).
@@ -611,6 +614,23 @@ pub fn notice_check(installed: &str, expected: &str) -> (bool, String) {
     )
 }
 
+/// `bundle-check`'s verdict on the installed [`NOTICES_FILE`] `text`: there, and naming every
+/// package of `shipped` ([`notices::expected_names`], the rule the bundle wrote it by), with the
+/// detail to print.
+#[must_use]
+pub fn notices_check(text: &str, shipped: &[(String, String)]) -> (bool, String) {
+    let missing = notices::missing_names(text, shipped);
+    let pass = !text.trim().is_empty() && !shipped.is_empty() && missing.is_empty();
+    (
+        pass,
+        format!(
+            "{} bytes, {} packages expected, missing: {missing:?}",
+            text.len(),
+            shipped.len()
+        ),
+    )
+}
+
 /// The settings laid over `tauri.conf.json` for one bundle run. Every path is a whole one: the CLI
 /// canonicalises `installerHooks` from its own working folder, not from this file's.
 #[must_use]
@@ -642,6 +662,10 @@ pub fn bundle_config(
     resources.insert(
         notice.display().to_string(),
         json!(MEETING_NOTICE_IN_INSTALL),
+    );
+    resources.insert(
+        exe_dir.join(NOTICES_FILE).display().to_string(),
+        json!(NOTICES_FILE),
     );
     json!({
         "bundle": {
@@ -1059,6 +1083,7 @@ pub fn run(
         check_binary(name, &read_pe(&exe_dir.join(name))?, &triple, features)?;
     }
     let notice = write_install_notice(root, exe_dir)?;
+    notices::write_notices(root, exe_dir, &triple, features)?;
     let config = dir.join(format!("earshot-bundle-{triple}.json"));
     let overlay = bundle_config(
         exe_dir,
@@ -1142,6 +1167,7 @@ pub fn expected_files(target: &str) -> Vec<PathBuf> {
         PathBuf::from(APP_EXE),
         PathBuf::from(APP_SYMBOLS),
         PathBuf::from(MEETING_NOTICE_IN_INSTALL),
+        PathBuf::from(NOTICES_FILE),
         PathBuf::from("uninstall.exe"),
     ];
     let features = build::shipped_features(Some(target), &[]);
@@ -1275,6 +1301,7 @@ fn built_comparisons(target: &str) -> Vec<(&'static str, &'static str)> {
         names.push(VULKAN_LICENCE);
     }
     names.extend(qnn_install_names(target));
+    names.push(NOTICES_FILE);
     let mut pairs: Vec<(&str, &str)> = names.into_iter().map(|n| (n, n)).collect();
     pairs.push((APP_SYMBOLS, APP_SYMBOLS_BUILT));
     pairs
@@ -1289,6 +1316,9 @@ pub enum Instead {
     Notice,
     /// A Windows binary: its machine type and imports ([`check_binary`]).
     Binary,
+    /// The third-party notices: they name every package of the shipped tree
+    /// ([`notices::missing_names`]).
+    Names,
     /// Nothing: no build and no pin to compare it with.
     Skipped,
 }
@@ -1301,6 +1331,8 @@ pub fn instead_of_build(name: &str, target: &str) -> Instead {
         Instead::Pin
     } else if target == ARM64_WINDOWS && name.eq_ignore_ascii_case(QNN_NOTICE) {
         Instead::Notice
+    } else if name.eq_ignore_ascii_case(NOTICES_FILE) {
+        Instead::Names
     } else if lower.ends_with(".dll") || lower.ends_with(".exe") {
         Instead::Binary
     } else {
@@ -1334,6 +1366,7 @@ pub fn skipped_lines(target: &str) -> Vec<String> {
                 Instead::Pin => "checked against its manifest pin (size and SHA-256) instead",
                 Instead::Notice => "checked that it names every QNN file instead",
                 Instead::Binary => "checked by machine type and imports instead",
+                Instead::Names => "checked that it names every shipped package instead",
                 Instead::Skipped => "skipped: no build folder to compare with and no pin for it",
             };
             format!("bundle-check: no build: {name}: same bytes as built not compared; {how}")
@@ -1460,6 +1493,7 @@ fn check_install(
     target: &str,
     qnn: &[QnnPin],
     notice: &str,
+    shipped: &[(String, String)],
 ) -> Result<()> {
     let mut found = Vec::new();
     for file in files_under(dir)? {
@@ -1512,6 +1546,14 @@ fn check_install(
             "nsis: {MEETING_NOTICE_IN_INSTALL} credits the benchmark meeting and the common words"
         ),
         credited,
+        &detail,
+    );
+    let third_party = std::fs::read_to_string(dir.join(NOTICES_FILE)).unwrap_or_default();
+    let (named, detail) = notices_check(&third_party, shipped);
+    verdict(
+        all,
+        &format!("nsis: {NOTICES_FILE} names every package of the shipped tree"),
+        named,
         &detail,
     );
     if target == ARM64_WINDOWS {
@@ -1835,6 +1877,8 @@ pub fn check(
     // After the digest, so a run stopped by an unreadable checkout notice still names the
     // installer it was given; still before anything is touched.
     let notice = install_notice_text(root)?;
+    let shipped =
+        notices::expected_names(root, triple, &build::shipped_features(Some(triple), &[]))?;
     let reference = exe_dir
         .as_deref()
         .map_or(Reference::Installer, Reference::Built);
@@ -1858,7 +1902,19 @@ pub fn check(
         product,
         vendor,
     };
-    let result = check_saved(root, &nsis, &reference, triple, &qnn, &notice, &names);
+    let expected_notices = Notices {
+        meeting: notice,
+        shipped,
+    };
+    let result = check_saved(
+        root,
+        &nsis,
+        &reference,
+        triple,
+        &qnn,
+        &expected_notices,
+        &names,
+    );
     let restored = guard.finish();
     let mut all = with_restore_error(result, restored.as_ref().err())?;
     match restored {
@@ -1899,6 +1955,14 @@ struct Installed {
     vendor: String,
 }
 
+/// What the installed notices are judged against, worked out before anything is touched.
+struct Notices {
+    /// [`install_notice_text`] of this checkout.
+    meeting: String,
+    /// [`notices::expected_names`] of the shipped tree.
+    shipped: Vec<(String, String)>,
+}
+
 /// The check itself, with the registry saved by the caller.
 fn check_saved(
     root: &Path,
@@ -1906,7 +1970,7 @@ fn check_saved(
     reference: &Reference,
     triple: &str,
     qnn: &[QnnPin],
-    notice: &str,
+    notices: &Notices,
     names: &Installed,
 ) -> Result<bool> {
     let work = root.join("target").join("bundle-check");
@@ -1929,7 +1993,15 @@ fn check_saved(
             Err(e) => format!("{e:#}"),
         },
     );
-    check_install(&mut all, &install, reference, triple, qnn, notice)?;
+    check_install(
+        &mut all,
+        &install,
+        reference,
+        triple,
+        qnn,
+        &notices.meeting,
+        &notices.shipped,
+    )?;
 
     // The names the guard saved are the ones the installer really used.
     let product_key = format!(r"HKCU\Software\{}\{}", names.vendor, names.product);

@@ -404,7 +404,12 @@ fn build_bundle_config_turns_the_bundler_on_with_no_download_at_install_time() {
     let resources = b["resources"].as_object().unwrap();
     assert_eq!(
         resources.len(),
-        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 2
+        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 3
+    );
+    // The third-party notices, written beside the exe (T14.37).
+    assert_eq!(
+        resources[exe_dir.join(NOTICES_FILE).to_str().unwrap()],
+        NOTICES_FILE
     );
     for dll in VC_RUNTIME_DLLS {
         let from = exe_dir.join(dll);
@@ -841,8 +846,11 @@ fn build_bundle_an_install_holds_exactly_the_expected_files() {
     let vulkan = if cfg!(target_arch = "x86_64") { 3 } else { 0 };
     assert_eq!(
         nsis.len(),
-        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 4 + vulkan
+        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 5 + vulkan
     );
+    // The third-party notices (T14.37), on both architectures.
+    assert!(nsis.contains(&rel(&[NOTICES_FILE])));
+    assert!(expected_files(ARM64_WINDOWS).contains(&rel(&[NOTICES_FILE])));
     for dll in VC_RUNTIME_DLLS {
         assert!(nsis.contains(&rel(&[dll])), "{dll}");
     }
@@ -1279,4 +1287,49 @@ fn bundle_check_reads_the_machine_architecture_not_the_xtask_binary_one() {
     );
     // This machine: whatever it is, the reading is one of the two installer targets.
     assert!([X64, ARM64_WINDOWS].contains(&machine_target()));
+}
+
+#[test]
+fn build_bundle_installs_the_third_party_notices_written_beside_the_exe() {
+    for target in [X64, ARM64_WINDOWS] {
+        let conf = bundle_config(
+            Path::new("C:/x"),
+            Path::new("n.md"),
+            Path::new("h.nsh"),
+            &["nsis"],
+            target,
+            &build::shipped_features(Some(target), &[]),
+        );
+        let res = conf["bundle"]["resources"].as_object().unwrap();
+        assert_eq!(
+            res.get(&Path::new("C:/x").join(NOTICES_FILE).display().to_string()),
+            Some(&json!(NOTICES_FILE)),
+            "{target}"
+        );
+        // Compared byte for byte with the build, and without one, judged by the names it holds.
+        assert!(built_comparisons(target).contains(&(NOTICES_FILE, NOTICES_FILE)));
+        assert_eq!(instead_of_build(NOTICES_FILE, target), Instead::Names);
+        assert!(
+            skipped_lines(target)
+                .iter()
+                .any(|l| l.contains(NOTICES_FILE) && l.contains("names every shipped package")),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn bundle_check_the_notices_must_name_every_shipped_package() {
+    let shipped = vec![
+        ("serde".to_owned(), "1.0.229".to_owned()),
+        ("tauri".to_owned(), "2.12.4".to_owned()),
+    ];
+    let whole = "# Notices\n\nserde 1.0.229 | MIT | u\ntauri 2.12.4 | MIT | u\n";
+    assert!(notices_check(whole, &shipped).0);
+    let (pass, detail) = notices_check("# Notices\n\nserde 1.0.229 | MIT | u\n", &shipped);
+    assert!(!pass);
+    assert!(detail.contains("tauri 2.12.4"), "{detail}");
+    // A missing or empty file fails, and so does an expectation that is empty.
+    assert!(!notices_check("", &shipped).0);
+    assert!(!notices_check(whole, &[]).0);
 }
