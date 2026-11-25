@@ -146,6 +146,13 @@ pub struct PhaseTracker {
     meeting: Option<String>,
     /// The phase before the tray or the shortcut asked for a meeting.
     before_start: Phase,
+    /// The meeting the tray or the shortcut started, from the driver's answer
+    /// ([`PhaseTracker::start_reported`]), until its `Started` arrives (T14.5): one that ends with
+    /// no `Started` (its thread stopped first) still ends the start.
+    reported: Option<String>,
+    /// The meetings whose last event arrived while a start was on its way and that were not the
+    /// one followed: the driver's answer can come after the meeting's own last event.
+    ended_while_starting: Vec<String>,
 }
 
 impl Default for PhaseTracker {
@@ -154,6 +161,8 @@ impl Default for PhaseTracker {
             phase: Phase::Idle,
             meeting: None,
             before_start: Phase::Idle,
+            reported: None,
+            ended_while_starting: Vec::new(),
         }
     }
 }
@@ -168,6 +177,13 @@ impl PhaseTracker {
                 Phase::Recording
             }
             MeetingEvent::Ended { meeting, .. } if self.follows(meeting) => Phase::Finishing,
+            // The meeting this start made, ended with no `Started`: followed from here on.
+            MeetingEvent::Ended { meeting, .. } if self.reported(meeting) => {
+                self.meeting = self.reported.take();
+                Phase::Finishing
+            }
+            // The same with no end either (its thread stopped): the start is over.
+            MeetingEvent::Summary { meeting, .. } if self.reported(meeting) => self.before_start,
             MeetingEvent::Summary { meeting, .. } if self.follows(meeting) => {
                 if self.phase == Phase::Starting {
                     self.before_start = Phase::Idle;
@@ -176,11 +192,43 @@ impl PhaseTracker {
                     Phase::Idle
                 }
             }
+            MeetingEvent::Summary { meeting, .. } if self.phase == Phase::Starting => {
+                self.ended_while_starting.push(meeting.clone());
+                Phase::Starting
+            }
             _ => self.phase,
         };
+        self.moved_to(next)
+    }
+
+    /// Sets the phase; true when it changed. What belongs to a start goes with it.
+    fn moved_to(&mut self, next: Phase) -> bool {
+        if next != Phase::Starting {
+            self.reported = None;
+            self.ended_while_starting.clear();
+        }
         let changed = next != self.phase;
         self.phase = next;
         changed
+    }
+
+    fn reported(&self, meeting: &str) -> bool {
+        self.reported.as_deref() == Some(meeting)
+    }
+
+    /// The driver answered the tray's or the shortcut's start with `meeting` (T14.5); true when
+    /// the phase changed. Its `Started` usually came first and this changes nothing. Without one,
+    /// the meeting's end or its last event now ends the start, also when that event came before
+    /// this answer.
+    pub fn start_reported(&mut self, meeting: &str) -> bool {
+        if self.phase != Phase::Starting {
+            return false;
+        }
+        if self.ended_while_starting.iter().any(|m| m == meeting) {
+            return self.moved_to(self.before_start);
+        }
+        self.reported = Some(meeting.to_owned());
+        false
     }
 
     /// The phase.
@@ -215,7 +263,7 @@ impl PhaseTracker {
     /// last meeting was doing.
     pub fn start_failed(&mut self) {
         if self.phase == Phase::Starting {
-            self.phase = self.before_start;
+            self.moved_to(self.before_start);
         }
     }
 }
@@ -703,12 +751,72 @@ pub fn with_record_dot(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// What draws the tray: Tauri's icon and menu item in the app, a fake in tests.
+pub trait TraySurface: Send + Sync {
+    /// Shows `view`. Called off the main thread, each of Tauri's tray and menu calls waits until
+    /// the main thread has run it (tauri 2.12 `run_item_main_thread!`).
+    fn show(&self, view: TrayView);
+}
+
+/// The tray's surface and the one way to draw on it (T14.5). No lock is held across a call to
+/// the surface: a call made off the main thread waits for the main thread, and the main thread
+/// draws too (the shortcut, the tray's own menu), so a lock held across the call would have each
+/// waiting for the other, with the window and the tray dead.
+#[derive(Default)]
+pub struct TrayBoard {
+    surface: Mutex<Option<Arc<dyn TraySurface>>>,
+}
+
+impl TrayBoard {
+    /// The tray exists: draw on `surface` from now on.
+    pub fn set(&self, surface: Arc<dyn TraySurface>) {
+        *self.surface.lock().unwrap_or_else(PoisonError::into_inner) = Some(surface);
+    }
+
+    fn surface(&self) -> Option<Arc<dyn TraySurface>> {
+        self.surface
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Draws the tray of the phase `phase` reads. With no lock around the drawing, two threads
+    /// may draw at once and the older phase may land last, so each draws again until the phase it
+    /// drew is still the phase: whichever draws last then drew the phase as it is.
+    pub fn refresh(&self, phase: impl Fn() -> Phase) {
+        loop {
+            let drawn = phase();
+            let Some(surface) = self.surface() else {
+                return;
+            };
+            surface.show(tray_view(drawn));
+            if phase() == drawn {
+                return;
+            }
+        }
+    }
+}
+
 /// The tray's parts that change.
 struct TrayParts {
     icon: TrayIcon,
     toggle: MenuItem<tauri::Wry>,
     idle: tauri::image::Image<'static>,
     recording: tauri::image::Image<'static>,
+}
+
+impl TraySurface for TrayParts {
+    fn show(&self, view: TrayView) {
+        let image = if view.recording {
+            &self.recording
+        } else {
+            &self.idle
+        };
+        let _ = self.icon.set_icon(Some(image.clone()));
+        let _ = self.icon.set_tooltip(Some(view.tooltip));
+        let _ = self.toggle.set_text(view.toggle_label);
+        let _ = self.toggle.set_enabled(view.toggle_enabled);
+    }
 }
 
 /// The shortcut's state, read by the General page.
@@ -736,7 +844,7 @@ impl ShortcutStatus {
 pub struct Shell {
     app: AppHandle,
     tracker: Mutex<PhaseTracker>,
-    tray: Mutex<Option<TrayParts>>,
+    tray: TrayBoard,
     latch: Mutex<KeyLatch>,
     has_tray: AtomicBool,
     /// The call-end question is open ([`call_end_open_after`]).
@@ -759,7 +867,7 @@ impl Shell {
         Self {
             app,
             tracker: Mutex::new(PhaseTracker::default()),
-            tray: Mutex::new(None),
+            tray: TrayBoard::default(),
             latch: Mutex::new(KeyLatch::default()),
             has_tray: AtomicBool::new(false),
             call_end_open: AtomicBool::new(false),
@@ -831,12 +939,12 @@ impl Shell {
                 }
             })
             .build(app)?;
-        *self.tray.lock().unwrap_or_else(PoisonError::into_inner) = Some(TrayParts {
+        self.tray.set(Arc::new(TrayParts {
             icon,
             toggle,
             idle,
             recording,
-        });
+        }));
         self.has_tray.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -947,7 +1055,13 @@ impl Shell {
                 )
             });
         match started {
-            Ok(_) => {
+            Ok(meeting) => {
+                // Its `Started` usually came first; one that ended without it still ends the
+                // start (T14.5).
+                let changed = self.tracker().start_reported(&meeting);
+                if changed {
+                    self.refresh_tray();
+                }
                 if !self.window_watched() {
                     self.notify(&listening_toast(), None);
                 }
@@ -1155,19 +1269,7 @@ impl Shell {
     }
 
     fn refresh_tray(&self) {
-        let view = tray_view(self.tracker().phase());
-        let tray = self.tray.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(parts) = tray.as_ref() {
-            let image = if view.recording {
-                &parts.recording
-            } else {
-                &parts.idle
-            };
-            let _ = parts.icon.set_icon(Some(image.clone()));
-            let _ = parts.icon.set_tooltip(Some(view.tooltip));
-            let _ = parts.toggle.set_text(view.toggle_label);
-            let _ = parts.toggle.set_enabled(view.toggle_enabled);
-        }
+        self.tray.refresh(|| self.tracker().phase());
     }
 
     /// Shows `toast`; `meeting` is what its clicks open. Never blocks the caller (the meeting

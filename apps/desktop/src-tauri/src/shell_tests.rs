@@ -553,3 +553,213 @@ fn shell_mic_reading_counts_a_dedicated_call_app_only() {
         Some(MicReading::Unknown)
     );
 }
+
+/// A tray that behaves as Tauri's does: a call on the main thread draws at once, and a call on
+/// any other thread is posted and waits until the main thread has run it.
+struct MainThreadTray {
+    main: std::thread::ThreadId,
+    posted: std::sync::Mutex<std::sync::mpsc::Sender<PostedDraw>>,
+    shown: std::sync::Mutex<Vec<TrayView>>,
+}
+
+/// A draw waiting for the main thread, and how its caller hears it ran.
+type PostedDraw = (TrayView, std::sync::mpsc::Sender<()>);
+
+impl MainThreadTray {
+    /// A tray whose main thread is the calling thread.
+    fn new() -> (Arc<Self>, std::sync::mpsc::Receiver<PostedDraw>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tray = Arc::new(Self {
+            main: std::thread::current().id(),
+            posted: std::sync::Mutex::new(tx),
+            shown: std::sync::Mutex::default(),
+        });
+        (tray, rx)
+    }
+
+    /// The main thread runs a posted draw.
+    fn run(&self, (view, done): PostedDraw) {
+        self.shown.lock().unwrap().push(view);
+        let _ = done.send(());
+    }
+}
+
+impl TraySurface for MainThreadTray {
+    fn show(&self, view: TrayView) {
+        if std::thread::current().id() == self.main {
+            self.shown.lock().unwrap().push(view);
+            return;
+        }
+        let (done, ran) = std::sync::mpsc::channel();
+        self.posted.lock().unwrap().send((view, done)).unwrap();
+        ran.recv().unwrap();
+    }
+}
+
+/// Bounds only a failing case: every wait below is a rendezvous.
+const SHELL_GUARD: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[test]
+fn shell_tray_refresh_from_another_thread_never_blocks_the_main_thread() {
+    // T14.5: a meeting's thread refreshes the tray and waits for the main thread to run the
+    // call; the main thread (the shortcut, pressed now) refreshes too. Neither may wait for a
+    // lock the other holds.
+    let (finished, shown) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (tray, posted) = MainThreadTray::new();
+        let board = Arc::new(TrayBoard::default());
+        board.set(Arc::clone(&tray) as Arc<dyn TraySurface>);
+        let from_meeting = Arc::clone(&board);
+        let meeting = std::thread::spawn(move || from_meeting.refresh(|| Phase::Recording));
+        // The meeting's thread is inside its tray call, waiting for this thread.
+        let waiting = posted.recv().unwrap();
+        // The main thread draws now, before it is back in its event loop.
+        board.refresh(|| Phase::Finishing);
+        tray.run(waiting);
+        meeting.join().unwrap();
+        let _ = finished.send(tray.shown.lock().unwrap().clone());
+    });
+    let shown = shown.recv_timeout(SHELL_GUARD).expect(
+        "the main thread waited for the tray while another thread's tray call waited for it",
+    );
+    assert_eq!(
+        shown,
+        vec![tray_view(Phase::Finishing), tray_view(Phase::Recording)]
+    );
+}
+
+/// A tray on one thread that changes the phase during its first draw, as another thread would.
+struct MovesThePhase {
+    phase: Arc<std::sync::Mutex<Phase>>,
+    shown: std::sync::Mutex<Vec<TrayView>>,
+}
+
+impl TraySurface for MovesThePhase {
+    fn show(&self, view: TrayView) {
+        let mut shown = self.shown.lock().unwrap();
+        if shown.is_empty() {
+            *self.phase.lock().unwrap() = Phase::Finishing;
+        }
+        shown.push(view);
+    }
+}
+
+#[test]
+fn shell_tray_refresh_draws_again_when_the_phase_moved_while_it_drew() {
+    // With no lock around the drawing an older phase could land last: the draw is repeated until
+    // what it drew is still the phase.
+    let phase = Arc::new(std::sync::Mutex::new(Phase::Recording));
+    let tray = Arc::new(MovesThePhase {
+        phase: Arc::clone(&phase),
+        shown: std::sync::Mutex::default(),
+    });
+    let board = TrayBoard::default();
+    // No tray yet (it could not be made): nothing to draw, and nothing waits.
+    board.refresh(|| *phase.lock().unwrap());
+    board.set(Arc::clone(&tray) as Arc<dyn TraySurface>);
+    board.refresh(|| *phase.lock().unwrap());
+    assert_eq!(
+        *tray.shown.lock().unwrap(),
+        vec![tray_view(Phase::Recording), tray_view(Phase::Finishing)]
+    );
+    // A phase that stays is drawn once.
+    board.refresh(|| *phase.lock().unwrap());
+    assert_eq!(tray.shown.lock().unwrap().len(), 3);
+}
+
+fn summary_of(meeting: &str) -> MeetingEvent {
+    MeetingEvent::Summary {
+        meeting: meeting.into(),
+        result: SummaryEvent::RecordingFailed {
+            message: "The meeting stopped.".into(),
+        },
+    }
+}
+
+#[test]
+fn shell_a_start_with_no_started_event_still_ends() {
+    // T14.5: the driver answered the tray's start with a meeting whose thread stopped before its
+    // `Started`. Its last event must end the start, or the tray stays on "Starting" for good.
+    let mut t = PhaseTracker::default();
+    assert!(t.begin_start());
+    assert!(!t.start_reported("m7"), "still starting");
+    assert_eq!(t.phase(), Phase::Starting);
+    assert!(t.apply(&summary_of("m7")));
+    assert_eq!(t.phase(), Phase::Idle);
+    assert!(t.begin_start(), "the tray starts meetings again");
+
+    // The answer may come after that last event.
+    assert!(!t.apply(&summary_of("m8")));
+    assert_eq!(t.phase(), Phase::Starting);
+    assert!(t.start_reported("m8"));
+    assert_eq!(t.phase(), Phase::Idle);
+
+    // With an end and no `Started`: finishing, then idle.
+    assert!(t.begin_start());
+    t.start_reported("m9");
+    assert!(t.apply(&MeetingEvent::Ended {
+        meeting: "m9".into(),
+        reason: EndedReason::Failed,
+    }));
+    assert_eq!(t.phase(), Phase::Finishing);
+    assert_eq!(t.meeting(), Some("m9"));
+    assert!(t.apply(&summary_of("m9")));
+    assert_eq!(t.phase(), Phase::Idle);
+}
+
+#[test]
+fn shell_a_reported_start_changes_nothing_for_a_meeting_that_started() {
+    let mut t = PhaseTracker::default();
+    assert!(t.begin_start());
+    // The usual order: `Started` first, then the driver's answer.
+    t.apply(&started());
+    assert!(!t.start_reported("m1"));
+    assert_eq!(t.phase(), Phase::Recording);
+    // The other order.
+    let mut t = PhaseTracker::default();
+    assert!(t.begin_start());
+    assert!(!t.start_reported("m1"));
+    assert!(t.apply(&started()));
+    assert_eq!(t.phase(), Phase::Recording);
+    assert!(t.apply(&ended()));
+    assert!(t.apply(&MeetingEvent::Summary {
+        meeting: "m1".into(),
+        result: stored(0)
+    }));
+    assert_eq!(t.phase(), Phase::Idle);
+    // A meeting already over when its answer comes (a short replay).
+    assert!(!t.start_reported("m1"));
+    assert_eq!(t.phase(), Phase::Idle);
+}
+
+#[test]
+fn shell_a_start_with_no_started_event_goes_back_to_the_older_meeting() {
+    // An older meeting finishes behind the start: only the started meeting's own last event ends
+    // the start, and the tray then shows what the older one is doing.
+    let mut t = PhaseTracker::default();
+    t.apply(&started());
+    t.apply(&ended());
+    assert!(t.begin_start());
+    t.start_reported("m2");
+    assert!(t.apply(&summary_of("m2")));
+    assert_eq!(t.phase(), Phase::Finishing, "the older meeting still runs");
+    assert!(t.apply(&MeetingEvent::Summary {
+        meeting: "m1".into(),
+        result: stored(0)
+    }));
+    assert_eq!(t.phase(), Phase::Idle);
+
+    // The older one ends first, and its summary is never taken for the new meeting's.
+    let mut t = PhaseTracker::default();
+    t.apply(&started());
+    t.apply(&ended());
+    assert!(t.begin_start());
+    assert!(!t.apply(&MeetingEvent::Summary {
+        meeting: "m1".into(),
+        result: stored(0)
+    }));
+    assert!(!t.start_reported("m2"), "m1's end is not m2's");
+    assert_eq!(t.phase(), Phase::Starting);
+    assert!(t.apply(&summary_of("m2")));
+    assert_eq!(t.phase(), Phase::Idle);
+}
