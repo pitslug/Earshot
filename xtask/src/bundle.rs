@@ -241,19 +241,26 @@ fn has_vulkan_summaries(features: &[String]) -> bool {
 /// The Visual C++ runtime an install holds beside the exe (T9.1w, the owner), because a PC without
 /// Microsoft's redistributable could not start the app or load ONNX Runtime, and installing that
 /// needs an admin prompt and a download. Exactly what the exe, llama.cpp, ggml and ONNX Runtime
-/// import; the Universal CRT comes with Windows. Microsoft's terms allow these files for licensed
-/// Visual Studio users (`VC\Redist` in its redistribution list). A new release carries a new copy,
-/// because Windows Update does not service these.
-pub const VC_RUNTIME_DLLS: [&str; 4] = [
+/// import, and what the opt-in CUDA files import ([`cuda_imports_unheld`], T14.38):
+/// `onnxruntime_providers_cuda.dll` imports `msvcp140_atomic_wait.dll`, which the app preloads
+/// from beside the exe before the provider loads, because the provider's imports are looked for
+/// beside it, not certainly in the exe's folder. The Universal CRT comes with Windows.
+/// Microsoft's terms allow these files for licensed Visual Studio users (`VC\Redist` in its
+/// redistribution list). A new release carries a new copy, because Windows Update does not
+/// service these.
+pub const VC_RUNTIME_DLLS: [&str; 5] = [
     "msvcp140.dll",
     "msvcp140_1.dll",
     "vcruntime140.dll",
     "vcruntime140_1.dll",
+    "msvcp140_atomic_wait.dll",
 ];
 
 /// [`VC_RUNTIME_DLLS`] for `target`. On ARM64 without `vcruntime140_1.dll`: that helper exists for
 /// x64 code only, and the copy in Visual Studio's `arm64\Microsoft.VC*.CRT` folder is an x64 binary
-/// (seen with 14.44.35112), which no ARM64 binary imports.
+/// (seen with 14.44.35112), which no ARM64 binary imports. Nor `msvcp140_atomic_wait.dll`: only
+/// the x64 CUDA provider imports it, and nothing an ARM64 install holds or downloads does (the
+/// ARM64 ONNX Runtime and QNN files, read 2026-11-26).
 #[must_use]
 pub fn vc_runtime_dlls(target: &str) -> &'static [&'static str] {
     if target == ARM64_WINDOWS {
@@ -998,6 +1005,108 @@ pub fn check_binary(name: &str, pe: &Pe, target: &str, features: &[String]) -> R
         missing.is_empty(),
         "{name} imports {missing:?}, which the install for {target} does not hold"
     );
+    Ok(())
+}
+
+/// Whether `name` is a library Windows itself provides: an API set, or a file of `system32` that
+/// is not part of the Visual C++ runtime (which System32 holds only where Microsoft's
+/// redistributable was installed: T14.38).
+#[must_use]
+pub fn is_windows_library(name: &str, system32: &Path) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("api-ms-win-") || lower.starts_with("ext-ms-") {
+        return true;
+    }
+    !is_vc_runtime_library(name) && system32.join(name).is_file()
+}
+
+/// The imports of a pinned CUDA library (`pe`) that nothing holds where the app loads it: not
+/// another file of the CUDA folder (`cuda_names`), not a file an install for `target` holds
+/// ([`expected_files`]), not a Windows library (`windows`, [`is_windows_library`] in production).
+#[must_use]
+pub fn cuda_imports_unheld(
+    pe: &Pe,
+    cuda_names: &[String],
+    target: &str,
+    windows: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    let installed = expected_files(target);
+    pe.imports
+        .iter()
+        .filter(|i| {
+            !cuda_names.iter().any(|n| n.eq_ignore_ascii_case(i))
+                && !installed
+                    .iter()
+                    .any(|f| f.to_string_lossy().eq_ignore_ascii_case(i))
+                && !windows(i)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Every file of the opt-in CUDA folder, as `models/manifest.toml`'s `[[cuda_archive]]` pins it.
+///
+/// # Errors
+/// An unreadable manifest.
+pub fn cuda_pins(root: &Path) -> Result<Vec<manifest::CudaFile>> {
+    let m = Manifest::load(&crate::models::manifest_path(root))?;
+    Ok(m.cuda_archives.into_iter().flat_map(|a| a.files).collect())
+}
+
+/// The CUDA files' imports, judged against what an install for `target` holds (T14.38): every
+/// pinned library in `folder` with its pinned bytes is read; one missing or with other bytes is
+/// listed as skipped, so a machine without the files says what it did not check. x64 only: ARM64
+/// has no CUDA files.
+fn check_cuda_imports(all: &mut bool, root: &Path, target: &str, folder: &Path) -> Result<()> {
+    if target != X64_WINDOWS {
+        println!("bundle-check: skipped: the CUDA files' imports: {target} has no CUDA files");
+        return Ok(());
+    }
+    let pins = cuda_pins(root)?;
+    let names: Vec<String> = pins.iter().map(|p| p.name.clone()).collect();
+    let system32 = PathBuf::from(std::env::var_os("SystemRoot").context("SystemRoot is not set")?)
+        .join("System32");
+    let windows = |name: &str| is_windows_library(name, &system32);
+    let mut skipped = Vec::new();
+    for pin in pins
+        .iter()
+        .filter(|p| p.name.to_ascii_lowercase().ends_with(".dll"))
+    {
+        let path = folder.join(&pin.name);
+        let pinned = crate::download::verify_file(
+            &path,
+            &crate::download::Expected {
+                sha256: &pin.sha256,
+                size: pin.size,
+            },
+        );
+        if pinned.is_err() {
+            skipped.push(pin.name.as_str());
+            continue;
+        }
+        let unheld = read_pe(&path).map(|pe| cuda_imports_unheld(&pe, &names, target, &windows));
+        verdict(
+            all,
+            &format!(
+                "cuda: {} imports only what an install, the folder or Windows holds",
+                pin.name
+            ),
+            unheld.as_ref().is_ok_and(Vec::is_empty),
+            &match &unheld {
+                Ok(u) if u.is_empty() => "every import held".to_owned(),
+                Ok(u) => format!("not held: {u:?}"),
+                Err(e) => format!("{e:#}"),
+            },
+        );
+    }
+    if !skipped.is_empty() {
+        println!(
+            "bundle-check: skipped: the imports of {} pinned CUDA libraries not in {} with their \
+             pinned bytes: {skipped:?}",
+            skipped.len(),
+            folder.display()
+        );
+    }
     Ok(())
 }
 
@@ -2001,6 +2110,12 @@ fn check_saved(
         qnn,
         &notices.meeting,
         &notices.shipped,
+    )?;
+    check_cuda_imports(
+        &mut all,
+        root,
+        triple,
+        &crate::models::cache_dir()?.join("cuda"),
     )?;
 
     // The names the guard saved are the ones the installer really used.

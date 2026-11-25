@@ -1252,12 +1252,40 @@ pub(crate) fn off_reason() -> RuntimeError {
     }
 }
 
-/// Loads what the provider cannot find by itself, so nothing goes on PATH. Measured (T8.4ad, this
+/// The Visual C++ runtime libraries `onnxruntime_providers_cuda.dll` imports that nothing loads
+/// before it (its import table, read 2026-11-26, T14.38). The install holds them beside the exe
+/// (xtask `bundle::VC_RUNTIME_DLLS`), where the provider's imports may not be looked for: they are
+/// found beside the provider (as cuBLAS is), and a library already loaded is used whatever the
+/// search, so a PC without Microsoft's redistributable in System32 would otherwise fail every CUDA
+/// start.
+pub const PROVIDER_RUNTIME_DLLS: [&str; 1] = ["msvcp140_atomic_wait.dll"];
+
+/// The [`PROVIDER_RUNTIME_DLLS`] that are in `exe_dir`, by full path, to load before the provider:
+/// an import is resolved from what is already loaded. One that is not there is left to Windows's
+/// own search as before (a developer's build run from `target`), and if that finds none either the
+/// provider fails to load, which is the existing "did not start" path.
+#[must_use]
+pub fn provider_runtime_beside(exe_dir: Option<&Path>) -> Vec<PathBuf> {
+    exe_dir
+        .into_iter()
+        .flat_map(|d| PROVIDER_RUNTIME_DLLS.iter().map(move |f| d.join(f)))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
+/// Loads what the provider cannot find by itself, so nothing goes on PATH: the Visual C++ runtime
+/// library only it imports ([`provider_runtime_beside`]), then cuDNN. Measured (T8.4ad, this
 /// folder not on PATH): cuBLAS is imported by the provider DLL and found beside it; without cuDNN
 /// the provider refuses every Parakeet session ("cuDNN is unavailable"), and with only
 /// `cudnn64_9.dll` loaded the process ends (0xC0000409), so all of it is loaded, or none reaches
 /// the provider.
 pub(crate) fn preload_for_provider(models: &ModelDir) -> Result<(), earshot_onnx::OnnxError> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf));
+    for path in provider_runtime_beside(exe_dir.as_deref()) {
+        earshot_onnx::preload_library(&path)?;
+    }
     let dir = folder(models);
     for file in CUDNN_LOAD_ORDER {
         earshot_onnx::preload_library(&dir.join(file))?;

@@ -1289,6 +1289,110 @@ fn bundle_check_reads_the_machine_architecture_not_the_xtask_binary_one() {
     assert!([X64, ARM64_WINDOWS].contains(&machine_target()));
 }
 
+/// T14.38: the CUDA provider's own runtime library ships on x64, where the provider is, and the
+/// rule that judges the CUDA files' imports sees the gap it closed.
+#[test]
+fn bundle_check_cuda_imports_are_held_by_the_install_the_folder_or_windows() {
+    assert!(vc_runtime_dlls(X64).contains(&"msvcp140_atomic_wait.dll"));
+    assert!(!vc_runtime_dlls(ARM64_WINDOWS).contains(&"msvcp140_atomic_wait.dll"));
+    assert!(expected_files(X64).contains(&PathBuf::from("msvcp140_atomic_wait.dll")));
+    let windows = |name: &str| ["KERNEL32.dll", "ntdll.dll"].contains(&name);
+    let folder = vec!["cublas64_13.dll".to_owned(), "cublasLt64_13.dll".to_owned()];
+    // The provider's imports as read from the pinned file on 2026-11-26, less the API sets.
+    let provider = Pe {
+        machine: machine_of(X64).unwrap(),
+        imports: [
+            "cublasLt64_13.dll",
+            "cublas64_13.dll",
+            "onnxruntime_providers_shared.dll",
+            "KERNEL32.dll",
+            "MSVCP140.dll",
+            "MSVCP140_ATOMIC_WAIT.dll",
+            "VCRUNTIME140.dll",
+            "VCRUNTIME140_1.dll",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    };
+    let mut names = folder.clone();
+    names.push("onnxruntime_providers_shared.dll".to_owned());
+    assert_eq!(
+        cuda_imports_unheld(&provider, &names, X64, &windows),
+        Vec::<String>::new()
+    );
+    // Without the library in the install, the gap shows, by its name as imported.
+    let mut without = vc_runtime_dlls(X64).to_vec();
+    without.retain(|d| *d != "msvcp140_atomic_wait.dll");
+    let held = |name: &str| {
+        windows(name)
+            || without.iter().any(|d| d.eq_ignore_ascii_case(name))
+            || names.iter().any(|n| n.eq_ignore_ascii_case(name))
+    };
+    let gap: Vec<&String> = provider.imports.iter().filter(|i| !held(i)).collect();
+    assert_eq!(gap, ["MSVCP140_ATOMIC_WAIT.dll"]);
+    // Something nobody holds is named.
+    let stray = Pe {
+        imports: vec!["nowhere.dll".to_owned()],
+        ..provider
+    };
+    assert_eq!(
+        cuda_imports_unheld(&stray, &names, X64, &windows),
+        ["nowhere.dll"]
+    );
+}
+
+#[test]
+fn bundle_check_a_vc_runtime_file_in_system32_is_not_windows() {
+    let dir = tmp("system32");
+    std::fs::write(dir.join("kernel32.dll"), b"").unwrap();
+    std::fs::write(dir.join("msvcp140_atomic_wait.dll"), b"").unwrap();
+    assert!(is_windows_library("KERNEL32.dll", &dir));
+    assert!(is_windows_library("api-ms-win-crt-heap-l1-1-0.dll", &dir));
+    assert!(is_windows_library("ext-ms-win-x.dll", &dir));
+    // In System32 only where the redistributable was installed: never counted as Windows.
+    assert!(!is_windows_library("MSVCP140_ATOMIC_WAIT.dll", &dir));
+    assert!(!is_windows_library("absent.dll", &dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundle_check_the_cuda_pins_hold_the_provider_and_the_runtime_preloads_what_ships() {
+    let root = crate::repo_root();
+    let pins = cuda_pins(&root).unwrap();
+    assert!(
+        pins.iter()
+            .any(|p| p.name == "onnxruntime_providers_cuda.dll")
+    );
+    // The runtime preloads from beside the exe exactly the files the x64 install holds for it.
+    let cuda = std::fs::read_to_string(root.join("crates/earshot-runtime/src/cuda.rs")).unwrap();
+    let line = cuda
+        .lines()
+        .find(|l| l.starts_with("pub const PROVIDER_RUNTIME_DLLS"))
+        .unwrap();
+    let listed: Vec<&str> = line.split('"').skip(1).step_by(2).collect();
+    assert!(!listed.is_empty(), "{line}");
+    for dll in listed {
+        assert!(vc_runtime_dlls(X64).contains(&dll), "{dll}");
+    }
+}
+
+/// T14.38 on this machine: the installed CUDA files' imports, when they are here with their pinned
+/// bytes. Reads about 1.5 GB.
+#[test]
+#[ignore = "reads the installed CUDA folder: cargo test -p xtask bundle_check_installed_cuda -- --ignored"]
+fn bundle_check_installed_cuda_files_import_only_what_is_held() {
+    let root = crate::repo_root();
+    let mut all = true;
+    check_cuda_imports(
+        &mut all,
+        &root,
+        X64,
+        &crate::models::cache_dir().unwrap().join("cuda"),
+    )
+    .unwrap();
+    assert!(all);
+}
+
 #[test]
 fn build_bundle_installs_the_third_party_notices_written_beside_the_exe() {
     for target in [X64, ARM64_WINDOWS] {
