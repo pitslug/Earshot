@@ -1550,3 +1550,317 @@ fn meeting_events_npu_preparing_shows_then_clears_its_banner() {
         "Earshot is preparing the NPU for this computer. Transcription starts shortly."
     );
 }
+
+fn warning(key: &str, message: &str) -> MeetingEvent {
+    MeetingEvent::Warning {
+        key: key.into(),
+        kind: WarningKind::Backend,
+        message: message.into(),
+    }
+}
+
+fn started(meeting: &str, mode: CaptureMode) -> MeetingEvent {
+    MeetingEvent::Started {
+        meeting: meeting.into(),
+        mode,
+        tracks: vec![LiveTrack::You, LiveTrack::Them],
+    }
+}
+
+fn banner_keys(s: &FollowedSnapshot) -> Vec<(&str, bool)> {
+    s.banners
+        .iter()
+        .map(|b| (b.key.as_str(), b.after_end))
+        .collect()
+}
+
+#[test]
+fn meeting_events_snapshot_with_nothing_sent_has_no_meeting() {
+    let r = SentRecord::default();
+    let s = r.snapshot(Instant::now());
+    assert_eq!(
+        s,
+        MeetingSnapshot {
+            followed: None,
+            behind: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn meeting_events_snapshot_keeps_the_banners_in_force_and_the_counts_of_a_recording() {
+    let t0 = Instant::now();
+    let mut r = SentRecord::default();
+    r.apply(1, &started("m1", CaptureMode::Call), t0);
+    r.apply(1, &warning("onnx", "A notice."), t0);
+    r.apply(1, &warning("far-end", "Quiet."), t0);
+    r.apply(1, &warning("onnx", "A newer notice."), t0);
+    r.apply(
+        1,
+        &MeetingEvent::WarningCleared {
+            key: "far-end".into(),
+        },
+        t0,
+    );
+    r.apply(
+        1,
+        &MeetingEvent::Backend {
+            track: LiveTrack::You,
+            label: "CPU".into(),
+        },
+        t0,
+    );
+    r.apply(1, &MeetingEvent::Words { total: 12 }, t0);
+    r.apply(1, &MeetingEvent::Lag { seconds: 3.5 }, t0);
+    r.apply(
+        1,
+        &MeetingEvent::Transcript {
+            state: TranscriptState::CatchingUp,
+        },
+        t0,
+    );
+    r.apply(
+        1,
+        &MeetingEvent::CallEndOffer {
+            open: true,
+            stops: true,
+        },
+        t0,
+    );
+    // Text is never kept.
+    r.apply(
+        1,
+        &MeetingEvent::Landed {
+            track: LiveTrack::You,
+            start_ms: 0,
+            end_ms: 500,
+            text: "an invented line".into(),
+        },
+        t0,
+    );
+    let s = r.snapshot(t0 + Duration::from_millis(95_000));
+    let f = s.followed.expect("the recording");
+    assert_eq!(f.meeting, "m1");
+    assert_eq!(f.mode, CaptureMode::Call);
+    assert_eq!(f.elapsed_ms, 95_000);
+    assert_eq!(f.ended, None);
+    assert_eq!(banner_keys(&f), [("onnx", false)]);
+    assert_eq!(f.banners[0].message, "A newer notice.");
+    assert_eq!(
+        f.backends,
+        [TrackBackend {
+            track: LiveTrack::You,
+            label: "CPU".into(),
+        }]
+    );
+    assert_eq!(
+        (f.words, f.lag_seconds, f.transcript, f.call_end_offer),
+        (12, Some(3.5), TranscriptState::CatchingUp, true)
+    );
+    assert!(s.behind.is_empty());
+    let json = serde_json::to_string(&r.snapshot(t0)).unwrap();
+    assert!(!json.contains("invented"), "{json}");
+}
+
+#[test]
+fn meeting_events_snapshot_of_a_finishing_meeting_freezes_its_clock_and_marks_later_banners() {
+    let t0 = Instant::now();
+    let mut r = SentRecord::default();
+    r.apply(1, &started("m1", CaptureMode::InRoom), t0);
+    r.apply(1, &warning("during", "Said while recording."), t0);
+    r.apply(
+        1,
+        &MeetingEvent::CallEndOffer {
+            open: true,
+            stops: true,
+        },
+        t0,
+    );
+    r.apply(
+        1,
+        &MeetingEvent::Ended {
+            meeting: "m1".into(),
+            reason: EndedReason::Stopped,
+        },
+        t0 + Duration::from_secs(60),
+    );
+    r.apply(1, &warning("recording-gap", "A gap."), t0);
+    let step = MeetingEvent::PostProgress {
+        meeting: "m1".into(),
+        step: PostStep::Starting,
+        done: 0,
+        total: Some(6),
+    };
+    r.apply(1, &step, t0);
+    let f = r.snapshot(t0 + Duration::from_secs(600)).followed.unwrap();
+    assert_eq!(f.elapsed_ms, 60_000);
+    assert_eq!(f.ended, Some(EndedReason::Stopped));
+    assert!(!f.call_end_offer);
+    assert_eq!(
+        banner_keys(&f),
+        [("during", false), ("recording-gap", true)]
+    );
+    assert_eq!(
+        f.progress,
+        Some(ProgressSnapshot {
+            step: PostStep::Starting,
+            done: 0,
+            total: Some(6),
+        })
+    );
+    // Its result is its last event: nothing of it is in progress any more.
+    r.apply(
+        1,
+        &MeetingEvent::Summary {
+            meeting: "m1".into(),
+            result: SummaryEvent::Cancelled,
+        },
+        t0,
+    );
+    assert_eq!(r.snapshot(t0).followed, None);
+}
+
+#[test]
+fn meeting_events_snapshot_puts_an_older_meeting_behind_the_newer_one() {
+    let t0 = Instant::now();
+    let mut r = SentRecord::default();
+    r.apply(1, &started("old", CaptureMode::Call), t0);
+    r.apply(
+        1,
+        &MeetingEvent::Ended {
+            meeting: "old".into(),
+            reason: EndedReason::Stopped,
+        },
+        t0,
+    );
+    r.apply(2, &started("new", CaptureMode::Call), t0);
+    r.apply(
+        1,
+        &MeetingEvent::PostProgress {
+            meeting: "old".into(),
+            step: PostStep::Stored,
+            done: 5,
+            total: Some(6),
+        },
+        t0,
+    );
+    let s = r.snapshot(t0);
+    assert_eq!(s.followed.as_ref().unwrap().meeting, "new");
+    assert_eq!(s.followed.as_ref().unwrap().ended, None);
+    assert_eq!(
+        s.behind,
+        [BehindSnapshot {
+            meeting: "old".into(),
+            progress: Some(ProgressSnapshot {
+                step: PostStep::Stored,
+                done: 5,
+                total: Some(6),
+            }),
+        }]
+    );
+    // The newer one's result while the older finishes (a failed recording): the older one is
+    // still behind, and nothing is followed.
+    r.apply(
+        2,
+        &MeetingEvent::Summary {
+            meeting: "new".into(),
+            result: SummaryEvent::Cancelled,
+        },
+        t0,
+    );
+    let s = r.snapshot(t0);
+    assert_eq!(s.followed, None);
+    assert_eq!(s.behind.len(), 1);
+}
+
+#[test]
+fn meeting_events_snapshot_folding_an_event_twice_changes_nothing() {
+    // The rule a window relies on: it applies every event it heard after subscribing on top of the
+    // snapshot, also those the snapshot already holds.
+    let t0 = Instant::now();
+    let events = [
+        started("m1", CaptureMode::Call),
+        warning("a", "One."),
+        MeetingEvent::Backend {
+            track: LiveTrack::Them,
+            label: "NPU".into(),
+        },
+        warning("b", "Two."),
+        MeetingEvent::WarningCleared { key: "a".into() },
+        MeetingEvent::Words { total: 4 },
+        MeetingEvent::Ended {
+            meeting: "m1".into(),
+            reason: EndedReason::Stopped,
+        },
+        warning("c", "Three."),
+        MeetingEvent::PostProgress {
+            meeting: "m1".into(),
+            step: PostStep::Loading,
+            done: 0,
+            total: None,
+        },
+    ];
+    let mut once = SentRecord::default();
+    for e in &events {
+        once.apply(1, e, t0);
+    }
+    for cut in 1..events.len() {
+        let mut twice = SentRecord::default();
+        for e in &events[..cut] {
+            twice.apply(1, e, t0);
+        }
+        // Everything from a point before the cut, again.
+        for e in &events[cut - 1..] {
+            twice.apply(1, e, t0);
+        }
+        assert_eq!(twice.snapshot(t0), once.snapshot(t0), "cut at {cut}");
+    }
+}
+
+#[test]
+fn meeting_events_snapshot_holds_the_call_end_question_as_last_sent() {
+    // T14.52: the question asked with stopping by itself on, then the setting turned off while it
+    // is open: it is re-sent open with `stops: false`, and a window loaded now must say that.
+    let t0 = Instant::now();
+    let mut r = SentRecord::default();
+    r.apply(1, &started("m1", CaptureMode::Call), t0);
+    let offer = |open, stops| MeetingEvent::CallEndOffer { open, stops };
+    r.apply(1, &offer(true, true), t0);
+    let f = r.snapshot(t0).followed.unwrap();
+    assert_eq!((f.call_end_offer, f.call_end_stops), (true, true));
+    r.apply(1, &offer(true, false), t0);
+    let f = r.snapshot(t0).followed.unwrap();
+    assert_eq!((f.call_end_offer, f.call_end_stops), (true, false));
+    // Applied again on top (a window that heard it while reading): the same.
+    r.apply(1, &offer(true, false), t0);
+    let again = r.snapshot(t0).followed.unwrap();
+    assert_eq!(again, f);
+    // Closed by "Keep recording": closed, in the words it was last asked in.
+    r.apply(1, &offer(false, false), t0);
+    let f = r.snapshot(t0).followed.unwrap();
+    assert_eq!((f.call_end_offer, f.call_end_stops), (false, false));
+}
+
+#[test]
+fn meeting_events_snapshot_cases_are_the_shared_table() {
+    // T14.51: the UI mock's copy (`ipc/mockSnapshot.ts`) runs the same table.
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/meeting_snapshot_cases.json"
+    ))
+    .unwrap();
+    let cases = table["cases"].as_array().unwrap();
+    assert!(cases.len() >= 5);
+    let t0 = Instant::now();
+    let at = |ms: &serde_json::Value| t0 + Duration::from_millis(ms.as_u64().unwrap());
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let mut r = SentRecord::default();
+        for sent in case["events"].as_array().unwrap() {
+            let event: MeetingEvent = serde_json::from_value(sent["event"].clone())
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            r.apply(sent["seq"].as_u64().unwrap(), &event, at(&sent["at_ms"]));
+        }
+        let got = serde_json::to_value(r.snapshot(at(&case["now_ms"]))).unwrap();
+        assert_eq!(got, case["expect"], "{name}");
+    }
+}

@@ -122,21 +122,32 @@ class Boundary extends Component<RootErrorBoundaryProps, State> {
     if (this.recordingId === null) this.lookForRecording();
   }
 
-  /** A recording this window never heard start (the page was loaded again during it): the
-   * meeting list says so. Asked only once a screen has broken. */
+  /** A recording this window never heard start (the page was loaded again during it): the app's
+   * snapshot of the meetings in progress says so (T14.51). Only the meeting the screen follows,
+   * and only while its recording has not ended: a meeting that is only finishing, or one still
+   * starting, has nothing to stop. Asked only once a screen has broken. */
   private lookForRecording() {
     const asked = this.heard;
-    this.props.ipc.listMeetings().then((meetings) => {
-      // A start or an end heard since is newer than the list.
+    this.props.ipc.meetingSnapshot().then((snapshot) => {
+      // A start or an end heard since is newer than the snapshot.
       if (!this.mounted || this.heard !== asked || this.recordingId !== null) return;
-      const recording = meetings.find((m) => m.state === "Recording");
-      if (recording === undefined) return;
-      this.recordingId = recording.id;
-      this.setState({ recordingId: recording.id });
+      const followed = snapshot.followed;
+      if (followed === null || followed.ended !== null) return;
+      this.recordingId = followed.meeting;
+      this.setState({ recordingId: followed.meeting });
     }, noop);
   }
 
   private onEvent = (event: MeetingEvent) => {
+    // A recording that failed before it was saved ends with its result and no `Ended`: nothing is
+    // left to stop.
+    if (event.type === "Summary" && event.meeting === this.recordingId) {
+      this.heard += 1;
+      this.endStopWait();
+      this.recordingId = null;
+      if (this.state.failed) this.setState({ recordingId: null, stop: "idle" });
+      return;
+    }
     if (event.type === "Started") {
       this.heard += 1;
       this.endStopWait();

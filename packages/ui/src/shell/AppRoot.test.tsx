@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactElement, isValidElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type Ipc, IpcProvider, type MeetingListItem, createMockIpc } from "../ipc";
+import { type Ipc, IpcProvider, type MeetingListItem, type MeetingSnapshot, createMockIpc } from "../ipc";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { AppRoot } from "./AppRoot";
@@ -56,7 +56,31 @@ describe("the window's tree", () => {
 
   it("app root: an app window that throws while a meeting records leaves the fixed words and a Stop that works", async () => {
     const stopMeeting = vi.fn(async () => {});
-    const ipc: Ipc = { ...createMockIpc({ meetings: [GOOD] }), listMeetings: async () => [BROKEN, GOOD], stopMeeting };
+    // The app says the broken row's meeting records (T14.51: the boundary asks the snapshot).
+    const meetingSnapshot = async (): Promise<MeetingSnapshot> => ({
+      followed: {
+        meeting: BROKEN.id,
+        mode: "InRoom",
+        tracks: ["You"],
+        elapsed_ms: 7_000,
+        ended: null,
+        banners: [],
+        backends: [],
+        words: 0,
+        lag_seconds: null,
+        transcript: "Live",
+        call_end_offer: false,
+        call_end_stops: false,
+        progress: null,
+      },
+      behind: [],
+    });
+    const ipc: Ipc = {
+      ...createMockIpc({ meetings: [GOOD] }),
+      listMeetings: async () => [BROKEN, GOOD],
+      meetingSnapshot,
+      stopMeeting,
+    };
     const onReload = vi.fn();
     render(<AppRoot ipc={ipc} timer={createManualTimer(10_000)} onReload={onReload} />);
     expect(await screen.findByRole("heading", { level: 1, name: CRASH_COPY.title })).toBeInTheDocument();

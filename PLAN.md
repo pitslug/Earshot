@@ -2789,7 +2789,7 @@ Second wave (after the lanes above are merged):
   - deps: T14.46
   - do: a retired sync thread stops when a new one starts; the signal lock is not held while waiting for the beats lock; the open Sync page asks the relay only while the window is watched and reuses the thread's client; `converge` runs only for kinds a page wrote.
   - accept: `cargo test -p earshot-runtime sync`; `cmd /c pnpm --filter @earshot/ui test`
-- [ ] T14.51 A reloaded window finds the meeting that is recording
+- [x] T14.51 A reloaded window finds the meeting that is recording
   - deps: T14.10, T14.14, T14.15
   - do: a command returns the recording meeting's snapshot (id, mode, tracks, start, banners in force) and the meetings finishing behind it; the window reads it on mount and rebuilds its live state; `MeetingDetailView` is memoised so live events do not reconcile an open transcript.
   - accept: `cargo test -p earshot-desktop --bin earshot meeting`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`

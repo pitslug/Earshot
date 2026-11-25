@@ -46,6 +46,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             stop_meeting,
             cancel_finishing,
             keep_recording,
+            meeting_snapshot,
             set_compact,
             set_window_theme,
             get_meeting,
@@ -477,6 +478,9 @@ pub struct SearchResultsView {
     pub items: Vec<SearchResultItem>,
     /// Whether more meetings matched than `items` holds.
     pub capped: bool,
+    /// Transcript lines and summaries left out of the search because they could not be read
+    /// (`SearchResults::unreadable`): a count only, 0 normally.
+    pub unreadable: u32,
 }
 
 /// The error kind of a search that a newer search replaced before it answered (T9.24); the UI
@@ -518,6 +522,7 @@ pub fn meeting_search(
             })
             .collect(),
         capped: results.capped,
+        unreadable: u32::try_from(results.unreadable).unwrap_or(u32::MAX),
     })
 }
 
@@ -697,6 +702,19 @@ fn cancel_finishing(driver: State<'_, MeetingDriver>, meeting: String) {
 #[specta::specta]
 fn keep_recording(driver: State<'_, MeetingDriver>) {
     driver.keep_recording();
+}
+
+/// What a window that has just loaded needs to rebuild the meeting screen (T14.51): the meeting
+/// the screen follows, recording or finishing, and the older ones finishing behind it. A window subscribes to `MeetingEvent`s first, then reads this, then applies
+/// every event it heard meanwhile on top ([`MeetingDriver::snapshot`]). No transcript text: lines
+/// already shown are not kept.
+#[tauri::command]
+#[specta::specta]
+async fn meeting_snapshot(
+    driver: State<'_, MeetingDriver>,
+) -> Result<crate::meeting_events::MeetingSnapshot, IpcError> {
+    let driver = driver.inner().clone();
+    blocking(move || Ok(driver.snapshot())).await
 }
 
 /// Runs blocking work off the main thread. Work that panics or is cancelled reaches the page as

@@ -17,6 +17,7 @@ import type {
   MeetingDetail,
   MeetingEvent,
   MeetingListItem,
+  MeetingSnapshot,
   DeleteAsk,
   ModelJobEvent,
   UpdateEvent,
@@ -95,6 +96,10 @@ export interface IpcCommands
   cancelFinishing(meeting: string): Promise<void>;
   /** "Keep recording" on the offer to stop when a call seems to have ended. */
   keepRecording(): Promise<void>;
+  /** What a window that has just loaded needs to show the meetings in progress (T14.51): the
+   * meeting the screen follows, recording or finishing, and those finishing behind it. Read after subscribing to `onMeetingEvent`; every event heard meanwhile is
+   * then applied on top (`useLiveMeeting`). Rejects with an `IpcFailure`. */
+  meetingSnapshot(): Promise<MeetingSnapshot>;
   /** Answers the offer to record a call that seems to have started (T12.86): with `start`, the
    * app starts the meeting itself. Resolves to whether the answer was taken (a closed question
    * takes none). */

@@ -35,6 +35,7 @@ pub enum CaptureMode {
 
 /// A live track as the meeting screen names it: speaker names exist only after hang-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum LiveTrack {
     /// The mic (after echo cancellation).
     You,
@@ -69,6 +70,7 @@ impl LiveTrack {
 
 /// Why the recording ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum EndedReason {
     /// Stopped on request.
     Stopped,
@@ -80,6 +82,7 @@ pub enum EndedReason {
 
 /// Which condition a warning banner is about (the UI picks the banner's look from it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum WarningKind {
     /// The mic is a Bluetooth headset in hands-free mode.
     BluetoothHandsFree,
@@ -113,6 +116,7 @@ pub enum WarningKind {
 
 /// A step of the work after the meeting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(tag = "kind")]
 pub enum PostStep {
     /// The recordings are being read back.
@@ -139,6 +143,7 @@ pub enum PostStep {
 
 /// What the summary step did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(tag = "kind")]
 pub enum SummaryEvent {
     /// A summary was stored.
@@ -194,6 +199,7 @@ pub enum SummaryEvent {
 
 /// Where the live transcript is, for the banner at the top of the meeting's transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum TranscriptState {
     /// Recording; the previous meeting's final pass or summary comes first.
     WaitingForPreviousMeeting,
@@ -209,6 +215,7 @@ pub enum TranscriptState {
 
 /// A word of [`MeetingEvent::Provisional`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub struct ProvisionalWord {
     /// Start in meeting time (ms).
     pub start_ms: u64,
@@ -221,6 +228,7 @@ pub struct ProvisionalWord {
 /// meeting started: `Ended`, `PostProgress` and `Summary` say whose they are, and it sends no
 /// other event from then on.
 #[derive(Debug, Clone, PartialEq, Serialize, Type, tauri_specta::Event)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(tag = "type")]
 pub enum MeetingEvent {
     /// The meeting is recording.
@@ -1469,6 +1477,269 @@ pub fn summary_result_event(result: &SummaryResult, voices_to_name: u32) -> Summ
         SummaryResult::Offloaded { name, .. } => SummaryEvent::Offloaded {
             message: crate::offload::waiting_copy(Some(name)),
         },
+    }
+}
+
+/// A banner in force, as [`MeetingSnapshot`] gives it (T14.51).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BannerSnapshot {
+    /// The banner's key ([`MeetingEvent::Warning`]).
+    pub key: String,
+    /// What kind of condition.
+    pub kind: WarningKind,
+    /// Plain copy, as it was sent.
+    pub message: String,
+    /// Whether its latest warning came after the recording was saved: the screen after a meeting
+    /// shows only those.
+    pub after_end: bool,
+}
+
+/// The backend a track's transcription runs on, as [`MeetingEvent::Backend`] said.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct TrackBackend {
+    /// The track.
+    pub track: LiveTrack,
+    /// The label.
+    pub label: String,
+}
+
+/// The last [`MeetingEvent::PostProgress`] of a meeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub struct ProgressSnapshot {
+    /// The step that last started or finished.
+    pub step: PostStep,
+    /// Final-pass steps done.
+    pub done: u32,
+    /// Final-pass steps in all, once known.
+    pub total: Option<u32>,
+}
+
+/// The meeting the screen follows (the newest that started), recording or finishing, as the
+/// events sent so far left it.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+pub struct FollowedSnapshot {
+    /// Meeting id.
+    pub meeting: String,
+    /// What it records.
+    pub mode: CaptureMode,
+    /// Its tracks (You first).
+    pub tracks: Vec<LiveTrack>,
+    /// How long it has recorded (ms on the app's clock): until now while it records, until its
+    /// end once it ended.
+    pub elapsed_ms: u64,
+    /// Why its recording ended; `None` while it records.
+    pub ended: Option<EndedReason>,
+    /// The banners in force, oldest first.
+    pub banners: Vec<BannerSnapshot>,
+    /// Each track's backend label.
+    pub backends: Vec<TrackBackend>,
+    /// Words transcribed so far.
+    pub words: u32,
+    /// How far the transcript is behind the audio, once said.
+    pub lag_seconds: Option<f64>,
+    /// Where the live transcript is.
+    pub transcript: TranscriptState,
+    /// Whether the question "the call seems to have ended" is open.
+    pub call_end_offer: bool,
+    /// Whether that question, as last sent, says the recording stops by itself (T14.52): its
+    /// wording and buttons follow it.
+    pub call_end_stops: bool,
+    /// How its finishing goes, once a step was said.
+    pub progress: Option<ProgressSnapshot>,
+}
+
+/// An older meeting finishing behind the one the screen follows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BehindSnapshot {
+    /// Meeting id.
+    pub meeting: String,
+    /// How its finishing goes, once a step was said.
+    pub progress: Option<ProgressSnapshot>,
+}
+
+/// What a window that has just loaded needs to show the meetings in progress (T14.51): built only
+/// from the [`MeetingEvent`]s the driver has sent ([`SentRecord`]), so it says nothing those events
+/// did not. Transcript text is not in it: lines already shown are not kept. A start whose
+/// `Started` has not gone out is not in it: the window shows that meeting from its `Started`.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+pub struct MeetingSnapshot {
+    /// The meeting the screen follows.
+    pub followed: Option<FollowedSnapshot>,
+    /// Older meetings finishing behind it, oldest first.
+    pub behind: Vec<BehindSnapshot>,
+}
+
+/// One meeting's part of [`SentRecord`].
+#[derive(Debug, Clone)]
+struct SentMeeting {
+    seq: u64,
+    meeting: String,
+    mode: CaptureMode,
+    tracks: Vec<LiveTrack>,
+    started: Instant,
+    ended: Option<(Instant, EndedReason)>,
+    banners: Vec<BannerSnapshot>,
+    backends: Vec<TrackBackend>,
+    words: u32,
+    lag_seconds: Option<f64>,
+    transcript: TranscriptState,
+    call_end_offer: bool,
+    call_end_stops: bool,
+    progress: Option<ProgressSnapshot>,
+}
+
+/// What the driver has sent the window, folded per meeting (T14.51): the source of
+/// [`MeetingSnapshot`]. Fed every event right before it goes out, with the number of the meeting
+/// it belongs to (the driver's start count), because most events name no meeting.
+///
+/// Every field it keeps is set by assignment (a banner by its key), so an event folded here and
+/// then applied again by a window on top of the snapshot changes nothing; that is what lets a
+/// window subscribe first, read the snapshot, then apply every event it heard meanwhile.
+#[derive(Debug, Default)]
+pub struct SentRecord {
+    meetings: Vec<SentMeeting>,
+    /// The meeting number of the newest `Started`.
+    followed: Option<u64>,
+}
+
+impl SentRecord {
+    fn by_id(&mut self, meeting: &str) -> Option<&mut SentMeeting> {
+        self.meetings.iter_mut().find(|m| m.meeting == meeting)
+    }
+
+    /// Folds in `event` of meeting number `seq`, sent at `now`.
+    pub fn apply(&mut self, seq: u64, event: &MeetingEvent, now: Instant) {
+        match event {
+            MeetingEvent::Started {
+                meeting,
+                mode,
+                tracks,
+            } => {
+                self.meetings
+                    .retain(|m| m.seq != seq && m.meeting != *meeting);
+                self.meetings.push(SentMeeting {
+                    seq,
+                    meeting: meeting.clone(),
+                    mode: *mode,
+                    tracks: tracks.clone(),
+                    started: now,
+                    ended: None,
+                    banners: Vec::new(),
+                    backends: Vec::new(),
+                    words: 0,
+                    lag_seconds: None,
+                    // As the window starts a meeting.
+                    transcript: TranscriptState::Live,
+                    call_end_offer: false,
+                    call_end_stops: false,
+                    progress: None,
+                });
+                self.followed = Some(seq);
+            }
+            MeetingEvent::Ended { meeting, reason } => {
+                if let Some(m) = self.by_id(meeting) {
+                    m.ended = Some((now, *reason));
+                    m.call_end_offer = false;
+                }
+            }
+            MeetingEvent::PostProgress {
+                meeting,
+                step,
+                done,
+                total,
+            } => {
+                if let Some(m) = self.by_id(meeting) {
+                    m.progress = Some(ProgressSnapshot {
+                        step: *step,
+                        done: *done,
+                        total: *total,
+                    });
+                }
+            }
+            // A meeting's last event: nothing of it is in progress any more.
+            MeetingEvent::Summary { meeting, .. } => {
+                self.meetings.retain(|m| m.meeting != *meeting)
+            }
+            other => {
+                let Some(m) = self.meetings.iter_mut().find(|m| m.seq == seq) else {
+                    return;
+                };
+                match other {
+                    MeetingEvent::Backend { track, label } => {
+                        m.backends.retain(|b| b.track != *track);
+                        m.backends.push(TrackBackend {
+                            track: *track,
+                            label: label.clone(),
+                        });
+                    }
+                    MeetingEvent::Lag { seconds } => m.lag_seconds = Some(*seconds),
+                    MeetingEvent::Words { total } => m.words = *total,
+                    MeetingEvent::Transcript { state } => m.transcript = *state,
+                    MeetingEvent::Warning { key, kind, message } => {
+                        m.banners.retain(|b| b.key != *key);
+                        m.banners.push(BannerSnapshot {
+                            key: key.clone(),
+                            kind: *kind,
+                            message: message.clone(),
+                            after_end: m.ended.is_some(),
+                        });
+                    }
+                    MeetingEvent::WarningCleared { key } => m.banners.retain(|b| b.key != *key),
+                    // As last sent: an open question re-sent with `stops: false` (the setting
+                    // turned off mid-meeting) keeps it open in the off wording.
+                    MeetingEvent::CallEndOffer { open, stops } => {
+                        m.call_end_offer = *open;
+                        m.call_end_stops = *stops;
+                    }
+                    MeetingEvent::CallEndStopped => m.call_end_offer = false,
+                    // Levels, voice activity and transcript text are not kept: they change many
+                    // times a second, or are content the window was shown once.
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// The snapshot at `now`.
+    #[must_use]
+    pub fn snapshot(&self, now: Instant) -> MeetingSnapshot {
+        let followed = self
+            .followed
+            .and_then(|seq| self.meetings.iter().find(|m| m.seq == seq));
+        let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        let mut behind: Vec<&SentMeeting> = self
+            .meetings
+            .iter()
+            .filter(|m| Some(m.seq) != self.followed && m.ended.is_some())
+            .collect();
+        behind.sort_by_key(|m| m.seq);
+        MeetingSnapshot {
+            followed: followed.map(|m| FollowedSnapshot {
+                meeting: m.meeting.clone(),
+                mode: m.mode,
+                tracks: m.tracks.clone(),
+                elapsed_ms: ms(m
+                    .ended
+                    .map_or(now, |(at, _)| at)
+                    .saturating_duration_since(m.started)),
+                ended: m.ended.map(|(_, reason)| reason),
+                banners: m.banners.clone(),
+                backends: m.backends.clone(),
+                words: m.words,
+                lag_seconds: m.lag_seconds,
+                transcript: m.transcript,
+                call_end_offer: m.call_end_offer,
+                call_end_stops: m.call_end_stops,
+                progress: m.progress,
+            }),
+            behind: behind
+                .into_iter()
+                .map(|m| BehindSnapshot {
+                    meeting: m.meeting.clone(),
+                    progress: m.progress,
+                })
+                .collect(),
+        }
     }
 }
 

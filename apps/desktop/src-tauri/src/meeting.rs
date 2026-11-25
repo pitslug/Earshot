@@ -64,7 +64,8 @@ use earshot_runtime::{MeetingJob, RuntimeError, Services};
 
 use crate::ipc::IpcError;
 use crate::meeting_events::{
-    CaptureMode, EventMapper, MeetingEvent, PostProgressMapper, SummaryEvent, summary_event,
+    CaptureMode, EventMapper, MeetingEvent, MeetingSnapshot, PostProgressMapper, SentRecord,
+    SummaryEvent, summary_event,
 };
 
 /// How long the meeting thread waits for an event before it checks the stop flag again.
@@ -202,6 +203,9 @@ struct Inner {
     started: AtomicU64,
     /// The meeting the screen follows: the newest that started recording.
     shown: AtomicU64,
+    /// What has been sent to the window, for a window that loads later (T14.51,
+    /// [`MeetingDriver::snapshot`]).
+    sent: Mutex<SentRecord>,
     /// What cancels each meeting past its recording, by meeting id ([`Finishing`]).
     finishing: Mutex<BTreeMap<String, MeetingCancel>>,
     /// The meetings whose thread runs, from the session's start ([`Owned`]).
@@ -227,7 +231,9 @@ struct Inner {
 type FailedStartHook = Arc<dyn Fn(&MeetingDriver) + Send + Sync>;
 
 impl Inner {
-    /// Sends `event` of meeting number `seq` (module docs).
+    /// Sends `event` of meeting number `seq` (module docs), its copy made plain. It is folded
+    /// into [`Inner::sent`] first and goes out after, with the record's lock free: an event the
+    /// window heard is always in a snapshot read after it (T14.51).
     fn send(&self, seq: u64, event: MeetingEvent) {
         let shown = self.shown.load(Ordering::SeqCst) == seq;
         if shown
@@ -238,6 +244,11 @@ impl Inner {
                     | MeetingEvent::Summary { .. }
             )
         {
+            let event = crate::plain_text::plain_meeting_event(event);
+            self.sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .apply(seq, &event, (self.now)());
             (self.sink)(event);
         }
     }
@@ -288,7 +299,7 @@ impl MeetingDriver {
         gate: crate::activity::WorkGate,
         _cuda: &crate::cuda_settings::CudaLatch,
     ) -> Self {
-        let sink: Sink = Arc::new(move |e| sink(crate::plain_text::plain_meeting_event(e)));
+        // Copy is made plain in `Inner::send`, before the event is recorded.
         Self(Arc::new(Inner {
             prepare,
             sink,
@@ -298,6 +309,7 @@ impl MeetingDriver {
             queue: MeetingQueue::new(),
             started: AtomicU64::new(0),
             shown: AtomicU64::new(0),
+            sent: Mutex::default(),
             finishing: Mutex::default(),
             owned: Mutex::default(),
             stop_ceiling: STOP_CEILING,
@@ -510,6 +522,26 @@ impl MeetingDriver {
         } else {
             (DriverPhase::Idle, false)
         }
+    }
+
+    /// What a window that has just loaded needs to show the meetings in progress (T14.51): the
+    /// meeting the screen follows, recording or finishing, and the older ones finishing behind
+    /// it, as the events sent so far left them ([`SentRecord`]). A start whose `Started` has not gone out is not in it.
+    ///
+    /// How a window stays in step with the events: it subscribes to them first, reads this, and
+    /// then applies every event it heard since subscribing, in order, on top. Each event is folded
+    /// into the record before it goes out ([`Inner`]'s `send`), so an event sent before the
+    /// subscription is in the snapshot, and one sent after it is heard; one heard that the
+    /// snapshot already holds changes nothing when applied again, because every field here is set
+    /// by assignment (a banner by its key) and transcript text is not here at all.
+    #[must_use]
+    pub fn snapshot(&self) -> MeetingSnapshot {
+        let now = (self.0.now)();
+        self.0
+            .sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot(now)
     }
 
     /// Whether a stop was asked of the newest meeting.

@@ -4,7 +4,14 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type Ipc, IpcFailure, type MeetingEvent, type MeetingListItem, createMockIpc } from "../ipc";
+import {
+  type FollowedSnapshot,
+  type Ipc,
+  IpcFailure,
+  type MeetingEvent,
+  type MeetingSnapshot,
+  createMockIpc,
+} from "../ipc";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { CRASH_COPY, RootErrorBoundary, STOP_ENDED_WAIT_MS } from "./RootErrorBoundary";
@@ -60,30 +67,43 @@ function DialogScreen() {
   );
 }
 
-const RECORDING: MeetingListItem = {
-  id: "m-rec",
-  title: "Fence quote",
-  started_at_ms: 1_000,
-  duration_ms: null,
-  state: "Recording",
-  folder_id: null,
-  new_summary: false,
-};
+/** The meeting the screen follows, as the app's snapshot gives it (T14.51). */
+function followed(meeting: string, ended: FollowedSnapshot["ended"] = null): FollowedSnapshot {
+  return {
+    meeting,
+    mode: "Call",
+    tracks: ["You", "Them"],
+    elapsed_ms: 60_000,
+    ended,
+    banners: [],
+    backends: [],
+    words: 0,
+    lag_seconds: null,
+    transcript: "Live",
+    call_end_offer: false,
+    call_end_stops: false,
+    progress: null,
+  };
+}
 
-function setup(over: Partial<Ipc> = {}, meetings: MeetingListItem[] = []) {
+/** A recording this window never heard start (the window loaded during it). */
+const RECORDING: MeetingSnapshot = { followed: followed("m-rec"), behind: [] };
+const NOTHING: MeetingSnapshot = { followed: null, behind: [] };
+
+function setup(over: Partial<Ipc> = {}, snapshot: MeetingSnapshot = NOTHING) {
   const listeners = new Set<(e: MeetingEvent) => void>();
   const stopMeeting = vi.fn(async () => {});
   const setCompact = vi.fn(async () => {});
-  const listMeetings = vi.fn(async () => meetings);
+  const meetingSnapshot = vi.fn(async () => snapshot);
   const ipc: Ipc = {
-    ...createMockIpc({ meetings }),
+    ...createMockIpc({ meetings: [] }),
     onMeetingEvent: async (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     stopMeeting,
     setCompact,
-    listMeetings,
+    meetingSnapshot,
     ...over,
   };
   const emit = (event: MeetingEvent) =>
@@ -104,7 +124,7 @@ function setup(over: Partial<Ipc> = {}, meetings: MeetingListItem[] = []) {
   const crash = () => user.click(screen.getByRole("button", { name: "Break" }));
   /** Moves the injected clock on, as time passing does. */
   const advance = (ms: number) => act(() => timer.advance(ms));
-  return { ipc, emit, onReload, renders, user, crash, advance, stopMeeting, setCompact, listMeetings, listeners };
+  return { ipc, emit, onReload, renders, user, crash, advance, stopMeeting, setCompact, meetingSnapshot, listeners };
 }
 
 const started = (meeting: string): MeetingEvent => ({ type: "Started", meeting, mode: "Call", tracks: ["You", "Them"] });
@@ -261,44 +281,70 @@ describe("root error boundary", () => {
   });
 
   it("error boundary: finds a recording this window never heard start, and only once it broke", async () => {
-    const s = setup({}, [RECORDING]);
+    const s = setup({}, RECORDING);
     await act(async () => {});
-    expect(s.listMeetings).not.toHaveBeenCalled();
+    expect(s.meetingSnapshot).not.toHaveBeenCalled();
     await s.crash();
     expect(await screen.findByRole("button", { name: CRASH_COPY.stop })).toBeInTheDocument();
-    expect(s.listMeetings).toHaveBeenCalledTimes(1);
+    expect(s.meetingSnapshot).toHaveBeenCalledTimes(1);
     expect(screen.getByText(CRASH_COPY.recording)).toBeInTheDocument();
   });
 
-  it("error boundary: an end heard while the list is being read is believed over the list", async () => {
-    let answer: (meetings: MeetingListItem[]) => void = () => {};
-    const listMeetings = vi.fn(() => new Promise<MeetingListItem[]>((resolve) => (answer = resolve)));
-    const s = setup({ listMeetings });
+  it("error boundary: a meeting that is only finishing offers no Stop", async () => {
+    const finishing: MeetingSnapshot = {
+      followed: followed("m-done", "Stopped"),
+      behind: [{ meeting: "m-older", progress: null }],
+    };
+    const s = setup({}, finishing);
     await act(async () => {});
     await s.crash();
-    await waitFor(() => expect(listMeetings).toHaveBeenCalledTimes(1));
-    // The recording this window never heard start ends (the tray stopped it) before the list,
-    // read while it still recorded, arrives.
-    s.emit(ended(RECORDING.id));
-    await act(async () => answer([RECORDING]));
+    await waitFor(() => expect(s.meetingSnapshot).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: CRASH_COPY.reload })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: CRASH_COPY.stop })).toBeNull();
+    expect(screen.queryByText(CRASH_COPY.recording)).toBeNull();
+  });
+
+  it("error boundary: a recording that fails before it is saved leaves nothing to stop", async () => {
+    const s = setup();
+    await act(async () => {});
+    s.emit(started("m-live"));
+    await s.crash();
+    expect(await screen.findByRole("button", { name: CRASH_COPY.stop })).toBeInTheDocument();
+    // Its result with no `Ended` (T9.23: the recording failed before it was saved).
+    s.emit({ type: "Summary", meeting: "m-live", result: { kind: "RecordingFailed", message: "Invented." } });
     expect(screen.queryByRole("button", { name: CRASH_COPY.stop })).toBeNull();
     expect(screen.getByRole("button", { name: CRASH_COPY.reload })).toBeInTheDocument();
   });
 
-  it("error boundary: a meeting list that cannot be read still leaves Reload", async () => {
-    const listMeetings = vi.fn(async (): Promise<MeetingListItem[]> => {
-      throw new IpcFailure({ kind: "store", message: "internal store words", retryable: false });
+  it("error boundary: an end heard while the snapshot is being read is believed over the snapshot", async () => {
+    let answer: (snapshot: MeetingSnapshot) => void = () => {};
+    const meetingSnapshot = vi.fn(() => new Promise<MeetingSnapshot>((resolve) => (answer = resolve)));
+    const s = setup({ meetingSnapshot });
+    await act(async () => {});
+    await s.crash();
+    await waitFor(() => expect(meetingSnapshot).toHaveBeenCalledTimes(1));
+    // The recording this window never heard start ends (the tray stopped it) before the
+    // snapshot, read while it still recorded, arrives.
+    s.emit(ended("m-rec"));
+    await act(async () => answer(RECORDING));
+    expect(screen.queryByRole("button", { name: CRASH_COPY.stop })).toBeNull();
+    expect(screen.getByRole("button", { name: CRASH_COPY.reload })).toBeInTheDocument();
+  });
+
+  it("error boundary: a snapshot that cannot be read still leaves Reload", async () => {
+    const meetingSnapshot = vi.fn(async (): Promise<MeetingSnapshot> => {
+      throw new IpcFailure({ kind: "internal", message: "internal driver words", retryable: false });
     });
-    const s = setup({ listMeetings });
+    const s = setup({ meetingSnapshot });
     await act(async () => {});
     await s.crash();
-    await waitFor(() => expect(listMeetings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(meetingSnapshot).toHaveBeenCalledTimes(1));
     await act(async () => {});
     expect(screen.getByRole("button", { name: CRASH_COPY.reload })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: CRASH_COPY.stop })).toBeNull();
-    expect(document.body.textContent).not.toContain("internal store words");
+    expect(document.body.textContent).not.toContain("internal driver words");
   });
-
   it("error boundary: leaves the compact card, so the words fit the window", async () => {
     const s = setup();
     await act(async () => {});

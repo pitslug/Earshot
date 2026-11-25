@@ -8,6 +8,7 @@ import { Profiler } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as detailModule from "../detail/detail";
+import * as detailViewModule from "../detail/MeetingDetailView";
 import { FIND_PAUSE_MS } from "../detail/findMatches";
 import {
   type Ipc,
@@ -33,6 +34,11 @@ vi.mock("../detail/detail", async (original) => {
   return { ...real, rowTime: vi.fn(real.rowTime) };
 });
 
+vi.mock("../detail/MeetingDetailView", async (original) => {
+  const real = await original<typeof import("../detail/MeetingDetailView")>();
+  return { ...real, MeetingDetailView: vi.fn(real.MeetingDetailView) };
+});
+
 vi.mock("./meetings", async (original) => {
   const real = await original<typeof import("./meetings")>();
   return { ...real, secondaryLine: vi.fn(real.secondaryLine) };
@@ -42,6 +48,8 @@ const clockSpy = vi.mocked(liveModule.clock);
 // Every row of the meeting list calls it once per render.
 const listRowSpy = vi.mocked(meetingsModule.secondaryLine);
 const rowTimeSpy = vi.mocked(detailModule.rowTime);
+// Called once per render of a meeting's page.
+const detailViewSpy = vi.mocked(detailViewModule.MeetingDetailView);
 
 const at = (day: number, hour: number, minute = 0, second = 0) =>
   new Date(2026, 10, day, hour, minute, second).getTime();
@@ -115,6 +123,7 @@ beforeEach(() => {
   clockSpy.mockClear();
   rowTimeSpy.mockClear();
   listRowSpy.mockClear();
+  detailViewSpy.mockClear();
 });
 
 describe("render cost", () => {
@@ -228,6 +237,34 @@ describe("render cost", () => {
     expect(await within(list).findByRole("button", { name: /^Gravel order, second load/ })).toBeInTheDocument();
     await act(async () => {});
     expect(listRowSpy.mock.calls.map(([m]) => m.id)).toEqual(["m1"]);
+  });
+
+  it("render cost: a live meeting's events render no line of an open meeting's page (T14.51)", async () => {
+    const s = setup();
+    await screen.findByRole("heading", { level: 1, name: "Hedge trimming plan" });
+    s.emit({ type: "Started", meeting: "live", mode: "Call", tracks: ["You", "Them"] });
+    await screen.findByRole("region", { name: "Meeting" });
+    // The user reads another meeting's transcript while this one records.
+    await s.user.click(
+      within(screen.getByRole("list", { name: "Meetings" })).getByRole("button", { name: /^Hedge trimming plan/ }),
+    );
+    await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    const table = await screen.findByRole("table", { name: "Transcript" });
+    expect(rowTimeSpy).toHaveBeenCalled();
+    await act(async () => {});
+    rowTimeSpy.mockClear();
+    detailViewSpy.mockClear();
+    for (let i = 0; i < 4; i += 1) s.emit(landed(i));
+    s.emit({ type: "Lag", seconds: 4 });
+    s.emit({ type: "Words", total: 40 });
+    s.emit({ type: "VoiceActivity", track: "Them", speaking: true });
+    s.emit({ type: "Warning", key: "far-end", kind: "Audio", message: "Invented warning." });
+    s.emit({ type: "Levels", you_dbfs: -20, them_dbfs: -30 });
+    await act(async () => {});
+    expect(within(table).getAllByRole("row")).toHaveLength(sampleDetail(MEETINGS[0]).transcript.length);
+    // Neither the page nor any of its lines rendered.
+    expect(detailViewSpy).not.toHaveBeenCalled();
+    expect(rowTimeSpy).not.toHaveBeenCalled();
   });
 
   it("render cost: typing a search does not render the open transcript's lines again", async () => {

@@ -4,7 +4,7 @@
 import { act, cleanup, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { type MockIpcData } from "../ipc";
+import { type MockIpcData, ORDER_COPY } from "../ipc";
 import { MOCK_STILL_WORKING_COPY } from "../ipc/mock";
 import { KEEP_LOCAL_HINT } from "../meeting/MeetingViews";
 import { ITEM, OTHER, setup } from "../test/meetingDetail";
@@ -13,6 +13,22 @@ import { KEPT_LOCAL_TEXT, allowWriterText } from "./KeptLocal";
 const claudeCode: MockIpcData["summaries"] = { settings: { writer: "ClaudeCode" } };
 
 describe("keeping a meeting on this computer", () => {
+  it("is described the same way on the start screen and the meeting's page, and claims no more", () => {
+    // A kept meeting still syncs to the user's other computers and may be summarised by a model
+    // there, a summary worker's own model included (T14.51, PRIVACY.md): the writers it skips are
+    // named, by the names the Summaries page gives them.
+    const said =
+      "Its summary is written only by a model running on one of your own computers, never sent to your own server, the Anthropic API, Claude Code or Codex.";
+    expect(KEPT_LOCAL_TEXT).toBe(said);
+    expect(KEEP_LOCAL_HINT).toBe(`${said} This can only be chosen now.`);
+    expect(ORDER_COPY.writers.endpoint_unset.toLowerCase()).toBe("your own server");
+    expect(ORDER_COPY.steps.endpoint_anthropic).toBe("Anthropic API");
+    expect([ORDER_COPY.writers.claude_code, ORDER_COPY.writers.codex]).toEqual(["Claude Code", "Codex"]);
+    for (const text of [KEPT_LOCAL_TEXT, KEEP_LOCAL_HINT]) {
+      expect(text).not.toMatch(/elsewhere|online service|on this computer/);
+    }
+  });
+
   it("is off on the start screen and follows the box into the started meeting", async () => {
     for (const tick of [false, true]) {
       const { ipc, user, timer } = await setup();

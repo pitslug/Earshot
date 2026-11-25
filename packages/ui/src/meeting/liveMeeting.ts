@@ -4,6 +4,7 @@
 import type {
   CaptureMode,
   EndedReason,
+  FollowedSnapshot,
   LiveTrack,
   MeetingEvent,
   PostStep,
@@ -72,6 +73,9 @@ export interface LiveMeeting {
   progress: { step: PostStep; done: number; total: number | null } | null;
   summary: SummaryEvent | null;
   seq: number;
+  /** Rebuilt from the app's snapshot after the window loaded mid-meeting (T14.51): the lines
+   * shown before were not kept, so the transcript says where they will be. */
+  reloaded: boolean;
 }
 
 /** The state after `Started` (`now` from the injected clock). */
@@ -103,6 +107,42 @@ export function startedMeeting(
     progress: null,
     summary: null,
     seq: 0,
+    reloaded: false,
+  };
+}
+
+/** The state a window that loaded mid-meeting rebuilds from the app's snapshot of the meeting it
+ * follows (T14.51), at `now`. Its banners keep their order, with those from after the recording
+ * ended after `endedSeq`, as the events left them; the clock runs from the snapshot's elapsed
+ * time. Every event the window heard while it read the snapshot is then applied on top with
+ * `reduce`: an event the snapshot already holds sets what it already says. */
+export function fromSnapshot(f: FollowedSnapshot, now: number): LiveMeeting {
+  const started = startedMeeting(f.meeting, f.mode, f.tracks, now - f.elapsed_ms);
+  const banners: Banner[] = f.banners.map((b, i) => ({
+    key: b.key,
+    kind: b.kind,
+    message: b.message,
+    seq: i + 1,
+  }));
+  const during = f.banners.filter((b) => !b.after_end).length;
+  const backends: Partial<Record<LiveTrack, string>> = {};
+  for (const b of f.backends) backends[b.track] = b.label;
+  return {
+    ...started,
+    phase: f.ended === null ? "recording" : "processing",
+    endedAt: f.ended === null ? null : now,
+    endedSeq: f.ended === null ? null : during,
+    endedReason: f.ended,
+    backends,
+    words: f.words,
+    lagSeconds: f.lag_seconds,
+    transcript: f.transcript,
+    banners,
+    callEndOffer: f.call_end_offer,
+    callEndStops: f.call_end_stops,
+    progress: f.progress,
+    seq: banners.length,
+    reloaded: true,
   };
 }
 

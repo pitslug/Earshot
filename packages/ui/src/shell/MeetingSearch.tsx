@@ -183,6 +183,10 @@ export function resultLine(item: SearchResultItem): string {
   }
 }
 
+/** Said under a search when some stored text could not be read and was left out of it (the
+ * store counts damaged lines and summaries, T14.51): fixed copy, never which or what. */
+export const UNREADABLE_NOTE = "Some text could not be read and was left out of this search.";
+
 /** What a search says beside its results; `null` when it has nothing to say. */
 function statusText(search: MeetingSearch): string | null {
   if (!search.current || search.answer === null) return null;
@@ -208,10 +212,12 @@ export function MeetingSearchResults({
   const styles = useStyles();
   const items = search.answer?.results?.items ?? [];
   const status = statusText(search);
+  const unreadable = search.current && (search.answer?.results?.unreadable ?? 0) > 0;
   return (
     <>
       <div role="status">
         {status !== null && <Caption1 className={styles.note}>{status}</Caption1>}
+        {unreadable && <Caption1 className={styles.note}>{UNREADABLE_NOTE}</Caption1>}
       </div>
       {items.length > 0 && (
         <ul className={styles.list} aria-label="Search results">

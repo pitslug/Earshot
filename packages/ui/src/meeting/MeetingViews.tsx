@@ -242,6 +242,9 @@ const useStyles = makeStyles({
   muted: {
     color: tokens.colorNeutralForeground3,
   },
+  stopError: {
+    color: tokens.colorPaletteRedForeground1,
+  },
   compact: {
     boxSizing: "border-box",
     height: "100%",
@@ -273,10 +276,18 @@ const useStyles = makeStyles({
   },
 });
 
+/** The compact card's words before a Stop's error (the full window's bar title says the same). */
+export const COMPACT_STOP_FAILED = "The meeting could not be stopped.";
+
+/** At the top of the live transcript after the window loaded mid-meeting (T14.51): the lines
+ * shown before are not kept by the window, and the meeting's page has them once it ends. */
+export const RELOADED_NOTE =
+  "Lines from before this window reloaded will be in the transcript when the meeting ends.";
+
 /** What "Keep this meeting on this computer" means, under the box. */
 export const KEEP_LOCAL_HINT =
-  "Its summary is written by the summary model on this computer or not at all, never sent " +
-  "elsewhere. This can only be chosen now.";
+  "Its summary is written only by a model running on one of your own computers, never sent to your " +
+  "own server, the Anthropic API, Claude Code or Codex. This can only be chosen now.";
 
 /** The longest title the start view accepts. */
 export const MAX_TITLE = 120;
@@ -607,6 +618,15 @@ function TranscriptGrid({ meeting }: { meeting: LiveMeeting }) {
     .filter(([, words]) => words.length > 0);
   return (
     <div role="table" aria-label="Transcript as it lands" className={styles.grid}>
+      {meeting.reloaded && (
+        <div role="row" className={styles.row}>
+          <span role="cell" />
+          <span role="cell" />
+          <Caption1 role="cell" className={styles.muted}>
+            {RELOADED_NOTE}
+          </Caption1>
+        </div>
+      )}
       {meeting.lines.map((line) => (
         <LiveLine key={line.seq} line={line} />
       ))}
@@ -722,6 +742,8 @@ export interface CompactCardProps {
   onExpand(): void;
   onKeepRecording(): void;
   stopping?: boolean;
+  /** Why the last Stop did not work, in the app's words (the full window shows it in a bar). */
+  stopError?: string | null;
 }
 
 /** The small always-on-top listening card. */
@@ -733,6 +755,7 @@ export function CompactCard({
   onExpand,
   onKeepRecording,
   stopping = false,
+  stopError = null,
 }: CompactCardProps) {
   const styles = useStyles();
   return (
@@ -747,13 +770,19 @@ export function CompactCard({
           <Meter key={t} track={t} meeting={meeting} levels={levels} compact />
         ))}
       </div>
-      <Caption1 className={styles.muted}>
-        {meeting.callEndOffer
-          ? meeting.callEndStops
-            ? CALL_END_COPY.compact_will_stop
-            : CALL_END_COPY.compact_asks_only
-          : `${wordCount(meeting.words)} words so far`}
-      </Caption1>
+      {stopError !== null ? (
+        <Caption1 role="alert" className={styles.stopError}>
+          {`${COMPACT_STOP_FAILED} ${stopError}`}
+        </Caption1>
+      ) : (
+        <Caption1 className={styles.muted}>
+          {meeting.callEndOffer
+            ? meeting.callEndStops
+              ? CALL_END_COPY.compact_will_stop
+              : CALL_END_COPY.compact_asks_only
+            : `${wordCount(meeting.words)} words so far`}
+        </Caption1>
+      )}
       <div className={styles.buttons}>
         <Button
           appearance="primary"

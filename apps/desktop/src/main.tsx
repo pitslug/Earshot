@@ -46,6 +46,9 @@ async function previewIpc(): Promise<Ipc> {
     callStartOfferAfterMs: query.get("callStarted") === "1" ? 3_000 : undefined,
     newerData: query.get("newerData") === "1",
     dataFolderFails: query.get("dataFolder") === "1",
+    // `?reloaded=1`: a call recording for 95 s when the window loaded, as after a reload (T14.51).
+    recordingBeforeLoad:
+      query.get("reloaded") === "1" || query.get("crash") === "recording" ? 95_000 : undefined,
     // `?start=failed`: New meeting, Start shows a meeting that could not start (T14.15).
     ...(query.get("start") === "failed"
       ? {
@@ -124,19 +127,11 @@ if (inTauri) suppressBrowserMenu(document);
 if (inTauri) suppressBrowserKeys(window);
 
 // Preview only: `?crash=1` shows what a screen that throws leaves (T14.14), `?crash=recording`
-// the same while a meeting records (the newest sample meeting is listed as recording).
+// the same while a meeting records (one that was recording when the window loaded).
 const crash = inTauri ? null : new URLSearchParams(window.location.search).get("crash");
 function PreviewCrash(): never {
   throw new Error("The preview's screen that throws");
 }
-const boundaryIpc: Ipc =
-  crash === "recording"
-    ? {
-        ...ipc,
-        listMeetings: async () =>
-          (await ipc.listMeetings()).map((m, i) => (i === 0 ? { ...m, state: "Recording" as const } : m)),
-      }
-    : ipc;
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root");
@@ -148,7 +143,7 @@ if (!root) throw new Error("index.html has no #root");
 // there, because what throws above it blanks the window. The order is pinned by `AppRoot`'s test.
 createRoot(root).render(
   <StrictMode>
-    <AppRoot ipc={boundaryIpc} notice={inTauri ? undefined : "Preview: sample data"}>
+    <AppRoot ipc={ipc} notice={inTauri ? undefined : "Preview: sample data"}>
       {crash !== null ? <PreviewCrash /> : undefined}
     </AppRoot>
   </StrictMode>,

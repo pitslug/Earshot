@@ -21,7 +21,7 @@ import type { KeptLocalView } from "../ipc";
 
 /** What the bar says about a kept meeting. */
 export const KEPT_LOCAL_TEXT =
-  "Its summary is written only by the summary model on this computer, never sent elsewhere.";
+  "Its summary is written only by a model running on one of your own computers, never sent to your own server, the Anthropic API, Claude Code or Codex.";
 
 /** The confirm's text for `writer`. */
 export function allowWriterText(writer: string): string {

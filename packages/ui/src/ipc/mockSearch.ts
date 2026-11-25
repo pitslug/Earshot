@@ -70,9 +70,9 @@ export function searchSample(
   query: string,
 ): SearchResultsView {
   const wanted = query.trim().toLowerCase();
-  if (wanted === "") return { items: [], capped: false };
+  if (wanted === "") return { items: [], capped: false, unreadable: 0 };
   const items = [...meetings]
     .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
     .flatMap((row) => hitIn(row, detailOf(row), wanted) ?? []);
-  return { items: items.slice(0, SEARCH_MAX_RESULTS), capped: items.length > SEARCH_MAX_RESULTS };
+  return { items: items.slice(0, SEARCH_MAX_RESULTS), capped: items.length > SEARCH_MAX_RESULTS, unreadable: 0 };
 }

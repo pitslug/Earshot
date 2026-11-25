@@ -681,6 +681,32 @@ export function AppShell({
       setBehindIds((ids) => ids.filter((id) => id !== event.meeting));
       setCancellingIds((ids) => ids.filter((id) => id !== event.meeting));
     }
+  }, (snapshot) => {
+    // A window that loaded mid-meeting (T14.51): the meeting it follows and those finishing behind
+    // it, as their events would have left this window. Events heard since apply after this.
+    const followed = snapshot.followed;
+    for (const b of snapshot.behind) {
+      // It recorded: its result is not a start that failed (`neverRecorded`).
+      startedIds.current.add(b.meeting);
+      addBehind(b.meeting);
+      if (b.progress !== null) {
+        const work = workOfStep(b.progress.step);
+        setAfterWork((all) => ({ ...all, [b.meeting]: work }));
+      }
+    }
+    if (followed !== null) {
+      startedIds.current.add(followed.meeting);
+      lastMeeting.current = { id: followed.meeting, finishing: followed.ended !== null };
+      setSelectedId(followed.meeting);
+      if (followed.progress !== null) {
+        const work = workOfStep(followed.progress.step);
+        setAfterWork((all) => ({ ...all, [followed.meeting]: work }));
+      }
+      // A recording keeps the window, as its `Started` does; one finishing shows its own page,
+      // the view the window opens on. A start still under way is shown by its `Started`, which
+      // has not gone out yet: the snapshot has nothing of it.
+      if (followed.ended === null) setView("meeting");
+    }
   });
   const meeting = live.meeting;
   liveMeetingId.current = meeting?.meetingId ?? null;
@@ -897,6 +923,49 @@ export function AppShell({
     }),
     [],
   );
+  // What the open meeting's page does, read when it is used: the page gets one object that never
+  // changes, so a live meeting's events do not render it (T14.51).
+  const detailLatest = useRef<DetailHandlers | null>(null);
+  const detailHandlers = useMemo<DetailHandlers>(
+    () => ({
+      onChanged: () => detailLatest.current?.onChanged(),
+      onJobStarted: (id, job) => detailLatest.current?.onJobStarted(id, job),
+      onJobDismissed: (id) => detailLatest.current?.onJobDismissed(id),
+      onJobCancel: (id) => detailLatest.current?.onJobCancel(id),
+      onManagePeople: () => detailLatest.current?.onManagePeople(),
+    }),
+    [],
+  );
+  useLayoutEffect(() => {
+    detailLatest.current = {
+      onChanged: refresh,
+      onJobStarted: (id, job) => {
+        jobSeq.current += 1;
+        const seq = jobSeq.current;
+        setJobs((all) => ({ ...all, [id]: { job, last: null, seq } }));
+      },
+      onJobDismissed: (id) =>
+        setJobs((all) => {
+          const { [id]: _, ...rest } = all;
+          return rest;
+        }),
+      onJobCancel: (id) => {
+        markJobCancelling(id, true);
+        // The job's last event says how it ended; a cancel that could not be sent leaves it running.
+        ipc.cancelJob(id).catch(() => markJobCancelling(id, false));
+      },
+      onManagePeople: () => {
+        setSettingsSection("People");
+        setView("settings");
+        onOpenSettings();
+      },
+    };
+  });
+  // The ended meeting's status handlers, read when used (`endedStatus`).
+  const statusLatest = useRef<{
+    cancelFinishing: (id: string) => void;
+    startAfterMeetingJob: (id: string, job: JobKind) => Promise<void>;
+  }>({ cancelFinishing: noop, startAfterMeetingJob: async () => {} });
   useLayoutEffect(() => {
     rowLatest.current = {
       select,
@@ -1164,6 +1233,35 @@ export function AppShell({
     ipc.keepRecording().catch(() => {});
   };
 
+  // The meeting that has ended, and how it finishes for its own page (T12.28). The element is
+  // made again only when something it shows changes: the open page is memoised, and a live event
+  // must not render it (T14.51). Its handlers are read through a ref when used.
+  statusLatest.current = { cancelFinishing, startAfterMeetingJob };
+  const endedMeeting = meeting !== null && meeting.phase !== "recording" ? meeting : null;
+  const endedCancelling = endedMeeting !== null && cancellingIds.includes(endedMeeting.meetingId);
+  const dismissBanner = live.dismissBanner;
+  const endedStatus = useMemo(
+    () =>
+      endedMeeting === null ? null : (
+        <MeetingStatus
+          meeting={endedMeeting}
+          onDismissBanner={dismissBanner}
+          onCancel={() => statusLatest.current.cancelFinishing(endedMeeting.meetingId)}
+          cancelling={endedCancelling}
+          onRetranscribe={(id) => void statusLatest.current.startAfterMeetingJob(id, "Retranscribe")}
+          onResummarise={(id) => void statusLatest.current.startAfterMeetingJob(id, "Resummarise")}
+          onDismissResult={() => {
+            setResultDismissed(endedMeeting.meetingId);
+            setRetryError(null);
+          }}
+          showResult={resultDismissed !== endedMeeting.meetingId}
+          retrying={retrying}
+          retryError={retryError}
+        />
+      ),
+    [endedMeeting, endedCancelling, dismissBanner, resultDismissed, retrying, retryError],
+  );
+
   if (compact && meeting !== null && meeting.phase === "recording") {
     return (
       <CompactCard
@@ -1174,6 +1272,7 @@ export function AppShell({
         onExpand={() => goCompact(false)}
         onKeepRecording={keepRecording}
         stopping={stopping}
+        stopError={stopError}
       />
     );
   }
@@ -1296,28 +1395,8 @@ export function AppShell({
   const showMeeting = view === "meeting";
   // The meeting that has ended, for its own page: how its finishing goes and what came of it.
   const ended =
-    meeting !== null && meeting.phase !== "recording"
-      ? {
-          id: meeting.meetingId,
-          finishing: meeting.summary === null,
-          status: (
-            <MeetingStatus
-              meeting={meeting}
-              onDismissBanner={live.dismissBanner}
-              onCancel={() => cancelFinishing(meeting.meetingId)}
-              cancelling={cancellingIds.includes(meeting.meetingId)}
-              onRetranscribe={(id) => void startAfterMeetingJob(id, "Retranscribe")}
-              onResummarise={(id) => void startAfterMeetingJob(id, "Resummarise")}
-              onDismissResult={() => {
-                setResultDismissed(meeting.meetingId);
-                setRetryError(null);
-              }}
-              showResult={resultDismissed !== meeting.meetingId}
-              retrying={retrying}
-              retryError={retryError}
-            />
-          ),
-        }
+    endedMeeting !== null
+      ? { id: endedMeeting.meetingId, finishing: endedMeeting.summary === null, status: endedStatus }
       : null;
   return (
     <div className={styles.root}>
@@ -1530,30 +1609,9 @@ export function AppShell({
             summaryStored={selected !== null ? (summaryStored[selected.id] ?? 0) : 0}
             onNewMeeting={newMeeting}
             nameVoices={nameVoices}
-            onChanged={refresh}
             timer={timer}
             jobs={jobs}
-            onJobStarted={(id, job) => {
-              jobSeq.current += 1;
-              const seq = jobSeq.current;
-              setJobs((all) => ({ ...all, [id]: { job, last: null, seq } }));
-            }}
-            onJobDismissed={(id) =>
-              setJobs((all) => {
-                const { [id]: _, ...rest } = all;
-                return rest;
-              })
-            }
-            onJobCancel={(id) => {
-              markJobCancelling(id, true);
-              // The job's last event says how it ended; a cancel that could not be sent leaves it running.
-              ipc.cancelJob(id).catch(() => markJobCancelling(id, false));
-            }}
-            onManagePeople={() => {
-              setSettingsSection("People");
-              setView("settings");
-              onOpenSettings();
-            }}
+            handlers={detailHandlers}
           />
         )}
       </main>
@@ -1944,6 +2002,69 @@ interface EndedMeeting {
   status: ReactNode;
 }
 
+/** What the open meeting's page does: one object for the window's life (T14.51). */
+interface DetailHandlers {
+  onChanged: () => void;
+  onJobStarted: (id: string, job: JobKind) => void;
+  onJobDismissed: (id: string) => void;
+  onJobCancel: (id: string) => void;
+  /** The Speakers panel's "Manage people": Settings on the People page. */
+  onManagePeople: () => void;
+}
+
+/** The meeting's page, rendered only when one of its own props changes (T14.51). */
+const MemoMeetingDetailView = memo(MeetingDetailView);
+
+/** The open meeting's page with its handlers bound to it, memoised: the window renders on every
+ * event of a live meeting, and none of them may render the open transcript (T14.51). */
+const OpenMeeting = memo(function OpenMeeting({
+  item,
+  status,
+  finishing,
+  refresh,
+  synced,
+  summaryStored,
+  nameVoices,
+  timer,
+  job,
+  handlers,
+}: {
+  item: MeetingListItem;
+  status: ReactNode;
+  finishing: boolean;
+  refresh: number;
+  synced: number;
+  summaryStored: number;
+  nameVoices: number;
+  timer: Timer;
+  job: JobView | undefined;
+  handlers: DetailHandlers;
+}) {
+  const id = item.id;
+  const onJobStarted = useCallback((kind: JobKind) => handlers.onJobStarted(id, kind), [handlers, id]);
+  const onJobDismissed = useCallback(() => handlers.onJobDismissed(id), [handlers, id]);
+  const onJobCancel = useCallback(() => handlers.onJobCancel(id), [handlers, id]);
+  return (
+    <MemoMeetingDetailView
+      item={item}
+      status={status ?? undefined}
+      finishing={finishing}
+      initialTab={finishing ? "transcript" : "summary"}
+      refresh={refresh}
+      synced={synced}
+      showSummary={summaryStored}
+      nameVoices={nameVoices}
+      onChanged={handlers.onChanged}
+      timer={timer}
+      job={job}
+      onJobStarted={onJobStarted}
+      onJobDismissed={onJobDismissed}
+      onJobCancel={onJobCancel}
+      onManagePeople={handlers.onManagePeople}
+    />
+  );
+});
+
 function Detail({
   load,
   onRetry,
@@ -1956,13 +2077,9 @@ function Detail({
   summaryStored,
   onNewMeeting,
   nameVoices,
-  onChanged,
   timer,
   jobs,
-  onJobStarted,
-  onJobDismissed,
-  onJobCancel,
-  onManagePeople,
+  handlers,
 }: {
   load: Load;
   /** Reads the meeting list again, after a first read that failed (T14.16). */
@@ -1981,16 +2098,10 @@ function Detail({
   summaryStored: number;
   onNewMeeting: () => void;
   nameVoices: number;
-  onChanged: () => void;
   timer: Timer;
   jobs: Record<string, JobView>;
-  onJobStarted: (id: string, job: JobKind) => void;
-  onJobDismissed: (id: string) => void;
-  onJobCancel: (id: string) => void;
-  /** The Speakers panel's "Manage people": Settings on the People page. */
-  onManagePeople: () => void;
-}) {
-  const styles = useStyles();
+  handlers: DetailHandlers;
+}) {  const styles = useStyles();
   if (load.status === "loading") {
     return <Spinner label="Loading meetings" />;
   }
@@ -2031,23 +2142,18 @@ function Detail({
   // (whose progress and Cancel are the bar above every page).
   const finishing = own?.finishing ?? behind;
   return (
-    <MeetingDetailView
+    <OpenMeeting
       key={selected.id}
       item={selected}
       status={own?.status}
       finishing={finishing}
-      initialTab={finishing ? "transcript" : "summary"}
       refresh={refresh}
       synced={synced}
-      showSummary={summaryStored}
+      summaryStored={summaryStored}
       nameVoices={nameVoices}
-      onChanged={onChanged}
       timer={timer}
       job={jobs[selected.id]}
-      onJobStarted={(job) => onJobStarted(selected.id, job)}
-      onJobDismissed={() => onJobDismissed(selected.id)}
-      onJobCancel={() => onJobCancel(selected.id)}
-      onManagePeople={onManagePeople}
+      handlers={handlers}
     />
   );
 }

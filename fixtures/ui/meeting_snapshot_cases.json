@@ -1,0 +1,135 @@
+{
+  "_comment": "T14.51: what a window that has just loaded is told of the meetings in progress, from the meeting events sent so far. Each case is a sequence of sent events, each with the number of the meeting that sent it (the driver's start count) and when it was sent (ms), and the snapshot expected at now_ms. Rust's meeting_events::SentRecord and the UI mock's ipc/mockSnapshot.ts both run every case, so they change together. Invented ids and words only.",
+  "cases": [
+    {
+      "name": "nothing sent",
+      "events": [],
+      "now_ms": 0,
+      "expect": { "followed": null, "behind": [] }
+    },
+    {
+      "name": "a recording: banners in force, counts, the call-end question as last sent, no text",
+      "events": [
+        { "seq": 1, "at_ms": 1000, "event": { "type": "Started", "meeting": "m-a", "mode": "Call", "tracks": ["You", "Them"] } },
+        { "seq": 1, "at_ms": 1000, "event": { "type": "Warning", "key": "onnx", "kind": "Backend", "message": "An invented notice." } },
+        { "seq": 1, "at_ms": 2000, "event": { "type": "Warning", "key": "far-end", "kind": "Audio", "message": "Invented quiet far end." } },
+        { "seq": 1, "at_ms": 3000, "event": { "type": "Warning", "key": "onnx", "kind": "Backend", "message": "A newer invented notice." } },
+        { "seq": 1, "at_ms": 4000, "event": { "type": "WarningCleared", "key": "far-end" } },
+        { "seq": 1, "at_ms": 4000, "event": { "type": "Backend", "track": "You", "label": "CPU" } },
+        { "seq": 1, "at_ms": 4000, "event": { "type": "Backend", "track": "You", "label": "NPU" } },
+        { "seq": 1, "at_ms": 5000, "event": { "type": "Landed", "track": "Them", "start_ms": 0, "end_ms": 500, "text": "An invented line." } },
+        { "seq": 1, "at_ms": 5000, "event": { "type": "Words", "total": 12 } },
+        { "seq": 1, "at_ms": 5000, "event": { "type": "Lag", "seconds": 3.5 } },
+        { "seq": 1, "at_ms": 5000, "event": { "type": "Levels", "you_dbfs": -20, "them_dbfs": -30 } },
+        { "seq": 1, "at_ms": 5000, "event": { "type": "VoiceActivity", "track": "Them", "speaking": true } },
+        { "seq": 1, "at_ms": 6000, "event": { "type": "Transcript", "state": "CatchingUp" } },
+        { "seq": 1, "at_ms": 7000, "event": { "type": "CallEndOffer", "open": true, "stops": true } },
+        { "seq": 1, "at_ms": 8000, "event": { "type": "CallEndOffer", "open": true, "stops": false } }
+      ],
+      "now_ms": 96000,
+      "expect": {
+        "followed": {
+          "meeting": "m-a",
+          "mode": "Call",
+          "tracks": ["You", "Them"],
+          "elapsed_ms": 95000,
+          "ended": null,
+          "banners": [{ "key": "onnx", "kind": "Backend", "message": "A newer invented notice.", "after_end": false }],
+          "backends": [{ "track": "You", "label": "NPU" }],
+          "words": 12,
+          "lag_seconds": 3.5,
+          "transcript": "CatchingUp",
+          "call_end_offer": true,
+          "call_end_stops": false,
+          "progress": null
+        },
+        "behind": []
+      }
+    },
+    {
+      "name": "a meeting finishing: its clock stops at the end, later banners are after it",
+      "events": [
+        { "seq": 1, "at_ms": 0, "event": { "type": "Started", "meeting": "m-a", "mode": "InRoom", "tracks": ["You"] } },
+        { "seq": 1, "at_ms": 1000, "event": { "type": "Warning", "key": "during", "kind": "Backend", "message": "Said while recording." } },
+        { "seq": 1, "at_ms": 2000, "event": { "type": "CallEndOffer", "open": true, "stops": true } },
+        { "seq": 1, "at_ms": 60000, "event": { "type": "Ended", "meeting": "m-a", "reason": "Stopped" } },
+        { "seq": 1, "at_ms": 61000, "event": { "type": "Warning", "key": "recording-gap", "kind": "Recording", "message": "An invented gap." } },
+        { "seq": 1, "at_ms": 62000, "event": { "type": "PostProgress", "meeting": "m-a", "step": { "kind": "Starting" }, "done": 0, "total": 6 } }
+      ],
+      "now_ms": 600000,
+      "expect": {
+        "followed": {
+          "meeting": "m-a",
+          "mode": "InRoom",
+          "tracks": ["You"],
+          "elapsed_ms": 60000,
+          "ended": "Stopped",
+          "banners": [
+            { "key": "during", "kind": "Backend", "message": "Said while recording.", "after_end": false },
+            { "key": "recording-gap", "kind": "Recording", "message": "An invented gap.", "after_end": true }
+          ],
+          "backends": [],
+          "words": 0,
+          "lag_seconds": null,
+          "transcript": "Live",
+          "call_end_offer": false,
+          "call_end_stops": true,
+          "progress": { "step": { "kind": "Starting" }, "done": 0, "total": 6 }
+        },
+        "behind": []
+      }
+    },
+    {
+      "name": "an older meeting behind a newer recording; events naming no meeting go by number",
+      "events": [
+        { "seq": 1, "at_ms": 0, "event": { "type": "Started", "meeting": "m-old", "mode": "Call", "tracks": ["You", "Them"] } },
+        { "seq": 1, "at_ms": 1000, "event": { "type": "Ended", "meeting": "m-old", "reason": "Stopped" } },
+        { "seq": 2, "at_ms": 2000, "event": { "type": "Started", "meeting": "m-new", "mode": "Call", "tracks": ["You", "Them"] } },
+        { "seq": 1, "at_ms": 2500, "event": { "type": "Warning", "key": "old-only", "kind": "Backend", "message": "Belongs to the older meeting." } },
+        { "seq": 2, "at_ms": 3000, "event": { "type": "Transcript", "state": "WaitingForPreviousMeeting" } },
+        { "seq": 1, "at_ms": 4000, "event": { "type": "PostProgress", "meeting": "m-old", "step": { "kind": "Stored" }, "done": 5, "total": 6 } },
+        { "seq": 3, "at_ms": 4500, "event": { "type": "Warning", "key": "no-meeting", "kind": "Backend", "message": "Sent before any Started of its number." } }
+      ],
+      "now_ms": 12000,
+      "expect": {
+        "followed": {
+          "meeting": "m-new",
+          "mode": "Call",
+          "tracks": ["You", "Them"],
+          "elapsed_ms": 10000,
+          "ended": null,
+          "banners": [],
+          "backends": [],
+          "words": 0,
+          "lag_seconds": null,
+          "transcript": "WaitingForPreviousMeeting",
+          "call_end_offer": false,
+          "call_end_stops": false,
+          "progress": null
+        },
+        "behind": [{ "meeting": "m-old", "progress": { "step": { "kind": "Stored" }, "done": 5, "total": 6 } }]
+      }
+    },
+    {
+      "name": "a result ends a meeting: the newer one's while the older finishes leaves nothing followed",
+      "events": [
+        { "seq": 1, "at_ms": 0, "event": { "type": "Started", "meeting": "m-old", "mode": "Call", "tracks": ["You", "Them"] } },
+        { "seq": 1, "at_ms": 1000, "event": { "type": "Ended", "meeting": "m-old", "reason": "Stopped" } },
+        { "seq": 2, "at_ms": 2000, "event": { "type": "Started", "meeting": "m-new", "mode": "InRoom", "tracks": ["You"] } },
+        { "seq": 2, "at_ms": 3000, "event": { "type": "Summary", "meeting": "m-new", "result": { "kind": "RecordingFailed", "message": "An invented failure." } } }
+      ],
+      "now_ms": 5000,
+      "expect": { "followed": null, "behind": [{ "meeting": "m-old", "progress": null }] }
+    },
+    {
+      "name": "the last result clears everything",
+      "events": [
+        { "seq": 1, "at_ms": 0, "event": { "type": "Started", "meeting": "m-a", "mode": "Call", "tracks": ["You", "Them"] } },
+        { "seq": 1, "at_ms": 1000, "event": { "type": "Ended", "meeting": "m-a", "reason": "Finished" } },
+        { "seq": 1, "at_ms": 2000, "event": { "type": "Summary", "meeting": "m-a", "result": { "kind": "Cancelled" } } }
+      ],
+      "now_ms": 3000,
+      "expect": { "followed": null, "behind": [] }
+    }
+  ]
+}
