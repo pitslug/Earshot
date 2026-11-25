@@ -754,6 +754,81 @@ fn export_merge_keeps_a_tick_on_a_line_written_before_the_escaping_rule() {
 }
 
 #[test]
+fn export_merge_into_its_own_output_stays_the_identity_when_generated_text_holds_a_mark() {
+    let mut f = fixture();
+    // Two summary bullets render as `- [x] foo` then `- [ ] foo`.
+    f.summary.enhanced_notes[0].bullets[0].text = "[x] Check travel".into();
+    f.summary.enhanced_notes[0].bullets[1].text = "[ ] Check travel".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    assert!(
+        doc.contains("- [x] Check travel\n- [ ] Check travel\n"),
+        "{doc}"
+    );
+    assert_eq!(merge(&doc, &r).unwrap(), doc);
+}
+
+#[test]
+fn export_merge_keeps_a_tick_after_a_plugin_appended_to_the_line() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    // A task plugin ticked the item and added a done date after its text.
+    let done = doc.replace(
+        &format!("- [ ] {ME_TASK}"),
+        &format!("- [x] {ME_TASK} \u{2705} 2026-11-20"),
+    );
+    let merged = merge(&done, &r).unwrap();
+    assert!(merged.contains(&format!("- [x] {ME_TASK}\n")), "{merged}");
+    assert!(
+        !merged.contains("2026-11-20"),
+        "the appended text is not carried"
+    );
+    // An exact copy still comes first: the exact pass pairs before the appended one.
+    assert_eq!(merge(&merged, &r).unwrap(), merged);
+}
+
+#[test]
+fn export_merge_does_not_carry_a_tick_to_a_longer_item_sharing_its_start() {
+    let mut f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    let ticked = r
+        .to_file()
+        .replace(&format!("- [ ] {ME_TASK}"), &format!("- [x] {ME_TASK}"));
+    // The new summary words the item longer: a different item, unticked.
+    f.summary.action_items[1].task = "Update the forecast numbers".into();
+    let r2 = render(&input(&f), &opts()).unwrap();
+    let merged = merge(&ticked, &r2).unwrap();
+    assert!(
+        merged.contains("- [ ] **Me**: Update the forecast numbers\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("- [x] **Me**"), "{merged}");
+    // A prefix that ends mid-word does not match either.
+    let partial = r
+        .to_file()
+        .replace(&format!("- [ ] {ME_TASK}"), &format!("- [x] {ME_TASK}s"));
+    assert!(!merge(&partial, &r).unwrap().contains("- [x] **Me**"));
+}
+
+#[test]
+fn export_merge_keeps_a_tick_written_under_the_wider_escaping_rule() {
+    let mut f = fixture();
+    f.summary.action_items[1].task = "Keep costs <5% over".into();
+    let r = render(&input(&f), &opts()).unwrap();
+    let doc = r.to_file();
+    let line = doc
+        .lines()
+        .find(|l| l.starts_with("- [ ] **Me**"))
+        .unwrap()
+        .to_owned();
+    // The note as T14.28's first rule wrote it (every `<` escaped), then ticked.
+    let wider = doc.replace(&line, &line.replace("- [ ]", "- [x]").replace('<', "&lt;"));
+    let merged = merge(&wider, &r).unwrap();
+    assert!(merged.contains(&line.replace("- [ ]", "- [x]")), "{merged}");
+}
+
+#[test]
 fn export_merge_never_carries_a_mark_from_outside_the_region() {
     let f = fixture();
     let r = render(&input(&f), &opts()).unwrap();

@@ -6,7 +6,6 @@
 //! separators) uses the note's dominant line ending.
 
 use super::render::{RenderedExport, tags_block, union_tags};
-use super::text::neutralise_generated;
 use super::{BEGIN_MARKER, END_MARKER, ExportError, OWNED_KEYS};
 use crate::identity::EntityId;
 
@@ -173,6 +172,19 @@ fn dominant_eol(doc: &str) -> &'static str {
     if crlf * 2 > lf { "\r\n" } else { "\n" }
 }
 
+/// Task text with every escape `neutralise_generated` has ever written undone (`&lt;`,
+/// `&#91;`, `&#37;`, `&#36;`, `&#96;`, `&#126;`), so a line written under any version of
+/// the escaping rule compares equal to its re-render. Pinned to `neutralise_generated` by
+/// `export_plain_form_undoes_every_generated_escape`.
+pub(super) fn plain_form(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&#91;", "[")
+        .replace("&#37;", "%")
+        .replace("&#36;", "$")
+        .replace("&#96;", "`")
+        .replace("&#126;", "~")
+}
+
 /// A task line `- [<mark>] <text>` (line ending removed): its mark and its text.
 fn task_line(line: &str) -> Option<(char, &str)> {
     let line = line.trim_end_matches(['\n', '\r']);
@@ -186,44 +198,73 @@ fn task_line(line: &str) -> Option<(char, &str)> {
 /// The new managed region with the task marks the user set in the old one (T14.27).
 ///
 /// Earshot renders action items as unticked `- [ ]` tasks inside the region, which a
-/// re-export replaces whole. Each unticked task line of the new region whose text after
-/// the checkbox equals a task line of the old region takes that line's mark character as
-/// the user left it (`x`, `X` or any other single character a task plugin uses). Old
-/// lines are used once each, in order, so repeated identical lines carry their marks in
-/// order; a reworded item matches nothing and stays unticked. Only text between the old
-/// markers is read. Both texts are compared after `neutralise_generated`, which leaves
-/// already neutralised text as it is, so a line written before T14.28 (a raw `<` or `![`)
-/// matches its escaped re-render and keeps its mark. Every other byte of the new region is unchanged, so with no marks
-/// set the result is the new region itself.
+/// re-export replaces whole. Matching runs in two passes over the task lines of the new
+/// region, each old task line used at most once, first come first served:
+///
+/// 1. Exact: every new task line, whatever its own mark, takes the first unused old line
+///    with the same text after the checkbox. Repeated identical lines pair up in order,
+///    and a line whose generated text already holds a mark (`- [x] foo` from a bullet
+///    reading `[x] foo`) uses up its own old copy, so merging a render into its own
+///    output stays the identity.
+/// 2. Appended: a new unticked line still unmatched takes the first unused old line
+///    whose text starts with the new text and a space (a task plugin added a done date
+///    or a tag after the text). Only that direction: an old line that is a prefix of the
+///    new text is another, longer item and does not match.
+///
+/// Only an unticked new line (`[ ]`) is rewritten, to the matched line's mark exactly as
+/// the user left it (`x`, `X` or another plugin's character); appended text is not
+/// carried. Texts are compared in their plain form (`plain_form`), so a line written
+/// before or after a change to the escaping rule matches its re-render. Only text between
+/// the old markers is read; every other byte of the new region is unchanged, so with no
+/// marks set the result is the new region itself.
 fn carry_task_marks(old_region: &str, new_region: &str) -> String {
     let mut old: Vec<Option<(char, String)>> = old_region
         .split_inclusive('\n')
         .filter_map(task_line)
-        .map(|(m, t)| Some((m, neutralise_generated(t))))
+        .map(|(m, t)| Some((m, plain_form(t))))
         .collect();
     if old.iter().flatten().all(|(m, _)| *m == ' ') {
         // Nothing marked: the new region as rendered.
         return new_region.to_owned();
     }
-    let mut out = String::with_capacity(new_region.len());
-    for line in new_region.split_inclusive('\n') {
-        let carried = task_line(line)
-            .filter(|(m, _)| *m == ' ')
-            .and_then(|(_, text)| {
-                let text = neutralise_generated(text);
-                let slot = old
-                    .iter_mut()
-                    .find(|o| o.as_ref().is_some_and(|(_, t)| *t == text))?;
-                slot.take().map(|(m, _)| m)
+    let lines: Vec<&str> = new_region.split_inclusive('\n').collect();
+    let new: Vec<Option<(char, String)>> = lines
+        .iter()
+        .map(|l| task_line(l).map(|(m, t)| (m, plain_form(t))))
+        .collect();
+    // The old mark each new line takes (pass 1, then pass 2).
+    let mut taken: Vec<Option<char>> = vec![None; lines.len()];
+    let mut take = |matches: &dyn Fn(&str) -> bool| {
+        let slot = old
+            .iter_mut()
+            .find(|o| o.as_ref().is_some_and(|(_, t)| matches(t)))?;
+        slot.take().map(|(m, _)| m)
+    };
+    for (i, n) in new.iter().enumerate() {
+        if let Some((_, text)) = n {
+            taken[i] = take(&|t: &str| t == text);
+        }
+    }
+    for (i, n) in new.iter().enumerate() {
+        if let Some((' ', text)) = n
+            && taken[i].is_none()
+        {
+            taken[i] = take(&|t: &str| {
+                t.strip_prefix(text.as_str())
+                    .is_some_and(|rest| rest.starts_with(' '))
             });
-        match carried {
-            Some(mark) => {
+        }
+    }
+    let mut out = String::with_capacity(new_region.len());
+    for ((line, n), mark) in lines.iter().zip(&new).zip(taken) {
+        match (n, mark) {
+            (Some((' ', _)), Some(mark)) => {
                 out.push_str("- [");
                 out.push(mark);
                 // `- [ ` is four bytes: the rest (`] text` and the line ending) is kept.
                 out.push_str(&line[4..]);
             }
-            None => out.push_str(line),
+            _ => out.push_str(line),
         }
     }
     out
