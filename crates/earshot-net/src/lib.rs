@@ -24,7 +24,7 @@ mod secret;
 mod url_policy;
 
 pub use allowlist::{Allowlist, DenyReason};
-pub use audit::{AuditEntry, AuditLog, AuditOutcome};
+pub use audit::{AuditEntry, AuditLog, AuditOutcome, MAX_AUDIT_ENTRIES};
 pub use client::{
     CANCELLED_BEFORE_RESPONSE, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_BODY, DEFAULT_TIMEOUT,
     MAX_REDIRECTS, NetClient, NetConfig, NetError, NetRequest, NetResponse, NetStream,
