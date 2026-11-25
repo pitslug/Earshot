@@ -1821,6 +1821,8 @@ struct Track<S, O> {
     /// Falling back and coming back to raw are not told to the observer (T12.36b: raw only the
     /// automatic choice asked for).
     raw_quiet: bool,
+    /// No timed tries for raw (the audio check's source, whose run a stream move would fail).
+    raw_retry_off: bool,
     stream: Option<S>,
     follower: StreamFollower,
     /// The last stream error that was neither a device loss nor a programming fault (T9.21):
@@ -1856,6 +1858,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             raw_retry: RawRetry::default(),
             raw_from_start: false,
             raw_quiet: false,
+            raw_retry_off: false,
             stream: Some(stream),
             follower,
             stream_error: None,
@@ -1890,6 +1893,15 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
         self
     }
 
+    /// A track that never tries raw again on the timed schedule ([`Track::try_raw`]): the audio
+    /// check's source (`DeviceSelection::raw_retry_off`), where a move onto the raw stream
+    /// mid-run is a discontinuity that fails the measurement. Fallbacks on a re-open still
+    /// happen and are still told.
+    fn without_raw_retries(mut self) -> Self {
+        self.raw_retry_off = true;
+        self
+    }
+
     fn event(&self) -> Option<HANDLE> {
         self.stream.as_ref().map(LoopStream::event)
     }
@@ -1912,11 +1924,13 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 Ok(())
             }
             Err(e) if e.is_device_loss() => {
+                observer.stream_failed(now, &e.detail());
                 self.follower.on_stream_error();
                 Ok(())
             }
             Err(e) => match e.windows_failure() {
                 Some(failure) if !follow::is_programming_fault(failure.1) => {
+                    observer.stream_failed(now, &e.detail());
                     self.stream_error = Some(failure);
                     self.follower.on_unknown_stream_error(now);
                     self.end_if_over(now);
@@ -2043,9 +2057,12 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
                 }
                 self.end_if_over(now);
                 if self.follower.give_up_chosen(now) {
-                    // Giving the device up ends the tries for raw on it (T12.36a); a later
-                    // fallback on the default starts them again.
-                    self.raw_retry.stop();
+                    // A track that fell back keeps trying raw after giving its chosen device up
+                    // (T12.36a): the next try opens the default device it moves to, after a
+                    // full first wait.
+                    if self.raw_retry.next_due().is_some() {
+                        self.raw_retry.fell_back(now);
+                    }
                     if let DeviceChoice::Endpoint { name, .. } = std::mem::take(&mut self.device)
                         && !std::mem::take(&mut self.followed_call)
                     {
@@ -2074,12 +2091,16 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     /// raw again (a later refusal falls back again). Nothing happens while the track has no
     /// stream (the follower re-opens it first) or after it ended. Never for the raw recorder.
     fn try_raw<D: LoopDriver<Stream = S>>(&mut self, driver: &mut D, now: u64) {
+        if self.raw_retry_off {
+            return;
+        }
         if std::mem::take(&mut self.raw_from_start) {
             self.raw_retry.fell_back(now);
             return;
         }
-        if !self.raw_fallback
-            || self.processing == MicProcessing::Raw
+        // Only a fallback arms the schedule, and only a live mic (`with_raw_fallback`) falls
+        // back, so the raw recorder never gets past `due`.
+        if self.processing == MicProcessing::Raw
             || self.stream.is_none()
             || self.follower.ended()
             || !self.raw_retry.due(now)
@@ -3146,6 +3167,9 @@ fn live_capture(
     let mut mic = mic_track(mic_stream, request.mic_role, mic_device, mic_obs)
         .with_processing(mic_processing)
         .with_raw_fallback(raw_refused_at_start, request.devices.raw_fallback_quiet);
+    if request.devices.raw_retry_off {
+        mic = mic.without_raw_retries();
+    }
     // `opened` and `lb_obs` are both present exactly when a loopback was requested.
     let mut lb = opened.zip(lb_obs).map(|(o, obs)| o.into_track(obs));
     let mut driver = Wasapi {
@@ -4402,6 +4426,7 @@ mod device_tests {
             output: DeviceChoice::Default,
             mic_processing: MicProcessing::Default,
             raw_fallback_quiet: false,
+            raw_retry_off: false,
         };
         let mut src =
             WasapiSource::start_on(MicRole::Console, &CaptureMode::InRoom, &devices).unwrap();
@@ -4431,6 +4456,7 @@ mod device_tests {
             output: chosen(&output.id, &output.name),
             mic_processing: MicProcessing::Default,
             raw_fallback_quiet: false,
+            raw_retry_off: false,
         };
         let mut src = WasapiSource::start_on(
             MicRole::Console,

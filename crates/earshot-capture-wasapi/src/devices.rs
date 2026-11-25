@@ -70,6 +70,10 @@ pub struct DeviceSelection {
     /// quietly, with no `raw_refused`, no `RawMicRefused` and no `RawMicRestored` note. The
     /// tries for raw still run. Ignored without a raw request.
     pub raw_fallback_quiet: bool,
+    /// No timed tries to open a fallen-back mic raw again (T12.36a): set only for the audio
+    /// check's source (`earshot_runtime::audio_check::check_devices`), whose run a move onto
+    /// the raw stream would fail.
+    pub raw_retry_off: bool,
 }
 
 /// One endpoint as listed.

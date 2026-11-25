@@ -62,7 +62,8 @@ pub use power::PowerSupply;
 pub use problem::{StartProblem, start_problem};
 pub use recording::{
     DeviceChange, DeviceDescription, HandsFreeChange, LoopbackMode, LoopbackSource, MicRole,
-    NotifyingTrack, RawRecording, RecordingTrack, TimestampsFile, TrackRecording, TrackReport,
+    NotifyingTrack, RawRecording, RecordingTrack, StreamError, TimestampsFile, TrackRecording,
+    TrackReport,
 };
 pub use session::{
     AudioSession, CALL_POLL_INTERVAL, CallAppWatch, CaptureMode, FallbackReason, LoopbackChoice,

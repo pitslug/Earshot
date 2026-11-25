@@ -105,6 +105,18 @@ pub struct TrackRecording {
     /// on an endpoint that refuses raw processing: from the first refused re-open to the first
     /// packet of the next stream, or to the end. Never in `timestamps.json`; 0 otherwise.
     pub raw_refused_frames: u64,
+    /// Stream errors that made the loop re-open the stream (T12.36a), in order. Never in
+    /// `timestamps.json`; `earshot-cli record-raw` prints them.
+    pub stream_errors: Vec<StreamError>,
+}
+
+/// A stream error that made the capture loop re-open a track's stream (T12.36a).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamError {
+    /// QPC position when it was seen (100 ns units).
+    pub qpc: u64,
+    /// The failed call and its HRESULT as a number, never Windows' message text.
+    pub detail: String,
 }
 
 impl TrackRecording {
@@ -162,6 +174,8 @@ pub struct RecordingTrack {
     raw_refused_from: Option<u64>,
     /// Frames of finished runs of such silence.
     raw_refused_frames: u64,
+    /// Stream errors that caused re-opens.
+    stream_errors: Vec<StreamError>,
 }
 
 impl RecordingTrack {
@@ -175,6 +189,7 @@ impl RecordingTrack {
             hands_free: None,
             raw_refused_from: None,
             raw_refused_frames: 0,
+            stream_errors: Vec::new(),
         }
     }
 
@@ -207,11 +222,19 @@ impl RecordingTrack {
             timeline: self.timeline,
             device_changes: self.changes,
             raw_refused_frames: self.raw_refused_frames,
+            stream_errors: self.stream_errors,
         }
     }
 }
 
 impl TrackObserver for RecordingTrack {
+    fn stream_failed(&mut self, qpc: u64, detail: &str) {
+        self.stream_errors.push(StreamError {
+            qpc,
+            detail: detail.to_owned(),
+        });
+    }
+
     fn packet(&mut self, info: PacketInfo, mono: &[f32]) {
         self.timeline.push(info, mono);
         // The first packet after a refused raw re-open (no stream delivers in between) ends
@@ -332,6 +355,10 @@ impl<F: FnMut(&HandsFreeMic)> TrackObserver for NotifyingTrack<F> {
 
     fn raw_refused(&mut self, qpc: u64) {
         self.track.raw_refused(qpc);
+    }
+
+    fn stream_failed(&mut self, qpc: u64, detail: &str) {
+        self.track.stream_failed(qpc, detail);
     }
 
     fn track_ended(&mut self, qpc: u64, hresult: i32) {
@@ -544,6 +571,7 @@ pub(crate) mod tests {
                     },
                 ],
                 raw_refused_frames: 0,
+                stream_errors: Vec::new(),
             },
             loopback: TrackRecording {
                 device_name: "Speakers (Test)".into(),
@@ -551,6 +579,7 @@ pub(crate) mod tests {
                 timeline: lb,
                 device_changes: Vec::new(),
                 raw_refused_frames: 0,
+                stream_errors: Vec::new(),
             },
         }
     }

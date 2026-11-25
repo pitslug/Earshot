@@ -223,7 +223,8 @@ A re-open asks for the track's rate (`Some(rate)`) and, for the mono mic, any ch
 
 - A live raw mic that falls back keeps the processed stream across re-opens and tries raw again on a schedule (`follow::RawRetry`): 10 s after the fallback, then doubling after each refused try, at most every 60 s (judgements, not measured). A mic whose start already fell back does the same.
 - A try opens and starts the raw stream before the running one is touched, so a refused try changes nothing and says nothing; an accepted one swaps the streams (a `DeviceChanged` marker, reason `raw_restored`) and sends one `RawMicRestored` note, which clears the meeting's `raw-mic` banner. A later fallback shows it again.
-- Tries stop when the track ends or gives its chosen device up, and wait while the track has no stream. The raw recorder never falls back and never tries.
+- Tries stop when the track ends and wait while the track has no stream; a chosen mic given up for the default goes on trying there, from a fresh first wait. The audio check's source never tries (a move onto raw mid-run would fail the measurement). The raw recorder never falls back and never tries.
+- `earshot-cli record-raw` now also prints each stream error that made it re-open (the call and the HRESULT number, on its output, not in `timestamps.json`), beside the refused re-open's, so the Surface reproduction captures both codes.
 
 ### Desktop measurement (pending)
 

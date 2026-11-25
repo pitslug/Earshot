@@ -216,6 +216,7 @@ impl AudioSettings {
                 MicProcessing::Default
             },
             raw_fallback_quiet: raw && self.mic_signal == MicSignal::Automatic,
+            raw_retry_off: false,
         }
     }
 }

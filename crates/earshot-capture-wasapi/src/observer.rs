@@ -96,6 +96,14 @@ pub trait TrackObserver {
         let _ = qpc;
     }
 
+    /// The track's stream failed at `qpc` with an error that makes the loop re-open it (a lost
+    /// device, or an error that is neither that nor a programming fault, T9.21): `detail` is the
+    /// failed call and its HRESULT as a number, never Windows' message text. Called before the
+    /// re-open it causes. Default: ignored.
+    fn stream_failed(&mut self, qpc: u64, detail: &str) {
+        let _ = (qpc, detail);
+    }
+
     /// The track ended at `qpc` after its stream kept failing for
     /// [`STREAM_ERROR_GRACE_QPC`](crate::follow::STREAM_ERROR_GRACE_QPC) (T9.21); `hresult` is
     /// the last stream error. No packet or re-open follows, and the other track goes on.
