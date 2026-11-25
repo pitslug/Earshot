@@ -4,8 +4,9 @@
 // the wizard holds only the order, its own short words, what the Download step adds up, and the
 // "done" call. Next saves what the step's parts registered (`saveOnNext`), so no part shows a Save
 // button here. Nothing downloads, records, plays a sound or runs the model check or the audio
-// check until the user presses its button, and the Sync step reads nothing until a way in is
-// chosen and sends nothing until its button or Next (Not now, the default, asks the app nothing).
+// check until the user presses its button, and the Sync step reads only this computer's own
+// sync view on opening (no server; T12.99) and sends nothing until its button or Next (Not now,
+// the default, asks the app nothing more).
 // The one thing that runs by itself: when Claude Code or Codex is ticked on the Summaries step,
 // its card asks that agent CLI whether it is installed and signed in (`checkClaudeCode` /
 // `checkCodex`), which sends no meeting content.
@@ -97,15 +98,18 @@ export const SYNC_JOIN = "Join with a pairing code";
 export const SYNC_SET_UP = "Set up sync for the first time";
 export const SYNC_LATER = "Not now";
 
-/** What Not now means: only what the choice does, since the step does not read whether this
- * computer already syncs. */
+/** What Not now means: only what the choice does, because it shows whenever the step cannot
+ * say that this computer syncs (the view still loading or unreadable). */
 export const SYNC_LATER_NOTE = "Not now sets nothing up. You can set up sync any time in Settings, Sync.";
 
 /** Why Next waits on Join or Set up: the sync settings are not read yet. */
 export const SYNC_STILL_READING = "Still reading this computer's sync settings.";
 
-/** The Sync step once this computer syncs. */
+/** The Sync step once this computer joined or set up sync here. */
 export const SYNC_JOINED = "This computer syncs. You can change sync any time in Settings, Sync.";
+
+/** The Sync step when its view, read on opening, says this computer already syncs. */
+export const SYNC_ALREADY = "This computer already syncs. You can change sync any time in Settings, Sync.";
 
 /** Said after the wizard when it ended with no transcription model. */
 export const NO_MODEL_NOTE = "Meetings need a transcription model. You can download one any time in Settings, Transcription.";
@@ -352,6 +356,10 @@ function WhatThisComputerNeeds({
 /** The Sync step's answer. */
 type SyncChoice = "join" | "setup" | "later";
 
+/** Whether this computer syncs, as far as the wizard knows: not known to (today's step), joined
+ * or set up here, or found set up by the view read on opening. */
+type SyncState = "unknown" | "joined" | "already";
+
 /** The Sync step once a way in is chosen: the Sync page's own form for it, which the wizard's
  * Next (or the form's own button, which is Next) sends. A computer that already syncs tells the
  * wizard (`onJoined`) and sends nothing. Nothing is read before this shows. */
@@ -402,27 +410,58 @@ function SyncChosen({
   );
 }
 
-/** Step 2: another computer, or not now. The choice and a join or setup that worked live in the
- * wizard, so Back shows them; once this computer syncs, that is all the step says, whatever the
- * choice. The choices wait while a join or setup is on its way. */
+/** Step 2: another computer, or not now. On opening it reads this computer's own sync view
+ * (local only: `syncView` asks no server) and, when that says sync is set up, says so with no
+ * choices, so Next moves on saving nothing. While the view loads or when it cannot be read, the
+ * choices show as before: a failed read never claims sync. The choice and a join or setup that
+ * worked live in the wizard, so Back shows them; once this computer syncs, that is all the step
+ * says. The choices wait while a join or setup is on its way. */
 function SyncStep({
   choice,
   onChoice,
-  joined,
+  synced,
   onJoined,
+  onAlready,
   busy,
   saveOnNext,
   onNext,
 }: {
   choice: SyncChoice;
   onChoice(choice: SyncChoice): void;
-  joined: boolean;
+  synced: SyncState;
   onJoined(): void;
+  onAlready(): void;
   busy: boolean;
   saveOnNext: SaveOnNext;
   onNext(): void;
 }) {
   const styles = useStyles();
+  const ipc = useIpc();
+  const known = synced !== "unknown";
+  useEffect(() => {
+    if (known) return;
+    let live = true;
+    ipc.syncView().then(
+      (view) => {
+        if (live && view.set_up) onAlready();
+      },
+      // An unreadable view leaves today's step as it is.
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [ipc, known, onAlready]);
+  if (known) {
+    return (
+      <>
+        <Body1 className={styles.muted}>{SYNC_INTRO}</Body1>
+        <MessageBar intent="success">
+          <MessageBarBody>{synced === "already" ? SYNC_ALREADY : SYNC_JOINED}</MessageBarBody>
+        </MessageBar>
+      </>
+    );
+  }
   return (
     <>
       <Body1 className={styles.muted}>{SYNC_INTRO}</Body1>
@@ -436,11 +475,7 @@ function SyncStep({
         <Radio value="setup" label={SYNC_SET_UP} />
         <Radio value="later" label={SYNC_LATER} />
       </RadioGroup>
-      {joined ? (
-        <MessageBar intent="success">
-          <MessageBarBody>{SYNC_JOINED}</MessageBarBody>
-        </MessageBar>
-      ) : choice === "later" ? (
+      {choice === "later" ? (
         <Caption1 className={styles.muted}>{SYNC_LATER_NOTE}</Caption1>
       ) : (
         <SyncChosen key={choice} choice={choice} saveOnNext={saveOnNext} onNext={onNext} onJoined={onJoined} />
@@ -580,9 +615,10 @@ export function FirstRunWizard({ onDone }: FirstRunWizardProps) {
   const models = useModels();
   const [step, setStep] = useState(0);
   const [syncChoice, setSyncChoice] = useState<SyncChoice>("later");
-  // This computer syncs: joined or set up here, or found already set up.
-  const [syncJoined, setSyncJoined] = useState(false);
-  const onSyncJoined = useCallback(() => setSyncJoined(true), []);
+  // Whether this computer syncs: joined or set up here, or found already set up.
+  const [synced, setSynced] = useState<SyncState>("unknown");
+  const onSyncJoined = useCallback(() => setSynced((was) => (was === "unknown" ? "joined" : was)), []);
+  const onSyncAlready = useCallback(() => setSynced((was) => (was === "unknown" ? "already" : was)), []);
   // Whether this computer is one of the summary writers, read when the Summaries step is left.
   const [localWriter, setLocalWriter] = useState<boolean | null>(null);
   const [running, setRunning] = useState(false);
@@ -699,7 +735,8 @@ export function FirstRunWizard({ onDone }: FirstRunWizardProps) {
             <h1 className={styles.heading} tabIndex={-1} ref={heading}>
               <Title2>{STEPS[step].title}</Title2>
             </h1>
-            <Body1>{STEPS[step].intro}</Body1>
+            {/* The Sync step's question has no choices to answer it once this computer syncs. */}
+            {!(step === SYNC_STEP && synced !== "unknown") && <Body1>{STEPS[step].intro}</Body1>}
           </div>
           <Notices notices={models.notices.filter((n) => n.area === "page")} onDismiss={models.dismiss} />
           {step === SUMMARIES_STEP && <SummaryOrderChoices saveOnNext={saveOnNext} />}
@@ -707,8 +744,9 @@ export function FirstRunWizard({ onDone }: FirstRunWizardProps) {
             <SyncStep
               choice={syncChoice}
               onChoice={setSyncChoice}
-              joined={syncJoined}
+              synced={synced}
               onJoined={onSyncJoined}
+              onAlready={onSyncAlready}
               busy={moving}
               saveOnNext={saveOnNext}
               onNext={() => void next()}

@@ -38,6 +38,7 @@ import {
   RUNNING_NOTE,
   SAVE_REFUSED_NOTE,
   STEPS,
+  SYNC_ALREADY,
   SYNC_JOIN,
   SYNC_JOINED,
   SYNC_LATER,
@@ -441,7 +442,7 @@ describe("First run wizard", () => {
     const syncSpies = (ipc: Ipc) => SYNC_CALLS.map((name) => vi.spyOn(ipc, name));
     const choice = (name: string) => screen.getByRole("radio", { name });
 
-    it("asks about another computer with Not now chosen, and Not now asks the app nothing", async () => {
+    it("asks about another computer with Not now chosen, and Not now asks the app nothing but the view", async () => {
       const s = setup();
       const spies = syncSpies(s.ipc);
       await toStep(s, SYNC);
@@ -453,15 +454,99 @@ describe("First run wizard", () => {
       ]);
       expect(choice(SYNC_LATER)).toBeChecked();
       expect(screen.getByText(SYNC_INTRO)).toBeInTheDocument();
-      // It cannot know whether this computer already syncs, so it says only what Not now does.
       expect(screen.getByText(SYNC_LATER_NOTE)).toBeInTheDocument();
       expect(SYNC_LATER_NOTE).not.toMatch(/sent/i);
+      expect(screen.queryByText(SYNC_ALREADY)).toBeNull();
       expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
       expect(screen.queryByRole("form", { name: "Set up the first computer" })).toBeNull();
       await s.user.click(button("Next"));
       await stepHeading(STEPS[DOWNLOAD].title);
-      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      // Opening the step reads this computer's own view (no server), and nothing else.
+      const [view, ...rest] = spies;
+      expect(view).toHaveBeenCalledTimes(1);
+      for (const spy of rest) expect(spy).not.toHaveBeenCalled();
       expect((await s.ipc.syncView()).set_up).toBe(false);
+    });
+
+    it("says this computer already syncs, with no choices, and Next moves on asking nothing more", async () => {
+      const s = setup({ sync: { setUp: true } });
+      const spies = syncSpies(s.ipc);
+      await toStep(s, SYNC);
+      expect(await screen.findByText(SYNC_ALREADY)).toBeInTheDocument();
+      expect(SYNC_ALREADY).toMatch(/Settings, Sync/);
+      expect(screen.queryByRole("radiogroup", { name: SYNC_QUESTION })).toBeNull();
+      expect(screen.queryByRole("radio")).toBeNull();
+      expect(screen.queryByText(SYNC_LATER_NOTE)).toBeNull();
+      // The question has nothing to answer it with, so it is not asked.
+      expect(screen.queryByText(SYNC_QUESTION)).toBeNull();
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      const [view, ...rest] = spies;
+      expect(view).toHaveBeenCalledTimes(1);
+      for (const spy of rest) expect(spy).not.toHaveBeenCalled();
+      // Back still says so from what the wizard already knows, without reading again.
+      await s.user.click(button("Back"));
+      await stepHeading(STEPS[SYNC].title);
+      expect(await screen.findByText(SYNC_ALREADY)).toBeInTheDocument();
+      expect(screen.queryByRole("radio")).toBeNull();
+      expect(view).toHaveBeenCalledTimes(1);
+    });
+
+    it("a view that says sync is set up after Join was chosen replaces the form, and Next joins nothing", async () => {
+      const s = setup({ sync: { setUp: true } });
+      const real = s.ipc.syncView.bind(s.ipc);
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      vi.spyOn(s.ipc, "syncView").mockImplementation(async () => {
+        await released;
+        return real();
+      });
+      const join = vi.spyOn(s.ipc, "joinSync");
+      await toStep(s, SYNC);
+      await s.user.click(choice(SYNC_JOIN));
+      // Neither the step's read nor the form's has answered yet: no form, no claim.
+      expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
+      expect(screen.queryByText(SYNC_ALREADY)).toBeNull();
+      await act(async () => release());
+      expect(await screen.findByText(SYNC_ALREADY)).toBeInTheDocument();
+      expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
+      expect(screen.queryByRole("radio")).toBeNull();
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      expect(join).not.toHaveBeenCalled();
+    });
+
+    it("shows today's step while the view is still being read, and Not now gets past it", async () => {
+      const s = setup({ sync: { setUp: true } });
+      const read = vi.spyOn(s.ipc, "syncView").mockImplementation(() => new Promise(() => {}));
+      await toStep(s, SYNC);
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      expect(choice(SYNC_LATER)).toBeChecked();
+      expect(screen.getByText(SYNC_QUESTION)).toBeInTheDocument();
+      expect(screen.getByText(SYNC_LATER_NOTE)).toBeInTheDocument();
+      expect(screen.queryByText(SYNC_ALREADY)).toBeNull();
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+    });
+
+    it("never claims sync when the view cannot be read, and shows today's step", async () => {
+      const s = setup({ sync: { setUp: true } });
+      const read = vi.spyOn(s.ipc, "syncView").mockRejectedValue(new Error("unreadable"));
+      const others = syncSpies(s.ipc).slice(1);
+      await toStep(s, SYNC);
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      // Let the refused read settle before judging the step.
+      await act(async () => {});
+      expect(choice(SYNC_LATER)).toBeChecked();
+      expect(choice(SYNC_JOIN)).toBeEnabled();
+      expect(screen.getByText(SYNC_LATER_NOTE)).toBeInTheDocument();
+      expect(screen.queryByText(SYNC_ALREADY)).toBeNull();
+      expect(screen.queryByText(SYNC_JOINED)).toBeNull();
+      await s.user.click(button("Next"));
+      await stepHeading(STEPS[DOWNLOAD].title);
+      for (const spy of others) expect(spy).not.toHaveBeenCalled();
     });
 
     it("a choice taken back to Not now sends nothing", async () => {
@@ -494,9 +579,8 @@ describe("First run wizard", () => {
       await stepHeading(STEPS[SYNC].title);
       expect(await screen.findByText(SYNC_JOINED)).toBeInTheDocument();
       expect(screen.queryByRole("form", { name: "Join with a pairing code" })).toBeNull();
-      // Not now after a join still says this computer syncs.
-      await s.user.click(choice(SYNC_LATER));
-      expect(screen.getByText(SYNC_JOINED)).toBeInTheDocument();
+      // Once this computer syncs the step offers no choices, so none can say otherwise.
+      expect(screen.queryByRole("radio")).toBeNull();
       expect(screen.queryByText(SYNC_LATER_NOTE)).toBeNull();
       await s.user.click(button("Next"));
       await stepHeading(STEPS[DOWNLOAD].title);
@@ -1171,6 +1255,7 @@ describe("First run wizard", () => {
       RUNNING_NOTE,
       SAVE_REFUSED_NOTE,
       SETUP_EXPLAINED,
+      SYNC_ALREADY,
       SYNC_JOIN,
       SYNC_JOINED,
       SYNC_LATER,
