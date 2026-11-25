@@ -678,6 +678,90 @@ fn shell_tray_refresh_draws_again_when_the_phase_moved_while_it_drew() {
     assert_eq!(tray.shown.lock().unwrap().len(), 3);
 }
 
+#[test]
+fn shell_call_start_setting_is_read_once_and_follows_what_the_page_stores() {
+    // T14.9: the watch asked the store twice a second. Now it reads once, and the General page's
+    // command tells it of a change.
+    let reads = std::cell::Cell::new(0);
+    let read = |value: Option<bool>| {
+        let reads = &reads;
+        move || {
+            reads.set(reads.get() + 1);
+            value
+        }
+    };
+    let setting = OfferSetting::default();
+    // No store yet: off for now, and asked again.
+    assert!(!setting.get(read(None)));
+    assert!(!setting.get(read(None)));
+    assert_eq!(reads.get(), 2);
+    // Read: kept from then on.
+    assert!(setting.get(read(Some(true))));
+    assert!(setting.get(read(Some(false))), "the kept value, not a read");
+    assert!(setting.get(read(None)));
+    assert_eq!(reads.get(), 3);
+    // The page turns it off, then on: the watch follows without a read.
+    setting.set(false);
+    assert!(!setting.get(read(Some(true))));
+    setting.set(true);
+    assert!(setting.get(read(Some(false))));
+    assert_eq!(reads.get(), 3);
+    // A change made before the first read wins over what that read finds.
+    let setting = OfferSetting::default();
+    assert!(!setting.get(|| {
+        setting.set(false);
+        Some(true)
+    }));
+}
+
+#[test]
+fn shell_a_start_in_the_tray_with_no_data_says_so_in_a_notification() {
+    // T14.9: started by Windows, no window opens, and a store that failed to open was silent
+    // until a meeting would not start.
+    assert_eq!(start_toast(false, true), Some(data_unopened_toast()));
+    // With a window on screen the window says it; with a store there is nothing to say.
+    assert_eq!(start_toast(true, true), None);
+    assert_eq!(start_toast(false, false), None);
+    assert_eq!(start_toast(true, false), None);
+    let t = data_unopened_toast();
+    assert_eq!(t.title, "Earshot could not open its data");
+    assert_eq!(
+        t.body,
+        "Meetings cannot be recorded until this is fixed. Open Earshot to see why."
+    );
+    assert_eq!(t.click, ToastClick::Window);
+    assert!(t.buttons.is_empty());
+    assert!(!t.stays);
+    let text = format!("{} {}", t.title, t.body);
+    assert!(!text.contains('\u{2014}') && !text.contains('!'), "{text}");
+}
+
+#[test]
+fn shell_window_csp_allows_no_plugins_base_tags_or_form_posts() {
+    // T14.9: `default-src` does not cover `base-uri` or `form-action`, and `object-src` fell
+    // back to it ('self'). The page uses none of the three.
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let csp = config["app"]["security"]["csp"].as_str().unwrap();
+    let directives: Vec<&str> = csp.split(';').map(str::trim).collect();
+    for wanted in [
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        // What was there stays as it was.
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "font-src 'self'",
+        "media-src blob:",
+        "connect-src ipc: http://ipc.localhost",
+    ] {
+        assert!(directives.contains(&wanted), "{wanted} in: {csp}");
+    }
+    assert_eq!(directives.len(), 10, "{csp}");
+}
+
 fn summary_of(meeting: &str) -> MeetingEvent {
     MeetingEvent::Summary {
         meeting: meeting.into(),

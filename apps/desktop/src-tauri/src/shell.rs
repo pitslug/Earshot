@@ -671,6 +671,61 @@ pub fn mic_reading(
 /// every [`earshot_capture_wasapi::session::CALL_POLL_INTERVAL`]).
 const CALL_START_STEP: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// The General page's "offer to record when a call starts" as the call-start watch reads it
+/// (T14.9): kept from its first read and from every change, so the watch does not take the
+/// store's lock twice a second for a value that changes when the user changes it. The setting
+/// is device-local and has one writer (`call_start::set_offer_on`, from the General page's
+/// command, which tells this cache).
+#[derive(Debug, Default)]
+pub struct OfferSetting(Mutex<Option<bool>>);
+
+impl OfferSetting {
+    fn kept(&self) -> std::sync::MutexGuard<'_, Option<bool>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The setting: the value kept, else what `read` gives (the store), kept from then on. A
+    /// read that fails (`None`: no store) is off for now and is read again next time. The lock
+    /// is not held across `read`; a change made meanwhile wins.
+    pub fn get(&self, read: impl FnOnce() -> Option<bool>) -> bool {
+        if let Some(on) = *self.kept() {
+            return on;
+        }
+        let read = read();
+        let mut kept = self.kept();
+        if kept.is_none() {
+            *kept = read;
+        }
+        kept.unwrap_or(false)
+    }
+
+    /// The setting was stored as `on`.
+    pub fn set(&self, on: bool) {
+        *self.kept() = Some(on);
+    }
+}
+
+/// The notification that Earshot started in the tray and could not open its data (T14.9): with
+/// no window on screen nothing else says so, and every meeting would fail to start. Fixed copy;
+/// the window says why.
+#[must_use]
+pub fn data_unopened_toast() -> Toast {
+    Toast {
+        title: "Earshot could not open its data".into(),
+        body: "Meetings cannot be recorded until this is fixed. Open Earshot to see why.".into(),
+        click: ToastClick::Window,
+        buttons: Vec::new(),
+        stays: false,
+    }
+}
+
+/// What a start says in a notification: [`data_unopened_toast`] when the store failed to open
+/// and no window shows it (started by Windows, in the tray). With a window, the window says it.
+#[must_use]
+pub fn start_toast(shows_window: bool, store_failed: bool) -> Option<Toast> {
+    (store_failed && !shows_window).then(data_unopened_toast)
+}
+
 /// The notification that nobody answered and the recording stopped by itself.
 #[must_use]
 pub fn call_end_stopped_toast() -> Toast {
@@ -871,6 +926,8 @@ pub struct Shell {
     call_start_open: AtomicBool,
     /// The call-start rule, fed by [`Shell::spawn_call_start_watch`] and answered by the user.
     call_start: Mutex<earshot_runtime::call_start::CallStartWatch>,
+    /// Whether the call-start offer is on, as last read or stored.
+    call_start_setting: OfferSetting,
     /// The call-end offer stopped this recording, or every track stopped recording (T9.17): its own
     /// notification said so, and [`ended_toast`] says nothing more.
     end_already_told: AtomicBool,
@@ -893,6 +950,7 @@ impl Shell {
             call_start: Mutex::new(earshot_runtime::call_start::CallStartWatch::new(
                 earshot_runtime::call_start::CallStartConfig::default(),
             )),
+            call_start_setting: OfferSetting::default(),
             end_already_told: AtomicBool::new(false),
             #[cfg(windows)]
             toasts: crate::toast_win::Toaster::default(),
@@ -1118,13 +1176,10 @@ impl Shell {
         self: &Arc<Self>,
         poller: &mut Option<earshot_capture_wasapi::RenderSessionPoller>,
     ) {
-        let on = self
-            .app
-            .state::<AppState>()
-            .services()
-            .ok()
-            .and_then(|s| earshot_runtime::call_start::offer_on(&s.store()).ok())
-            .unwrap_or(false);
+        let on = self.call_start_setting.get(|| {
+            let services = self.app.state::<AppState>().services().ok()?;
+            earshot_runtime::call_start::offer_on(&services.store()).ok()
+        });
         if !on {
             // Turned off (or no store): no readings, and an open question goes.
             *poller = None;
@@ -1145,7 +1200,9 @@ impl Shell {
         let Some(reading) = poller.as_mut().and_then(|p| mic_reading(p.latest())) else {
             return;
         };
-        let recording = matches!(self.tracker().phase(), Phase::Starting | Phase::Recording)
+        // One lock at a time.
+        let phase = self.tracker().phase();
+        let recording = matches!(phase, Phase::Starting | Phase::Recording)
             || self.driver().phase() == DriverPhase::Recording;
         let change = self.call_start_watch().reading(reading, recording);
         match change {
@@ -1173,6 +1230,20 @@ impl Shell {
         self.call_start
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The General page stored the call-start offer as `on`: the watch reads it from here.
+    pub fn call_start_offer_stored(&self, on: bool) {
+        self.call_start_setting.set(on);
+    }
+
+    /// Says once, at the start, what no window is there to say (T14.9, [`start_toast`]):
+    /// `shows_window` is whether this start opened the window.
+    pub fn tell_start_problems(self: &Arc<Self>, shows_window: bool) {
+        let store_failed = self.app.state::<AppState>().services().is_err();
+        if let Some(toast) = start_toast(shows_window, store_failed) {
+            self.notify(&toast, None);
+        }
     }
 
     /// The question closed: the window's banner and the notification go.

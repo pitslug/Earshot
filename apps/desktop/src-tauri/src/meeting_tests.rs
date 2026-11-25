@@ -1106,25 +1106,154 @@ fn meeting_driver_a_panicking_preflight_is_a_failed_start() {
     assert!(rx.try_recv().is_err());
 }
 
+/// Words of the program's insides that a window never shows (T14.9).
+const INSIDE_WORDS: [&str; 9] = [
+    "llama", "ggml", "cublas", "dll", "DLL", "PATH", "CUDA", "ONNX", "Cuda",
+];
+
+fn no_inside_words(text: &str) {
+    for word in INSIDE_WORDS {
+        assert!(!text.contains(word), "{word} in: {text}");
+    }
+    assert!(!crate::plain_text::names_developer_tool(text), "{text}");
+    assert!(
+        text.chars().next().is_some_and(char::is_uppercase) && text.ends_with('.'),
+        "{text}"
+    );
+}
+
 #[test]
-fn meeting_summary_setup_errors_name_the_missing_dlls_in_one_sentence() {
+fn meeting_summary_setup_errors_are_fixed_copy_without_the_missing_files_names() {
+    // T14.9: this said "llama.cpp's DLLs", "on PATH" and each file's name. The kind still says
+    // which failure it is; the window gets what to do.
     use earshot_runtime::host::SummarySetupError;
     let e = summary_setup_error(SummarySetupError::LlamaDllsMissing(vec![
         "llama.dll".into(),
         "ggml.dll".into(),
     ]));
     assert_eq!(e.kind, "summary_dlls");
-    assert_eq!(
-        e.message,
-        "A summary on this computer needs llama.cpp's DLLs next to Earshot; not found: llama.dll, ggml.dll"
-    );
+    assert_eq!(e.message, crate::plain_text::SUMMARY_FILES_MISSING);
+    no_inside_words(&e.message);
     let e = summary_setup_error(SummarySetupError::CudaDllsMissing(vec![
         "cublas64_13*.dll".into(),
     ]));
+    assert_eq!(e.kind, "summary_dlls");
+    assert_eq!(e.message, crate::plain_text::SUMMARY_GRAPHICS_FILES_MISSING);
+    no_inside_words(&e.message);
     assert_eq!(
-        e.message,
-        "A summary on this computer needs the CUDA runtime's DLLs on PATH; not found: cublas64_13*.dll"
+        crate::plain_text::SUMMARY_FILES_MISSING,
+        "Earshot cannot write a summary on this computer because some of its own files are \
+         missing. Install Earshot again, or choose another way to summarise in Settings, \
+         Summaries."
     );
+}
+
+#[test]
+fn meeting_driver_refusals_are_plain_sentences() {
+    // T14.9: "a meeting is already recording" and "no meeting is recording" reached the window
+    // as written for a log.
+    let dir = TempDir::new("driver-refusals");
+    let svc = services(&dir);
+    let (d, rx) = driver(FakePrepare::new(Script::UntilStopped));
+    let none = d.stop().unwrap_err();
+    assert_eq!(
+        (none.kind.as_str(), none.message.as_str()),
+        ("not_recording", "No meeting is recording.")
+    );
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let second = d.start(&svc, request(CaptureMode::Call)).unwrap_err();
+    assert_eq!(
+        (second.kind.as_str(), second.message.as_str()),
+        (
+            "busy",
+            "A meeting is already recording. Stop it before you start another."
+        )
+    );
+    for text in [&none.message, &second.message] {
+        no_inside_words(text);
+    }
+    d.stop().unwrap();
+    until_summary(&rx);
+    d.join();
+}
+
+#[test]
+fn meeting_speech_library_banners_name_no_library_and_no_error_text() {
+    // T14.9: the banner said "The Cuda library of ONNX Runtime is unavailable" and then the
+    // error's own text.
+    use earshot_runtime::backends::Accelerator;
+    let raw = RuntimeError::Asr(earshot_core::asr::AsrError::Backend(
+        "zq-raw-words onnxruntime_providers_cuda.dll refused (0x7e)".into(),
+    ));
+    let banner = onnx_fallback_message(Accelerator::Cuda, &raw);
+    assert_eq!(banner, crate::plain_text::GRAPHICS_SPEECH_UNAVAILABLE);
+    assert_eq!(
+        banner,
+        "Earshot could not use the graphics card for speech models this time, so they run on \
+         the processor. Restart Earshot to try again."
+    );
+    let missing = RuntimeError::ModelMissing {
+        path: std::path::PathBuf::from("zq-folder").join("onnxruntime.dll"),
+        fetch_set: None,
+    };
+    let not_there = onnx_fallback_message(Accelerator::Cuda, &missing);
+    assert_eq!(not_there, crate::plain_text::GRAPHICS_SPEECH_NOT_DOWNLOADED);
+    for text in [&banner, &not_there] {
+        no_inside_words(text);
+        assert!(!text.contains("zq-"), "{text}");
+        assert!(!text.contains("0x"), "{text}");
+    }
+    // The NPU's stays its own (T12.64).
+    assert_eq!(
+        onnx_fallback_message(Accelerator::Qnn, &raw),
+        crate::plain_text::NPU_LIBRARY_UNAVAILABLE
+    );
+}
+
+#[test]
+fn meeting_recording_reads_as_over_when_ended_goes_out_and_gap_banners_follow() {
+    // T14.9: with a gap in the recording the mapper sends the gap's banner after `Ended` (the
+    // screen after a meeting shows only what follows it), and the flag cleared only before that
+    // last banner, so what heard `Ended` found the driver still recording.
+    use earshot_runtime::live::RuntimeWarning;
+    let mut mapper = EventMapper::new(CaptureMode::Call);
+    let saved = RuntimeEvent::RecordingSaved {
+        reason: earshot_core::capture::EndReason::Stopped,
+        problems: vec![
+            RuntimeWarning::RecordingGap {
+                total: Duration::from_secs(4),
+            },
+            RuntimeWarning::EveryRecordingStopped { disk_full: false },
+        ],
+    };
+    let mapped = mapper.map(&saved, Instant::now());
+    let ended = position(&mapped, |e| matches!(e, MeetingEvent::Ended { .. }));
+    assert_eq!((mapped.len(), ended), (3, 1), "{mapped:?}");
+    let recording = AtomicBool::new(true);
+    let heard = Mutex::new(Vec::new());
+    send_mapped(mapped, true, &recording, &|e| {
+        let ended = matches!(e, MeetingEvent::Ended { .. });
+        heard
+            .lock()
+            .unwrap()
+            .push((ended, recording.load(Ordering::SeqCst)));
+    });
+    // The banner told with the save goes out while it still records; `Ended` and the gap's
+    // banner after it do not.
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [(false, true), (true, false), (false, false)]
+    );
+
+    // Any other event leaves the flag alone.
+    let recording = AtomicBool::new(true);
+    send_mapped(
+        vec![MeetingEvent::Words { total: 3 }],
+        false,
+        &recording,
+        &|_| {},
+    );
+    assert!(recording.load(Ordering::SeqCst));
 }
 
 #[test]

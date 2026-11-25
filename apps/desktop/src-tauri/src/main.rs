@@ -365,9 +365,12 @@ fn main() {
             shell.spawn_call_start_watch();
             // The window starts hidden: started by Windows it stays so (T7.5), unless there is
             // no tray to open it from.
-            if !by_windows || tray.is_err() {
+            let shows_window = !by_windows || tray.is_err();
+            if shows_window {
                 shell.show_window();
             }
+            // In the tray with a store that failed to open: a notification says so (T14.9).
+            shell.tell_start_problems(shows_window);
             Ok(())
         })
         .build(tauri::generate_context!())

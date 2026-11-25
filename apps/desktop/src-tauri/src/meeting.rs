@@ -338,7 +338,7 @@ impl MeetingDriver {
         {
             let mut threads = self.threads();
             if threads.recording() {
-                return Err(IpcError::busy("a meeting is already recording"));
+                return Err(IpcError::busy(crate::plain_text::ALREADY_RECORDING));
             }
             let pass = self.0.gate.enter_meeting()?;
             if let Some(old) = threads.newest.take() {
@@ -382,12 +382,8 @@ impl MeetingDriver {
                 thread,
             });
         }
-        let started = rx.recv().unwrap_or_else(|_| {
-            Err(IpcError::new(
-                "internal",
-                "the meeting thread stopped before the meeting started",
-            ))
-        });
+        // The meeting thread ended without an answer: fixed copy, as every internal error.
+        let started = rx.recv().unwrap_or_else(|_| Err(IpcError::internal()));
         if started.is_err() {
             #[cfg(test)]
             if let Some(hook) = &self.0.failed_start_hook {
@@ -426,7 +422,10 @@ impl MeetingDriver {
                 r.stop.store(true, Ordering::SeqCst);
                 Ok(())
             }
-            _ => Err(IpcError::new("not_recording", "no meeting is recording")),
+            _ => Err(IpcError::new(
+                "not_recording",
+                crate::plain_text::NOT_RECORDING,
+            )),
         }
     }
 
@@ -1047,6 +1046,30 @@ impl CallEndOffer {
     }
 }
 
+/// Sends the UI events of one runtime event, in order. For the saved recording (`saved`),
+/// `recording` clears right before `Ended` goes out (T14.9): what the UI hears then can start a
+/// new meeting at once, so the driver must already read as free; the banners told with the save
+/// go before the flag, so a newer meeting cannot start before they are out, and the banners that
+/// follow `Ended` (a gap in the recording: the screen after a meeting shows only what follows
+/// it) no longer hold the flag up.
+fn send_mapped(
+    mapped: Vec<MeetingEvent>,
+    saved: bool,
+    recording: &AtomicBool,
+    send: &dyn Fn(MeetingEvent),
+) {
+    for event in mapped {
+        if saved && matches!(event, MeetingEvent::Ended { .. }) {
+            recording.store(false, Ordering::SeqCst);
+        }
+        send(event);
+    }
+    if saved {
+        // Whatever the mapper sent for it.
+        recording.store(false, Ordering::SeqCst);
+    }
+}
+
 /// [`run`] with a panic turned into the meeting's last event: a failed start before the
 /// meeting records, else a failed [`MeetingEvent::Summary`]. The thread then ends, so the
 /// driver is free again (a live session dropped during the unwind is stopped by its `Drop`, and
@@ -1184,20 +1207,8 @@ fn run(
                         // Before the UI hears of the end, so its Cancel always finds this.
                         finishing.open();
                     }
-                    let mut mapped = mapper.map(&event, (inner.now)());
-                    // The UI's "saved" event goes last, so what it hears can start a new meeting at
-                    // once; the banners go before the flag, so a newer meeting cannot start before
-                    // they are out.
-                    let last = mapped.pop();
-                    for e in mapped {
-                        send(e);
-                    }
-                    if saved {
-                        recording.store(false, Ordering::SeqCst);
-                    }
-                    if let Some(e) = last {
-                        send(e);
-                    }
+                    let mapped = mapper.map(&event, (inner.now)());
+                    send_mapped(mapped, saved, recording, &send);
                     // After the end, so it shows with the work after the recording.
                     if saved && stopped_by_call_end {
                         send(crate::meeting_events::call_end_stopped_warning());
@@ -1339,44 +1350,28 @@ fn run(
     drop(waiting);
 }
 
-fn setup_err(kind: &str, message: String) -> IpcError {
-    IpcError::new(kind, message)
-}
-
-/// The banner text of an ONNX Runtime library that could not load (the CPU one is used). The NPU's
-/// is fixed copy, with no library name or error text (T12.64).
+/// The banner text of a speech library that could not load (the processor's is used): fixed
+/// copy by the part of the computer and by whether its files are missing, with no library name,
+/// internal name or error text (T12.64 for the NPU, T14.9 for the rest).
 #[must_use]
 pub(crate) fn onnx_fallback_message(
     library: earshot_runtime::backends::Accelerator,
     e: &RuntimeError,
 ) -> String {
-    if library == earshot_runtime::backends::Accelerator::Qnn {
-        return crate::plain_text::NPU_LIBRARY_UNAVAILABLE.to_owned();
-    }
-    let why = crate::plain_text::library_problem(e);
-    format!(
-        "The {library:?} library of ONNX Runtime is unavailable, so speech models run on the CPU \
-         ({why})."
-    )
+    crate::plain_text::library_fallback_copy(library, e).to_owned()
 }
 
-/// The UI error of a summary setup failure.
+/// The UI error of a summary setup failure. Missing program files are fixed copy (T14.9): the
+/// files' names mean nothing to the user and are not shown.
 #[must_use]
 pub(crate) fn summary_setup_error(e: SummarySetupError) -> IpcError {
     match e {
-        SummarySetupError::LlamaDllsMissing(missing) => setup_err(
+        SummarySetupError::LlamaDllsMissing(_) => {
+            IpcError::new("summary_dlls", crate::plain_text::SUMMARY_FILES_MISSING)
+        }
+        SummarySetupError::CudaDllsMissing(_) => IpcError::new(
             "summary_dlls",
-            format!(
-                "A summary on this computer needs llama.cpp's DLLs next to Earshot; not found: {}",
-                missing.join(", ")
-            ),
-        ),
-        SummarySetupError::CudaDllsMissing(missing) => setup_err(
-            "summary_dlls",
-            format!(
-                "A summary on this computer needs the CUDA runtime's DLLs on PATH; not found: {}",
-                missing.join(", ")
-            ),
+            crate::plain_text::SUMMARY_GRAPHICS_FILES_MISSING,
         ),
         SummarySetupError::Runtime(e) => IpcError::from(e),
     }
