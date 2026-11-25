@@ -143,6 +143,9 @@ pub type Sink = Arc<dyn Fn(MeetingEvent) + Send + Sync>;
 pub type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 struct Running {
+    /// Which start made it ([`Inner::started`]'s count), so a start that failed takes back only
+    /// its own thread (T14.7).
+    seq: u64,
     /// Set by `stop`; read by the meeting thread before every event.
     stop: Arc<AtomicBool>,
     /// Set by `keep_recording`; taken by the meeting thread.
@@ -207,7 +210,15 @@ struct Inner {
     stop_ceiling: Duration,
     /// When the work after a meeting is given up ([`AfterBounds`]).
     after_bounds: AfterBounds,
+    /// Runs in a start that failed, after its result is known and before it takes its thread
+    /// back: where a test lets another start in (T14.7).
+    #[cfg(test)]
+    failed_start_hook: Option<FailedStartHook>,
 }
+
+/// [`Inner::failed_start_hook`].
+#[cfg(test)]
+type FailedStartHook = Arc<dyn Fn(&MeetingDriver) + Send + Sync>;
 
 impl Inner {
     /// Sends `event` of meeting number `seq` (module docs).
@@ -285,6 +296,8 @@ impl MeetingDriver {
             owned: Mutex::default(),
             stop_ceiling: STOP_CEILING,
             after_bounds: AfterBounds::default(),
+            #[cfg(test)]
+            failed_start_hook: None,
         }))
     }
 
@@ -318,6 +331,7 @@ impl MeetingDriver {
     /// failure, with nothing recorded.
     pub fn start(&self, services: &Services, request: StartRequest) -> Result<String, IpcError> {
         let (tx, rx) = mpsc::sync_channel::<Result<String, IpcError>>(1);
+        let seq;
         {
             let mut threads = self.threads();
             if threads.recording() {
@@ -348,7 +362,7 @@ impl MeetingDriver {
                 recording: Arc::clone(&recording),
                 started: Arc::clone(&started_flag),
             };
-            let seq = self.0.started.fetch_add(1, Ordering::SeqCst) + 1;
+            seq = self.0.started.fetch_add(1, Ordering::SeqCst) + 1;
             let thread = std::thread::Builder::new()
                 .name("earshot-meeting".into())
                 .spawn(move || {
@@ -357,6 +371,7 @@ impl MeetingDriver {
                 })
                 .map_err(|_| IpcError::internal())?;
             threads.newest = Some(Running {
+                seq,
                 stop,
                 keep,
                 recording,
@@ -371,10 +386,25 @@ impl MeetingDriver {
             ))
         });
         if started.is_err() {
-            // The thread ends right after reporting a failed start; join it so the next
-            // start is not refused as busy.
-            let mut threads = self.threads();
-            if let Some(r) = threads.newest.take() {
+            #[cfg(test)]
+            if let Some(hook) = &self.0.failed_start_hook {
+                hook(self);
+            }
+            // The thread ends right after reporting a failed start; join it so the driver reads
+            // idle at once. Only this start's own thread, and with the lock free (T14.7): the
+            // failing thread clears `recording` before it reports, so another start may have put
+            // its meeting in `newest` by now, and joining that one here would hold `stop` and
+            // `phase` up for that meeting's whole life. A thread such a start moved aside is
+            // joined by a later start, as every thread that ended is.
+            let own = {
+                let mut threads = self.threads();
+                if threads.newest.as_ref().is_some_and(|r| r.seq == seq) {
+                    threads.newest.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(r) = own {
                 let _ = r.thread.join();
             }
         }
@@ -511,6 +541,20 @@ impl MeetingDriver {
         Arc::get_mut(&mut self.0)
             .expect("set before the driver is shared")
             .after_bounds = bounds;
+        self
+    }
+
+    /// The same driver running `hook` in every start that failed, once its result is known and
+    /// before it takes its thread back (tests; call it before the driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    fn with_failed_start_hook(mut self, hook: FailedStartHook) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .failed_start_hook = Some(hook);
         self
     }
 

@@ -1006,6 +1006,58 @@ fn meeting_driver_the_windows_own_stop_during_the_preflight_is_still_honoured() 
 }
 
 #[test]
+fn meeting_driver_a_failed_start_never_joins_another_meetings_thread() {
+    // T14.7: the failing thread clears `recording` before it reports, so a second start can put
+    // its meeting in the driver before the first start cleans up. The first must take back only
+    // its own thread: joining the second meeting's, under the driver's lock, held `stop` and
+    // `phase` up for that meeting's whole life.
+    let dir = TempDir::new("driver-start-race");
+    let svc = services(&dir);
+    let prepare = FakePrepare::new(Script::PreflightFails);
+    let (d, rx) = driver(Arc::clone(&prepare));
+    // The rendezvous: the second start runs inside the first one's failure, after its result is
+    // known and before its clean-up.
+    let second = Arc::new(Mutex::new(None));
+    let d = d.with_failed_start_hook({
+        let (prepare, svc, second) = (Arc::clone(&prepare), svc.clone(), Arc::clone(&second));
+        Arc::new(move |d: &MeetingDriver| {
+            *prepare.script.lock().unwrap() = Script::UntilStopped;
+            *second.lock().unwrap() = Some(d.start(&svc, request(CaptureMode::Call)));
+        })
+    });
+    // On a thread of its own, so a start that waits for the second meeting fails this test
+    // instead of hanging it.
+    let (done, first) = mpsc::channel();
+    {
+        let (d, svc) = (d.clone(), svc.clone());
+        std::thread::spawn(move || {
+            let _ = done.send(d.start(&svc, request(CaptureMode::Call)));
+        });
+    }
+    let first = first
+        .recv_timeout(MEET_GUARD)
+        .expect("the failed start waited for the second meeting's thread");
+    assert_eq!(first.unwrap_err().kind, "model");
+    let meeting = second
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the second start ran")
+        .expect("the second meeting started");
+    // The second meeting is still the driver's: it records, and it can be stopped.
+    assert_eq!(d.phase(), DriverPhase::Recording);
+    d.stop().unwrap();
+    let events = until_summary(&rx);
+    assert!(events.contains(&MeetingEvent::Ended {
+        meeting,
+        reason: EndedReason::Stopped
+    }));
+    d.join();
+    assert!(!d.busy());
+    assert_eq!(svc.store().meetings().unwrap().len(), 1);
+}
+
+#[test]
 fn meeting_driver_a_panic_after_the_start_ends_with_a_failed_summary_and_frees_the_driver() {
     let dir = TempDir::new("driver-panic");
     let svc = services(&dir);
