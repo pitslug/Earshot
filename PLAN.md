@@ -2490,6 +2490,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: replace the list (`DictionaryPage.tsx` "Saved people") with one line of fixed copy, for example "Names on the People page are used too, so there is no need to add them here.", with a link or button to the People page; keep the left-out note (`people_left_out_note`) when some names are left out. If the detail's `people` list is then unused by the UI, drop it from the IPC view and regenerate bindings; keep `fixtures/ui/summary_settings_cases.json`'s cleaning rule and `left_out` cases running in both suites. Update the tests that read the list.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot summary`; preview screenshot
 
+- [x] T12.101 The Sync page's list of computers keeps up while it is open
+  - result (2026-11-25): the open page asks for the computers every 10 s (`DEVICES_REFRESH_MS`) and stops when left; this computer reads "Online" while sync is on, running and not stopped, else "Not syncing" (it has no presence of its own in the list, and its last-seen was always "just now"). UI 812 tests, build.
+  - found (the owner, 2026-11-25, 0.4.2 section 8): quitting Earshot on the other computer, and starting it again, showed only after leaving the Sync page and opening it again; this computer read "Last seen just now".
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
+
 - [x] T12.100 Claude Code and Codex rows say when they are not signed in
   - result (2026-11-25): the row shows the sign-in check's definite answer ("Not signed in", "Not installed") as the badge the endpoint's "Not set up" uses, and stays tickable both ways; no check run, checking, unknown or a failed check says nothing on the row. UI 811 tests, build, preview on the sample Surface.
   - why (the owner, 2026-11-25, 0.4.2 section 7): the endpoint's row said "Not set up" but a signed-out Claude only said so in its setup panel. Greying them was declined: the answer comes from asking the CLI and can be out of date, and a ticked signed-out writer is skipped at a meeting with a banner.

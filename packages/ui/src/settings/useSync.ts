@@ -10,6 +10,10 @@ import { type SyncCodeView, type SyncDeviceView, type SyncView, errorText, useIp
 import type { Timer } from "../time";
 import { type Load, useLoad } from "./parts";
 
+/** How often the open Sync page asks for the computers again, so one that quits, sleeps or comes
+ * back shows without leaving the page (the 0.4.2 test, 2026-11-25). */
+export const DEVICES_REFRESH_MS = 10_000;
+
 /** One of the two forms for a computer that is not set up. */
 export interface SyncForm {
   address: string;
@@ -97,6 +101,13 @@ export function useSync(timer: Timer): SyncPageState {
       live = false;
     };
   }, [ipc, setUp, devicesAsked]);
+
+  // While the page is open the computers are asked for again, so one that quits, sleeps or
+  // comes back shows without leaving the page; leaving the page stops it.
+  useEffect(() => {
+    if (!setUp) return;
+    return timer.setInterval(() => setDevicesAsked((n) => n + 1), DEVICES_REFRESH_MS);
+  }, [setUp, timer]);
 
   const shown = (view: SyncView) => setLoad({ status: "loaded", view });
 

@@ -15,7 +15,9 @@ import { createManualTimer } from "../time";
 import offload from "../../../../fixtures/ui/offload_copy_cases.json";
 import { DEVICE_NAME_TOO_LONG } from "../ipc/mockSync";
 import {
+  DEVICES_REFRESH_MS,
   NAME_EXPLAINED,
+  NOT_SYNCING,
   NOT_RUNNING,
   OFFER_EXPLAINED,
   REMOVE_EXPLAINED,
@@ -190,6 +192,64 @@ describe("the Sync page", () => {
     const form = saves[0].closest("form");
     expect(form).toHaveAccessibleName("This computer's name");
     expect(form?.querySelectorAll("input[type='checkbox'], input[type='radio'], select, [role='switch']")).toHaveLength(0);
+  });
+
+  it("asks for the computers again while the page is open, and stops when it closes", async () => {
+    // The other computer quits: the server's next answer says so, and the open page shows it
+    // without being left and opened again.
+    const other = { ...device("b71d04a8", false), name: "Laptop", online: true, seen_s_ago: 5 };
+    let answer: SyncDeviceView[] = [{ ...device("3f2a9c1e", true), seen_s_ago: 0 }, other];
+    const asked: number[] = [];
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ meetings: [], timer, sync: { setUp: true } });
+    renderApp(
+      {
+        ...ipc,
+        syncDevices: async () => {
+          asked.push(asked.length);
+          return answer.map((d) => ({ ...d }));
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "Sync");
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getAllByText("Online")).toHaveLength(2);
+    answer = [answer[0], { ...other, online: false, seen_s_ago: 3 }];
+    act(() => timer.advance(DEVICES_REFRESH_MS - 1));
+    expect(asked).toHaveLength(1);
+    act(() => timer.advance(1));
+    await waitFor(() => expect(within(list).getByText("Last seen just now")).toBeInTheDocument());
+    expect(within(list).queryByText("Online, recording")).toBeNull();
+    // Back online on the next look.
+    answer = [answer[0], other];
+    act(() => timer.advance(DEVICES_REFRESH_MS));
+    await waitFor(() => expect(asked).toHaveLength(3));
+    // This computer reads "Online" while sync runs, the other one too.
+    await waitFor(() => expect(within(list).getAllByText("Online")).toHaveLength(2));
+    // Leaving the page stops asking.
+    await user.click(screen.getByRole("button", { name: "General" }));
+    await waitFor(() => expect(screen.queryByRole("list", { name: "Computers" })).toBeNull());
+    const before = asked.length;
+    act(() => timer.advance(DEVICES_REFRESH_MS * 3));
+    expect(asked).toHaveLength(before);
+  });
+
+  it("says this computer is online while sync runs, and not syncing when it does not", async () => {
+    await setup({ setUp: true });
+    const list = await screen.findByRole("list", { name: "Computers" });
+    const mine = within(list).getByText("This computer").closest("li") as HTMLElement;
+    expect(within(mine).getByText("Online")).toBeInTheDocument();
+    expect(within(mine).queryByText(/Last seen/)).toBeNull();
+  });
+
+  it("says this computer is not syncing while sync is off or not running", async () => {
+    await setup({ setUp: true, running: false });
+    const list = await screen.findByRole("list", { name: "Computers" });
+    const mine = within(list).getByText("This computer").closest("li") as HTMLElement;
+    expect(within(mine).getByText(NOT_SYNCING)).toBeInTheDocument();
+    expect(within(mine).queryByText("Online")).toBeNull();
   });
 
   it("syncs now and asks for the computers again", async () => {

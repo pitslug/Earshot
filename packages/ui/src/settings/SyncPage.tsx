@@ -34,7 +34,9 @@ import type { SyncDeviceView, SyncView } from "../ipc";
 import { clockTime, recordedDate } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { BOX_WIDTH, FIELD_WIDTH, NotLoaded, NoticeBar, Section, TEXT_WIDTH, usePageStyles } from "./parts";
-import { type SyncForm, type SyncPageState, useSync } from "./useSync";
+import { DEVICES_REFRESH_MS, type SyncForm, type SyncPageState, useSync } from "./useSync";
+
+export { DEVICES_REFRESH_MS };
 
 const useStyles = makeStyles({
   heading: {
@@ -161,10 +163,14 @@ export function deviceName(d: SyncDeviceView): string {
   return d.name ?? `Computer ${d.short_id}`;
 }
 
+/** This computer's state in the list while sync is off, not running or stopped by a problem. */
+export const NOT_SYNCING = "Not syncing";
+
 /** A computer's state in the list: online (and recording) from its presence, else when it
- * last reached the server. */
-export function deviceState(d: SyncDeviceView): string {
-  if (d.this_device) return seenText(d.seen_s_ago);
+ * last reached the server. This computer has no presence of its own in the list (asking for it
+ * is itself a visit to the server), so it is online while its sync runs. */
+export function deviceState(d: SyncDeviceView, view: SyncView): string {
+  if (d.this_device) return view.on && view.running && !view.stopped ? "Online" : NOT_SYNCING;
   if (d.online) return d.recording ? "Online, recording" : "Online";
   return seenText(d.seen_s_ago);
 }
@@ -435,10 +441,12 @@ function RemoveOther({ device, state, onRemove }: { device: SyncDeviceView; stat
 }
 
 function Computers({
+  view,
   state,
   listRef,
   onRemoveOther,
 }: {
+  view: SyncView;
   state: SyncPageState;
   listRef: RefObject<HTMLUListElement | null>;
   onRemoveOther: (d: SyncDeviceView) => void;
@@ -460,7 +468,7 @@ function Computers({
             <li key={d.id} className={styles.device}>
               <div className={styles.deviceText}>
                 <Body1>{deviceName(d)}</Body1>
-                <Caption1 className={styles.muted}>{deviceState(d)}</Caption1>
+                <Caption1 className={styles.muted}>{deviceState(d, view)}</Caption1>
                 {writesText(d) !== null && <Caption1 className={styles.muted}>{writesText(d)}</Caption1>}
               </div>
               {!d.this_device && <RemoveOther device={d} state={state} onRemove={() => onRemoveOther(d)} />}
@@ -494,7 +502,7 @@ function SetUp({
       )}
       <Status view={view} state={state} />
       <AddComputer state={state} />
-      <Computers state={state} listRef={listRef} onRemoveOther={onRemoveOther} />
+      <Computers view={view} state={state} listRef={listRef} onRemoveOther={onRemoveOther} />
       <Section title="Summaries for your other computers">
         <Switch
           label="Write summaries for my other computers"
