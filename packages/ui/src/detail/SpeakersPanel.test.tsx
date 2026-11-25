@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { POST_STEP_MS, RECOGNISED_ME_COPY, SAMPLE_SPEAKERS, sampleDetail, samplePersons } from "../ipc";
 import { ITEM, setup, panel, speakerRow, openNamed } from "../test/meetingDetail";
-import { keyAction, mergeTarget, notThisPersonHint } from "./SpeakersPanel";
+import { becomeOneText, keyAction, mergeTarget, notThisPersonHint } from "./SpeakersPanel";
 
 describe("MeetingDetailView", () => {
   it("offers This is me only in the room, and it and its undo follow through the transcript", async () => {
@@ -229,7 +229,7 @@ describe("MeetingDetailView", () => {
     const field = await screen.findByRole("combobox", { name: "Name of Speaker 3" });
     await user.type(field, "priya shah");
     // Said before Save, in place of "Links to".
-    const line = within(speakerRow("Speaker 3")).getByText("Priya Shah is already Priya Shah here: the two voices become one.");
+    const line = within(speakerRow("Speaker 3")).getByText("Priya Shah already has a voice in this meeting: the two become one.");
     expect(field).toHaveAttribute("aria-describedby", line.id);
     expect(within(speakerRow("Speaker 3")).queryByText(/^Links to/)).toBeNull();
     expect(calls.some((c) => c[0] === "mergeSpeakers")).toBe(false);
@@ -237,6 +237,8 @@ describe("MeetingDetailView", () => {
     await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Speaker 3" })).toBeNull());
     expect(calls).toContainEqual(["mergeSpeakers", ITEM.id, SAMPLE_SPEAKERS.priya, SAMPLE_SPEAKERS.third]);
     expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
+    // The merged card is gone; with the named list folded, focus goes to the panel's heading.
+    await waitFor(() => expect(within(panel()).getByRole("heading", { name: "Speakers" })).toHaveFocus());
     await openNamed(user);
     expect(within(panel()).getAllByRole("listitem", { name: "Priya Shah" })).toHaveLength(1);
     expect(within(speakerRow("Priya Shah")).getByText(/29% of talk time/)).toBeInTheDocument();
@@ -253,7 +255,7 @@ describe("MeetingDetailView", () => {
     await user.type(field, "sam");
     await user.click(screen.getByRole("option", { name: "Sam Lee (1 meeting)" }));
     expect(
-      within(speakerRow("Priya Shah")).getByText("Sam Lee is already Sam Lee here: the two voices become one."),
+      within(speakerRow("Priya Shah")).getByText("Sam Lee already has a voice in this meeting: the two become one."),
     ).toBeInTheDocument();
     await user.click(within(speakerRow("Priya Shah")).getByRole("button", { name: "Save name of Priya Shah" }));
     // Keep the other card, merge this one into it.
@@ -263,6 +265,8 @@ describe("MeetingDetailView", () => {
     await waitFor(() => expect(within(panel()).queryByRole("listitem", { name: "Priya Shah" })).toBeNull());
     expect(within(panel()).getAllByRole("listitem", { name: "Sam Lee" })).toHaveLength(1);
     expect(calls.some((c) => c[0] === "linkSpeaker")).toBe(false);
+    // Focus goes to the card kept.
+    await waitFor(() => expect(within(panel()).getByRole("listitem", { name: "Sam Lee" })).toHaveFocus());
   });
 
   it("saves with the Save button, to an existing person by exact name, and never an empty name", async () => {
@@ -739,7 +743,7 @@ describe("Speakers panel person field (T12.80)", () => {
     await user.keyboard("{ArrowDown}");
     await user.tab();
     expect(field).toHaveValue("Priya Shah");
-    expect(within(speakerRow("Speaker 2")).getByText("Priya Shah is already Priya Shah here: the two voices become one.")).toBeInTheDocument();
+    expect(within(speakerRow("Speaker 2")).getByText("Priya Shah already has a voice in this meeting: the two become one.")).toBeInTheDocument();
     expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
   });
 
@@ -791,6 +795,15 @@ describe("Speakers panel person field (T12.80)", () => {
     await screen.findByRole("heading", { level: 1, name: "People" });
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(nav).getByRole("button", { name: "People" })).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("becomeOneText", () => {
+  it("names the other card only when it reads differently from the person", () => {
+    expect(becomeOneText("Avery Chen", "Avery Chen")).toBe("Avery Chen already has a voice in this meeting: the two become one.");
+    expect(becomeOneText("Avery Chen", "Me (Avery Chen)")).toBe(
+      "Avery Chen is already Me (Avery Chen) here: the two voices become one.",
+    );
   });
 });
 
@@ -858,7 +871,7 @@ describe("Speakers panel person field keys (T12.80 re-review)", () => {
     );
     await user.keyboard("{ArrowLeft}{Enter}");
     expect(field).toHaveValue("Priya Shah");
-    expect(within(speakerRow("Speaker 2")).getByText("Priya Shah is already Priya Shah here: the two voices become one.")).toBeInTheDocument();
+    expect(within(speakerRow("Speaker 2")).getByText("Priya Shah already has a voice in this meeting: the two become one.")).toBeInTheDocument();
     expect(calls.some((c) => c[0] === "saveVoice")).toBe(false);
   });
 

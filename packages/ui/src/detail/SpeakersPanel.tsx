@@ -33,7 +33,7 @@ import {
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { type KeyboardEvent, type ReactElement, type Ref, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactElement, type Ref, useEffect, useRef, useState } from "react";
 
 import { RECOGNISED_ME_COPY, type LinkChoice, type MeetingDetail, type PersonItem, type SpeakerCard } from "../ipc";
 import { recognised, recordingsGone, sourceLabel, speakerGroups } from "./detail";
@@ -216,7 +216,9 @@ export function mergeTarget(card: SpeakerCard, pick: PersonPick, speakers: Speak
 
 /** The line under a name field while the chosen person already has another card here. */
 export function becomeOneText(person: string, other: string): string {
-  return `${person} is already ${other} here: the two voices become one.`;
+  return other === person
+    ? `${person} already has a voice in this meeting: the two become one.`
+    : `${person} is already ${other} here: the two voices become one.`;
 }
 
 /** Why the Speakers panel's edits wait while the meeting finishes. */
@@ -228,10 +230,25 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
   const styles = useStyles();
   const { detail } = props;
   const { unnamed, named, ignored } = speakerGroups(detail);
+  const panel = useRef<HTMLElement | null>(null);
+  // After two voices become one the merged card is gone: focus goes to the card kept once the
+  // panel shows it, else (its list is folded) to the panel's heading.
+  const [focusAfterMerge, setFocusAfterMerge] = useState<string | null>(null);
+  useEffect(() => {
+    if (focusAfterMerge === null || panel.current === null) return;
+    const kept = panel.current.querySelector<HTMLElement>(`[data-card="${focusAfterMerge}"]`);
+    const heading = panel.current.querySelector<HTMLElement>("h2");
+    (kept ?? heading)?.focus();
+    setFocusAfterMerge(null);
+  });
+  const onMerge = async (keep: string, merge: string) => {
+    await props.onMerge(keep, merge);
+    setFocusAfterMerge(keep);
+  };
   return (
-    <aside id={props.id} className={styles.panel} aria-label="Speakers">
+    <aside id={props.id} ref={panel} className={styles.panel} aria-label="Speakers">
       <div className={styles.top}>
-        <Subtitle2 as="h2" className={styles.heading}>
+        <Subtitle2 as="h2" tabIndex={-1} className={styles.heading}>
           Speakers
         </Subtitle2>
         <Button size="small" appearance="subtle" aria-label="Close Speakers" onClick={props.onClose}>
@@ -278,6 +295,7 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
                 key={s.id}
                 card={s}
                 {...props}
+                onMerge={onMerge}
                 nameRef={i === 0 ? props.firstNameField : undefined}
               />
             ))}
@@ -292,7 +310,7 @@ export function SpeakersPanel(props: SpeakersPanelProps) {
           <AccordionPanel className={styles.accordionPanel}>
             <ul className={styles.list} aria-label="Named">
               {named.map((s) => (
-                <NamedRow key={s.id} card={s} {...props} />
+                <NamedRow key={s.id} card={s} {...props} onMerge={onMerge} />
               ))}
             </ul>
           </AccordionPanel>
@@ -412,7 +430,7 @@ function UnnamedRow(props: RowProps & { nameRef?: (input: HTMLInputElement | nul
     onEnter: (pick) => void save(pick),
   });
   return (
-    <li className={styles.row} aria-label={card.name}>
+    <li className={styles.row} aria-label={card.name} data-card={card.id} tabIndex={-1}>
       <div className={styles.nameLine}>
         <PlayButton {...props} />
         {field.element}
@@ -455,7 +473,7 @@ function IgnoredRow(props: RowProps) {
   const styles = useStyles();
   const { card, onUnignore, locked } = props;
   return (
-    <li className={styles.row} aria-label={card.name}>
+    <li className={styles.row} aria-label={card.name} data-card={card.id} tabIndex={-1}>
       <div className={styles.nameLine}>
         <PlayButton {...props} />
         <Body1Strong className={styles.name}>{card.name}</Body1Strong>
@@ -507,7 +525,7 @@ function NamedRow(props: RowProps) {
   };
 
   return (
-    <li className={styles.row} aria-label={card.name}>
+    <li className={styles.row} aria-label={card.name} data-card={card.id} tabIndex={-1}>
       {editing ? (
         <NameChange {...props} onDone={close} />
       ) : (
