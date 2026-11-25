@@ -8,6 +8,7 @@ import table from "../../../../fixtures/ui/summary_settings_cases.json";
 import { IpcFailure, type SummarySettingsValue } from "./ipc";
 import { createMockIpc } from "./mock";
 import { createSummariesMock } from "./mockSummaries";
+import { peopleOf } from "./mockWords";
 
 type Outcome<T> = { stored: T } | { error: string };
 
@@ -124,7 +125,7 @@ describe("the Summaries mock against the app's case table", () => {
     expect(await outcome(() => mock.setSummaryTemplate("terse"))).toEqual({ error: table.templates.unknown_error });
   });
 
-  it("lists the saved people's names as the app does (T12.91)", async () => {
+  it("cleans the saved people's names as the app does (T12.91)", async () => {
     expect(table.people.cases.length).toBeGreaterThanOrEqual(8);
     for (const c of table.people.cases) {
       const persons = c.names.map((name, i) => ({
@@ -136,8 +137,10 @@ describe("the Summaries mock against the app's case table", () => {
       }));
       // Names in the table are already in the People page's order.
       const mock = createSummariesMock({ vocabulary: c.dictionary }, "surface", () => persons);
-      expect((await mock.summaryVocabulary()).people, c.name).toEqual(c.people);
       const view = await mock.summaryVocabulary();
+      // The Dictionary page lists no names (T12.97): the rule is the mock's word list's own.
+      expect(peopleOf(view.words, persons), c.name).toEqual(c.people);
+      expect(view, c.name).not.toHaveProperty("people");
       expect(view.people_left_out, c.name).toBe(c.left_out);
       const copy = table.messages.people_left_out;
       const note = c.left_out === 0 ? null : c.left_out === 1 ? copy.one : copy.many.replace("{n}", String(c.left_out));

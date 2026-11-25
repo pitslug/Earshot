@@ -32,7 +32,6 @@ fn summary_vocabulary_view_starts_empty_and_saves_checked_words() {
             max_chars: 1000,
             not_in_use: 0,
             not_in_use_note: None,
-            people: vec![],
             people_left_out: 0,
             people_left_out_note: None,
         }
@@ -73,14 +72,7 @@ fn summary_vocabulary_refusals_are_plain_sentences_and_store_nothing() {
 
 #[test]
 fn summary_vocabulary_the_view_serialises_for_the_ui() {
-    let json = serde_json::to_value(view(
-        &owned(&["QXR-7"]),
-        vec![],
-        0,
-        owned(&["Vantrel Oskarine"]),
-        0,
-    ))
-    .unwrap();
+    let json = serde_json::to_value(view(&owned(&["QXR-7"]), vec![], 0, 0)).unwrap();
     assert_eq!(
         json,
         serde_json::json!({
@@ -91,7 +83,6 @@ fn summary_vocabulary_the_view_serialises_for_the_ui() {
             "max_chars": 1000,
             "not_in_use": 0,
             "not_in_use_note": null,
-            "people": ["Vantrel Oskarine"],
             "people_left_out": 0,
             "people_left_out_note": null,
         })
@@ -118,22 +109,37 @@ fn summary_vocabulary_saved_people_follow_the_shared_case_table() {
     }
 }
 
+/// The saved names a summary may be given, as the runtime reads them from `svc`'s store.
+fn summary_people(svc: &Services) -> Vec<String> {
+    let db = svc.store();
+    let state = vocabulary::dictionary_state(&db).unwrap();
+    earshot_runtime::word_choices::summary_people(&db, &state.words)
+        .unwrap()
+        .names()
+        .to_vec()
+}
+
 #[test]
-fn summary_vocabulary_lists_the_saved_people_a_summary_may_be_given() {
-    // T12.91: the saved names, read only beside the words.
+fn summary_vocabulary_lists_no_saved_people_but_summaries_still_get_them() {
+    // T12.91: the saved names reach summaries beside the words; T12.97: the Dictionary page
+    // lists none of them (the People page holds them), so its view carries no name.
     let dir = TempDir::new("summary-vocabulary");
     let svc = services(&dir);
     // The default "Me" is no one's name.
-    assert!(vocabulary_view(&svc).unwrap().people.is_empty());
+    assert!(summary_people(&svc).is_empty());
     earshot_runtime::my_voice::set_my_name(&svc, "Tamsin Brevik").unwrap();
-    assert_eq!(
-        vocabulary_view(&svc).unwrap().people,
-        owned(&["Tamsin Brevik"])
+    assert_eq!(summary_people(&svc), owned(&["Tamsin Brevik"]));
+    let json = serde_json::to_string(&vocabulary_view(&svc).unwrap()).unwrap();
+    assert!(
+        !json.contains("Tamsin") && !json.contains("Brevik"),
+        "{json}"
     );
     // A name the Dictionary already holds (any case) is left to the Dictionary.
     let added = add_word(&svc, "tamsin brevik").unwrap();
-    assert!(added.view.people.is_empty());
-    assert!(remove_word(&svc, "tamsin brevik").unwrap().people == owned(&["Tamsin Brevik"]));
+    assert_eq!(added.view.words, owned(&["tamsin brevik"]));
+    assert!(summary_people(&svc).is_empty());
+    remove_word(&svc, "tamsin brevik").unwrap();
+    assert_eq!(summary_people(&svc), owned(&["Tamsin Brevik"]));
 }
 
 #[test]
@@ -153,19 +159,23 @@ fn summary_vocabulary_says_how_many_saved_names_it_left_out_and_why() {
     earshot_runtime::my_voice::set_my_name(&svc, "Nim\u{200c}a Rostavel").unwrap();
     add_person(&svc, "Vantrel Oskarine");
     let v = vocabulary_view(&svc).unwrap();
-    assert_eq!(v.people, owned(&["Vantrel Oskarine"]));
+    assert_eq!(summary_people(&svc), owned(&["Vantrel Oskarine"]));
     assert_eq!(v.people_left_out, 1);
     assert_eq!(v.people_left_out_note.as_deref(), copy["one"].as_str());
-    // The view the window gets carries the listed name and no text of the left-out one.
+    // The view the window gets carries the count (positive control: the name it counts is
+    // stored) and no text of any saved name (T12.97: it lists none).
     let json = serde_json::to_string(&v).unwrap();
-    assert!(json.contains("Vantrel Oskarine"), "{json}");
+    assert!(json.contains("\"people_left_out\":1"), "{json}");
     assert!(
-        !json.contains("Rostavel") && !json.contains("Nim"),
+        !json.contains("Rostavel") && !json.contains("Nim") && !json.contains("Vantrel"),
         "{json}"
     );
     earshot_runtime::my_voice::set_my_name(&svc, "Nima Rostavel").unwrap();
     let v = vocabulary_view(&svc).unwrap();
-    assert_eq!(v.people, owned(&["Nima Rostavel", "Vantrel Oskarine"]));
+    assert_eq!(
+        summary_people(&svc),
+        owned(&["Nima Rostavel", "Vantrel Oskarine"])
+    );
     assert_eq!((v.people_left_out, v.people_left_out_note), (0, None));
 }
 
@@ -229,7 +239,7 @@ fn summary_vocabulary_words_not_in_use_follow_the_shared_table() {
     assert!(many.contains("{n}"));
     assert_eq!(not_in_use_note(7), Some(many.replace("{n}", "7")));
     // A view counts them and says so.
-    let v = view(&owned(&["QXR-7"]), vec![], 3, vec![], 0);
+    let v = view(&owned(&["QXR-7"]), vec![], 3, 0);
     assert_eq!(v.not_in_use, 3);
     assert_eq!(v.not_in_use_note, Some(many.replace("{n}", "3")));
 }

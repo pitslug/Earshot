@@ -8,8 +8,8 @@
    "many": "{n} words are not in use: the Dictionaries of your computers together pass the limits. Remove words to make room for them."
   },
   "people_left_out": {
-   "one": "1 saved name is not listed and is never given to a summary: it holds an invisible formatting character (such as a zero-width joiner) or a control character, or is longer than 100 characters.",
-   "many": "{n} saved names are not listed and are never given to a summary: each holds an invisible formatting character (such as a zero-width joiner) or a control character, or is longer than 100 characters."
+   "one": "1 saved name on the People page is never given to a summary: it holds an invisible formatting character (such as a zero-width joiner) or a control character, or is longer than 100 characters.",
+   "many": "{n} saved names on the People page are never given to a summary: each holds an invisible formatting character (such as a zero-width joiner) or a control character, or is longer than 100 characters."
   },
   "effort_needs_newer": "Choosing the effort needs a newer Claude Code. This one runs at its own default effort; update Claude Code to choose it.",
   "live_needs_local": "Summarising during the meeting needs a local summary model.",
@@ -632,7 +632,7 @@
   }
  ],
  "people": {
-  "about": "The saved people's names the Dictionary page lists and a summary may be given (T12.91, earshot_core::prompt::People::new over the saved names in the People page's order): each name on one line with white space joined, names that are empty, longer than 100 characters or hold a control or invisible formatting character left out, and a name that repeats an earlier one or a Dictionary entry in another case left out. Run through People::new (summary_vocabulary_tests.rs) and the mock's peopleOf (mockSummaries.test.ts). `left_out` is how many names were left out for what they hold (a control or invisible formatting character, or more than 100 characters; never empty names or repeats): People::left_out and the mock's peopleLeftOut, which the Dictionary page reports with messages.people_left_out (T12.91a). Every name is invented.",
+  "about": "The saved people's names a summary may be given (T12.91; the Dictionary page lists none since T12.97, earshot_core::prompt::People::new over the saved names in the People page's order): each name on one line with white space joined, names that are empty, longer than 100 characters or hold a control or invisible formatting character left out, and a name that repeats an earlier one or a Dictionary entry in another case left out. Run through People::new (summary_vocabulary_tests.rs) and the mock's peopleOf (mockSummaries.test.ts). `left_out` is how many names were left out for what they hold (a control or invisible formatting character, or more than 100 characters; never empty names or repeats): People::left_out and the mock's peopleLeftOut, which the Dictionary page reports with messages.people_left_out (T12.91a). Every name is invented.",
   "cases": [
    {
     "name": "kept as given",

@@ -6,20 +6,21 @@ import { describe, expect, it } from "vitest";
 
 import { type Ipc, IpcFailure, IpcProvider, type MockIpcData, createMockIpc } from "../ipc";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
-import { ADD_LABEL, DICTIONARY_INTRO, DictionaryPage, SAVED_PEOPLE_TEXT } from "./DictionaryPage";
+import { ADD_LABEL, DICTIONARY_INTRO, DictionaryPage, OPEN_PEOPLE_LABEL, SAVED_PEOPLE_NOTE } from "./DictionaryPage";
 import { ALREADY_THERE } from "./useDictionary";
 import table from "../../../../fixtures/ui/summary_settings_cases.json";
 
 function setup(data: MockIpcData = {}, wrap: (ipc: Ipc) => Ipc = (i) => i) {
   const ipc = wrap(createMockIpc({ meetings: [], ...data }));
+  const result = { ipc, user: userEvent.setup(), opened: 0 };
   render(
     <EarshotThemeProvider>
       <IpcProvider ipc={ipc}>
-        <DictionaryPage />
+        <DictionaryPage onOpenPeople={() => (result.opened += 1)} />
       </IpcProvider>
     </EarshotThemeProvider>,
   );
-  return { ipc, user: userEvent.setup() };
+  return result;
 }
 
 function shown(): string[] {
@@ -31,61 +32,61 @@ function shown(): string[] {
 }
 
 describe("Dictionary", () => {
-  it("lists the saved people's names read only, with where they come from (T12.91)", async () => {
-    setup({
+  it("notes that saved people are used too, with a way to the People page, and lists no one (T12.97)", async () => {
+    const s = setup({
       persons: [
         { id: "p1", name: "Vantrel Oskarine", is_me: false, has_voiceprint: false, meetings: 2 },
-        { id: "p2", name: "Me", is_me: true, has_voiceprint: true, meetings: 3 },
         { id: "p3", name: "Bozzle Fenwright", is_me: false, has_voiceprint: false, meetings: 1 },
       ],
-      summaries: { vocabulary: ["bozzle fenwright"] },
     });
-    const list = await screen.findByRole("list", { name: "Saved people" });
-    // The default "Me" is no one's name; a name the Dictionary holds is left to it.
-    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Vantrel Oskarine"]);
-    expect(within(list).queryByRole("button")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Saved people" })).toBeInTheDocument();
-    expect(screen.getByText(SAVED_PEOPLE_TEXT)).toBeInTheDocument();
-    expect(SAVED_PEOPLE_TEXT).toMatch(/People page/);
-    expect(SAVED_PEOPLE_TEXT).toMatch(/only the names that match what was said/);
-    expect(SAVED_PEOPLE_TEXT).not.toMatch(/\u2014/);
+    await screen.findByRole("textbox", { name: ADD_LABEL });
+    expect(screen.getByText(SAVED_PEOPLE_NOTE)).toBeInTheDocument();
+    expect(SAVED_PEOPLE_NOTE).toMatch(/People page/);
+    expect(SAVED_PEOPLE_NOTE).not.toMatch(/\u2014/);
+    // The People page holds the names; this page repeats none of them.
+    expect(screen.queryByRole("list", { name: "Saved people" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Saved people" })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/Vantrel|Bozzle/);
+    expect(JSON.stringify(await s.ipc.summaryVocabulary())).not.toMatch(/Vantrel|Bozzle/);
+    await s.user.click(screen.getByRole("button", { name: OPEN_PEOPLE_LABEL }));
+    expect(s.opened).toBe(1);
   });
 
-  it("says when no one is saved", async () => {
+  it("notes saved people even when no one is saved yet, with no left-out note", async () => {
     setup({ persons: [] });
-    expect(await screen.findByText("No saved people yet.")).toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "Saved people" })).not.toBeInTheDocument();
+    await screen.findByRole("textbox", { name: ADD_LABEL });
+    expect(screen.getByText(SAVED_PEOPLE_NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(table.messages.people_left_out.one)).not.toBeInTheDocument();
   });
 
   it("says how many saved names it left out, and why, without naming them (T12.91a)", async () => {
     const { ipc } = setup({
       persons: [
-        { id: "p1", name: "Nim\u200ca Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
         { id: "p2", name: "Vantrel Oskarine", is_me: false, has_voiceprint: false, meetings: 2 },
       ],
     });
-    const list = await screen.findByRole("list", { name: "Saved people" });
-    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Vantrel Oskarine"]);
-    expect(screen.getByText(table.messages.people_left_out.one)).toBeInTheDocument();
+    expect(await screen.findByText(table.messages.people_left_out.one)).toBeInTheDocument();
     expect(table.messages.people_left_out.one).not.toMatch(/\u2014/);
-    // No text of the left-out name reaches the page or the view it was drawn from.
-    expect(document.body.textContent).toContain("Vantrel Oskarine");
+    // No text of the left-out name reaches the page or the view it was drawn from; the view
+    // carries its count (positive control: it is the one left out).
     expect(document.body.textContent).not.toMatch(/Rostavel|Nim/);
-    expect(JSON.stringify(await ipc.summaryVocabulary())).not.toMatch(/Rostavel|Nim/);
+    const view = await ipc.summaryVocabulary();
+    expect(view.people_left_out).toBe(1);
+    expect(JSON.stringify(view)).not.toMatch(/Rostavel|Nim/);
   });
 
-  it("does not say no one is saved when every saved name was left out (T12.91a)", async () => {
+  it("counts every saved name left out (T12.91a)", async () => {
     setup({
       persons: [
-        { id: "p1", name: "Nim\u200ca Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
-        { id: "p2", name: "Kam\u200dPellory Vane", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p1", name: "Nim‌a Rostavel", is_me: false, has_voiceprint: false, meetings: 1 },
+        { id: "p2", name: "Kam‍Pellory Vane", is_me: false, has_voiceprint: false, meetings: 1 },
       ],
     });
     expect(
       await screen.findByText(table.messages.people_left_out.many.replace("{n}", "2")),
     ).toBeInTheDocument();
-    expect(screen.queryByText("No saved people yet.")).not.toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "Saved people" })).not.toBeInTheDocument();
+    expect(screen.getByText(SAVED_PEOPLE_NOTE)).toBeInTheDocument();
   });
 
   it("says how many words are not in use when the joined list passes a limit (T11.3e)", async () => {
@@ -228,7 +229,6 @@ describe("Dictionary", () => {
         max_chars: 1000,
         not_in_use: 0,
         not_in_use_note: null,
-        people: [],
         people_left_out: 0,
         people_left_out_note: null,
       }),

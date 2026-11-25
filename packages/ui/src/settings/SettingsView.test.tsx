@@ -105,6 +105,15 @@ describe("Settings", () => {
     expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
   });
 
+  it("goes from the Dictionary's note to the People page (T12.97)", async () => {
+    const s = setup();
+    await openPage(s, "Dictionary");
+    await s.user.click(await screen.findByRole("button", { name: "Open the People page" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "People" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(within(nav).getByRole("button", { name: "People" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("puts each part on the page the design gives it", async () => {
     const expected: Record<"surface" | "desktop", Partial<Record<SettingsSection, string[]>>> = {
       surface: {
@@ -124,7 +133,7 @@ describe("Settings", () => {
           "When speakers are found",
         ],
         Summaries: ["Who writes the summary", "During the meeting", "Summary style"],
-        Dictionary: ["Your words", "Saved people"],
+        Dictionary: ["Your words"],
         People: ["Your name", "Your voice", "People"],
         "Notes and storage": ["Obsidian", "Recordings", "Crash logs"],
       },

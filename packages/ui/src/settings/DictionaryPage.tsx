@@ -3,8 +3,8 @@
 // request so the summary spells them right (`earshot_runtime::vocabulary`). An Add field above
 // the words in alphabetical order (the owner, 2026-11-11: a long list never pushes Add off the
 // page), each word with its own Delete; both apply at once (docs/ui-design.md
-// "Settings"). Below the words, the saved people's names (T12.91), read only: they come from
-// the People page, and each summary request is given only the names that match what was said.
+// "Settings"). Saved people's names are used too (T12.91) but not listed here: one line says so,
+// with a way to the People page that holds them (T12.97), so nobody adds them twice.
 
 import {
   Body1,
@@ -12,6 +12,7 @@ import {
   Caption1,
   Field,
   Input,
+  Link,
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
@@ -80,9 +81,11 @@ export const DICTIONARY_INTRO =
 /** The Add field's label. */
 export const ADD_LABEL = "Add a word";
 
-/** What the saved people's names are, above them (T12.91). */
-export const SAVED_PEOPLE_TEXT =
-  "Names of the people you saved on the People page. Change them there. A summary is given only the names that match what was said.";
+/** Why saved people's names need no entry here (T12.97). */
+export const SAVED_PEOPLE_NOTE = "Names on the People page are used too, so there is no need to add them here.";
+
+/** The link to the People page, after that note. */
+export const OPEN_PEOPLE_LABEL = "Open the People page";
 
 /** The words as the page lists them: alphabetical, ignoring case and accents (the stored order,
  * which every summary prompt uses, is unchanged). */
@@ -90,13 +93,17 @@ export function sortedWords(words: readonly string[]): string[] {
   return [...words].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }) || (a < b ? -1 : 1));
 }
 
+export interface DictionaryPageProps {
+  /** Switches Settings to the People page. */
+  onOpenPeople(): void;
+}
+
 /** The Dictionary page. */
-export function DictionaryPage() {
+export function DictionaryPage({ onOpenPeople }: DictionaryPageProps) {
   const styles = useStyles();
   const page = usePageStyles();
   const state = useDictionary();
   const headingId = useId();
-  const peopleId = useId();
   const { load } = state;
 
   return (
@@ -105,6 +112,15 @@ export function DictionaryPage() {
         Dictionary
       </Title2>
       <Body1 className={styles.text}>{DICTIONARY_INTRO}</Body1>
+      <Body1 className={styles.text}>
+        <span>{SAVED_PEOPLE_NOTE}</span>{" "}
+        <Link as="button" onClick={onOpenPeople}>
+          {OPEN_PEOPLE_LABEL}
+        </Link>
+      </Body1>
+      {load.status === "loaded" && load.view.people_left_out_note !== null && (
+        <Caption1 className={styles.muted}>{load.view.people_left_out_note}</Caption1>
+      )}
       <section className={styles.section} aria-labelledby={headingId}>
         <Subtitle2 as="h2" id={headingId} className={styles.heading}>
           Your words
@@ -180,30 +196,6 @@ export function DictionaryPage() {
           </>
         )}
       </section>
-      {load.status === "loaded" && (
-        <section className={styles.section} aria-labelledby={peopleId}>
-          <Subtitle2 as="h2" id={peopleId} className={styles.heading}>
-            Saved people
-          </Subtitle2>
-          <Body1 className={styles.text}>{SAVED_PEOPLE_TEXT}</Body1>
-          {load.view.people.length > 0 ? (
-            <ul className={styles.list} aria-label="Saved people">
-              {sortedWords(load.view.people).map((name) => (
-                <li key={name} className={styles.word}>
-                  <Body1>{name}</Body1>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            load.view.people_left_out_note === null && (
-              <Caption1 className={styles.muted}>No saved people yet.</Caption1>
-            )
-          )}
-          {load.view.people_left_out_note !== null && (
-            <Caption1 className={styles.muted}>{load.view.people_left_out_note}</Caption1>
-          )}
-        </section>
-      )}
     </div>
   );
 }
