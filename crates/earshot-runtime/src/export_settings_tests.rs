@@ -130,13 +130,13 @@ fn export_settings_subfolder_follows_the_shared_case_table() {
     let mut refused_by_windows = 0;
     for case in cases {
         let folder = case["folder"].as_str().unwrap();
-        match (case["stored"].as_str(), case["refused"].as_str()) {
+        match (case["stored"].as_str(), case["message"].as_str()) {
             (Some(stored), None) => {
                 assert_eq!(check_folder(folder).unwrap(), stored, "{folder:?}");
             }
-            (None, Some(refused)) => {
+            (None, Some(message)) => {
                 let e = check_folder(folder).unwrap_err();
-                assert_eq!(e.to_string(), refused, "{folder:?}");
+                assert_eq!(e.message(), message, "{folder:?}");
                 if matches!(e, ObsidianSettingsError::FolderName(_)) {
                     refused_by_windows += 1;
                     // Each of these was a vault path before T14.29: only the Windows rule
@@ -147,25 +147,54 @@ fn export_settings_subfolder_follows_the_shared_case_table() {
                     );
                 }
             }
-            _ => panic!("case {folder:?} needs exactly one of stored and refused"),
+            _ => panic!("case {folder:?} needs exactly one of stored and message"),
         }
     }
     assert!(refused_by_windows >= 20, "{refused_by_windows}");
 }
 
 #[test]
+fn export_settings_a_stored_subfolder_with_trailing_dots_keeps_exporting_where_it_did() {
+    // Stored by a version from before T14.29: Windows dropped the trailing dots and spaces,
+    // so exports went to "Work/Notes/Q4"; they still do, with nothing to report.
+    let dir = TempDir::new("export-settings-trailing");
+    let (svc, _) = services(&dir);
+    let read = |stored: &[u8]| {
+        svc.store().set_local_value(FOLDER_KEY, stored).unwrap();
+        obsidian_settings(&svc.store()).unwrap()
+    };
+    for (stored, used) in [
+        (&b"Work/Notes./Q4 "[..], "Work/Notes/Q4"),
+        (b"Notes. . ", "Notes"),
+        (b"\\Calls..\\", "Calls"),
+    ] {
+        let (s, unknown) = read(stored);
+        assert_eq!(s.folder, used, "{stored:?}");
+        assert!(unknown.is_empty(), "{stored:?}: {unknown:?}");
+    }
+    // Saving stays strict.
+    let vault = dir.0.join("vault");
+    std::fs::create_dir_all(&vault).unwrap();
+    let vault = vault.display().to_string();
+    let e = set_obsidian_settings(&svc, &vault, "Work/Notes.").unwrap_err();
+    assert!(matches!(e, ObsidianSettingsError::FolderName(_)), "{e:?}");
+}
+
+#[test]
 fn export_settings_a_stored_subfolder_windows_refuses_is_reported_not_fatal() {
-    // Stored by a version from before T14.29.
+    // Stored by a version from before T14.29, names that could never have exported.
     let dir = TempDir::new("export-settings-windows");
     let (svc, _) = services(&dir);
-    svc.store()
-        .set_local_value(FOLDER_KEY, b"Work/Notes.")
-        .unwrap();
-    let (s, unknown) = obsidian_settings(&svc.store()).unwrap();
-    assert_eq!(s.folder, DEFAULT_FOLDER);
-    assert_eq!(unknown.len(), 1);
-    assert_eq!(unknown[0].key, FOLDER_KEY);
-    assert_eq!(unknown[0].stored, "Work/Notes.");
+    for stored in ["Work/CON", "Work/why?", "Notes./a|b", "Work/.../b", "..."] {
+        svc.store()
+            .set_local_value(FOLDER_KEY, stored.as_bytes())
+            .unwrap();
+        let (s, unknown) = obsidian_settings(&svc.store()).unwrap();
+        assert_eq!(s.folder, DEFAULT_FOLDER, "{stored:?}");
+        assert_eq!(unknown.len(), 1, "{stored:?}");
+        assert_eq!(unknown[0].key, FOLDER_KEY);
+        assert_eq!(unknown[0].stored, stored);
+    }
     // Saving a usable subfolder replaces it.
     let vault = dir.0.join("vault");
     std::fs::create_dir_all(&vault).unwrap();

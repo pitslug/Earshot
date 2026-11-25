@@ -7,13 +7,7 @@ import table from "../../../../fixtures/ui/vault_folder_cases.json";
 import { IpcFailure } from "./ipc";
 import { checkFolder } from "./mockSettings";
 
-/** What the desktop sends for a refusal: the runtime's text as a sentence (`obsidian::sentence`). */
-function sentence(text: string): string {
-  const s = text.charAt(0).toUpperCase() + text.slice(1);
-  return s.endsWith(".") ? s : `${s}.`;
-}
-
-type Case = { folder: string; stored?: string; refused?: string };
+type Case = { folder: string; stored?: string; message?: string };
 
 describe("checkFolder", () => {
   it("follows the shared case table", () => {
@@ -35,7 +29,7 @@ describe("checkFolder", () => {
       expect([c.folder, failure.error.kind, failure.error.message]).toEqual([
         c.folder,
         "invalid_setting",
-        sentence(c.refused ?? ""),
+        c.message,
       ]);
     }
   });

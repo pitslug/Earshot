@@ -56,20 +56,6 @@ pub fn settings_view(services: &Services) -> Result<ObsidianSettingsView, IpcErr
     Ok(view(&s, unknown.iter().map(ToString::to_string).collect()))
 }
 
-/// `text` with its first letter upper-case and a full stop.
-fn sentence(text: &str) -> String {
-    let mut c = text.chars();
-    let mut out: String = c
-        .next()
-        .map(|f| f.to_uppercase().collect())
-        .unwrap_or_default();
-    out.push_str(c.as_str());
-    if !out.ends_with('.') {
-        out.push('.');
-    }
-    out
-}
-
 /// Checks and stores `value` (the vault folder is checked on disk); returns the settings as
 /// stored.
 ///
@@ -82,7 +68,8 @@ pub fn set_settings(
     match export_settings::set_obsidian_settings(services, &value.vault, &value.folder) {
         Ok(s) => Ok(view(&s, Vec::new())),
         Err(ObsidianSettingsError::Store(e)) => Err(e.into()),
-        Err(other) => Err(IpcError::invalid(sentence(&other.to_string()))),
+        // The page's sentence, pinned by fixtures/ui/vault_folder_cases.json.
+        Err(other) => Err(IpcError::invalid(other.message())),
     }
 }
 

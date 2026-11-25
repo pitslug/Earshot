@@ -18,7 +18,9 @@
 //!
 //! A stored value this build cannot use (not text, a relative vault, a subfolder the rule
 //! refuses) reads as the default and is reported ([`UnknownSetting`]), as the other
-//! settings pages do.
+//! settings pages do. One exception keeps old exports where they were: a subfolder stored
+//! before T14.29 whose names end in dots or spaces reads as the folder Windows made of it
+//! (those dropped), when that passes the rule.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -112,6 +114,47 @@ impl fmt::Display for ObsidianSettingsError {
 }
 
 impl std::error::Error for ObsidianSettingsError {}
+
+impl ObsidianSettingsError {
+    /// The refusal as the page shows it: the text as a sentence (first letter upper case, a
+    /// full stop at the end). The messages of `fixtures/ui/vault_folder_cases.json`.
+    #[must_use]
+    pub fn message(&self) -> String {
+        let text = self.to_string();
+        let mut c = text.chars();
+        let mut out: String = c
+            .next()
+            .map(|f| f.to_uppercase().collect())
+            .unwrap_or_default();
+        out.push_str(c.as_str());
+        if !out.ends_with('.') {
+            out.push('.');
+        }
+        out
+    }
+}
+
+/// A subfolder stored by an earlier version, as exports used it: [`check_folder`], or, when
+/// that refuses only for trailing dots or spaces, the folder Windows made of it (each
+/// name without them) if that passes. Saving stays strict ([`check_folder`]); a value still
+/// refused (a reserved character or device name, which could never have exported) is
+/// `None`.
+fn stored_folder(folder: &str) -> Option<String> {
+    if let Ok(f) = check_folder(folder) {
+        return Some(f);
+    }
+    let windows_made: Vec<&str> = folder
+        .trim()
+        .trim_matches(['/', '\\'])
+        .split(['/', '\\'])
+        .map(|name| name.trim_end_matches(['.', ' ']))
+        .collect();
+    // A name of only dots or spaces is not guessed at.
+    if windows_made.iter().any(|n| n.is_empty()) {
+        return None;
+    }
+    check_folder(&windows_made.join("/")).ok()
+}
 
 /// The subfolder rule (module docs): `Ok` with the normalised subfolder.
 ///
@@ -237,9 +280,9 @@ pub fn obsidian_settings(
     if let Some(f) = setting_of(
         FOLDER_KEY,
         store.local_value(FOLDER_KEY)?.as_deref(),
-        |bytes| match std::str::from_utf8(bytes).map(check_folder) {
-            Ok(Ok(f)) => Ok(f),
-            _ => Err(lossy(bytes)),
+        |bytes| match std::str::from_utf8(bytes).ok().and_then(stored_folder) {
+            Some(f) => Ok(f),
+            None => Err(lossy(bytes)),
         },
     )
     .known(&mut unknown)
