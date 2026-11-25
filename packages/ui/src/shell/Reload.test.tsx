@@ -189,6 +189,25 @@ describe("a window loaded while a meeting is in progress", () => {
     await waitFor(() => expect(retranscribe).toHaveAttribute("aria-disabled", "true"));
   });
 
+  it("counts a meeting finishing behind as one that recorded, so its result is no failed start", async () => {
+    // The window never heard this meeting's `Started`. Its result must not be kept as the reason
+    // a start failed: an answer naming it (invented here) would then be shown as a failed start.
+    let answer = "";
+    const s = await load(
+      { followed: null, behind: [{ meeting: OLDER.id, progress: null }] },
+      [OLDER],
+      { startMeeting: async () => answer },
+    );
+    await screen.findByText("Your previous meeting is still finishing");
+    s.meeting({ type: "Summary", meeting: OLDER.id, result: { kind: "Cancelled" } });
+    expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull();
+    answer = OLDER.id;
+    await s.user.click(screen.getByRole("button", { name: "New meeting" }));
+    await s.user.click(await screen.findByRole("button", { name: "Start" }));
+    await act(async () => {});
+    expect(screen.queryByText("The meeting could not start")).toBeNull();
+  });
+
   it("with nothing in progress shows the meeting list as always", async () => {
     await load({ followed: null, behind: [] }, [OLDER]);
     expect(await screen.findByRole("heading", { level: 1, name: OLDER.title })).toBeInTheDocument();

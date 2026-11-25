@@ -686,6 +686,8 @@ export function AppShell({
     // it, as their events would have left this window. Events heard since apply after this.
     const followed = snapshot.followed;
     for (const b of snapshot.behind) {
+      // It recorded: its result is not a start that failed (`neverRecorded`).
+      startedIds.current.add(b.meeting);
       addBehind(b.meeting);
       if (b.progress !== null) {
         const work = workOfStep(b.progress.step);
