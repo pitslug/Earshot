@@ -75,6 +75,7 @@ import { failureText } from "../detail/detail";
 import { type JobView, MeetingDetailView, isTerminal } from "../detail/MeetingDetailView";
 import { FirstRunWizard, NO_MODEL_NOTE } from "../firstRun/FirstRunWizard";
 import { useLiveMeeting, useLocalDay } from "../meeting/hooks";
+import { useCollapsedGroups } from "./collapsedGroups";
 import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
 import { type Timer, realTimer } from "../time";
@@ -139,13 +140,31 @@ const useStyles = makeStyles({
   group: {
     marginBottom: tokens.spacingVerticalM,
   },
-  groupHeading: {
-    display: "block",
+  groupHeadingLine: {
     margin: 0,
+    fontSize: "inherit",
+    fontWeight: "inherit",
+  },
+  groupToggle: {
+    display: "flex",
+    alignItems: "center",
+    gap: tokens.spacingHorizontalXS,
+    width: "100%",
+    margin: 0,
+    border: "none",
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: "transparent",
+    cursor: "pointer",
     paddingTop: tokens.spacingVerticalXS,
     paddingBottom: tokens.spacingVerticalXS,
     paddingLeft: tokens.spacingHorizontalS,
     color: tokens.colorNeutralForeground3,
+    textAlign: "start",
+    ":hover": { color: tokens.colorNeutralForeground2, backgroundColor: tokens.colorSubtleBackgroundHover },
+    ":focus-visible": { outline: `2px solid ${tokens.colorStrokeFocus2}`, outlineOffset: "-2px" },
+  },
+  groupCount: {
+    color: tokens.colorNeutralForeground4,
   },
   wizardFrame: {
     display: "flex",
@@ -686,6 +705,29 @@ export function AppShell({
   const folders = load.status === "loaded" ? load.folders : [];
   const visible = meetingsInFolder(meetings, selectedFolder);
   const selected = meetings.find((m) => m.id === selectedId) ?? null;
+  const groups = groupByDay(visible, today);
+
+  // A closed group opens when it gets a meeting it did not hold (a new recording, one moved into
+  // the folder shown) or when the meeting shown moves into it (T12.103); the first list read and
+  // the first meeting shown open nothing, so groups closed before a restart stay closed.
+  const collapsedGroups = useCollapsedGroups();
+  const groupSeen = useRef<{ ids: Set<string>; selected: string | null } | null>(null);
+  useEffect(() => {
+    if (load.status !== "loaded") return;
+    const seen = groupSeen.current;
+    groupSeen.current = { ids: new Set(visible.map((m) => m.id)), selected: selectedId };
+    if (seen === null) return;
+    for (const g of groups) {
+      if (!collapsedGroups.collapsed.has(g.key)) continue;
+      const gotNew = g.meetings.some((m) => !seen.ids.has(m.id));
+      const holdsShown =
+        selectedId !== null &&
+        seen.selected !== null &&
+        selectedId !== seen.selected &&
+        g.meetings.some((m) => m.id === selectedId);
+      if (gotNew || holdsShown) collapsedGroups.open(g.key);
+    }
+  });
 
   // A deleted row, or one moved out of the folder shown, took keyboard focus with it.
   useEffect(() => {
@@ -1212,10 +1254,12 @@ export function AppShell({
           )}
           {!search.active && visible.length > 0 && (
             <ul className={styles.list} aria-label="Meetings">
-              {groupByDay(visible, today).map((group) => (
+              {groups.map((group) => (
                 <MeetingGroup
-                  key={group.label}
+                  key={group.key}
                   group={group}
+                  open={!collapsedGroups.collapsed.has(group.key)}
+                  onToggle={() => collapsedGroups.toggle(group.key)}
                   selectedId={view === "start" ? null : selectedId}
                   folders={folders}
                   handlers={rowHandlers}
@@ -1495,6 +1539,15 @@ export function AppShell({
   );
 }
 
+/** The caret of a list group's heading: right when closed, down when open. */
+function CaretIcon({ open }: { open: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" aria-hidden="true">
+      <path d={open ? "M3 4.5l3 3 3-3" : "M4.5 3l3 3-3 3"} />
+    </svg>
+  );
+}
+
 function TrashIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
@@ -1503,7 +1556,6 @@ function TrashIcon() {
   );
 }
 
-/** What a row of the meeting list does; each call reaches `AppShell`'s current state. */
 /** Renames a meeting from its row in the list (T12.102): the title as stored, saved on Save or
  * Enter; a refusal stays in the dialog with what was typed. The open meeting's heading reads the
  * list, so it follows. */
@@ -1579,6 +1631,7 @@ function RenameMeetingDialog({
   );
 }
 
+/** What a row of the meeting list does; each call reaches `AppShell`'s current state. */
 interface RowHandlers {
   select(id: string): void;
   remove(item: MeetingListItem): void;
@@ -1590,12 +1643,17 @@ interface RowHandlers {
 
 function MeetingGroup({
   group,
+  open,
+  onToggle,
   selectedId,
   folders,
   handlers,
   workOf,
 }: {
   group: DayGroup;
+  /** Its meetings show (T12.103). */
+  open: boolean;
+  onToggle(): void;
   selectedId: string | null;
   folders: FolderListItem[];
   handlers: RowHandlers;
@@ -1604,24 +1662,43 @@ function MeetingGroup({
 }) {
   const styles = useStyles();
   const headingId = useId();
+  const listId = useId();
   return (
     <li className={styles.group}>
+      {/* The heading sits outside the group, which holds only its meetings' rows. */}
+      <h2 className={styles.groupHeadingLine}>
+        <button
+          type="button"
+          className={styles.groupToggle}
+          aria-expanded={open}
+          aria-controls={open ? listId : undefined}
+          onClick={onToggle}
+        >
+          <CaretIcon open={open} />
+          <Caption1Strong id={headingId}>{group.label}</Caption1Strong>
+          {/* How many it holds, while closed: greyed, and not part of the group's name. */}
+          {!open && (
+            <Caption1 className={styles.groupCount} aria-hidden="true">
+              ({group.meetings.length})
+            </Caption1>
+          )}
+        </button>
+      </h2>
       <div role="group" aria-labelledby={headingId}>
-        <Caption1Strong as="h2" id={headingId} className={styles.groupHeading}>
-          {group.label}
-        </Caption1Strong>
-        <ul className={styles.list}>
-          {group.meetings.map((m) => (
-            <MeetingRow
-              key={m.id}
-              m={m}
-              work={workOf(m)}
-              selected={m.id === selectedId}
-              folders={folders}
-              handlers={handlers}
-            />
-          ))}
-        </ul>
+        {open && (
+          <ul id={listId} className={styles.list}>
+            {group.meetings.map((m) => (
+              <MeetingRow
+                key={m.id}
+                m={m}
+                work={workOf(m)}
+                selected={m.id === selectedId}
+                folders={folders}
+                handlers={handlers}
+              />
+            ))}
+          </ul>
+        )}
       </div>
     </li>
   );

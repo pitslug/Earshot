@@ -63,7 +63,8 @@ function shownByDay(): Record<string, string[]> {
   if (list === null) return {};
   const out: Record<string, string[]> = {};
   for (const group of within(list).getAllByRole("group")) {
-    const label = within(group).getByRole("heading").textContent ?? "";
+    // Named by its heading, which sits just outside it (T12.103).
+    const label = document.getElementById(group.getAttribute("aria-labelledby") ?? "")?.textContent ?? "";
     out[label] = within(group)
       .getAllByRole("button", { name: /^(?!Delete )/ })
       .map((b) => b.querySelector(".earshot-row-title")?.textContent ?? "");

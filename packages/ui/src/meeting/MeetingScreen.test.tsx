@@ -736,8 +736,10 @@ describe("meeting screen", () => {
     });
     await startMeeting(s, "Call", "Pump order");
     const list = await screen.findByRole("list", { name: "Meetings" });
-    await waitFor(() => expect(within(list).getAllByRole("button")[0].textContent).toContain("Pump order"));
-    expect(within(list).getAllByRole("button")[0].textContent).toContain("Recording...");
+    // The first meeting row (group headings are buttons too, with aria-expanded: T12.103).
+    const firstRow = () => within(list).getAllByRole("button").filter((b) => !b.hasAttribute("aria-expanded"))[0];
+    await waitFor(() => expect(firstRow().textContent).toContain("Pump order"));
+    expect(firstRow().textContent).toContain("Recording...");
   });
 
   it("shows a warning banner that can be dismissed", async () => {

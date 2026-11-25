@@ -2,12 +2,29 @@
 
 import type { MeetingListItem, PostStep } from "../ipc";
 
-export type DayGroupLabel = "Today" | "Yesterday" | "Earlier";
-
+/** A group of the meeting list (T12.103). `key` stays the same whatever day it is ("today",
+ * "yesterday", "this-week", "last-week", or "YYYY-MM" for a month), so a group the user closed
+ * stays closed; `label` is what the list shows. */
 export interface DayGroup {
-  label: DayGroupLabel;
+  key: string;
+  label: string;
   meetings: MeetingListItem[];
 }
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
 function startOfLocalDay(ms: number): number {
   const d = new Date(ms);
@@ -15,23 +32,49 @@ function startOfLocalDay(ms: number): number {
   return d.getTime();
 }
 
-/** Groups meetings (already newest first) by local calendar day relative to `now`; empty
- * groups are left out and the order inside a group is kept. */
+/** The local midnight `days` calendar days after `dayStart` (negative: before). */
+function addDays(dayStart: number, days: number): number {
+  const d = new Date(dayStart);
+  d.setDate(d.getDate() + days);
+  return d.getTime();
+}
+
+/** Groups meetings (already newest first) relative to `now`, by local calendar day: Today,
+ * Yesterday, Earlier this week, Last week (weeks start on Monday), then one group per month
+ * ("October 2026"). Yesterday wins over Last week on a Monday. Empty groups are left out and the
+ * order inside a group is kept. */
 export function groupByDay(meetings: MeetingListItem[], now: number): DayGroup[] {
   const today = startOfLocalDay(now);
-  const yesterdayDate = new Date(today);
-  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-  const yesterday = yesterdayDate.getTime();
-  const groups: DayGroup[] = [
-    { label: "Today", meetings: [] },
-    { label: "Yesterday", meetings: [] },
-    { label: "Earlier", meetings: [] },
-  ];
+  const yesterday = addDays(today, -1);
+  // Monday 0 ... Sunday 6.
+  const weekday = (new Date(today).getDay() + 6) % 7;
+  const thisWeek = addDays(today, -weekday);
+  const lastWeek = addDays(thisWeek, -7);
+  const groups: DayGroup[] = [];
+  const groupFor = (key: string, label: string): DayGroup => {
+    let g = groups.find((x) => x.key === key);
+    if (g === undefined) {
+      g = { key, label, meetings: [] };
+      groups.push(g);
+    }
+    return g;
+  };
   for (const m of meetings) {
-    const index = m.started_at_ms >= today ? 0 : m.started_at_ms >= yesterday ? 1 : 2;
-    groups[index].meetings.push(m);
+    const t = m.started_at_ms;
+    let group: DayGroup;
+    if (t >= today) group = groupFor("today", "Today");
+    else if (t >= yesterday) group = groupFor("yesterday", "Yesterday");
+    else if (t >= thisWeek) group = groupFor("this-week", "Earlier this week");
+    else if (t >= lastWeek) group = groupFor("last-week", "Last week");
+    else {
+      const d = new Date(t);
+      const month = d.getMonth();
+      const key = `${d.getFullYear()}-${String(month + 1).padStart(2, "0")}`;
+      group = groupFor(key, `${MONTH_NAMES[month]} ${d.getFullYear()}`);
+    }
+    group.meetings.push(m);
   }
-  return groups.filter((g) => g.meetings.length > 0);
+  return groups;
 }
 
 /** Local `HH:MM` (24-hour). */

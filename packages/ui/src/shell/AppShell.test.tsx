@@ -6,6 +6,8 @@ import { DATA_FOLDER_COPY, type Ipc, IpcFailure, type MeetingListItem, POST_STEP
 import { renderApp } from "../test/app";
 import { ITEM, listRow, setup } from "../test/meetingDetail";
 import { setWindowWatched } from "../test/windowWatched";
+import { createManualTimer } from "../time";
+import { COLLAPSED_GROUPS_KEY } from "./collapsedGroups";
 
 const at = (day: number, hour: number, minute = 0) =>
   new Date(2026, 10, day, hour, minute).getTime();
@@ -27,7 +29,8 @@ describe("AppShell", () => {
     renderShell(createMockIpc({ meetings: MEETINGS }));
     const list = await screen.findByRole("list", { name: "Meetings" });
     const headings = within(list).getAllByRole("heading").map((h) => h.textContent);
-    expect(headings).toEqual(["Today", "Yesterday", "Earlier"]);
+    // 2 Nov 2026 is a Monday: the meeting of Tuesday 27 October was last week (T12.103).
+    expect(headings).toEqual(["Today", "Yesterday", "Last week"]);
     const today = within(list).getByRole("group", { name: "Today" });
     // Every row button has its trash can beside it.
     const rowsOnly = { name: /^(?!Delete )/ };
@@ -38,10 +41,89 @@ describe("AppShell", () => {
     ]);
     const yesterday = within(list).getByRole("group", { name: "Yesterday" });
     expect(within(yesterday).getByRole("button", rowsOnly).textContent).toBe("Supplier call1 Nov 2026 11:05 · 22 min");
-    const earlier = within(list).getByRole("group", { name: "Earlier" });
+    const earlier = within(list).getByRole("group", { name: "Last week" });
     expect(within(earlier).getByRole("button", rowsOnly).textContent).toContain("Quarterly planning");
     expect(screen.getByRole("button", { name: "New meeting" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("closes and opens a group from its heading, greying its count while closed (T12.103)", async () => {
+    const user = userEvent.setup();
+    renderShell(createMockIpc({ meetings: MEETINGS }));
+    const list = await screen.findByRole("list", { name: "Meetings" });
+    const toggle = within(list).getByRole("button", { name: "Yesterday" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(list).getByRole("button", { name: /^Supplier call/ })).toBeInTheDocument();
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(list).queryByRole("button", { name: /^Supplier call/ })).toBeNull();
+    // The count shows while closed, outside the group's name.
+    expect(within(toggle).getByText("(1)")).toBeInTheDocument();
+    expect(within(list).getByRole("group", { name: "Yesterday" })).toBeInTheDocument();
+    // The other groups stay as they were.
+    expect(within(list).getByRole("button", { name: /^Design review/ })).toBeInTheDocument();
+    // Remembered on this computer by the group's key, never a title.
+    expect(JSON.parse(window.localStorage.getItem(COLLAPSED_GROUPS_KEY) ?? "[]")).toEqual(["yesterday"]);
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(toggle).queryByText("(1)")).toBeNull();
+    expect(within(list).getByRole("button", { name: /^Supplier call/ })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(COLLAPSED_GROUPS_KEY) ?? "[]")).toEqual([]);
+  });
+
+  it("keeps a closed group closed when the window opens again (T12.103)", async () => {
+    window.localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(["today", "last-week"]));
+    renderShell(createMockIpc({ meetings: MEETINGS }));
+    const list = await screen.findByRole("list", { name: "Meetings" });
+    // The newest meeting is shown on opening, and its closed group still stays closed.
+    expect(within(list).getByRole("button", { name: "Today" })).toHaveAttribute("aria-expanded", "false");
+    expect(within(list).getByRole("button", { name: "Last week" })).toHaveAttribute("aria-expanded", "false");
+    expect(within(list).getByRole("button", { name: "Yesterday" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(within(list).getByRole("button", { name: "Today" })).getByText("(2)")).toBeInTheDocument();
+  });
+
+  it("reads damaged stored groups as all open (T12.103)", async () => {
+    window.localStorage.setItem(COLLAPSED_GROUPS_KEY, "not json");
+    renderShell(createMockIpc({ meetings: MEETINGS }));
+    const list = await screen.findByRole("list", { name: "Meetings" });
+    for (const name of ["Today", "Yesterday", "Last week"]) {
+      expect(within(list).getByRole("button", { name })).toHaveAttribute("aria-expanded", "true");
+    }
+  });
+
+  it("opens a closed group when a new meeting lands in it (T12.103)", async () => {
+    const user = userEvent.setup();
+    const timer = createManualTimer(NOW);
+    renderApp(createMockIpc({ meetings: MEETINGS, timer }), { timer });
+    const list = await screen.findByRole("list", { name: "Meetings" });
+    await user.click(within(list).getByRole("button", { name: "Today" }));
+    expect(within(list).getByRole("button", { name: "Today" })).toHaveAttribute("aria-expanded", "false");
+    const nav = screen.getByRole("navigation");
+    await user.click(within(nav).getByRole("button", { name: "New meeting" }));
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await act(async () => timer.advance(0));
+    await waitFor(() =>
+      expect(within(screen.getByRole("list", { name: "Meetings" })).getByRole("button", { name: "Today" })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      ),
+    );
+    expect(JSON.parse(window.localStorage.getItem(COLLAPSED_GROUPS_KEY) ?? "[]")).toEqual([]);
+  });
+
+  it("opens a closed group when the meeting shown moves into it (T12.103)", async () => {
+    const user = userEvent.setup();
+    renderShell(createMockIpc({ meetings: MEETINGS }));
+    const list = await screen.findByRole("list", { name: "Meetings" });
+    await user.click(within(list).getByRole("button", { name: "Yesterday" }));
+    expect(within(list).queryByRole("button", { name: /^Supplier call/ })).toBeNull();
+    // A search result in the closed group is shown, and its group opens.
+    await user.type(screen.getByRole("searchbox", { name: "Search meetings" }), "Supplier");
+    await user.click(await screen.findByRole("button", { name: /Supplier call/ }));
+    await user.clear(screen.getByRole("searchbox", { name: "Search meetings" }));
+    const shown = await screen.findByRole("list", { name: "Meetings" });
+    await waitFor(() => expect(within(shown).getByRole("button", { name: "Yesterday" })).toHaveAttribute("aria-expanded", "true"));
+    expect(within(shown).getByRole("button", { name: /^Supplier call/ })).toHaveAttribute("aria-current", "true");
   });
 
   it("shows the newest meeting first and switches on selection", async () => {

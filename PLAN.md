@@ -2490,6 +2490,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: replace the list (`DictionaryPage.tsx` "Saved people") with one line of fixed copy, for example "Names on the People page are used too, so there is no need to add them here.", with a link or button to the People page; keep the left-out note (`people_left_out_note`) when some names are left out. If the detail's `people` list is then unused by the UI, drop it from the IPC view and regenerate bindings; keep `fixtures/ui/summary_settings_cases.json`'s cleaning rule and `left_out` cases running in both suites. Update the tests that read the list.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot summary`; preview screenshot
 
+- [x] T12.103 Meeting list groups by week and month, each one collapsible
+  - result (2026-11-25): groups are Today, Yesterday, Earlier this week, Last week (weeks start on Monday), then one per month ("October 2026"), each keyed so the key never changes with the day. A heading is a button with a caret; a closed group shows its count greyed ("(5)", not part of its name). Closed groups are kept browser-side only (`localStorage` `earshot-collapsed-groups`, keys only, an unreadable value reads as all open). A closed group opens by itself when it gets a meeting it did not hold (a new recording) or when the meeting shown moves into it (a search result); the first list read and the first meeting shown open nothing. Search results are not grouped, as before. UI 823 tests, build, preview light and dark.
+  - why (the owner, 2026-11-25): Today, Yesterday and Earlier made one long pile of everything older.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
+
 - [x] T12.102 Rename a meeting from its row in the list
   - result (2026-11-25): the row menu (right-click, Shift+F10, the Menu key) starts with "Rename...", which opens a "Rename meeting" dialog holding the stored title, selected; Save or Enter stores it through the same `renameMeeting` the header uses, a refusal stays in the dialog with what was typed, Cancel or Escape change nothing, and focus goes back to the row. The open meeting's heading reads the list, so it follows. UI 816 tests, build, preview.
   - why (the owner, 2026-11-25): rename was only in the meeting's own header.

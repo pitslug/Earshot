@@ -21,24 +21,77 @@ function meeting(id: string, started: number, duration: number | null = 30 * 60_
 }
 
 describe("groupByDay", () => {
-  const now = at(2, 9, 15);
+  // Wednesday 18 November 2026, 09:15 local; weeks start on Monday (16 November).
+  const now = at(18, 9, 15);
+  const keys = (list: MeetingListItem[], when = now) => groupByDay(list, when).map((g) => g.key);
+  const labels = (list: MeetingListItem[], when = now) => groupByDay(list, when).map((g) => g.label);
 
-  it("splits meetings into today, yesterday and earlier by local day", () => {
+  it("splits meetings into today, yesterday, earlier this week, last week and months", () => {
     const list = [
-      meeting("a", at(2, 8, 0)),
-      meeting("b", at(2, 0, 0)),
-      meeting("c", at(1, 23, 59)),
-      meeting("d", at(1, 0, 0)),
-      // 31 October 23:59, the evening before yesterday.
-      meeting("e", new Date(2026, 9, 31, 23, 59).getTime()),
+      meeting("a", at(18, 8, 0)),
+      meeting("b", at(18, 0, 0)),
+      meeting("c", at(17, 23, 59)),
+      meeting("d", at(16, 0, 0)), // Monday: earlier this week
+      meeting("e", at(15, 23, 59)), // Sunday: last week
+      meeting("f", at(9, 0, 0)), // Monday a week ago: last week
+      meeting("g", at(8, 23, 59)), // before last week, this month
+      meeting("h", new Date(2026, 9, 31, 23, 59).getTime()),
+      meeting("i", new Date(2025, 11, 3, 10).getTime()),
     ];
     const groups = groupByDay(list, now);
-    expect(groups.map((g) => g.label)).toEqual(["Today", "Yesterday", "Earlier"]);
-    expect(groups.map((g) => g.meetings.map((m) => m.id))).toEqual([["a", "b"], ["c", "d"], ["e"]]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "Today",
+      "Yesterday",
+      "Earlier this week",
+      "Last week",
+      "November 2026",
+      "October 2026",
+      "December 2025",
+    ]);
+    expect(groups.map((g) => g.meetings.map((m) => m.id))).toEqual([
+      ["a", "b"],
+      ["c"],
+      ["d"],
+      ["e", "f"],
+      ["g"],
+      ["h"],
+      ["i"],
+    ]);
+    // Keys stay the same whatever day it is, so a closed group stays closed: months by year and
+    // month, the others by name.
+    expect(groups.map((g) => g.key)).toEqual([
+      "today",
+      "yesterday",
+      "this-week",
+      "last-week",
+      "2026-11",
+      "2026-10",
+      "2025-12",
+    ]);
+  });
+
+  it("puts last week across a month boundary in Last week, then the months", () => {
+    // Tuesday 3 November 2026: yesterday is Monday 2 November, last week 26 Oct to 1 Nov.
+    const tue = at(3, 12);
+    const list = [
+      meeting("a", at(2, 10)),
+      meeting("b", at(1, 10)),
+      meeting("c", new Date(2026, 9, 26, 0, 0).getTime()),
+      meeting("d", new Date(2026, 9, 25, 23, 59).getTime()),
+    ];
+    expect(labels(list, tue)).toEqual(["Yesterday", "Last week", "October 2026"]);
+    expect(groupByDay(list, tue).map((g) => g.meetings.map((m) => m.id))).toEqual([["a"], ["b", "c"], ["d"]]);
+  });
+
+  it("on a Monday has no earlier this week, and yesterday is last week's Sunday", () => {
+    const mon = at(16, 9);
+    const list = [meeting("a", at(15, 10)), meeting("b", at(14, 10)), meeting("c", at(9, 10)), meeting("d", at(8, 10))];
+    expect(labels(list, mon)).toEqual(["Yesterday", "Last week", "November 2026"]);
+    expect(groupByDay(list, mon).map((g) => g.meetings.map((m) => m.id))).toEqual([["a"], ["b", "c"], ["d"]]);
   });
 
   it("leaves out empty groups and keeps the given order", () => {
-    const groups = groupByDay([meeting("x", at(1, 10)), meeting("y", at(1, 9))], now);
+    const groups = groupByDay([meeting("x", at(17, 10)), meeting("y", at(17, 9))], now);
     expect(groups).toHaveLength(1);
     expect(groups[0].label).toBe("Yesterday");
     expect(groups[0].meetings.map((m) => m.id)).toEqual(["x", "y"]);
@@ -46,10 +99,12 @@ describe("groupByDay", () => {
   });
 
   it("depends on the injected clock, not the real one", () => {
-    const list = [meeting("a", at(2, 8))];
-    expect(groupByDay(list, at(2, 23, 59))[0].label).toBe("Today");
-    expect(groupByDay(list, at(3, 0, 0))[0].label).toBe("Yesterday");
-    expect(groupByDay(list, at(4, 0, 0))[0].label).toBe("Earlier");
+    const list = [meeting("a", at(18, 8))];
+    expect(keys(list, at(18, 23, 59))).toEqual(["today"]);
+    expect(keys(list, at(19, 0, 0))).toEqual(["yesterday"]);
+    expect(keys(list, at(20, 0, 0))).toEqual(["this-week"]);
+    expect(keys(list, at(23, 0, 0))).toEqual(["last-week"]);
+    expect(keys(list, at(30, 0, 0))).toEqual(["2026-11"]);
   });
 });
 

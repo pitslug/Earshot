@@ -109,7 +109,7 @@ describe("render cost", () => {
     const list = await screen.findByRole("list", { name: "Meetings" });
     expect(within(list).getAllByRole("heading").map((h) => h.textContent)).toEqual(["Today", "Yesterday"]);
     await act(async () => s.timer.advance(2 * 60_000));
-    expect(within(list).getAllByRole("heading").map((h) => h.textContent)).toEqual(["Yesterday", "Earlier"]);
+    expect(within(list).getAllByRole("heading").map((h) => h.textContent)).toEqual(["Yesterday", "Last week"]);
   });
 
   it("render cost: the clock ticks only the elapsed time, and levels only the meters", async () => {
