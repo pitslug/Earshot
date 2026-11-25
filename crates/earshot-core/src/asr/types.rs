@@ -103,15 +103,30 @@ pub struct Word {
     pub probability: f32,
 }
 
+/// A recogniser's probability as a transcript keeps it: the number, or 0 (no confidence) when
+/// it is not one (T14.23). A model fault can hand out NaN or an infinity, `f32::clamp` keeps
+/// NaN, SQLite stores NaN as NULL and JSON has no such number, so one such word would fail the
+/// write of a whole final pass. Applied wherever a recogniser's word enters a transcript:
+/// [`Word::new`], [`Word::shifted`] (every way from a recogniser's buffer to meeting time) and
+/// [`mean_probability`].
+pub(super) fn probability_or_zero(probability: f32) -> f32 {
+    if probability.is_finite() {
+        probability
+    } else {
+        0.0
+    }
+}
+
 impl Word {
-    /// A word spanning `start_ms..end_ms`.
+    /// A word spanning `start_ms..end_ms`. A probability that is not a number (NaN, an
+    /// infinity) is kept as 0.
     #[must_use]
     pub fn new(text: impl Into<String>, start_ms: u64, end_ms: u64, probability: f32) -> Self {
         Word {
             text: text.into(),
             start: MeetingTime::from_millis(start_ms),
             end: MeetingTime::from_millis(end_ms.max(start_ms)),
-            probability,
+            probability: probability_or_zero(probability),
         }
     }
 
@@ -122,14 +137,15 @@ impl Word {
         MeetingTime((self.start.0 + self.end.0) / 2)
     }
 
-    /// The same word shifted later by `offset`.
+    /// The same word shifted later by `offset` (a probability that is not a number becomes 0,
+    /// as in [`Word::new`]: a recogniser may have built the word field by field).
     #[must_use]
     pub fn shifted(&self, offset: MeetingTime) -> Word {
         Word {
             text: self.text.clone(),
             start: self.start + offset,
             end: self.end + offset,
-            probability: self.probability,
+            probability: probability_or_zero(self.probability),
         }
     }
 }
@@ -151,13 +167,17 @@ pub fn join_words(words: &[Word]) -> String {
     out
 }
 
-/// Mean word probability, or 0 for no words.
+/// Mean word probability, or 0 for no words. A probability that is not a number counts as 0,
+/// so the mean is always one.
 #[must_use]
 pub fn mean_probability(words: &[Word]) -> f32 {
     if words.is_empty() {
         return 0.0;
     }
-    let sum: f64 = words.iter().map(|w| f64::from(w.probability)).sum();
+    let sum: f64 = words
+        .iter()
+        .map(|w| f64::from(probability_or_zero(w.probability)))
+        .sum();
     (sum / words.len() as f64) as f32
 }
 

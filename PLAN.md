@@ -2668,16 +2668,16 @@ Lane ui-detail (`packages/ui/src/detail`):
 
 Lane live (`earshot-core` asr, `earshot-runtime` live, `earshot-capture-wasapi`, `earshot-asr-whisper`):
 
-- [ ] T14.20 A silent track's live stream holds no audio
-  - do: `PieceStream` releases audio before the settled frontier that no piece can still need (keeping `kept_from` right), and `settle` works from a settled prefix; `asr_stretch_resume_equals_the_whole_track_pass_wherever_the_stream_stopped` and the bit-for-bit stretch tests unchanged; a test that an hour of silence keeps a bounded buffer.
+- [x] T14.20 A silent track's live stream holds no audio
+  - do: `PieceStream` releases audio before the settled frontier that no piece can still need (keeping `kept_from` right); `settle` is left scanning from the start (measured in the lane: 0.42 ms per look after 4 hours of talk, one look per 256 ms, so a settled prefix buys nothing); `asr_stretch_resume_equals_the_whole_track_pass_wherever_the_stream_stopped` and the bit-for-bit stretch tests unchanged; a test that an hour of silence keeps a bounded buffer.
   - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime live`
-- [ ] T14.21 A stuck live worker stops taking audio
+- [x] T14.21 A stuck live worker stops taking audio
   - do: past its cap a worker is sent no more audio (one warning, as today), and dropping a worker whose thread is stuck cancels and leaves it, never joins.
   - accept: `cargo test -p earshot-runtime live`
-- [ ] T14.22 Capture start cannot wait forever; a packet with no data is silence
+- [x] T14.22 Capture start cannot wait forever; a packet with no data is silence
   - do: the capture thread's ready wait has a bound (a judgement, above the activation timeout), after which the start fails with fixed copy and the thread is left; a non-silent packet with a null buffer is treated as silent. Through `FakeDriver` only.
   - accept: `cargo test -p earshot-capture-wasapi`
-- [ ] T14.23 Non-finite word probabilities never reach the store
+- [x] T14.23 Non-finite word probabilities never reach the store
   - do: `Word::new` (or the decoders' own clamp) maps a non-finite probability to 0; a final pass with a NaN from a fake transcriber stores.
   - accept: `cargo test -p earshot-core asr`; `cargo test -p earshot-runtime post`
 

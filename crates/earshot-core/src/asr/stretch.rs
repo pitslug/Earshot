@@ -28,6 +28,38 @@
 //!   and the two parts then fit one window (`settle` has the proof and the exact
 //!   condition).
 //!
+//! # What is held (T14.20)
+//!
+//! The stream keeps audio only from its frontier on ([`PieceStream::held`]). The frontier
+//! `settle` gives is the start of the last piece when that piece may still grow, else the
+//! start of the pending region's remainder, else `b`; and no piece of the plan of any
+//! longer stream that is not settled yet starts before it:
+//! - a region that is final keeps its end (it is not clipped by the end of the stream: a
+//!   clipped end is `known`, never before `b`), and no later region merges into it, so the
+//!   parts of the final regions and the pending region's known cuts are the plan's first
+//!   parts, and its pieces up to the last settled one are the settled ones;
+//! - the next part is the pending region's remainder, whose start is fixed (the region's
+//!   start is its first speech frame less the padding, and its cuts so far read only
+//!   probabilities already heard), or, with nothing pending, a region that begins at or
+//!   after `b`, padding included (a speech frame not heard yet lies at or after `known`;
+//!   an open region too short to count so far starts at `b` if it comes to count);
+//! - a piece starts at its first part's start (`merge_parts` only extends ends), so the
+//!   next piece starts where the last one does when that one may still grow, and at or
+//!   after the next part otherwise.
+//!
+//! What is true of every piece not settled at one look is true of those left at a later
+//! one, so the highest frontier so far holds, and audio before it is let go of after each
+//! look. What stays is bounded by the config, not by the length of the stream: with
+//! `known - b` at most `speech_pad + min_speech + min_silence`, the pending remainder at
+//! most `max_piece` behind that (a longer one is cut as soon as its window is heard) and
+//! the last piece at most `max_piece` behind its end, the stream holds less than
+//! `2 * max_piece + speech_pad + min_speech + min_silence` and the
+//! [`SETTLE_EVERY_FRAMES`] frames between looks (about 63 s, 4 MB, with the defaults);
+//! over silence, `speech_pad` and those frames. The per-frame probabilities are kept for
+//! the whole stream (one `f32` per VAD frame): `settle` and step 5 of the decoding read
+//! them from the start. `settle` goes through all of them at every look, which was
+//! measured and left as it is: 0.11 ms a look after an hour of talk at 512-sample frames
+//! and 0.42 ms after four hours, against a look every 256 ms (2026-11-26).
 //!
 //! # Resuming (T6.13c)
 //!
@@ -75,7 +107,7 @@ pub fn settled_pieces(probs: &[f32], frame: usize, config: &PieceConfig) -> Vec<
 /// [`settled_pieces`] and the frontier: every speech sample before it lies in one of the
 /// settled pieces (the start of what is still open, or the earliest a later region can
 /// begin).
-fn settle(probs: &[f32], frame: usize, config: &PieceConfig) -> (Vec<Span>, usize) {
+pub(super) fn settle(probs: &[f32], frame: usize, config: &PieceConfig) -> (Vec<Span>, usize) {
     let known = probs.len() * frame;
     let max = samples(config.max_piece);
     let merge_gap = samples(config.merge_gap);
@@ -223,7 +255,8 @@ pub struct PieceStream {
     probs: Vec<f32>,
     /// Samples not yet in a whole VAD frame.
     partial: Vec<f32>,
-    /// Audio from `kept_from` on (earlier audio belongs to decoded pieces only).
+    /// Audio from `kept_from` on: earlier audio lies in decoded pieces or before the
+    /// frontier, where no piece still to come can start (module docs, What is held).
     audio: Vec<f32>,
     kept_from: usize,
     total: usize,
@@ -292,6 +325,23 @@ impl PieceStream {
     #[must_use]
     pub fn decoded_through(&self) -> usize {
         self.frontier
+    }
+
+    /// Samples of audio the stream holds: what a piece not yet decoded may still need
+    /// (module docs, What is held). Bounded whatever the length of the stream.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.audio.len()
+    }
+
+    /// Lets go of the audio before the frontier: no piece still to come starts before it
+    /// (module docs, What is held), and decoded pieces are never decoded again.
+    fn release(&mut self) {
+        let keep_from = self.frontier.min(self.total);
+        if keep_from > self.kept_from {
+            self.audio.drain(..keep_from - self.kept_from);
+            self.kept_from = keep_from;
+        }
     }
 
     /// The counts so far.
@@ -363,6 +413,7 @@ impl PieceStream {
         let (settled, frontier) = settle(&self.probs, self.frame, &self.config);
         self.decode_new(transcriber, &settled, cancel, on_piece)?;
         self.frontier = self.frontier.max(frontier);
+        self.release();
         Ok(())
     }
 
@@ -437,6 +488,13 @@ impl PieceStream {
             ));
         }
         for &piece in &plan[self.decoded.len()..] {
+            if piece.start < self.kept_from || piece.end > self.total {
+                // Never expected: every piece still to come starts at or after the
+                // frontier, and audio is released only before it.
+                return Err(AsrError::Config(
+                    "piece stream: a piece lies outside the audio held".into(),
+                ));
+            }
             let from = piece.start - self.kept_from;
             let to = piece.end - self.kept_from;
             let before = self.decoder.report().clone();

@@ -1617,7 +1617,12 @@ where
                     if self.holding() {
                         self.hold_audio(audio.track, &audio.samples);
                     }
-                    // The worker stops itself when it next takes its queue (`worker` docs).
+                    // Said as soon as what was sent and is not decoded yet passes the cap. That
+                    // counts the audio of the decode in progress, so the worker itself stops
+                    // (when it next takes its queue) only if what waits then is past the cap on
+                    // its own: a worker whose decode returns in time goes on transcribing, with
+                    // this state already said. Past the cap and a margin the worker is sent no
+                    // more audio, and its stop is then certain (`worker` docs, T14.21).
                     if over_cap {
                         self.set_transcript_state(LiveTranscriptState::Stopped);
                     }

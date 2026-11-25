@@ -590,6 +590,35 @@ mod tests {
     }
 
     #[test]
+    fn a_token_probability_that_is_no_number_gives_its_word_no_confidence() {
+        // T14.23: whisper.cpp can hand out NaN (a model fault). `clamp` keeps NaN, so the
+        // word's probability would be NaN; it is 0, and the word's text and times are those of
+        // the same tokens with numbers.
+        let with = |p: f32| {
+            let tokens = [
+                special("[_BEG_]", 0),
+                tok(" He", 10, 20, p),
+                tok("llo", 20, 30, 0.7),
+                tok(" world", 40, 60, 0.8),
+                special("[_TT_61]", 61),
+            ];
+            assemble_words(&tokens, 0, 100, TOKENS)
+        };
+        let want = with(0.9);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let got = with(bad);
+            assert_eq!(texts(&got), texts(&want));
+            for (g, w) in got.iter().zip(&want) {
+                assert_eq!((g.start, g.end), (w.start, w.end));
+                assert!(g.probability.is_finite(), "{bad}: {}", g.probability);
+                assert!((0.0..=1.0).contains(&g.probability));
+            }
+            assert_eq!(got[1].probability, want[1].probability);
+        }
+        assert_eq!(with(f32::NAN)[0].probability.to_bits(), 0f32.to_bits());
+    }
+
+    #[test]
     fn tokens_join_into_words_on_leading_spaces() {
         let tokens = [
             special("[_BEG_]", 0),
