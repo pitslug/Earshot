@@ -179,6 +179,8 @@ describe("Settings, Audio", () => {
     expect(options).toEqual([SIGNAL_LABEL.Automatic, SIGNAL_LABEL.Processed, SIGNAL_LABEL.Raw]);
     expect(screen.getByRole("radio", { name: SIGNAL_LABEL.Automatic })).toBeChecked();
     expect(SIGNAL_LABEL.Automatic).toContain("raw in the room, Windows' processing in calls");
+    // Automatic says what happens when the microphone cannot give raw: no message.
+    expect(SIGNAL_DESCRIPTION).toContain("on Automatic it is recorded with the processing without a message");
     for (const label of Object.values(SIGNAL_LABEL)) expect(label).not.toContain("\u2014");
     // A choice applies at once: no Save button on the page part.
     expect(screen.queryByRole("button", { name: /save/i })).toBeNull();

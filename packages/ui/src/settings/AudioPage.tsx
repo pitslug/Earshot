@@ -87,7 +87,7 @@ export const SIGNAL_LABEL: Record<MicSignal, string> = {
 
 /** What the sound processing setting does. */
 export const SIGNAL_DESCRIPTION =
-  "Some computers clean up the microphone before Earshot hears it. In a call that can leave echo of the other side under your name, and in a room it can treat people further away as noise. Raw skips that, where the microphone allows it. If you choose raw and the microphone does not allow it, it is recorded with the processing and the meeting says so. Run the audio check again after you change this.";
+  "Some computers clean up the microphone before Earshot hears it. In a call that can leave echo of the other side under your name, and in a room it can treat people further away as noise. Raw skips that, where the microphone allows it. If you choose raw and the microphone does not allow it, it is recorded with the processing and the meeting says so; on Automatic it is recorded with the processing without a message. Run the audio check again after you change this.";
 
 /** The option text of the Windows default, naming the device it is now. */
 export function defaultLabel(devices: DeviceItem[]): string {
