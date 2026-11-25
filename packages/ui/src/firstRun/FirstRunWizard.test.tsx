@@ -307,8 +307,11 @@ describe("First run wizard", () => {
 
     it("Next saves a typed endpoint and ticks it, with no Save button", async () => {
       const s = setup();
-      const form = within(await screen.findByRole("group", { name: "Your own server" }));
+      const group = await screen.findByRole("group", { name: "Your own server" });
+      const form = within(group);
       expect(form.queryByRole("button", { name: /endpoint/ })).toBeNull();
+      // The wizard keeps the writers' setup sections open, with no caret to fold them (T12.96).
+      expect(group.querySelector("button[aria-expanded]")).toBeNull();
       await s.user.type(form.getByRole("textbox", { name: /^Address/ }), "http://127.0.0.1:8080/v1");
       await s.user.type(form.getByRole("textbox", { name: /^Model/ }), "local");
       await s.user.click(button("Next"));

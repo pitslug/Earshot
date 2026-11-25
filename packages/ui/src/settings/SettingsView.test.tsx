@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { type Ipc, IpcFailure, type MockIpcData, ORDER_COPY, createMockIpc, fillCopy } from "../ipc";
 import { DOWNLOADING_MESSAGE, MOCK_DISPLAY_NAMES, MODEL_STEP_MS } from "../ipc/mockModels";
-import { renderApp } from "../test/app";
+import { openSetup, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./SettingsView";
 import { formatSize } from "./copy";
@@ -191,21 +191,22 @@ describe("Settings", () => {
     }
     // The writers' own parts on Summaries: the endpoint (with the Anthropic key) and the two CLIs.
     await goTo(s, "Summaries");
-    // The endpoint is not set up, so its form shows below the list of writers (T12.68).
-    const form = await screen.findByRole("group", { name: "Your own server" });
+    // The endpoint is not set up, so its form is below the list of writers (T12.68), in a section
+    // folded away until opened (T12.96): open each writer's section before reading its parts.
+    const form = await openSetup(s.user, "Your own server");
     await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
     checkPage();
     const tick = (writer: string) =>
       screen.getByRole("checkbox", { name: fillCopy(ORDER_COPY.page.use, { writer }) });
     await s.user.click(tick(ORDER_COPY.steps.claude_code));
-    const claude = await screen.findByRole("group", { name: "Claude through Claude Code" });
+    const claude = await openSetup(s.user, "Claude through Claude Code");
     checkPage();
     // The model and effort lists apply at once; only Other's typed name has a Save button.
     await s.user.selectOptions(within(claude).getByRole("combobox", { name: "Model" }), "Other");
     within(claude).getByRole("button", { name: "Save model" });
     checkPage();
     await s.user.click(tick(ORDER_COPY.steps.codex));
-    const codex = await screen.findByRole("group", { name: "OpenAI through Codex" });
+    const codex = await openSetup(s.user, "OpenAI through Codex");
     checkPage();
     await s.user.selectOptions(within(codex).getByRole("combobox", { name: "Model" }), "Other");
     within(codex).getByRole("button", { name: "Save model" });
