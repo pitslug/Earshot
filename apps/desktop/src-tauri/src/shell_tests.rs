@@ -803,6 +803,45 @@ fn shell_a_start_with_no_started_event_still_ends() {
 }
 
 #[test]
+fn shell_a_start_whose_meeting_is_already_over_does_not_say_earshot_is_listening() {
+    // T14.5 review: the meeting died before its `Started` and its last event came before the
+    // driver's answer. The start ended there, and "Earshot is listening" would be false.
+    let mut t = PhaseTracker::default();
+    assert!(t.begin_start());
+    t.apply(&summary_of("m8"));
+    assert!(t.start_reported("m8"));
+    assert_eq!(started_toast(t.phase()), None);
+    // The same behind an older meeting that still finishes.
+    let mut t = PhaseTracker::default();
+    t.apply(&started());
+    t.apply(&ended());
+    assert!(t.begin_start());
+    t.apply(&summary_of("m2"));
+    assert!(t.start_reported("m2"));
+    assert_eq!(t.phase(), Phase::Finishing);
+    assert_eq!(started_toast(t.phase()), None);
+    // A meeting so short that it started and ended before the answer.
+    let mut t = PhaseTracker::default();
+    assert!(t.begin_start());
+    t.apply(&started());
+    t.apply(&ended());
+    assert!(!t.start_reported("m1"));
+    assert_eq!(started_toast(t.phase()), None);
+
+    // A meeting that records, in either order of its `Started` and the answer, says so.
+    let mut t = PhaseTracker::default();
+    assert!(t.begin_start());
+    t.apply(&started());
+    assert!(!t.start_reported("m1"));
+    assert_eq!(started_toast(t.phase()), Some(listening_toast()));
+    let mut t = PhaseTracker::default();
+    assert!(t.begin_start());
+    assert!(!t.start_reported("m1"));
+    assert_eq!(t.phase(), Phase::Starting);
+    assert_eq!(started_toast(t.phase()), Some(listening_toast()));
+}
+
+#[test]
 fn shell_a_reported_start_changes_nothing_for_a_meeting_that_started() {
     let mut t = PhaseTracker::default();
     assert!(t.begin_start());

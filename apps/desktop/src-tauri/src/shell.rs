@@ -579,6 +579,16 @@ pub fn listening_toast() -> Toast {
     }
 }
 
+/// The notification after the driver answered the tray's or the shortcut's start, by the phase
+/// the tracker is in once it heard the answer ([`PhaseTracker::start_reported`]):
+/// [`listening_toast`] while the meeting starts or records, nothing for one that is already over
+/// (it ended with no `Started`, or it was that short). Nobody is being recorded then, and its
+/// own end says how it went.
+#[must_use]
+pub fn started_toast(phase: Phase) -> Option<Toast> {
+    matches!(phase, Phase::Starting | Phase::Recording).then(listening_toast)
+}
+
 /// The notification when a recording ends for `reason` with no window on screen, so a stop by the
 /// shortcut is confirmed before the summary arrives; `None` after the call-end stop or a meeting that
 /// stopped because no track could record, whose own notification already said it
@@ -1131,12 +1141,17 @@ impl Shell {
             Ok(meeting) => {
                 // Its `Started` usually came first; one that ended without it still ends the
                 // start (T14.5).
-                let changed = self.tracker().start_reported(&meeting);
+                let (changed, phase) = {
+                    let mut tracker = self.tracker();
+                    (tracker.start_reported(&meeting), tracker.phase())
+                };
                 if changed {
                     self.refresh_tray();
                 }
-                if !self.window_watched() {
-                    self.notify(&listening_toast(), None);
+                if let Some(toast) = started_toast(phase)
+                    && !self.window_watched()
+                {
+                    self.notify(&toast, None);
                 }
             }
             Err(e) => self.start_failed(e.message),
