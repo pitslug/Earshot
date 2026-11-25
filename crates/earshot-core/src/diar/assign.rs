@@ -720,6 +720,7 @@ mod tests {
     fn diar_assign_sweep_gives_the_scan_s_speaker_for_every_span() {
         let mut g = Gen(0x9E37_79B9_7F4A_7C15);
         let (mut gaps, mut zero, mut touching, mut checked) = (0, 0, 0, 0);
+        let (mut ties, mut prev_decides, mut restarts, mut inverted) = (0, 0, 0, 0);
         for case in 0..1500 {
             let span = 2000 + g.below(20_000);
             let speakers = 1 + g.below(5);
@@ -727,15 +728,38 @@ mod tests {
             let turns = gen_turns(&mut g, speakers, count, span);
             let count = g.count(80);
             let words = gen_words(&mut g, count, case % 3 == 0);
-            assert_eq!(
-                assign_words(&words, &turns),
-                reference_assign(&words, &turns),
-                "case {case}"
-            );
+            let expected = reference_assign(&words, &turns);
+            assert_eq!(assign_words(&words, &turns), expected, "case {case}");
             checked += words.len();
+            // Words judged beside a turn that ends before it starts.
+            if turns.iter().any(|t| t.end < t.start) {
+                inverted += words.len();
+            }
             // How often the harder paths came up, so the generator is known to reach them.
-            for w in &words {
+            for (i, w) in words.iter().enumerate() {
                 let (s, e) = (w.start.as_millis(), w.end.as_millis());
+                // A span starting before the one before it restarts the sweep.
+                restarts += usize::from(i > 0 && w.start < words[i - 1].start);
+                // Overlap ties between speakers, and those the previous word's speaker
+                // decides (it is tied and is not the lowest tied index).
+                let n = turns.iter().map(|t| t.speaker + 1).max().unwrap_or(0);
+                let mut overlap = vec![0u64; n];
+                for t in &turns {
+                    let (ts, te) = (t.start.as_millis(), t.end.as_millis());
+                    overlap[t.speaker] += if e > s {
+                        e.min(te).saturating_sub(s.max(ts))
+                    } else {
+                        u64::from(ts <= s && s < te)
+                    };
+                }
+                let best = overlap.iter().copied().max().unwrap_or(0);
+                let tied: Vec<usize> = (0..n).filter(|&k| best > 0 && overlap[k] == best).collect();
+                if tied.len() > 1 {
+                    ties += 1;
+                    let prev = expected[..i].iter().rev().find_map(|k| *k);
+                    prev_decides +=
+                        usize::from(prev.is_some_and(|p| tied.contains(&p) && p != tied[0]));
+                }
                 let inside = turns.iter().any(|t| {
                     let (ts, te) = (t.start.as_millis(), t.end.as_millis());
                     if e > s {
@@ -755,6 +779,16 @@ mod tests {
         assert!(
             touching > 500,
             "only {touching} words touching a turn boundary"
+        );
+        assert!(ties > 1000, "only {ties} overlap ties between speakers");
+        assert!(
+            prev_decides > 400,
+            "only {prev_decides} ties the previous speaker decides"
+        );
+        assert!(restarts > 2500, "only {restarts} sweep restarts");
+        assert!(
+            inverted > 7000,
+            "only {inverted} words beside an inverted turn"
         );
     }
 

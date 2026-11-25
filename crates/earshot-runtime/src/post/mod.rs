@@ -801,6 +801,21 @@ pub struct PostProcessor<T, S, E> {
     /// ONNX Runtime threads of the speaker models; live speaker windows are reused only
     /// when they were computed with the same count ([`PostProcessor::with_speaker_threads`]).
     speaker_threads: Option<usize>,
+    /// Tests only: runs between the labelling before the write transaction and the
+    /// transaction itself (T14.48), so a test can change the edited lines in between.
+    #[cfg(test)]
+    before_write: Option<BeforeWrite>,
+}
+
+/// Tests only: [`PostProcessor::with_before_write`]'s hook.
+#[cfg(test)]
+struct BeforeWrite(Box<dyn FnMut(&Services) + Send>);
+
+#[cfg(test)]
+impl fmt::Debug for BeforeWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("BeforeWrite")
+    }
 }
 
 /// The speech detector and settings for piece-wise final-pass decoding.
@@ -1163,7 +1178,18 @@ where
             config,
             pieces: None,
             speaker_threads: None,
+            #[cfg(test)]
+            before_write: None,
         })
+    }
+
+    /// Tests only: `hook` runs after the labelling before the write transaction and before
+    /// the transaction (T14.48).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_before_write(mut self, hook: Box<dyn FnMut(&Services) + Send>) -> Self {
+        self.before_write = Some(BeforeWrite(hook));
+        self
     }
 
     /// The diarisation settings the final pass runs with (tests).
@@ -1512,6 +1538,10 @@ where
             let mut next_id = || EntityId::generate(&*clock, &mut *rng);
             label_tracks(transcripts.clone(), edited, &meeting_diar, &mut next_id)
         };
+        #[cfg(test)]
+        if let Some(BeforeWrite(hook)) = self.before_write.as_mut() {
+            hook(services);
+        }
 
         // 4-5. Naming and persistence in one transaction.
         let threshold = self.voiceprint_threshold;
