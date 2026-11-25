@@ -303,6 +303,14 @@ impl SyncThread {
         cv.notify_all();
     }
 
+    /// The thread's client, for a host's own asks of the relay beside the thread's ticks
+    /// ([`SyncClient::vault_devices`], T14.50): one HTTP client and runtime for both, in place
+    /// of a new client for every ask. It stays usable after the thread has ended.
+    #[must_use]
+    pub fn client(&self) -> Arc<SyncClient> {
+        Arc::clone(&self.client)
+    }
+
     /// What ends this thread when another takes its place ([`Superseder`]).
     #[must_use]
     pub fn superseder(&self) -> Superseder {

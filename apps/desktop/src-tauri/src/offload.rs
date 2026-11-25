@@ -457,7 +457,7 @@ pub fn helpers_view(services: &Services, host: &SyncHost) -> Result<SummaryHelpe
     if !ready {
         return Ok(only_chosen(None));
     }
-    let devices = match earshot_runtime::sync::vault_devices(services, host.vault()) {
+    let devices = match host.list_devices(services) {
         Ok(d) => d,
         Err(p) => {
             return Ok(only_chosen(Some(

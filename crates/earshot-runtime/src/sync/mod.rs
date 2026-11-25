@@ -880,17 +880,16 @@ pub fn vault_devices(
     services: &Services,
     vault: std::sync::Arc<dyn SyncVault>,
 ) -> Result<Vec<SyncDevice>, SyncProblem> {
-    let secrets = vault.load()?.ok_or(SyncProblem::Vault)?;
-    let client = SyncClient::new(services.clone(), vault)?;
-    let me = *client.device().as_uuid().as_bytes();
-    let answer = client.relay().vault(&secrets.token)?;
-    let peers = client.peers()?;
-    Ok(devices_of(me, answer, &peers))
+    // Not set up is said before any client is made.
+    if !vault.has()? {
+        return Err(SyncProblem::Vault);
+    }
+    SyncClient::new(services.clone(), vault)?.vault_devices()
 }
 
 /// The vault's devices as the relay lists them, this device first, each with what its presence
 /// says.
-fn devices_of(
+pub(crate) fn devices_of(
     me: [u8; 16],
     answer: earshot_sync::wire::VaultResponse,
     peers: &[Peer],

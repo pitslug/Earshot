@@ -146,9 +146,17 @@ pub struct SyncHost {
     /// moment a new thread starts, which then owns that work (T14.45 review). Taken alone,
     /// never with the slot or the store.
     retired: Mutex<Vec<Superseder>>,
+    /// The client the pages ask the server through while no sync thread is in place (sync is
+    /// off, or it never started), made at the first such ask and kept (T14.50: the open Sync
+    /// page asks every few seconds). Dropped whenever the thread is started or this computer is
+    /// removed, so it never outlives the address it was made for. Taken alone, after the slot.
+    spare: Mutex<Option<Arc<SyncClient>>>,
     /// Tests: the next threads cannot be started, as when the system has no thread to give.
     #[cfg(test)]
     refuse_start: std::sync::atomic::AtomicBool,
+    /// Tests: how many clients were made for the pages' asks.
+    #[cfg(test)]
+    spares_made: std::sync::atomic::AtomicUsize,
 }
 
 /// What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
@@ -198,9 +206,62 @@ impl SyncHost {
             offload: Mutex::new(None),
             changes: Mutex::new(None),
             retired: Mutex::new(Vec::new()),
+            spare: Mutex::new(None),
             #[cfg(test)]
             refuse_start: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            spares_made: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    fn spare(&self) -> std::sync::MutexGuard<'_, Option<Arc<SyncClient>>> {
+        self.spare.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// How many clients were made for the pages' asks (tests).
+    #[cfg(test)]
+    pub fn spares_made_for_test(&self) -> usize {
+        self.spares_made.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The client a page asks the server through (T14.50): the sync thread's own when a thread
+    /// is in place (running, or ended on a problem: its client still answers), else one kept
+    /// for the pages. Never a new client for every ask: each has its own HTTP client and
+    /// runtime, and the open Sync page asks every few seconds.
+    ///
+    /// Using the thread's client beside its ticks is safe: an ask reads the vault and makes its
+    /// requests, and takes neither the tick lock nor any lock of the thread's
+    /// ([`SyncClient::vault_devices`]). The slot is not held while asking.
+    fn page_client(&self, services: &Services) -> Result<Arc<SyncClient>, SyncProblem> {
+        let running = self.slot().as_ref().map(SyncThread::client);
+        if let Some(client) = running {
+            return Ok(client);
+        }
+        let mut spare = self.spare();
+        if let Some(client) = spare.as_ref() {
+            return Ok(Arc::clone(client));
+        }
+        let client = Arc::new(SyncClient::new(services.clone(), self.vault())?);
+        #[cfg(test)]
+        self.spares_made
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *spare = Some(Arc::clone(&client));
+        Ok(client)
+    }
+
+    /// The vault's devices, from the server ([`earshot_runtime::sync::vault_devices`]), asked
+    /// through [`Self::page_client`].
+    ///
+    /// # Errors
+    /// [`SyncProblem::Vault`] when this computer is not set up; the relay's problems.
+    pub fn list_devices(
+        &self,
+        services: &Services,
+    ) -> Result<Vec<earshot_runtime::sync::SyncDevice>, SyncProblem> {
+        if !self.vault.has()? {
+            return Err(SyncProblem::Vault);
+        }
+        self.page_client(services)?.vault_devices()
     }
 
     fn retired(&self) -> std::sync::MutexGuard<'_, Vec<Superseder>> {
@@ -299,6 +360,10 @@ impl SyncHost {
     }
 
     fn start_locked(&self, services: &Services) {
+        // Whatever follows, the pages' own client is made anew when next needed: the address
+        // may be another (this runs after setting up and joining), and a thread about to start
+        // brings its own.
+        *self.spare() = None;
         let on = {
             let db = services.store();
             earshot_runtime::sync::sync_settings(&db).is_ok_and(|s| s.on)
@@ -575,7 +640,8 @@ pub struct SyncDeviceView {
 /// # Errors
 /// Fixed copy of the problem.
 pub fn devices(services: &Services, host: &SyncHost) -> Result<Vec<SyncDeviceView>, IpcError> {
-    Ok(earshot_runtime::sync::vault_devices(services, host.vault())
+    Ok(host
+        .list_devices(services)
         .map_err(sync_error)?
         .into_iter()
         .inspect(|d| {
@@ -764,6 +830,8 @@ pub fn remove(services: &Services, host: &SyncHost) -> Result<SyncView, IpcError
         // No start may slip in between the stop and the deletions.
         let _lifecycle = host.lifecycle();
         host.stop_and_wait_locked();
+        // The pages' own client was made for the address this computer is leaving.
+        *host.spare() = None;
         let removed = earshot_runtime::sync::remove_this_device(services, host.vault());
         if removed.is_err() {
             // Still set up: carry on syncing.

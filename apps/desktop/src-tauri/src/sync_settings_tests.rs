@@ -669,6 +669,68 @@ fn sync_other_online_within(b: &Computer, want: bool, limit: Duration) -> bool {
     }
 }
 
+/// T14.50: the open Sync page asks for the computers every few seconds. No ask makes a client
+/// of its own (each has its own HTTP client and runtime): with a sync thread in place the
+/// thread's client is used, without one a single client is kept for the pages, and it never
+/// outlives the address it was made for.
+#[test]
+fn sync_devices_are_asked_through_the_threads_client_or_one_kept_for_the_pages() {
+    let env = relay();
+    let a = computer("sync-page-client");
+    // Not set up: said before any client is made.
+    let not_set_up = devices(&a.svc, &a.host).unwrap_err();
+    assert_eq!(not_set_up.message, command_copy(SyncProblem::Vault));
+    assert_eq!(a.host.spares_made_for_test(), 0);
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    assert!(a.host.running());
+    // A thread is in place: its client answers, ask after ask, beside its ticks.
+    for _ in 0..5 {
+        let list = devices(&a.svc, &a.host).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].this_device);
+    }
+    assert_eq!(
+        a.host.spares_made_for_test(),
+        0,
+        "the thread's client was used"
+    );
+    // Turned off: no thread. The first ask makes the pages' client, the later ones use it.
+    set_on(&a.svc, &a.host, false).unwrap();
+    assert!(!a.host.running());
+    for _ in 0..5 {
+        assert_eq!(devices(&a.svc, &a.host).unwrap().len(), 1);
+    }
+    assert_eq!(a.host.spares_made_for_test(), 1, "one client for five asks");
+    // The Summaries page's list of computers asks the same way.
+    let helpers = crate::offload::helpers_view(&a.svc, &a.host).unwrap();
+    assert!(!helpers.sync_ready, "sync is off: nothing is asked");
+    // Turned on again: the thread's client again, and the pages' own is dropped with the start.
+    set_on(&a.svc, &a.host, true).unwrap();
+    assert!(a.host.running());
+    assert_eq!(devices(&a.svc, &a.host).unwrap().len(), 1);
+    assert!(
+        crate::offload::helpers_view(&a.svc, &a.host)
+            .unwrap()
+            .sync_ready
+    );
+    assert_eq!(a.host.spares_made_for_test(), 1);
+    set_on(&a.svc, &a.host, false).unwrap();
+    assert_eq!(devices(&a.svc, &a.host).unwrap().len(), 1);
+    assert_eq!(a.host.spares_made_for_test(), 2, "made anew after a start");
+    // Removed: the pages' client goes with the address, and the list has nothing to ask.
+    remove(&a.svc, &a.host).unwrap();
+    let removed = devices(&a.svc, &a.host).unwrap_err();
+    assert_eq!(removed.message, command_copy(SyncProblem::Vault));
+    assert_eq!(a.host.spares_made_for_test(), 2);
+    // Set up again, at another relay, and off: the pages' client is the new address's.
+    let other = relay();
+    set_up(&a.svc, &a.host, &other.relay.url(), SECRET).unwrap();
+    set_on(&a.svc, &a.host, false).unwrap();
+    assert_eq!(devices(&a.svc, &a.host).unwrap().len(), 1);
+    assert_eq!(a.host.spares_made_for_test(), 3);
+    a.host.stop_and_wait();
+}
+
 #[cfg(windows)]
 #[test]
 fn sync_sleep_says_gone_at_once_and_resume_says_online_again() {

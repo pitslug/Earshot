@@ -739,6 +739,27 @@ impl SyncClient {
             .collect())
     }
 
+    /// [`super::vault_devices`] through this client (T14.50): a host that lists the devices
+    /// again and again (the open Sync page) asks through a client it already has, the running
+    /// sync thread's when there is one, instead of making one, with its own HTTP client and
+    /// runtime, for every ask.
+    ///
+    /// Safe beside a tick of this client on another thread: it reads the vault and makes two
+    /// requests, and takes neither the tick lock, the store lock nor any lock of the sync
+    /// thread's, so a tick never waits for it and it never waits for a tick. The relay's
+    /// requests of both go through one HTTP client and runtime, which serve callers on several
+    /// threads at once (the sync thread's gone presence already does).
+    ///
+    /// # Errors
+    /// As [`super::vault_devices`].
+    pub fn vault_devices(&self) -> Result<Vec<super::SyncDevice>, SyncProblem> {
+        let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
+        let me = *self.device.as_uuid().as_bytes();
+        let answer = self.relay.vault(&secrets.token)?;
+        let peers = self.peers()?;
+        Ok(super::devices_of(me, answer, &peers))
+    }
+
     /// The flag that ends a tick at its next page.
     pub(crate) fn stop_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.stop)

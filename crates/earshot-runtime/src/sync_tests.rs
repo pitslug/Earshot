@@ -5057,5 +5057,74 @@ fn sync_a_clients_first_page_runs_every_repair_and_later_pages_only_their_own() 
     assert_eq!(live_mes(&b), 1);
 }
 
+/// T14.50: the list of computers is asked through a client the host already has (the sync
+/// thread's), the same list as a client made for the ask gives, also while that client's tick
+/// is in progress and holds the store's tick lock, and with ticks and asks at once.
+#[test]
+fn sync_the_device_list_is_asked_through_a_client_beside_its_ticks() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    set_device_name(&b.svc, "Invented laptop").unwrap();
+    b.client().send_presence(false).unwrap();
+    let seen_ignored = |mut list: Vec<SyncDevice>| {
+        for d in &mut list {
+            d.seen_s_ago = 0;
+        }
+        list
+    };
+    let afresh = seen_ignored(vault_devices(&a.svc, a.vault()).unwrap());
+    assert_eq!(afresh.len(), 2);
+    assert_eq!(afresh[1].name.as_deref(), Some("Invented laptop"));
+
+    // The client's own tick asks for the list from another thread, as a page's command does,
+    // while the tick is in progress.
+    let this: Arc<std::sync::OnceLock<std::sync::Weak<SyncClient>>> = Arc::default();
+    let inside: Arc<std::sync::Mutex<Vec<Result<Vec<SyncDevice>, SyncProblem>>>> = Arc::default();
+    let client = {
+        let (this, inside) = (Arc::clone(&this), Arc::clone(&inside));
+        Arc::new(a.client().with_in_tick(Arc::new(move || {
+            let client = this.get().and_then(std::sync::Weak::upgrade);
+            let Some(client) = client else { return };
+            let asked = std::thread::spawn(move || client.vault_devices())
+                .join()
+                .expect("the ask did not panic");
+            inside.lock().unwrap().push(asked);
+        })))
+    };
+    this.set(Arc::downgrade(&client)).unwrap();
+    assert_eq!(seen_ignored(client.vault_devices().unwrap()), afresh);
+    meeting(&a.svc, "Planning", 1);
+    client.tick().unwrap();
+    let asked_inside: Vec<_> = inside
+        .lock()
+        .unwrap()
+        .drain(..)
+        .map(|r| r.map(seen_ignored))
+        .collect();
+    assert_eq!(
+        asked_inside,
+        vec![Ok(afresh.clone())],
+        "asked while a tick held the store's tick lock"
+    );
+
+    // Ticks on one thread and asks on another, at once, through the one client.
+    let ticking = {
+        let client = Arc::clone(&client);
+        std::thread::spawn(move || {
+            for _ in 0..15 {
+                client.tick().unwrap();
+            }
+        })
+    };
+    for _ in 0..15 {
+        assert_eq!(seen_ignored(client.vault_devices().unwrap()), afresh);
+    }
+    ticking.join().unwrap();
+    // The asks inside those ticks all answered too.
+    assert_eq!(inside.lock().unwrap().len(), 15);
+    assert!(inside.lock().unwrap().iter().all(Result::is_ok));
+    assert_only_the_relay(&client, &relay);
+}
+
 #[path = "sync_edit_tests.rs"]
 mod edits;

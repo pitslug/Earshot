@@ -7,11 +7,12 @@
 import { useEffect, useState } from "react";
 
 import { type SyncCodeView, type SyncDeviceView, type SyncView, errorText, useIpc } from "../ipc";
+import { useWindowWatched } from "../shell/windowWatched";
 import type { Timer } from "../time";
 import { type Load, useLoad } from "./parts";
 
-/** How often the open Sync page asks for the computers again, so one that quits, sleeps or comes
- * back shows without leaving the page (the 0.4.2 test, 2026-11-25). */
+/** How often the open Sync page asks for the computers again while the window is watched, so one
+ * that quits, sleeps or comes back shows without leaving the page (the 0.4.2 test, 2026-11-25). */
 export const DEVICES_REFRESH_MS = 10_000;
 
 /** One of the two forms for a computer that is not set up. */
@@ -82,11 +83,16 @@ export function useSync(timer: Timer): SyncPageState {
   }, [code, timer]);
 
   const setUp = load.status === "loaded" && load.view.set_up;
+  // The server is asked only while the window is watched (T14.50): hidden in the tray, minimised
+  // or behind another window, the open page asks nothing, and it asks at once when it is watched
+  // again (this effect runs anew), so the list is never older than the last look at it.
+  const watched = useWindowWatched();
   useEffect(() => {
     if (!setUp) {
       setDevices(null);
       return;
     }
+    if (!watched) return;
     let live = true;
     setDevices((d) => d ?? { status: "loading" });
     void ipc.syncDevices().then(
@@ -100,14 +106,15 @@ export function useSync(timer: Timer): SyncPageState {
     return () => {
       live = false;
     };
-  }, [ipc, setUp, devicesAsked]);
+  }, [ipc, setUp, watched, devicesAsked]);
 
-  // While the page is open the computers are asked for again, so one that quits, sleeps or
-  // comes back shows without leaving the page; leaving the page stops it.
+  // While the page is open and the window is watched the computers are asked for again, so one
+  // that quits, sleeps or comes back shows without leaving the page; leaving the page, or the
+  // window no longer being watched, stops it.
   useEffect(() => {
-    if (!setUp) return;
+    if (!setUp || !watched) return;
     return timer.setInterval(() => setDevicesAsked((n) => n + 1), DEVICES_REFRESH_MS);
-  }, [setUp, timer]);
+  }, [setUp, watched, timer]);
 
   const shown = (view: SyncView) => setLoad({ status: "loaded", view });
 

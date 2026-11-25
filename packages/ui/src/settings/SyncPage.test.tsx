@@ -11,6 +11,7 @@ import { type SyncDeviceView, type SyncMockData, createMockIpc } from "../ipc";
 import { mockDeviceId } from "../ipc/mockSync";
 import { MOCK_SYNC_CODE, MOCK_SYNC_SECRET } from "../ipc/mockSync";
 import { openSettings, renderApp } from "../test/app";
+import { setWindowWatched } from "../test/windowWatched";
 import { createManualTimer } from "../time";
 import offload from "../../../../fixtures/ui/offload_copy_cases.json";
 import { DEVICE_NAME_TOO_LONG } from "../ipc/mockSync";
@@ -257,6 +258,64 @@ describe("the Sync page", () => {
     const before = asked.length;
     act(() => timer.advance(DEVICES_REFRESH_MS * 3));
     expect(asked).toHaveLength(before);
+  });
+
+  it("asks for the computers only while the window is watched, and at once when it is again (T14.50)", async () => {
+    const answer = [{ ...device("3f2a9c1e", true), seen_s_ago: 0 }, { ...device("b71d04a8", false), name: "Laptop" }];
+    const asked: number[] = [];
+    const timer = createManualTimer(1_000_000);
+    const ipc = createMockIpc({ meetings: [], timer, sync: { setUp: true } });
+    renderApp(
+      {
+        ...ipc,
+        syncDevices: async () => {
+          asked.push(asked.length);
+          return answer.map((d) => ({ ...d }));
+        },
+      },
+      { timer },
+    );
+    const user = userEvent.setup();
+    await openSettings(user, "Sync");
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getByText("Laptop")).toBeInTheDocument();
+    expect(asked).toHaveLength(1);
+    // The ask is made in the same turn the timer fires in, so a count read right after one
+    // says whether it was made.
+    act(() => timer.advance(DEVICES_REFRESH_MS));
+    expect(asked).toHaveLength(2);
+    // Hidden to the tray: nothing is asked, however long the page stays open there, and the
+    // list stays as it was.
+    act(() => setWindowWatched(false, false, true));
+    act(() => timer.advance(DEVICES_REFRESH_MS * 5));
+    expect(asked).toHaveLength(2);
+    expect(within(list).getByText("Laptop")).toBeInTheDocument();
+    // Watched again: asked at once, not at the next interval, and then every interval as before.
+    act(() => setWindowWatched(true, true, true));
+    expect(asked).toHaveLength(3);
+    act(() => timer.advance(DEVICES_REFRESH_MS - 1));
+    expect(asked).toHaveLength(3);
+    act(() => timer.advance(1));
+    expect(asked).toHaveLength(4);
+    // Visible but behind another window (not focused) is not watched either.
+    act(() => setWindowWatched(true, false, true));
+    act(() => timer.advance(DEVICES_REFRESH_MS * 3));
+    expect(asked).toHaveLength(4);
+    act(() => setWindowWatched(true, true, true));
+    expect(asked).toHaveLength(5);
+    await waitFor(() => expect(within(list).getByText("Laptop")).toBeInTheDocument());
+  });
+
+  it("asks for nothing when the page opens in a window that is not watched, until it is", async () => {
+    setWindowWatched(false, false);
+    const { calls } = await setup({ setUp: true });
+    await screen.findByRole("switch", { name: "Sync is on" });
+    expect(calls).toContain("syncView");
+    expect(calls).not.toContain("syncDevices");
+    act(() => setWindowWatched(true, true, true));
+    expect(calls.filter((c) => c === "syncDevices")).toHaveLength(1);
+    const list = await screen.findByRole("list", { name: "Computers" });
+    expect(within(list).getByText("This computer")).toBeInTheDocument();
   });
 
   it("says this computer is online while sync runs, and not syncing when it does not", async () => {
