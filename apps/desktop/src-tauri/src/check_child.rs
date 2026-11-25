@@ -8,8 +8,9 @@
 //! which [`child_main`] handles at the very start of `main`, before Tauri is built: it opens
 //! no window and no store and never calls llama.cpp (`llama.dll` stays delay-loaded and
 //! unloaded). It initialises ONNX Runtime for the check (`host::init_onnx_for_check`), runs
-//! `model_bench::run_check` and writes one JSON line per event to stdout ([`CheckLine`]):
-//! a `warning` for a library that could not load, `testing` and `tested` per trial, then
+//! `model_bench::run_check_watched` and writes one JSON line per event to stdout ([`CheckLine`]):
+//! a `warning` for a library that could not load, `testing` and `tested` per trial with an
+//! `alive` whenever the running trial made progress (a loaded model, decodes that moved on), then
 //! exactly one final `done` (the facts, every trial and the answer) and exit 0, or one final
 //! `error` and a non-zero exit. Native libraries may print to the same stream, so every line is
 //! written after a newline with [`LINE_PREFIX`], and the parent reads no line without it (T14.11,
@@ -28,10 +29,12 @@
 //! with `host::record_model_check` (the parent owns the store). A child that ends without a
 //! final line, writes a line it cannot read, crashes or is killed is a retryable failure.
 //!
-//! A child that writes no line of the protocol for [`CHECK_STALL_LIMIT`] of time awake (a trial
-//! hung in a driver) is killed through its job and ends as a child without a final line does
-//! ([`follow`], T14.11): the check holds a pass that refuses every meeting start, so it never
-//! waits for the user to cancel it.
+//! A child that writes no line of the protocol for [`CHECK_STALL_LIMIT`] of time awake is killed
+//! through its job and ends as a child without a final line does ([`follow`], T14.11): the check
+//! holds a pass that refuses every meeting start, so it never waits for the user to cancel it.
+//! Every line is a sign of life, and a running trial writes `alive` lines from its own progress,
+//! never from a timer, so the limit means "no progress": a trial that is slow but moving is left
+//! to finish (and be judged too slow), one hung in a driver is not.
 
 use std::ffi::OsString;
 use std::io::{BufRead, Read, Write};
@@ -60,13 +63,13 @@ pub const LINE_PREFIX: &str = "earshot-model-check ";
 /// child is not well.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// How long the child may write no line of the protocol, in time awake, before it is stopped.
-/// A judgement, not a measurement: the longest quiet stretch of a healthy check is one trial
-/// (a model load and the bundled clip's decode) or the start before the first trial (the CUDA
-/// files' verification and ONNX Runtime's start), each a few minutes at worst on a slow
-/// computer, and ten minutes is what a model load is given elsewhere (the summary's
-/// `GPU_LOAD_LIMIT`, the work after a meeting). A trial that is merely slow is cut too, and the
-/// check can be run again.
+/// How long the child may make no progress, in time awake, before it is stopped: no line of
+/// the protocol, an `alive` line of a running trial included. A judgement, not a measurement:
+/// what a healthy check does without a line is one step (one model load, one engine call of a
+/// decode, the start before the first trial: the CUDA files' verification and ONNX Runtime's
+/// start), and ten minutes is what a model load is given elsewhere (the summary's
+/// `GPU_LOAD_LIMIT`, the work after a meeting). A trial that takes longer in all but keeps
+/// moving is never cut by it.
 pub const CHECK_STALL_LIMIT: Duration = Duration::from_secs(600);
 
 /// How often the parent looks at the cancel token and the stall limit.
@@ -203,6 +206,9 @@ pub enum CheckLine {
         /// The trial.
         trial: TrialLine,
     },
+    /// The running trial made progress (`model_bench::run_trial_watched`): the parent's sign of
+    /// life and nothing else. It never reaches the page.
+    Alive,
     /// Files a refused load in the child found damaged (`Catalogue::found_damaged`), written
     /// just before the final line, so the app marks them too.
     Damaged {
@@ -376,22 +382,28 @@ fn run_in_child(args: &ChildArgs, out: &mut dyn Write) -> Result<CheckLine, Stri
     if let Some(message) = choice_not_kept(args.cuda_transcription, fell_back) {
         return Err(message.into());
     }
-    let outcome = earshot_runtime::model_bench::run_check(&models, &languages, &mut |p| {
-        emit(
-            out,
-            &match p {
-                CheckProgress::Testing { model, backend } => CheckLine::Testing {
-                    model: (*model).to_owned(),
-                    backend: *backend,
-                },
-                CheckProgress::Tested { report, verdict } => CheckLine::Tested {
-                    trial: TrialLine::of(report, *verdict),
-                },
-            },
-        );
-    })
-    .map_err(|e| crate::plain_text::runtime_text(&e))?;
+    let outcome =
+        earshot_runtime::model_bench::run_check_watched(&models, &languages, &mut |step| {
+            emit(out, &step_line(&step));
+        })
+        .map_err(|e| crate::plain_text::runtime_text(&e))?;
     Ok(done_line(&outcome))
+}
+
+/// The line the child writes for a step of the check: a trial's start or end, or `alive` for
+/// the running trial's progress.
+fn step_line(step: &earshot_runtime::model_bench::CheckStep<'_>) -> CheckLine {
+    use earshot_runtime::model_bench::CheckStep;
+    match step {
+        CheckStep::Progress(CheckProgress::Testing { model, backend }) => CheckLine::Testing {
+            model: (*model).to_owned(),
+            backend: *backend,
+        },
+        CheckStep::Progress(CheckProgress::Tested { report, verdict }) => CheckLine::Tested {
+            trial: TrialLine::of(report, *verdict),
+        },
+        CheckStep::Alive => CheckLine::Alive,
+    }
 }
 
 /// What a child says when it cannot keep the parent's CUDA choice ([`choice_not_kept`]).
@@ -595,6 +607,8 @@ pub fn read_lines(
             CheckLine::Tested { trial } => {
                 events.trial(&trial.model, trial.backend, Some(trial.verdict.verdict()));
             }
+            // A sign of life (`heard`, above) and nothing for the page.
+            CheckLine::Alive => {}
             CheckLine::Damaged { artefacts } => events.damaged(artefacts),
             CheckLine::Done {
                 facts,

@@ -946,3 +946,83 @@ fn check_child_that_stalls_ends_the_job_and_frees_the_gate_for_a_meeting() {
     drop(gate.enter_meeting().expect("no check holds the gate"));
     drop(gate.enter_check().expect("the check can run again"));
 }
+
+const ALIVE: &str = r#"{"line":"alive"}"#;
+
+/// T14.11: `alive` is a line of the protocol the page never hears of, written by the child for
+/// a trial's progress and read by the parent as it is written.
+#[test]
+fn check_child_alive_lines_are_signs_of_life_and_nothing_for_the_page() {
+    use earshot_runtime::model_bench::CheckStep;
+
+    assert_eq!(serde_json::to_string(&CheckLine::Alive).unwrap(), ALIVE);
+    assert_eq!(step_line(&CheckStep::Alive), CheckLine::Alive);
+    // The page's events are those of the same lines without them; each is a sign of life.
+    let text = wire(&[TESTING, ALIVE, ALIVE, TESTED, DONE].join("\n"));
+    let mut heard = Heard::default();
+    let mut signs = 0;
+    let outcome = read_lines(Cursor::new(text.as_bytes()), &mut heard, &mut || signs += 1).unwrap();
+    assert_eq!(signs, 5);
+    assert_eq!(heard.trials.len(), 2);
+    assert!(heard.warnings.is_empty() && heard.damaged.is_empty());
+    assert_eq!(outcome.trials.len(), 2);
+    // What the child writes for it is what the parent reads.
+    let mut out: Vec<u8> = Vec::new();
+    emit(&mut out, &CheckLine::Alive);
+    emit(&mut out, &serde_json::from_str::<CheckLine>(DONE).unwrap());
+    let mut signs = 0;
+    assert!(read_lines(Cursor::new(out), &mut Heard::default(), &mut || signs += 1).is_ok());
+    assert_eq!(signs, 2);
+    // After the final line it is a line too many, as any other.
+    let (r, _) = read(&[DONE, ALIVE].join("\n"));
+    assert_eq!(r.unwrap_err().message, MORE_AFTER_LAST_LINE);
+}
+
+/// T14.11: a trial that is slow but keeps making progress is never cut, however far past the
+/// limit it runs in all; once its progress stops (and whatever a library still prints), the
+/// limit counts from its last sign of life.
+#[test]
+fn check_child_slow_trial_that_keeps_making_progress_is_not_cut_and_one_that_stops_is() {
+    let limit = CHECK_STALL_LIMIT;
+    let clock = FakeClock::default();
+    let (child, stdout) = FakeChild::start();
+    let (tx, rx) = mpsc::channel();
+    let cancel = CancelToken::new();
+    let result = std::thread::scope(|scope| {
+        let _ended = child.ended_on_drop();
+        let (awake, killed) = (clock.awake(), Arc::clone(&child));
+        let cancel = &cancel;
+        let run = scope.spawn(move || {
+            follow(
+                std::io::BufReader::new(stdout),
+                &mut Told(tx),
+                cancel,
+                &awake,
+                limit,
+                &|| killed.kill(),
+            )
+        });
+        clock.watched();
+        child.write(&format!("\n{LINE_PREFIX}{TESTING}\n"));
+        next_trial(&rx);
+        // The trial runs for five times the limit, its decodes moving on all the while.
+        let mut lines = 1;
+        for _ in 0..10 {
+            clock.stay_awake(limit / 2);
+            clock.watched();
+            child.write(&format!("\n{LINE_PREFIX}{ALIVE}\n"));
+            lines += 1;
+            clock.heard(lines);
+        }
+        assert_eq!(child.kills(), 0, "slow, and making progress");
+        // Its progress stops: a library goes on printing, which is no sign of life.
+        clock.stay_awake(limit - Duration::from_millis(1));
+        child.write("a library still talking\n");
+        clock.watched();
+        assert_eq!(child.kills(), 0, "the limit counts from the last progress");
+        clock.stay_awake(Duration::from_millis(1));
+        wait_for("the kill", || child.kills() == 1);
+        run.join().unwrap()
+    });
+    assert_eq!(result.unwrap_err(), no_final_line());
+}
