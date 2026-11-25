@@ -62,6 +62,7 @@ import {
   type MeetingListItem,
   NEWER_DATA_KIND,
   type RecoveredRecording,
+  type SummaryEvent,
   errorText,
   useIpc,
 } from "../ipc";
@@ -97,6 +98,7 @@ import {
 import { openMenuFromKeyboard } from "./menuKeys";
 import { STOPPING_TEXT, deleteQuestion, stopsWork } from "./deleteQuestion";
 import { DataFolderScreen } from "./DataFolderScreen";
+import { ErrorBar } from "./ErrorBar";
 import { NewerDataScreen } from "./NewerDataScreen";
 import { PAGE_MIN_WIDTH, SIDEBAR_MIN, SidebarSplitter, useSidebarWidth } from "./SidebarSplitter";
 
@@ -357,6 +359,15 @@ const QUIT_COPY = {
 /** Events after which the meeting list is read again. */
 const RELOAD_ON: MeetingEvent["type"][] = ["Started", "Ended", "Summary"];
 
+/** Why a meeting that ended without ever recording did not start: its result's own words when it
+ * has any, else fixed ones. */
+function neverRecordedText(result: SummaryEvent): string {
+  return "message" in result ? result.message : NEVER_RECORDED_COPY;
+}
+
+/** What the start bar says of a start that came to nothing with no reason given. */
+const NEVER_RECORDED_COPY = "The meeting ended before it began recording. Start it again.";
+
 /** `counts` with one more for `id`. */
 function countedFor(counts: Record<string, number>, id: string): Record<string, number> {
   return { ...counts, [id]: (counts[id] ?? 0) + 1 };
@@ -375,7 +386,7 @@ export function AppShell({
   // one unmounts, without undoing the aria-hidden its open modal put on the page. Deleting a
   // meeting unmounts the whole meeting view, its confirmation dialog included, so without
   // this the page stayed hidden from screen readers after a delete.
-  useFocusFinders();
+  const { findFirstFocusable } = useFocusFinders();
   const styles = useStyles();
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   const ipc = useIpc();
@@ -406,6 +417,14 @@ export function AppShell({
   // The meeting the app said it started, until its `Started` event has arrived: the meeting
   // screen shows that it is starting, not the meeting followed before it (T14.15).
   const [startingId, setStartingId] = useState<string | null>(null);
+  // The same, written as the events arrive and not on a render: an event can follow the answer
+  // before React has drawn.
+  const startingRef = useRef<string | null>(null);
+  // The meetings whose `Started` the window heard, and why each meeting that ended without one
+  // never recorded: an answer to a start can arrive after its meeting's events, and is read
+  // against these (a meeting or two per start, for the life of the window).
+  const startedIds = useRef(new Set<string>());
+  const neverRecorded = useRef(new Map<string, string>());
   // The meetings a Cancel was pressed for, each until its result.
   const [cancellingIds, setCancellingIds] = useState<string[]>([]);
   // Older meetings still finishing behind the newer one the screen follows, oldest first, each
@@ -445,6 +464,8 @@ export function AppShell({
   // A deleted row took keyboard focus with it: focus moves on once the list is read again.
   const refocusAfterDelete = useRef<string | null>(null);
   const newMeetingButton = useRef<HTMLButtonElement | null>(null);
+  // The body of a screen that has no meeting list (Settings, the wizard), while one shows.
+  const screenBody = useRef<HTMLDivElement | null>(null);
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   // The folder shown: "All meetings" (`null`) each time the app opens, never stored.
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -607,8 +628,27 @@ export function AppShell({
       // Also a meeting the tray or the shortcut started.
       setView("meeting");
       setStartError(null);
+      startedIds.current.add(event.meeting);
+      startingRef.current = null;
       setStartingId(null);
       setCallStartAsked(false);
+    }
+    // A meeting that ends without ever having sent `Started` never recorded: the app answered
+    // its start and then it failed (T14.15). Its result says why; kept in case the answer to its
+    // start arrives after it.
+    if (event.type === "Summary" && !startedIds.current.has(event.meeting)) {
+      neverRecorded.current.set(event.meeting, neverRecordedText(event.result));
+    }
+    // The start the window is waiting on is over: nothing is starting any more, and the meeting
+    // screen, which has nothing to show for it, gives way to the meeting pages.
+    if ((event.type === "Summary" || event.type === "Ended") && event.meeting === startingRef.current) {
+      startingRef.current = null;
+      setStartingId(null);
+      setView((v) => (v === "meeting" ? "detail" : v));
+      if (event.type === "Summary") {
+        neverRecorded.current.delete(event.meeting);
+        setStartError(neverRecordedText(event.result));
+      }
     }
     // Followed here, not on a render: an end and the next start can arrive before React draws.
     if (event.type === "Ended" && lastMeeting.current?.id === event.meeting) {
@@ -796,10 +836,21 @@ export function AppShell({
       setStartError(errorText(e));
       throw e;
     }
+    // Its result arrived before this answer and it never recorded: a start that failed, said as
+    // one, with the new-meeting screen usable again.
+    const never = neverRecorded.current.get(id);
+    if (never !== undefined) {
+      neverRecorded.current.delete(id);
+      setStartError(never);
+      throw new Error(never);
+    }
     // `Started` shows the meeting and may arrive before or after this answer; until it has, the
-    // meeting screen says it is starting. `lastMeeting` is written when the event arrives, not
+    // meeting screen says it is starting. `startedIds` is written when the event arrives, not
     // on a render, so it is current here.
-    if (lastMeeting.current?.id !== id) setStartingId(id);
+    if (!startedIds.current.has(id)) {
+      startingRef.current = id;
+      setStartingId(id);
+    }
     setSelectedId(id);
     setView("meeting");
   };
@@ -1129,21 +1180,36 @@ export function AppShell({
 
   if (!firstRunKnown) return quitDialog || null;
 
+  // Where focus goes when an error bar that held it goes away (its Dismiss, or a Try again that
+  // worked): back to the screen under the bar, by one rule for every such bar. With the meeting
+  // list on screen that is the row of the meeting shown, else New meeting, as after a delete;
+  // never the page's own first control, which while recording is Stop. On a screen without the
+  // list (Settings, the wizard) it is that screen's first control.
+  const focusAfterBar = () => {
+    const body = screenBody.current;
+    if (body !== null) {
+      findFirstFocusable(body)?.focus();
+      return;
+    }
+    const row = selectedId !== null ? rowButtons.current.get(selectedId) : undefined;
+    (row ?? newMeetingButton.current)?.focus();
+  };
+
   // Why a meeting could not start, on every screen (T14.15): a start from the tray or the
   // shortcut fails wherever the user is, and one from the window can fail after they left the
   // new-meeting screen.
   const startErrorBar = startError !== null && (
-    <MessageBar intent="error">
-      <MessageBarBody>
-        <MessageBarTitle>The meeting could not start</MessageBarTitle>
-        {startError}
-      </MessageBarBody>
-      <MessageBarActions>
+    <ErrorBar
+      title="The meeting could not start"
+      onGoneWithFocus={focusAfterBar}
+      actions={
         <Button size="small" appearance="transparent" onClick={() => setStartError(null)}>
           Dismiss
         </Button>
-      </MessageBarActions>
-    </MessageBar>
+      }
+    >
+      {startError}
+    </ErrorBar>
   );
 
   if (view === "first-run") {
@@ -1151,7 +1217,7 @@ export function AppShell({
       <div className={styles.wizardFrame}>
         {startErrorBar}
         {callStartBar}
-        <div className={styles.wizardBody}>
+        <div ref={screenBody} className={styles.wizardBody}>
           <FirstRunWizard
             onDone={(noModel) => {
               refresh();
@@ -1195,7 +1261,9 @@ export function AppShell({
       <div className={styles.wizardFrame}>
         {noModelBar}
         {startErrorBar}
-        <div className={styles.wizardBody}>{settings}</div>
+        <div ref={screenBody} className={styles.wizardBody}>
+          {settings}
+        </div>
         {quitDialog}
       </div>
     );
@@ -1376,17 +1444,17 @@ export function AppShell({
         )}
         {startErrorBar}
         {stopError !== null && (
-          <MessageBar intent="error">
-            <MessageBarBody>
-              <MessageBarTitle>The meeting could not be stopped</MessageBarTitle>
-              {stopError}
-            </MessageBarBody>
-            <MessageBarActions>
+          <ErrorBar
+            title="The meeting could not be stopped"
+            onGoneWithFocus={focusAfterBar}
+            actions={
               <Button size="small" appearance="transparent" onClick={() => setStopError(null)}>
                 Dismiss
               </Button>
-            </MessageBarActions>
-          </MessageBar>
+            }
+          >
+            {stopError}
+          </ErrorBar>
         )}
         {folderNotice !== null && (
           <MessageBar intent="warning">

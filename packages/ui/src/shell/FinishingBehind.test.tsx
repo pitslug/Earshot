@@ -235,6 +235,156 @@ describe("starting a meeting while the previous one finishes", () => {
   });
 });
 
+describe("a start the app answered that never records", () => {
+  const failed = (meeting: string, message: string): MeetingEvent => ({
+    type: "Summary",
+    meeting,
+    result: { kind: "RecordingFailed", message },
+  });
+
+  it("stops saying it is starting and says why, when its result arrives with no first event", async () => {
+    const s = await open(() => ({ startMeeting: async () => "m-newer" }));
+    await s.user.click(screen.getByRole("button", { name: "New meeting" }));
+    await s.user.click(await screen.findByRole("button", { name: "Start" }));
+    expect(await screen.findByText("Starting the meeting")).toBeInTheDocument();
+    s.meeting(failed("m-newer", "The invented microphone stopped answering."));
+    await waitFor(() => expect(screen.queryByText("Starting the meeting")).toBeNull());
+    expect(screen.getByText("The meeting could not start")).toBeInTheDocument();
+    expect(screen.getByText("The invented microphone stopped answering.")).toBeInTheDocument();
+    // The window is usable: a meeting's page shows, and a new start can be asked for.
+    expect(await screen.findByRole("heading", { level: 1, name: OLDER.title })).toBeInTheDocument();
+    await s.user.click(screen.getByRole("button", { name: "New meeting" }));
+    expect(await screen.findByRole("button", { name: "Start" })).toBeEnabled();
+  });
+
+  it("is left alone by another meeting's result, and stops saying it is starting at its own end", async () => {
+    const s = await open(() => ({ startMeeting: async () => "m-newer" }));
+    await s.user.click(screen.getByRole("button", { name: "New meeting" }));
+    await s.user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByText("Starting the meeting");
+    s.meeting(failed(OTHER.id, "Invented words about another meeting."));
+    expect(screen.getByText("Starting the meeting")).toBeInTheDocument();
+    expect(screen.queryByText("The meeting could not start")).toBeNull();
+    // Its own end without a first event: nothing is starting any more.
+    s.meeting(ended("m-newer"));
+    await waitFor(() => expect(screen.queryByText("Starting the meeting")).toBeNull());
+    expect(await screen.findByRole("button", { name: "New meeting" })).toBeEnabled();
+  });
+
+  it("says why with fixed words when its result gives none", async () => {
+    const s = await open(() => ({ startMeeting: async () => "m-newer" }));
+    await s.user.click(screen.getByRole("button", { name: "New meeting" }));
+    await s.user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByText("Starting the meeting");
+    s.meeting({ type: "Summary", meeting: "m-newer", result: { kind: "PostCancelled" } });
+    await waitFor(() => expect(screen.queryByText("Starting the meeting")).toBeNull());
+    expect(screen.getByText("The meeting could not start")).toBeInTheDocument();
+    expect(screen.getByText("The meeting ended before it began recording. Start it again.")).toBeInTheDocument();
+  });
+
+  it("is read right when its result arrived before the app's answer", async () => {
+    const answer = deferred<string>();
+    const s = await open(() => ({ startMeeting: () => answer.promise }));
+    await s.user.click(screen.getByRole("button", { name: "New meeting" }));
+    await s.user.click(await screen.findByRole("button", { name: "Start" }));
+    s.meeting(failed("m-newer", "The invented microphone stopped answering."));
+    await act(async () => answer.resolve("m-newer"));
+    expect(screen.queryByText("Starting the meeting")).toBeNull();
+    expect(await screen.findByText("The meeting could not start")).toBeInTheDocument();
+    expect(screen.getByText("The invented microphone stopped answering.")).toBeInTheDocument();
+    // Still on the new-meeting screen, which can be used again.
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+  });
+
+  it("a meeting that did record is never read as a failed start when its summary fails", async () => {
+    const s = await open(() => ({ startMeeting: async () => "m-newer" }));
+    await s.user.click(screen.getByRole("button", { name: "New meeting" }));
+    await s.user.click(await screen.findByRole("button", { name: "Start" }));
+    s.meeting(started("m-newer"));
+    await screen.findByRole("button", { name: "Stop meeting" });
+    s.meeting(ended("m-newer"));
+    s.meeting({
+      type: "Summary",
+      meeting: "m-newer",
+      result: { kind: "Failed", message: "Invented summary failure.", retryable: false },
+    });
+    await act(async () => {});
+    expect(screen.queryByText("The meeting could not start")).toBeNull();
+  });
+});
+
+describe("the bars about a start and a stop", () => {
+  const stopRefused = () => ({
+    stopMeeting: async () => {
+      throw new IpcFailure({ kind: "internal", message: "The invented stop did not reach the app.", retryable: true });
+    },
+  });
+  const barOf = async (title: string) => {
+    const bar = (await screen.findByText(title)).closest<HTMLElement>(".fui-MessageBar");
+    if (bar === null) throw new Error(`"${title}" is not in a message bar`);
+    return bar;
+  };
+
+  it("are announced as the app's other error bars are", async () => {
+    const s = await open(stopRefused);
+    s.send({ type: "StartFailed", message: "The invented model is not installed." });
+    expect(await barOf("The meeting could not start")).toHaveAttribute("role", "alert");
+    s.meeting(started("m-live"));
+    await s.user.click(await screen.findByRole("button", { name: "Stop meeting" }));
+    expect(await barOf("The meeting could not be stopped")).toHaveAttribute("role", "alert");
+  });
+
+  it("hand focus to the row of the meeting shown when Dismiss takes the bar away", async () => {
+    const s = await open();
+    s.send({ type: "StartFailed", message: "The invented model is not installed." });
+    const bar = await barOf("The meeting could not start");
+    within(bar).getByRole("button", { name: "Dismiss" }).focus();
+    await s.user.keyboard("{Enter}");
+    expect(screen.queryByText("The meeting could not start")).toBeNull();
+    expect(row(OLDER)).toHaveFocus();
+  });
+
+  it("hand focus to New meeting when the meeting shown has no row", async () => {
+    const s = await open(stopRefused);
+    s.meeting(started("m-live"));
+    await s.user.click(await screen.findByRole("button", { name: "Stop meeting" }));
+    const bar = await barOf("The meeting could not be stopped");
+    // The group of the meeting shown is closed: its row is not on screen.
+    await s.user.click(within(screen.getByRole("list", { name: "Meetings" })).getByRole("button", { name: "Today" }));
+    expect(within(screen.getByRole("list", { name: "Meetings" })).queryByRole("button", { name: /^Paving quote/ })).toBeNull();
+    within(bar).getByRole("button", { name: "Dismiss" }).focus();
+    await s.user.keyboard("{Enter}");
+    expect(screen.queryByText("The meeting could not be stopped")).toBeNull();
+    // Never Stop meeting: a second Enter must not stop the recording.
+    expect(screen.getByRole("button", { name: "New meeting" })).toHaveFocus();
+  });
+
+  it("hand focus to the screen's first control where there is no list (Settings)", async () => {
+    const s = await open();
+    await s.user.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("navigation", { name: "Settings sections" });
+    s.send({ type: "StartFailed", message: "The invented model is not installed." });
+    const bar = await barOf("The meeting could not start");
+    within(bar).getByRole("button", { name: "Dismiss" }).focus();
+    await s.user.keyboard("{Enter}");
+    expect(screen.queryByText("The meeting could not start")).toBeNull();
+    expect(screen.getByRole("button", { name: "Back to meetings" })).toHaveFocus();
+  });
+
+  it("leave focus where it is when the bar goes while focus is elsewhere", async () => {
+    const s = await open();
+    s.send({ type: "StartFailed", message: "The invented model is not installed." });
+    await screen.findByText("The meeting could not start");
+    const search = screen.getByRole("searchbox", { name: "Search meetings" });
+    await s.user.click(search);
+    // A meeting starts: the bar goes by itself.
+    s.meeting(started("m-live"));
+    await screen.findByRole("button", { name: "Stop meeting" });
+    expect(screen.queryByText("The meeting could not start")).toBeNull();
+    expect(search).toHaveFocus();
+  });
+});
+
 describe("a start that failed is said wherever the user is", () => {
   it("on another meeting's page, when the user left the new-meeting screen while it started", async () => {
     const answer = deferred<string>();
