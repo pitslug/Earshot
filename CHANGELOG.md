@@ -6,20 +6,71 @@ What each release changed, in plain words, newest first. It is written from the 
 
 ## Unreleased (after 0.4.2)
 
+### Added
+
+- Find in a transcript, by speaker and by text.
+- Rename a meeting from its row in the meeting list.
+- The installer carries the licence notices of the third-party software it ships.
+- Project files: this changelog, SECURITY.md, CONTRIBUTING.md and docs/compatibility.md. README.md and PRIVACY.md rewritten, naming only pages that exist.
+
+### Changed
+
+- Stopping by itself when a call ends is a setting on the General page, off unless you switch it on. While it is off, the question stays open until you answer it or the recording ends.
 - A line you edited is kept when the same meeting is transcribed again on another computer.
 - A voice you chose to ignore is ignored on your other computers too.
-- Find in a transcript, by speaker and by text.
-- The meeting list groups meetings by week and month, each group can be folded, and a meeting can be renamed from its row.
-- A simpler card for a named voice in the Speakers panel. Summary edit buttons no longer move the text.
+- The meeting list groups meetings by week and month, and each group can be folded.
+- A simpler card for a named voice in the Speakers panel. Summary edit buttons no longer move the text. Split mode's Cancel sits apart from the words.
 - In a meeting in the room, the microphone is opened without Windows' sound processing by default, and a microphone that could not give that tries again.
-- The Summaries page folds away each writer's setup, and says when Claude Code or Codex is not signed in. The Dictionary page points to the People page for saved names.
+- The Summaries page folds away each writer's setup, and says when Claude Code or Codex is not signed in. The Dictionary page points to the People page for saved names. Settings pages share one set of widths.
 - The Sync page's list of computers keeps up while it is open, and the first-run Sync step knows when this computer already syncs.
-- Project files: this changelog, SECURITY.md, CONTRIBUTING.md and docs/compatibility.md. README.md and PRIVACY.md rewritten.
+- Transcript lines are one Tab stop, with the arrow keys moving between lines; the Speakers button moves focus into the panel.
+- Find in a transcript waits for a short pause and needs two characters of text.
+- An Anthropic API key is sent only to the address it was saved for, and never over plain http except to this computer. A changed address asks for the key again.
+- Codex and Claude Code run with more of your environment cleared (Node and Bun options among them), and Codex runs with the features it was measured with: any other feature that is on is turned off for the run.
+- Rows a new computer receives are applied in the same sync as the meetings they belong to.
+- The relay refuses a change stamped more than a day ahead of its own clock, and a computer whose clock is that far ahead stops sending until it is corrected (the Sync page says so).
+- A relay restored from a backup is noticed, and each computer sends everything again.
+- The relay checks a computer's token before reading what it sends.
 - The relay's compose file publishes its port on the host's loopback address only (it was every interface). If your reverse proxy is not on that host itself, read the file's comments before updating it.
 - The relay image is pushed as `earshot-server` only. The old name, `earshot-sync-server`, stops at 0.4.2.
 - Both compose files say to pin `EARSHOT_VERSION` and to update the worker last.
+- Update checks read version files that carry fields this version does not know, and a download is checked in one pass.
 
-**Updating:** the database changes (0.4.2 cannot open it afterwards) and the sync row format rises from 2 to 4, so every computer that syncs, and then the worker, must be updated.
+### Fixed
+
+- The tray no longer locks up or sticks on "Starting", and a second press of the tray item or the shortcut while a meeting starts does nothing.
+- A meeting that fails to start no longer waits on another meeting.
+- Time the computer spent asleep no longer counts as a stall for the work after a meeting, a summary or a helper program.
+- Settings and other commands that wait on shared work no longer freeze the window.
+- A model check that stops answering ends by itself and can be tried again.
+- A model a meeting is using cannot be removed while the meeting records or finishes.
+- A title given at the start of a meeting is cleaned as a rename would clean it.
+- A display error shows a way back (Stop recording and Reload), and F5 and Ctrl+R no longer reload the window.
+- Pages of meetings finishing behind the one you follow stay up to date, a failed start is shown wherever you are, and its message can be dismissed.
+- A failed read of the meeting list keeps the list on screen, with Try again.
+- A refusal on a meeting's page shows its real reason, and long transcripts stay quick to edit.
+- A silent track no longer keeps its audio in memory for the whole meeting, and a stuck live transcription stops taking audio.
+- Starting the recording can no longer wait forever.
+- A broken confidence value from the recogniser no longer stops a transcript being saved.
+- Search reads only the text it shows, and skips a damaged line instead of failing.
+- A damaged recording file cannot make Earshot ask for more memory than the file could hold.
+- Audio is deleted after the computer's clock jumps only when two runs agree it is due, and a meeting with a damaged transcript line can still be deleted.
+- A saved row that cannot be read no longer stops every sync: it is counted on the Sync page as one that cannot be sent, as are rows refused before they could be sealed.
+- Re-exporting to Obsidian keeps the action items you ticked. Generated text in a note can no longer embed images, HTML or other notes. An Obsidian subfolder name Windows refuses is refused when you save it.
+- The record of network requests kept while Earshot runs has a limit.
+- The installer that was checked is the one that runs.
+- CUDA transcription runs without Microsoft's Visual C++ redistributable installed.
+- The CUDA rules read the memory of the NVIDIA card CUDA runs on, never another card's.
+- A second local summary model load waits as long as a slow load may take before calling the first one stuck.
+
+### Upgrading
+
+- The database changes and the upgrade is one-way: 0.4.2 cannot open it afterwards.
+- The sync row format rises from 2 to 4: every computer that syncs, and then the worker, must be updated before they sync again.
+- The relay's example compose file now binds to this computer only, and once the new relay image has started, the relay cannot go back to an older image.
+- An Anthropic-style address over plain http on your local network is no longer used: use https, or an address on this computer.
+- Stopping by itself when a call ends is now off. Switch it on in Settings, General, if you want it.
+- Codex and Claude Code run with more of the environment cleared.
 
 ## 0.4.2 - 2026-11-25
 
