@@ -26,11 +26,13 @@ pub struct ChosenDevice {
     pub name: String,
 }
 
-/// How a meeting records the microphone (T12.36,
+/// How a meeting records the microphone (T12.36, T12.36b;
 /// `earshot_runtime::audio_settings::MicSignal`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum MicSignal {
-    /// With Windows' own sound processing (the default).
+    /// Raw in the room, with Windows' own sound processing in a call (the default).
+    Automatic,
+    /// With Windows' own sound processing, chosen on purpose.
     Processed,
     /// Without it, where the microphone allows it.
     Raw,
@@ -76,6 +78,7 @@ impl AudioSettingsValue {
                 DefaultCaptureMode::InRoom => CaptureMode::InRoom,
             },
             mic_signal: match s.mic_signal {
+                Signal::Automatic => MicSignal::Automatic,
                 Signal::Processed => MicSignal::Processed,
                 Signal::Raw => MicSignal::Raw,
             },
@@ -91,6 +94,7 @@ impl AudioSettingsValue {
                 CaptureMode::InRoom => DefaultCaptureMode::InRoom,
             },
             mic_signal: match self.mic_signal {
+                MicSignal::Automatic => Signal::Automatic,
                 MicSignal::Processed => Signal::Processed,
                 MicSignal::Raw => Signal::Raw,
             },

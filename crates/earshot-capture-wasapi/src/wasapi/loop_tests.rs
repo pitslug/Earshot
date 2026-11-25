@@ -1188,7 +1188,7 @@ fn drive_mic<O: TrackObserver>(
     )
     .with_processing(processing);
     if raw_fallback {
-        mic = mic.with_raw_fallback(false);
+        mic = mic.with_raw_fallback(false, false);
     }
     let mut lb = Track::new(
         lb_stream,
@@ -1687,6 +1687,18 @@ fn run_live_scripted(
     fell_back_at_start: bool,
     seconds: u64,
     faults: &[Fault],
+    each: impl FnMut(u64, &Platform),
+) -> Run {
+    run_live_scripted_as(processing, fell_back_at_start, false, seconds, faults, each)
+}
+
+/// [`run_live_scripted`] with the mic's fallbacks `quiet` (T12.36b).
+fn run_live_scripted_as(
+    processing: MicProcessing,
+    fell_back_at_start: bool,
+    quiet: bool,
+    seconds: u64,
+    faults: &[Fault],
     mut each: impl FnMut(u64, &Platform),
 ) -> Run {
     let platform = Rc::new(Platform {
@@ -1709,7 +1721,7 @@ fn run_live_scripted(
         Ear::default(),
     )
     .with_processing(processing)
-    .with_raw_fallback(fell_back_at_start);
+    .with_raw_fallback(fell_back_at_start, quiet);
     let mut lb = Track::new(
         lb_stream,
         Endpoint::Loopback,
@@ -1906,6 +1918,40 @@ fn capture_loop_a_raw_try_waits_while_the_mic_has_no_stream() {
         "the follower kept re-opening"
     );
     assert!(run.mic.restored.is_empty());
+}
+
+#[test]
+fn capture_loop_an_automatic_raw_mic_falls_back_and_returns_quietly() {
+    // T12.36b: raw only the automatic choice asked for. The same fallback, tries and return as
+    // an explicit raw choice, but the observer hears neither the fallback nor the return.
+    let script = |now: u64, p: &Platform| {
+        if now == QPC_UNITS_PER_SEC {
+            p.mic_without_raw.set(true);
+            new_default_mic(p, "another-mic");
+        }
+        if now >= 5 * QPC_UNITS_PER_SEC {
+            p.mic_without_raw.set(false);
+        }
+    };
+    let loud = run_live_scripted_as(MicProcessing::Raw, false, false, 15, &[], script);
+    let quiet = run_live_scripted_as(MicProcessing::Raw, false, true, 15, &[], script);
+    assert_eq!(loud.mic.fell_back.len(), 1);
+    assert_eq!(loud.mic.restored.len(), 1);
+    assert!(quiet.mic.fell_back.is_empty() && quiet.mic.restored.is_empty());
+    assert_eq!(
+        asked_for(&quiet.platform, TrackId::Mic),
+        asked_for(&loud.platform, TrackId::Mic),
+        "the same opens"
+    );
+    assert_eq!(reopens_at(&quiet.mic), reopens_at(&loud.mic));
+    assert_eq!(quiet.mic.audio(), 15 * QPC_UNITS_PER_SEC);
+    // A start that already fell back is quiet too.
+    let start = run_live_scripted_as(MicProcessing::Default, true, true, 12, &[], |_, _| {});
+    assert!(start.mic.restored.is_empty());
+    assert_eq!(
+        asked_for(&start.platform, TrackId::Mic),
+        [MicProcessing::Raw]
+    );
 }
 
 #[test]

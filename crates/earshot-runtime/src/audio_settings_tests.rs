@@ -53,7 +53,7 @@ fn audio_settings_round_trip_in_the_store() {
         AudioSettings::default().capture_mode,
         DefaultCaptureMode::Call
     );
-    assert_eq!(AudioSettings::default().mic_signal, MicSignal::Processed);
+    assert_eq!(AudioSettings::default().mic_signal, MicSignal::Automatic);
     let want = AudioSettings {
         microphone: chosen(MIC_ID, "Acme Evolve"),
         output: chosen(OUT_ID, "Speakers"),
@@ -86,7 +86,54 @@ fn audio_settings_round_trip_in_the_store() {
     assert_eq!(db.local_value(OUTPUT_KEY).unwrap().unwrap(), b"default");
     assert_eq!(db.local_value(OUTPUT_NAME_KEY).unwrap().unwrap(), b"");
     assert_eq!(db.local_value(CAPTURE_MODE_KEY).unwrap().unwrap(), b"call");
-    assert_eq!(db.local_value(MIC_SIGNAL_KEY).unwrap().unwrap(), b"default");
+    assert_eq!(db.local_value(MIC_SIGNAL_KEY).unwrap().unwrap(), b"auto");
+    // Windows' processing chosen on purpose has its own word.
+    let processed = AudioSettings {
+        mic_signal: MicSignal::Processed,
+        ..AudioSettings::default()
+    };
+    set_audio_settings(&mut db, &processed).unwrap();
+    assert_eq!(
+        db.local_value(MIC_SIGNAL_KEY).unwrap().unwrap(),
+        b"processed"
+    );
+    assert_eq!(audio_settings(&db).unwrap(), (processed, Vec::new()));
+}
+
+#[test]
+fn audio_settings_mic_signal_reads_every_stored_word() {
+    // T12.36b: `auto`, `processed` and `raw` as written; T12.36's `default`, written whenever
+    // any Audio setting was saved, is not a choice and reads as automatic, unreported; an
+    // unknown word is reported and the default (automatic) used.
+    let dir = TempDir::new("audio-signal-words");
+    let mut db = store(&dir);
+    for (stored, want, reported) in [
+        ("auto", MicSignal::Automatic, false),
+        ("default", MicSignal::Automatic, false),
+        ("processed", MicSignal::Processed, false),
+        ("raw", MicSignal::Raw, false),
+        ("Raw", MicSignal::Automatic, true),
+        ("automatic", MicSignal::Automatic, true),
+    ] {
+        db.set_local_value(MIC_SIGNAL_KEY, stored.as_bytes())
+            .unwrap();
+        let (s, unknown) = audio_settings(&db).unwrap();
+        assert_eq!(s.mic_signal, want, "{stored}");
+        let keys: Vec<&str> = unknown.iter().map(|u| u.key).collect();
+        let expected: &[&str] = if reported { &[MIC_SIGNAL_KEY] } else { &[] };
+        assert_eq!(keys, expected, "{stored}");
+    }
+}
+
+#[test]
+fn audio_settings_automatic_is_raw_only_in_the_room() {
+    use DefaultCaptureMode::{Call, InRoom};
+    assert!(MicSignal::Automatic.raw_in(InRoom));
+    assert!(!MicSignal::Automatic.raw_in(Call));
+    for mode in [Call, InRoom] {
+        assert!(MicSignal::Raw.raw_in(mode));
+        assert!(!MicSignal::Processed.raw_in(mode));
+    }
 }
 
 #[test]
@@ -99,13 +146,13 @@ fn audio_settings_unusable_stored_values_read_as_defaults_and_are_reported() {
     // A name that cannot be shown is dropped, the choice kept.
     db.set_local_value(OUTPUT_NAME_KEY, b"two\nlines").unwrap();
     db.set_local_value(CAPTURE_MODE_KEY, b"podcast").unwrap();
-    // A word this version does not know is never read as raw.
+    // A word this version does not know is never read as the explicit raw choice.
     db.set_local_value(MIC_SIGNAL_KEY, b"Raw").unwrap();
     let (s, unknown) = audio_settings(&db).unwrap();
     assert_eq!(s.microphone, DeviceSetting::Default);
     assert_eq!(s.output, chosen(OUT_ID, ""));
     assert_eq!(s.capture_mode, DefaultCaptureMode::Call);
-    assert_eq!(s.mic_signal, MicSignal::Processed);
+    assert_eq!(s.mic_signal, MicSignal::Automatic);
     let keys: Vec<&str> = unknown.iter().map(|u| u.key).collect();
     assert_eq!(keys, [MICROPHONE_KEY, CAPTURE_MODE_KEY, MIC_SIGNAL_KEY]);
     assert_eq!(unknown[1].stored, "podcast");
@@ -175,11 +222,11 @@ fn audio_settings_capture_mode_names() {
         assert_eq!(DefaultCaptureMode::parse(m.as_str()), Some(m));
     }
     assert_eq!(DefaultCaptureMode::parse("Call"), None);
-    for m in [MicSignal::Processed, MicSignal::Raw] {
+    for m in [MicSignal::Automatic, MicSignal::Processed, MicSignal::Raw] {
         assert_eq!(MicSignal::parse(m.as_str()), Some(m));
     }
-    assert_eq!(MicSignal::parse("processed"), None);
-    assert!(MicSignal::Raw.is_raw() && !MicSignal::Processed.is_raw());
+    assert_eq!(MicSignal::parse("default"), Some(MicSignal::Automatic));
+    assert_eq!(MicSignal::parse("Processed"), None);
     assert_eq!(DeviceSetting::Default.id(), None);
     assert_eq!(chosen(MIC_ID, "").id(), Some(MIC_ID));
 }
@@ -194,17 +241,36 @@ fn audio_settings_give_the_capture_layer_the_chosen_endpoints() {
         capture_mode: DefaultCaptureMode::Call,
         mic_signal: MicSignal::Processed,
     };
-    let d = s.devices();
+    let d = s.devices(DefaultCaptureMode::Call);
     assert_eq!(d.mic_processing, MicProcessing::Default);
-    // The raw setting reaches the capture layer, in a call and in the room alike.
-    for capture_mode in [DefaultCaptureMode::Call, DefaultCaptureMode::InRoom] {
-        let raw = AudioSettings {
-            capture_mode,
-            mic_signal: MicSignal::Raw,
-            ..s.clone()
-        };
-        assert_eq!(raw.devices().mic_processing, MicProcessing::Raw);
-        assert_eq!(raw.devices().microphone, d.microphone);
+    assert!(!d.raw_fallback_quiet);
+    use DefaultCaptureMode::{Call, InRoom};
+    // What each choice asks of the capture layer in each kind of meeting (the meeting's mode
+    // decides, not the stored mode a new meeting starts with): (processing, quiet fallback).
+    for (signal, mode, processing, quiet) in [
+        (MicSignal::Processed, Call, MicProcessing::Default, false),
+        (MicSignal::Processed, InRoom, MicProcessing::Default, false),
+        // The raw setting, in a call and in the room alike, warns when it falls back.
+        (MicSignal::Raw, Call, MicProcessing::Raw, false),
+        (MicSignal::Raw, InRoom, MicProcessing::Raw, false),
+        // Automatic: raw in the room, falling back quietly; processed in a call.
+        (MicSignal::Automatic, InRoom, MicProcessing::Raw, true),
+        (MicSignal::Automatic, Call, MicProcessing::Default, false),
+    ] {
+        for stored_mode in [Call, InRoom] {
+            let settings = AudioSettings {
+                capture_mode: stored_mode,
+                mic_signal: signal,
+                ..s.clone()
+            };
+            let got = settings.devices(mode);
+            assert_eq!(
+                (got.mic_processing, got.raw_fallback_quiet),
+                (processing, quiet),
+                "{signal:?} in {mode:?}"
+            );
+            assert_eq!(got.microphone, d.microphone);
+        }
     }
     assert_eq!(
         d.microphone,

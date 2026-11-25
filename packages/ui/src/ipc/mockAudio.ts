@@ -116,7 +116,7 @@ export function createAudioMock(data: AudioMockData = {}, machine: SampleMachine
     microphone: null,
     output: null,
     capture_mode: "Call",
-    mic_signal: "Processed",
+    mic_signal: "Automatic",
     ...data.settings,
   };
   const microphones = data.microphones ?? SAMPLE_DEVICES[machine].microphones;

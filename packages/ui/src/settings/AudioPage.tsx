@@ -78,15 +78,16 @@ export const MICROPHONE_DESCRIPTION =
 export const MODE_DESCRIPTION =
   "What a new meeting records. You can still pick the other one when you start a meeting.";
 
-/** The choices of the microphone's sound processing (T12.36). */
+/** The choices of the microphone's sound processing (T12.36, T12.36b). */
 export const SIGNAL_LABEL: Record<MicSignal, string> = {
-  Processed: "With Windows' sound processing (recommended)",
-  Raw: "Raw, without Windows' sound processing",
+  Automatic: "Automatic: raw in the room, Windows' processing in calls (recommended)",
+  Processed: "Always with Windows' sound processing",
+  Raw: "Always raw, without Windows' sound processing",
 };
 
 /** What the sound processing setting does. */
 export const SIGNAL_DESCRIPTION =
-  "Some computers clean up the microphone before Earshot hears it, which can leave echo of the other side under your name. Raw skips that, where the microphone allows it; one that does not is recorded with the processing and the meeting says so. Run the audio check again after you change this.";
+  "Some computers clean up the microphone before Earshot hears it. In a call that can leave echo of the other side under your name, and in a room it can treat people further away as noise. Raw skips that, where the microphone allows it. If you choose raw and the microphone does not allow it, it is recorded with the processing and the meeting says so. Run the audio check again after you change this.";
 
 /** The option text of the Windows default, naming the device it is now. */
 export function defaultLabel(devices: DeviceItem[]): string {
@@ -167,7 +168,7 @@ export function AudioPage() {
   const chosen = load.status === "loaded" ? load.page.value : null;
   // The stored check is per microphone, output and sound processing.
   const check = useAudioCheck(
-    `${chosen?.microphone?.id ?? "default"}|${chosen?.output?.id ?? "default"}|${chosen?.mic_signal ?? "Processed"}`,
+    `${chosen?.microphone?.id ?? "default"}|${chosen?.output?.id ?? "default"}|${chosen?.mic_signal ?? "Automatic"}`,
   );
   // The devices stay as they are while the check plays and listens on them.
   const deviceState = checkRunning(check.run) ? { ...state, busy: true } : state;
@@ -238,6 +239,7 @@ export function AudioPage() {
           disabled={deviceState.busy}
           onChange={(_, d) => void state.save({ mic_signal: d.value as MicSignal })}
         >
+          <Radio value="Automatic" label={SIGNAL_LABEL.Automatic} />
           <Radio value="Processed" label={SIGNAL_LABEL.Processed} />
           <Radio value="Raw" label={SIGNAL_LABEL.Raw} />
         </RadioGroup>

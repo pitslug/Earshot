@@ -1818,6 +1818,9 @@ struct Track<S, O> {
     /// The live start already fell back to the default stream: the first pass of the loop
     /// schedules the first raw try ([`Track::try_raw`]).
     raw_from_start: bool,
+    /// Falling back and coming back to raw are not told to the observer (T12.36b: raw only the
+    /// automatic choice asked for).
+    raw_quiet: bool,
     stream: Option<S>,
     follower: StreamFollower,
     /// The last stream error that was neither a device loss nor a programming fault (T9.21):
@@ -1852,6 +1855,7 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             raw_fallback: false,
             raw_retry: RawRetry::default(),
             raw_from_start: false,
+            raw_quiet: false,
             stream: Some(stream),
             follower,
             stream_error: None,
@@ -1876,9 +1880,13 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     /// After a fallback, here or at the start (`fell_back_at_start`: the start opened the
     /// default stream because raw failed), the track keeps the default stream across re-opens
     /// and tries raw again on the [`RawRetry`] schedule ([`Track::try_raw`], T12.36a).
-    fn with_raw_fallback(mut self, fell_back_at_start: bool) -> Self {
+    ///
+    /// `quiet` (T12.36b, `DeviceSelection::raw_fallback_quiet`): the fallbacks and returns
+    /// happen alike but the observer hears neither.
+    fn with_raw_fallback(mut self, fell_back_at_start: bool, quiet: bool) -> Self {
         self.raw_fallback = true;
         self.raw_from_start = fell_back_at_start && self.processing == MicProcessing::Default;
+        self.raw_quiet = quiet;
         self
     }
 
@@ -2052,7 +2060,9 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
     /// once and the tries for raw start ([`RawRetry::fell_back`]).
     fn raw_fell_back(&mut self, now: u64) {
         self.raw_retry.fell_back(now);
-        self.observer.raw_fell_back(now);
+        if !self.raw_quiet {
+            self.observer.raw_fell_back(now);
+        }
     }
 
     /// For a live mic that fell back to the default stream (T12.36a): when a try is due
@@ -2113,7 +2123,9 @@ impl<S: LoopStream, O: TrackObserver> Track<S, O> {
             },
         );
         self.stream = Some(new);
-        self.observer.raw_restored(now);
+        if !self.raw_quiet {
+            self.observer.raw_restored(now);
+        }
     }
 
     /// Moves a device loopback onto the output a call plays on (T6.15). The new stream is opened
@@ -3062,7 +3074,10 @@ fn live_capture(
                 .map(|o| (o.stream.description(), o.source.clone())),
             fallbacks,
             mic_raw: mic_processing == MicProcessing::Raw,
-            raw_refused,
+            // An automatic raw request falls back quietly (T12.36b).
+            raw_refused: raw_refused
+                .clone()
+                .filter(|_| !request.devices.raw_fallback_quiet),
             output_endpoint: opened.as_ref().and_then(|o| {
                 o.stream
                     .device_id()
@@ -3073,7 +3088,12 @@ fn live_capture(
         };
         Ok::<_, CaptureError>((
             notifications,
-            (mic_stream, mic_device, mic_processing),
+            (
+                mic_stream,
+                mic_device,
+                mic_processing,
+                raw_refused.is_some(),
+            ),
             opened,
             started,
             infos,
@@ -3081,7 +3101,7 @@ fn live_capture(
     })();
     let (
         notifications,
-        (mic_stream, mic_device, mic_processing),
+        (mic_stream, mic_device, mic_processing, raw_refused_at_start),
         opened,
         started,
         (mic_info, lb_info),
@@ -3117,7 +3137,6 @@ fn live_capture(
         .emitter
         .with_mic_warnings(started.mic_properties.as_ref());
     let lb_obs = lb_info.as_ref().map(|i| emitter(TrackId::Reference, i));
-    let raw_refused_at_start = started.raw_refused.is_some();
     if ready.send(Ok(started)).is_err() {
         return;
     }
@@ -3126,7 +3145,7 @@ fn live_capture(
     // whose start already fell back.
     let mut mic = mic_track(mic_stream, request.mic_role, mic_device, mic_obs)
         .with_processing(mic_processing)
-        .with_raw_fallback(raw_refused_at_start);
+        .with_raw_fallback(raw_refused_at_start, request.devices.raw_fallback_quiet);
     // `opened` and `lb_obs` are both present exactly when a loopback was requested.
     let mut lb = opened.zip(lb_obs).map(|(o, obs)| o.into_track(obs));
     let mut driver = Wasapi {
@@ -4382,6 +4401,7 @@ mod device_tests {
             microphone: chosen(MISSING_ID, "Old headset"),
             output: DeviceChoice::Default,
             mic_processing: MicProcessing::Default,
+            raw_fallback_quiet: false,
         };
         let mut src =
             WasapiSource::start_on(MicRole::Console, &CaptureMode::InRoom, &devices).unwrap();
@@ -4410,6 +4430,7 @@ mod device_tests {
             microphone: chosen(&mic.id, &mic.name),
             output: chosen(&output.id, &output.name),
             mic_processing: MicProcessing::Default,
+            raw_fallback_quiet: false,
         };
         let mut src = WasapiSource::start_on(
             MicRole::Console,

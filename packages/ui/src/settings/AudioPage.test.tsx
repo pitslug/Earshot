@@ -170,9 +170,27 @@ describe("Settings, Audio", () => {
     expect(calls).toEqual(["defaultCaptureMode"]);
   });
 
-  it("records the microphone with Windows' processing unless raw is chosen, and stores raw", async () => {
+  it("offers three sound processing choices, automatic by default, each saved at once", async () => {
     const s = await open();
+    const group = screen.getByRole("radiogroup", { name: "Microphone sound processing" });
+    const options = Array.from(group.querySelectorAll("input[type=radio]")).map(
+      (r) => (r as HTMLInputElement).labels?.[0]?.textContent,
+    );
+    expect(options).toEqual([SIGNAL_LABEL.Automatic, SIGNAL_LABEL.Processed, SIGNAL_LABEL.Raw]);
+    expect(screen.getByRole("radio", { name: SIGNAL_LABEL.Automatic })).toBeChecked();
+    expect(SIGNAL_LABEL.Automatic).toContain("raw in the room, Windows' processing in calls");
+    for (const label of Object.values(SIGNAL_LABEL)) expect(label).not.toContain("\u2014");
+    // A choice applies at once: no Save button on the page part.
+    expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
+    await s.user.click(screen.getByRole("radio", { name: SIGNAL_LABEL.Processed }));
+    await waitFor(async () => expect((await s.ipc.audioSettings()).value.mic_signal).toBe("Processed"));
     expect(screen.getByRole("radio", { name: SIGNAL_LABEL.Processed })).toBeChecked();
+    await s.user.click(screen.getByRole("radio", { name: SIGNAL_LABEL.Automatic }));
+    await waitFor(async () => expect((await s.ipc.audioSettings()).value.mic_signal).toBe("Automatic"));
+  });
+
+  it("records the microphone raw when raw is chosen, and stores raw", async () => {
+    const s = await open();
     expect(screen.getByRole("radiogroup", { name: "Microphone sound processing" })).toBeInTheDocument();
     expect(pageText()).toContain(SIGNAL_DESCRIPTION);
     await s.user.click(screen.getByRole("radio", { name: SIGNAL_LABEL.Raw }));

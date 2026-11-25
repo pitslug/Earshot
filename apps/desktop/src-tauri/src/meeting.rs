@@ -1618,9 +1618,14 @@ pub(crate) fn meeting_capture(
             message,
         })
         .collect();
+    // The meeting's own mode decides what the microphone signal asks for (T12.36b).
+    let meeting_mode = match request.mode {
+        CaptureMode::Call => earshot_runtime::audio_settings::DefaultCaptureMode::Call,
+        CaptureMode::InRoom => earshot_runtime::audio_settings::DefaultCaptureMode::InRoom,
+    };
     Ok(MeetingCapture {
         mode,
-        devices: audio.devices(),
+        devices: audio.devices(meeting_mode),
         notices,
     })
 }

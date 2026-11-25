@@ -65,6 +65,11 @@ pub struct DeviceSelection {
     /// (`WasapiSource::raw_refused`, `EndpointWarning::RawMicRefused`); it never costs the
     /// recording.
     pub mic_processing: MicProcessing,
+    /// The raw request is an automatic choice the user did not make (T12.36b: the Audio page's
+    /// automatic signal in the room): a mic that cannot give raw records the default stream
+    /// quietly, with no `raw_refused`, no `RawMicRefused` and no `RawMicRestored` note. The
+    /// tries for raw still run. Ignored without a raw request.
+    pub raw_fallback_quiet: bool,
 }
 
 /// One endpoint as listed.
