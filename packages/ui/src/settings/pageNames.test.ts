@@ -2,10 +2,13 @@
 // Benchmark were dissolved into System, Transcription and Summaries, Speakers became People, and
 // Obsidian and Storage became Notes and storage. The Rust side has the same guard
 // (`page_names_tests.rs` in the desktop app); both take the gone pages and the forms from
-// `fixtures/ui/page_name_cases.json` and run its cases, so a rule change edits that file.
+// `fixtures/ui/page_name_cases.json` and run its cases, so a rule change edits that file. Both
+// also read README.md and PRIVACY.md at the repo root whole (T14.53).
 
 import { describe, expect, it } from "vitest";
 
+import privacy from "../../../../PRIVACY.md?raw";
+import readme from "../../../../README.md?raw";
 import table from "../../../../fixtures/ui/page_name_cases.json";
 import voiceCopy from "../../../../fixtures/ui/voice_sample_copy_cases.json";
 import { SETTINGS_SECTIONS } from "./SettingsView";
@@ -76,5 +79,17 @@ describe("Settings page names", () => {
     expect(files.some((f) => f.includes(".test."))).toBe(false);
     const found = files.flatMap((f) => stalePageNames(code(SOURCES[f])).map((form) => `${f}: ${form}`));
     expect(found).toEqual([]);
+  });
+
+  it("names no gone page in README.md or PRIVACY.md, read whole (T14.53)", () => {
+    // Both name Settings pages for people reading them; every line counts.
+    expect(readme).toContain("General page");
+    expect(privacy).toContain("General page");
+    for (const [name, text] of [
+      ["README.md", readme],
+      ["PRIVACY.md", privacy],
+    ]) {
+      expect(stalePageNames(text), name).toEqual([]);
+    }
   });
 });

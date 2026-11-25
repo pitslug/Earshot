@@ -187,21 +187,24 @@ mod tests {
 
     #[test]
     fn shell_toast_xml_of_the_call_end_question_stays_silently_with_both_answers() {
-        let xml = toast_xml(&crate::shell::call_end_toast());
-        assert!(
-            xml.starts_with("<toast launch=\"window\" scenario=\"reminder\">"),
-            "{xml}"
-        );
-        assert!(xml.contains("<audio silent=\"true\"/>"), "{xml}");
-        assert!(
-            xml.contains("content=\"Stop recording\" arguments=\"stop\""),
-            "{xml}"
-        );
-        assert!(
-            xml.contains("content=\"Keep recording\" arguments=\"keep\""),
-            "{xml}"
-        );
-        let parsed = XmlDocument::new().unwrap();
-        parsed.LoadXml(&HSTRING::from(xml)).unwrap();
+        // Whether or not the recording stops by itself (T14.52).
+        for stops in [true, false] {
+            let xml = toast_xml(&crate::shell::call_end_toast(stops));
+            assert!(
+                xml.starts_with("<toast launch=\"window\" scenario=\"reminder\">"),
+                "{xml}"
+            );
+            assert!(xml.contains("<audio silent=\"true\"/>"), "{xml}");
+            assert!(
+                xml.contains("content=\"Stop recording\" arguments=\"stop\""),
+                "{xml}"
+            );
+            assert!(
+                xml.contains("content=\"Keep recording\" arguments=\"keep\""),
+                "{xml}"
+            );
+            let parsed = XmlDocument::new().unwrap();
+            parsed.LoadXml(&HSTRING::from(xml)).unwrap();
+        }
     }
 }

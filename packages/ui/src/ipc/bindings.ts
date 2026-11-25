@@ -477,6 +477,16 @@ export const commands = {
 	 *  meeting. A question already closed takes no answer (`false`).
 	 */
 	answerCallStart: (start: boolean) => __TAURI_INVOKE<boolean>("answer_call_start", { start }),
+	/**
+	 *  Whether a call's recording stops by itself when the call seems to have ended (off unless
+	 *  turned on).
+	 */
+	callEndStop: () => typedError<CallEndStopView, IpcError>(__TAURI_INVOKE("call_end_stop")),
+	/**
+	 *  Turns "stop recording by itself when a call ends" on or off; returns it as stored. Off
+	 *  applies at once, to a meeting recording now too; on, from the next meeting.
+	 */
+	setCallEndStop: (on: boolean) => typedError<CallEndStopView, IpcError>(__TAURI_INVOKE("set_call_end_stop", { on })),
 	/**  Whether Earshot offers to start recording when a call starts (T12.86; on unless turned off). */
 	callStartOffer: () => typedError<boolean, IpcError>(__TAURI_INVOKE("call_start_offer")),
 	/**
@@ -716,6 +726,17 @@ export type BenchmarkView = {
 	attribution: string,
 	/**  The run under way (`null`: none), so a page opened during it shows it. */
 	running: BenchmarkRunning | null,
+};
+
+/**  "Stop recording by itself when a call ends" (T14.52), as stored. */
+export type CallEndStopView = {
+	/**
+	 *  On: a call's recording stops by itself 3 minutes after the question "the call seems to
+	 *  have ended" with no answer. Off (the default): it keeps recording until stopped.
+	 */
+	on: boolean,
+	/**  A stored value this version does not know (read as off), one line. */
+	unknown: string[],
 };
 
 /**  What a meeting records. */
@@ -1495,7 +1516,13 @@ key: string } |
 /**  The question "the call seems to have ended: stop recording?" appears or goes away (T9.4). */
 { type: "CallEndOffer"; 
 /**  Whether it is being asked. */
-open: boolean } | 
+open: boolean; 
+/**
+ *  Whether the recording stops by itself if nobody answers (the General page's "stop
+ *  recording by itself", read when the meeting started; T14.52). Off, the question only
+ *  asks, and nothing may say that a stop is coming.
+ */
+stops: boolean } | 
 /**  Nobody answered that question in time, and the recording is being stopped. */
 { type: "CallEndStopped" } | 
 /**  The recording is saved. */

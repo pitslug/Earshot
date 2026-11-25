@@ -1,0 +1,11 @@
+{
+  "_comment": "T14.52: the words of the question when a call seems to have ended, with stopping by itself on (will_stop) and off (asks_only). The notification (Rust's shell.rs) and the meeting screen's banner and compact card (the UI's meeting/MeetingViews.tsx, which reads this file) say them; both suites check against this table, so a copy change edits it.",
+  "notification_title": "The call seems to have ended",
+  "banner_title": "The call seems to have ended.",
+  "will_stop": "Earshot will stop recording within 3 minutes unless you keep it going.",
+  "asks_only": "Do you want to stop recording? Earshot keeps recording until you stop it.",
+  "compact_will_stop": "The call seems to have ended. Stopping within 3 minutes.",
+  "compact_asks_only": "The call seems to have ended.",
+  "stop_button": "Stop recording",
+  "keep_button": "Keep recording"
+}

@@ -404,7 +404,12 @@ fn build_bundle_config_turns_the_bundler_on_with_no_download_at_install_time() {
     let resources = b["resources"].as_object().unwrap();
     assert_eq!(
         resources.len(),
-        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 2
+        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 3
+    );
+    // The third-party notices, written beside the exe (T14.37).
+    assert_eq!(
+        resources[exe_dir.join(NOTICES_FILE).to_str().unwrap()],
+        NOTICES_FILE
     );
     for dll in VC_RUNTIME_DLLS {
         let from = exe_dir.join(dll);
@@ -841,8 +846,11 @@ fn build_bundle_an_install_holds_exactly_the_expected_files() {
     let vulkan = if cfg!(target_arch = "x86_64") { 3 } else { 0 };
     assert_eq!(
         nsis.len(),
-        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 4 + vulkan
+        crate::llama_dlls::REQUIRED.len() + VC_RUNTIME_DLLS.len() + 5 + vulkan
     );
+    // The third-party notices (T14.37), on both architectures.
+    assert!(nsis.contains(&rel(&[NOTICES_FILE])));
+    assert!(expected_files(ARM64_WINDOWS).contains(&rel(&[NOTICES_FILE])));
     for dll in VC_RUNTIME_DLLS {
         assert!(nsis.contains(&rel(&[dll])), "{dll}");
     }
@@ -1279,4 +1287,212 @@ fn bundle_check_reads_the_machine_architecture_not_the_xtask_binary_one() {
     );
     // This machine: whatever it is, the reading is one of the two installer targets.
     assert!([X64, ARM64_WINDOWS].contains(&machine_target()));
+}
+
+/// T14.38: the CUDA provider's own runtime library ships on x64, where the provider is, and the
+/// rule that judges the CUDA files' imports sees the gap it closed.
+#[test]
+fn bundle_check_cuda_imports_are_held_by_the_install_the_folder_or_windows() {
+    assert!(vc_runtime_dlls(X64).contains(&"msvcp140_atomic_wait.dll"));
+    assert!(!vc_runtime_dlls(ARM64_WINDOWS).contains(&"msvcp140_atomic_wait.dll"));
+    assert!(expected_files(X64).contains(&PathBuf::from("msvcp140_atomic_wait.dll")));
+    let windows = |name: &str| ["KERNEL32.dll", "ntdll.dll"].contains(&name);
+    let folder = vec!["cublas64_13.dll".to_owned(), "cublasLt64_13.dll".to_owned()];
+    // The provider's imports as read from the pinned file on 2026-11-26, less the API sets.
+    let provider = Pe {
+        machine: machine_of(X64).unwrap(),
+        imports: [
+            "cublasLt64_13.dll",
+            "cublas64_13.dll",
+            "onnxruntime_providers_shared.dll",
+            "KERNEL32.dll",
+            "MSVCP140.dll",
+            "MSVCP140_ATOMIC_WAIT.dll",
+            "VCRUNTIME140.dll",
+            "VCRUNTIME140_1.dll",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    };
+    let mut names = folder.clone();
+    names.push("onnxruntime_providers_shared.dll".to_owned());
+    assert_eq!(
+        cuda_imports_unheld(&provider, &names, X64, &windows),
+        Vec::<String>::new()
+    );
+    // Without the library in the install, the gap shows, by its name as imported.
+    let mut without = expected_files(X64);
+    without.retain(|f| f != Path::new("msvcp140_atomic_wait.dll"));
+    assert_eq!(
+        cuda_imports_unheld_in(&provider, &names, &without, &windows),
+        ["MSVCP140_ATOMIC_WAIT.dll"]
+    );
+    // Something nobody holds is named.
+    let stray = Pe {
+        imports: vec!["nowhere.dll".to_owned()],
+        ..provider
+    };
+    assert_eq!(
+        cuda_imports_unheld(&stray, &names, X64, &windows),
+        ["nowhere.dll"]
+    );
+}
+
+#[test]
+fn bundle_check_a_vc_runtime_file_in_system32_is_not_windows() {
+    let dir = tmp("system32");
+    std::fs::write(dir.join("kernel32.dll"), b"").unwrap();
+    std::fs::write(dir.join("msvcp140_atomic_wait.dll"), b"").unwrap();
+    assert!(is_windows_library("KERNEL32.dll", &dir));
+    assert!(is_windows_library("api-ms-win-crt-heap-l1-1-0.dll", &dir));
+    assert!(is_windows_library("ext-ms-win-x.dll", &dir));
+    // In System32 only where the redistributable was installed: never counted as Windows.
+    assert!(!is_windows_library("MSVCP140_ATOMIC_WAIT.dll", &dir));
+    assert!(!is_windows_library("absent.dll", &dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundle_check_the_cuda_pins_hold_the_provider_and_the_runtime_preloads_what_ships() {
+    let root = crate::repo_root();
+    let pins = cuda_pins(&root).unwrap();
+    assert!(
+        pins.iter()
+            .any(|p| p.name == "onnxruntime_providers_cuda.dll")
+    );
+    // The runtime preloads from beside the exe exactly the files the x64 install holds for it.
+    let cuda = std::fs::read_to_string(root.join("crates/earshot-runtime/src/cuda.rs")).unwrap();
+    let line = cuda
+        .lines()
+        .find(|l| l.starts_with("pub const PROVIDER_RUNTIME_DLLS"))
+        .unwrap();
+    let listed: Vec<&str> = line.split('"').skip(1).step_by(2).collect();
+    assert!(!listed.is_empty(), "{line}");
+    for dll in listed {
+        assert!(vc_runtime_dlls(X64).contains(&dll), "{dll}");
+    }
+}
+
+/// T14.38 on this machine: every pinned CUDA library's imports, read from the installed folder with
+/// its pinned bytes. Reads about 1.5 GB. A folder that is missing or holds other bytes fails: the
+/// check must have read every pinned library to say anything.
+#[test]
+#[ignore = "reads the installed CUDA folder: cargo test -p xtask bundle_check_installed_cuda -- --ignored"]
+fn bundle_check_installed_cuda_files_import_only_what_is_held() {
+    let root = crate::repo_root();
+    let folder = crate::models::cache_dir().unwrap().join("cuda");
+    assert!(
+        folder.is_dir(),
+        "{} is missing: download both CUDA parts in the app (Settings, System), or point \
+         EARSHOT_MODELS at a models folder that holds them",
+        folder.display()
+    );
+    let mut all = true;
+    let counts = check_cuda_imports(&mut all, &root, X64, &folder).unwrap();
+    let pinned = cuda_pinned_libraries(&root).unwrap();
+    assert!(pinned > 0);
+    assert_eq!(
+        counts,
+        CudaImportsChecked {
+            checked: pinned,
+            skipped: 0
+        },
+        "every pinned library read with its pinned bytes (download the CUDA parts again in the \
+         app if some differ)"
+    );
+    assert!(all);
+}
+
+#[test]
+fn bundle_check_cuda_imports_count_what_they_skip() {
+    let root = crate::repo_root();
+    let empty = tmp("cuda-empty");
+    let mut all = true;
+    let counts = check_cuda_imports(&mut all, &root, X64, &empty).unwrap();
+    assert_eq!(
+        counts,
+        CudaImportsChecked {
+            checked: 0,
+            skipped: cuda_pinned_libraries(&root).unwrap()
+        }
+    );
+    assert_eq!(
+        counts.summary(),
+        format!("CUDA imports: 0 checked, {} skipped", counts.skipped)
+    );
+    // ARM64 has none to check or skip.
+    let arm = check_cuda_imports(&mut all, &root, ARM64_WINDOWS, &empty).unwrap();
+    assert_eq!(arm, CudaImportsChecked::default());
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
+#[test]
+fn build_bundle_installs_the_third_party_notices_written_beside_the_exe() {
+    for target in [X64, ARM64_WINDOWS] {
+        let conf = bundle_config(
+            Path::new("C:/x"),
+            Path::new("n.md"),
+            Path::new("h.nsh"),
+            &["nsis"],
+            target,
+            &build::shipped_features(Some(target), &[]),
+        );
+        let res = conf["bundle"]["resources"].as_object().unwrap();
+        assert_eq!(
+            res.get(&Path::new("C:/x").join(NOTICES_FILE).display().to_string()),
+            Some(&json!(NOTICES_FILE)),
+            "{target}"
+        );
+        // Compared byte for byte with the build, and without one, judged by the names it holds.
+        assert!(built_comparisons(target).contains(&(NOTICES_FILE, NOTICES_FILE)));
+        assert_eq!(instead_of_build(NOTICES_FILE, target), Instead::Names);
+        assert!(
+            skipped_lines(target)
+                .iter()
+                .any(|l| l.contains(NOTICES_FILE) && l.contains("names every shipped package")),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn bundle_check_the_notices_must_name_every_shipped_package() {
+    let shipped = vec![
+        ("serde".to_owned(), "1.0.229".to_owned()),
+        ("tauri".to_owned(), "2.12.4".to_owned()),
+    ];
+    let file = |lines: &[&str]| {
+        let sections: Vec<notices::Section> = notices::SECTIONS[..5]
+            .iter()
+            .map(|h| notices::Section {
+                heading: (*h).to_owned(),
+                intro: "Intro.".into(),
+                entries: lines
+                    .iter()
+                    .map(|l| notices::Entry {
+                        line: (*l).to_owned(),
+                        texts: vec!["t".into()],
+                        notes: vec![],
+                        copyleft: vec![],
+                    })
+                    .collect(),
+            })
+            .collect();
+        notices::render(
+            "# Notices",
+            &notices::own_licence("MIT License\n\nPermission."),
+            &sections,
+        )
+    };
+    let whole = file(&["serde 1.0.229 | MIT | u", "tauri 2.12.4 | MIT | u"]);
+    assert!(notices_check(&whole, &shipped).0);
+    let (pass, detail) = notices_check(&file(&["serde 1.0.229 | MIT | u"]), &shipped);
+    assert!(!pass);
+    assert!(detail.contains("tauri 2.12.4"), "{detail}");
+    // A missing or empty file fails, and so does an expectation that is empty, and a file that
+    // names everything but is not whole.
+    assert!(!notices_check("", &shipped).0);
+    assert!(!notices_check(&whole, &[]).0);
+    let bare = "# Notices\n\nserde 1.0.229 | MIT | u\ntauri 2.12.4 | MIT | u\n";
+    assert!(!notices_check(bare, &shipped).0);
 }

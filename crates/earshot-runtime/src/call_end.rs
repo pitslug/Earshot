@@ -1,10 +1,15 @@
 //! When to offer to stop a recording because the call seems to be over, and when to stop it (T9.4).
 //!
-//! [`CallEndWatch`] says when to show or take back the question, and when a question nobody answered
-//! has been open for [`CallEndConfig::stop_after`] ([`CallEndChange::Stop`]; the owner: a
-//! recording that ran on after a call is a privacy problem, and a stop this late needs the call to
-//! look over for minutes on end). It stops nothing itself: the host does. A host runs it only for a
-//! call with a [`CallSignal`]: an in-room meeting or a replay has none.
+//! [`CallEndWatch`] says when to show or take back the question, and, only with
+//! [`CallEndConfig::stops`] (the General page's "stop recording by itself", [`STOP_KEY`], off by
+//! default: T14.52), when a question nobody answered has been open for
+//! [`CallEndConfig::stop_after`] ([`CallEndChange::Stop`]; the owner: a recording that ran on after
+//! a call is a privacy problem, and a stop this late needs the call to look over for minutes on
+//! end; and, 2026-11-26, the signal is unmeasured for hang-up, hold and Zoom, so a wrong stop that
+//! costs meeting content happens only for a user who asked for it). With it off the question stays
+//! open until it is answered, the call looks alive again or the recording ends some other way. It
+//! stops nothing itself: the host does. A host runs it only for a call with a [`CallSignal`]: an
+//! in-room meeting or a replay has none.
 //!
 //! The offer needs both of these at once, for [`CallEndConfig::quiet_after`]:
 //! - **The call app's session ended**: one of its render sessions was seen active during this
@@ -36,6 +41,36 @@
 
 use std::time::Duration;
 
+use earshot_store::Store;
+
+use crate::RuntimeError;
+use crate::local::DeviceRecord;
+
+/// The local-state key of the General page's "stop recording by itself when a call ends".
+pub const STOP_KEY: &str = "settings/call-end-stop";
+
+/// Whether a call's recording stops by itself when the question stays unanswered
+/// ([`CallEndConfig::stops`]), and a stored value this version does not know (read as off, the
+/// default). A host reads it when a meeting starts.
+///
+/// # Errors
+/// Store errors.
+pub fn stop_setting(store: &Store) -> Result<(bool, Option<String>), RuntimeError> {
+    let (on, unknown) =
+        crate::local::read_setting(store, STOP_KEY, |t| crate::local::on_off(&t).ok_or(t))?
+            .or_default_with(|| false);
+    Ok((on, unknown.map(|u| u.stored)))
+}
+
+/// Stores "stop recording by itself when a call ends": the setting's one writer.
+///
+/// # Errors
+/// Store errors.
+pub fn set_stop_on(store: &mut Store, on: bool) -> Result<(), RuntimeError> {
+    let value: &[u8] = if on { b"on" } else { b"off" };
+    crate::local::set(store, &DeviceRecord::CallEndStop.key(), value).map_err(RuntimeError::from)
+}
+
 /// One reading of the call app's render sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallSessions {
@@ -61,8 +96,12 @@ pub struct CallEndConfig {
     /// measured. Long enough for a call app to reconnect or move between sessions; short enough to
     /// be useful. Replace it once the hang-up measurement exists).
     pub quiet_after: Duration,
-    /// How long a question may stay open and unanswered before the recording stops (default 3 min:
-    /// The owner's choice, between the plan's 60 s and 5 min; not measured).
+    /// Whether an unanswered question stops the recording at all (default off: the General page's
+    /// setting, [`stop_setting`], T14.52). Off, [`CallEndChange::Stop`] never comes.
+    pub stops: bool,
+    /// How long a question may stay open and unanswered before the recording stops, when it
+    /// [`stops`](Self::stops) (default 3 min: the owner's choice, between the plan's 60 s and
+    /// 5 min; not measured).
     pub stop_after: Duration,
     /// How old the newest session reading may be for a stop (default 10 s, five polls: a judgement).
     /// A poller that went quiet says nothing about the call, so its last word cannot stop a meeting.
@@ -74,6 +113,7 @@ impl Default for CallEndConfig {
         Self {
             polls_to_end: 2,
             quiet_after: Duration::from_secs(30),
+            stops: false,
             stop_after: Duration::from_secs(180),
             stop_needs_reading_within: Duration::from_secs(10),
         }
@@ -180,6 +220,19 @@ impl CallEndWatch {
         self.asked = false;
     }
 
+    /// The user turned "stop recording by itself" off during the meeting: from here on nothing
+    /// stops by itself, an open question included (off is the safe direction, so it applies at
+    /// once; turning it on applies only from the next meeting, so there is no way back on).
+    pub fn stop_by_itself_off(&mut self) {
+        self.config.stops = false;
+    }
+
+    /// Whether the question is open.
+    #[must_use]
+    pub fn offered(&self) -> bool {
+        self.offered
+    }
+
     /// What changes at `now`, if anything.
     pub fn check(&mut self, now: Duration) -> Option<CallEndChange> {
         if self.stopped {
@@ -197,7 +250,10 @@ impl CallEndWatch {
             }
             let reading_is_recent =
                 now.saturating_sub(self.last_reading) <= self.config.stop_needs_reading_within;
-            if reading_is_recent && now.saturating_sub(self.offered_at) >= self.config.stop_after {
+            if self.config.stops
+                && reading_is_recent
+                && now.saturating_sub(self.offered_at) >= self.config.stop_after
+            {
                 self.stopped = true;
                 return Some(CallEndChange::Stop);
             }
@@ -225,17 +281,117 @@ mod tests {
         Duration::from_secs(seconds)
     }
 
+    /// A watch with "stop recording by itself" on: the tests of the stop were written for it.
     fn watch() -> CallEndWatch {
-        CallEndWatch::new(CallEndConfig::default())
+        CallEndWatch::new(CallEndConfig {
+            stops: true,
+            ..CallEndConfig::default()
+        })
     }
 
     /// A call whose session was seen at 0 s and read as gone at 10 and 12 s (counted ended at 12).
     fn ended_at_12() -> CallEndWatch {
-        let mut w = watch();
+        ended_at_12_with(watch())
+    }
+
+    fn ended_at_12_with(mut w: CallEndWatch) -> CallEndWatch {
         w.sessions(CallSessions::Active, s(0));
         w.sessions(CallSessions::NoneActive, s(10));
         w.sessions(CallSessions::NoneActive, s(12));
         w
+    }
+
+    /// The default watch: "stop recording by itself" off.
+    fn ended_at_12_without_stop() -> CallEndWatch {
+        ended_at_12_with(CallEndWatch::new(CallEndConfig::default()))
+    }
+
+    #[test]
+    fn call_end_with_the_stop_off_an_unanswered_offer_never_stops() {
+        let mut w = ended_at_12_without_stop();
+        assert_eq!(w.check(s(42)), Some(CallEndChange::Offer));
+        // Fresh readings with the call over, for a day: the question just stays open.
+        for t in (44..86_400).step_by(2) {
+            w.sessions(CallSessions::NoneActive, s(t));
+            assert_eq!(w.check(s(t)), None, "at {t} s");
+        }
+    }
+
+    #[test]
+    fn call_end_with_the_stop_off_the_question_still_comes_and_goes() {
+        // Taken back when the call looks alive, asked again when it looks over.
+        let mut w = ended_at_12_without_stop();
+        assert_eq!(w.check(s(42)), Some(CallEndChange::Offer));
+        w.far_end(true, s(500));
+        assert_eq!(w.check(s(500)), Some(CallEndChange::Withdraw));
+        w.far_end(false, s(501));
+        w.sessions(CallSessions::NoneActive, s(531));
+        assert_eq!(w.check(s(531)), Some(CallEndChange::OfferAgain));
+        // "Keep recording" settles it until a new session ends, as with the stop on.
+        w.keep_recording();
+        w.sessions(CallSessions::NoneActive, s(10_000));
+        assert_eq!(w.check(s(10_000)), None);
+        w.sessions(CallSessions::Active, s(10_002));
+        w.sessions(CallSessions::NoneActive, s(10_004));
+        w.sessions(CallSessions::NoneActive, s(10_006));
+        assert_eq!(w.check(s(10_036)), Some(CallEndChange::Offer));
+        w.sessions(CallSessions::NoneActive, s(20_000));
+        assert_eq!(w.check(s(20_000)), None);
+    }
+
+    #[test]
+    fn call_end_turning_the_stop_off_during_a_meeting_applies_at_once() {
+        // Before the question.
+        let mut w = ended_at_12();
+        w.stop_by_itself_off();
+        assert!(!w.offered());
+        assert_eq!(w.check(s(42)), Some(CallEndChange::Offer));
+        assert!(w.offered());
+        w.sessions(CallSessions::NoneActive, s(5_000));
+        assert_eq!(w.check(s(5_000)), None);
+        // While it is open, one second before the stop.
+        let mut w = ended_at_12();
+        assert_eq!(w.check(s(42)), Some(CallEndChange::Offer));
+        w.sessions(CallSessions::NoneActive, s(221));
+        assert_eq!(w.check(s(221)), None);
+        w.stop_by_itself_off();
+        w.sessions(CallSessions::NoneActive, s(222));
+        assert_eq!(w.check(s(222)), None);
+        w.sessions(CallSessions::NoneActive, s(86_400));
+        assert_eq!(w.check(s(86_400)), None);
+        assert!(w.offered(), "the question stays open");
+    }
+
+    #[test]
+    fn call_end_stop_setting_is_off_until_turned_on() {
+        let dir = crate::testutil::TempDir::new("call-end-stop");
+        let (svc, _) = crate::testutil::services(&dir);
+        let mut db = svc.store();
+        assert_eq!(stop_setting(&db).unwrap(), (false, None));
+        assert_eq!(
+            db.local_value(STOP_KEY).unwrap(),
+            None,
+            "reading writes nothing"
+        );
+        set_stop_on(&mut db, true).unwrap();
+        assert_eq!(stop_setting(&db).unwrap(), (true, None));
+        assert_eq!(
+            db.local_value(STOP_KEY).unwrap().as_deref(),
+            Some(&b"on"[..])
+        );
+        set_stop_on(&mut db, false).unwrap();
+        assert_eq!(stop_setting(&db).unwrap(), (false, None));
+        assert_eq!(
+            db.local_value(STOP_KEY).unwrap().as_deref(),
+            Some(&b"off"[..])
+        );
+        // A value this version does not know is reported and reads as off.
+        db.set_local_value(STOP_KEY, b"later").unwrap();
+        assert_eq!(
+            stop_setting(&db).unwrap(),
+            (false, Some("later".to_owned()))
+        );
+        assert_eq!(DeviceRecord::CallEndStop.key().as_str(), STOP_KEY);
     }
 
     #[test]
@@ -460,6 +616,7 @@ mod tests {
         let c = CallEndConfig::default();
         assert_eq!(c.polls_to_end, 2);
         assert_eq!(c.quiet_after, s(30));
+        assert!(!c.stops, "off by default (T14.52)");
         assert_eq!(c.stop_after, s(180));
         assert_eq!(c.stop_needs_reading_within, s(10));
     }
