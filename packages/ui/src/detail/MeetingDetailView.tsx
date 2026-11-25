@@ -74,6 +74,7 @@ import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { KeptLocal } from "./KeptLocal";
+import { keepUnchanged } from "./keepUnchanged";
 import { ResummariseControl } from "./ResummariseControl";
 import { SpeakersPanel } from "./SpeakersPanel";
 import {
@@ -357,6 +358,13 @@ const useStyles = makeStyles({
     paddingLeft: tokens.spacingHorizontalS,
     paddingRight: tokens.spacingHorizontalS,
     borderRadius: tokens.borderRadiusMedium,
+    // A line off screen is not laid out or painted (T14.18): an hours-long transcript costs what
+    // its visible lines cost. The size stands in until the line has been drawn once ("auto"
+    // then keeps its last real size), so the scrollbar and scrolling to a far line stay close.
+    // Focus, find's highlights and menus are unaffected: menus and popovers are portalled, and
+    // a line holding focus or in view is always drawn.
+    contentVisibility: "auto",
+    containIntrinsicSize: "auto 32px",
     // The Edit button shows on hover and whenever the row holds focus (T12.16).
     ":hover .earshot-line-edit": { opacity: 1 },
     ":focus-within .earshot-line-edit": { opacity: 1 },
@@ -716,7 +724,9 @@ export function MeetingDetailView({
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
       if (read !== reads.current) return;
-      setDetail(d);
+      // Unchanged rows, word lists and movable lists keep their objects, so after an edit only
+      // the lines that changed render again (T14.18).
+      setDetail((before) => keepUnchanged(before, d));
       // Decided with each detail, in the same render: the first opens it exactly when a voice
       // needs a name; a later one opens it when more voices need a name than before (a
       // re-transcription found new ones). Never closed by itself. A voice recognised from a
