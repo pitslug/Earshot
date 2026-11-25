@@ -458,6 +458,7 @@ fn codex_word(e: &earshot_llm::CodexError) -> Option<OutcomeWord> {
         | E::UnsupportedVersion
         | E::ToolRan
         | E::UnknownEvent
+        | E::UnknownFeature
         | E::Start(_)
         | E::TimedOut(_)
         | E::OutputIncomplete

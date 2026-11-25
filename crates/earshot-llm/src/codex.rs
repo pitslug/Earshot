@@ -43,14 +43,20 @@
 //!   0.169.0's list (T12.46), the background daemon, the code-mode host, incremental tools,
 //!   plugin discovery, local automation, the system proxy fallback, the unified exec TTY and
 //!   write-stdin approval). A feature name a version does not know fails the run before any
-//!   connection ("Unknown feature flag", measured), so each run first reads the installed
+//!   connection ("Unknown feature flag", measured), so a client first reads the installed
 //!   CLI's own `codex features list` (no content, [`CodexCli::features`], within
-//!   [`STATUS_TIMEOUT`]) and passes `--disable` only for the names it lists
-//!   ([`run_args`]): a feature it does not list cannot be on. A list that cannot be read
-//!   refuses the run ([`CodexError::UnsupportedVersion`]) before anything is handed over.
-//!   The list was checked against codex-cli 0.169.0 (2026-11-14, T12.46); on every Codex
-//!   version change, re-check it (a new tool-providing feature must be added, a renamed one
-//!   fixed).
+//!   [`STATUS_TIMEOUT`]; once per [`CodexClient`], only a successful read is kept) and
+//!   passes `--disable` only for the names it lists ([`run_args`]): a feature it does not
+//!   list cannot be on. A list that cannot be read refuses the run
+//!   ([`CodexError::UnsupportedVersion`]) before anything is handed over.
+//! - Fail closed on features (T14.30): a feature the list shows enabled that is on neither
+//!   [`DISABLED_FEATURES`] nor the reviewed [`HARMLESS_FEATURES`] refuses the run
+//!   ([`CodexError::UnknownFeature`], `unknown_feature`) before anything is handed over,
+//!   because a newer Codex can add a tool-providing feature that would otherwise stay on
+//!   ([`check_features`]). Both lists were checked against codex-cli 0.169.0 (2026-11-14,
+//!   T12.46); on every Codex version change, re-check them against `codex features list`
+//!   (a new tool-providing feature must be added to the disable list, a renamed one fixed, and
+//!   a name joins the harmless list only with its reason).
 //! - Tools that run anyway: any `item.started`/`item.completed` whose item type is not an
 //!   agent message, reasoning or an error (for example `command_execution`, `file_change`,
 //!   `mcp_tool_call`, `web_search`, or a type this version adds) fails the run with
@@ -186,6 +192,43 @@ pub const DISABLED_FEATURES: [&str; 29] = [
     "unified_exec_tty",
     "write_stdin_approval",
 ];
+
+/// Features that may stay on (T14.30): each reviewed as giving the model no tool, network or
+/// file access, with its reason beside it. Empty: no capture of `codex features list` in
+/// this repository says which other features are on by default or what they do, and a name
+/// that cannot be justified from such material does not go here (the review's rule). So any
+/// enabled feature outside [`DISABLED_FEATURES`] refuses the run ([`check_features`]) until a
+/// real list of the pinned CLI is reviewed and its harmless names are added here, each with
+/// its one-line reason. Re-check on every Codex version change.
+pub const HARMLESS_FEATURES: [&str; 0] = [];
+
+/// One line of `codex features list`: a feature's name and whether it is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedFeature {
+    /// The feature's name (lower-case letters, digits, `_` and `.`).
+    pub name: String,
+    /// Whether the list shows it on (`true` in the last column).
+    pub enabled: bool,
+}
+
+/// Whether a run may go ahead with the features `listed` (module docs): every enabled feature
+/// is on [`DISABLED_FEATURES`] (the run turns it off) or on [`HARMLESS_FEATURES`].
+///
+/// # Errors
+/// [`CodexError::UnknownFeature`] for any other enabled feature (its name is never kept: a
+/// fixed word only).
+pub fn check_features(listed: &[ListedFeature]) -> Result<(), CodexError> {
+    let unreviewed = listed.iter().any(|f| {
+        f.enabled
+            && !DISABLED_FEATURES.contains(&f.name.as_str())
+            && !HARMLESS_FEATURES.contains(&f.name.as_str())
+    });
+    if unreviewed {
+        Err(CodexError::UnknownFeature)
+    } else {
+        Ok(())
+    }
+}
 
 /// Prefix of the working folders.
 const TEMP_PREFIX: &str = "earshot-codex";
@@ -326,6 +369,9 @@ pub enum CodexError {
     /// Codex printed an event Earshot does not know (a type outside [`KNOWN_EVENTS`], or an
     /// item event without its item): the run's reply is not used.
     UnknownEvent,
+    /// The CLI lists a feature turned on that is on neither [`DISABLED_FEATURES`] nor
+    /// [`HARMLESS_FEATURES`] (T14.30): nothing was handed to it.
+    UnknownFeature,
     /// The CLI could not be started (the reason from the operating system).
     Start(String),
     /// The CLI did not finish within the deadline and was stopped.
@@ -357,9 +403,9 @@ impl CodexError {
 
     /// A fixed lower-case name of the variant (for records that must hold no text):
     /// `not_installed`, `not_signed_in`, `sign_in_expired`, `access_denied`,
-    /// `prompt_too_long`, `unsupported_version`, `tool_ran`, `unknown_event`, `start`,
-    /// `timed_out`,
-    /// `output_incomplete`, `not_recorded`, `bad_output`, `failed`.
+    /// `prompt_too_long`, `unsupported_version`, `tool_ran`, `unknown_event`,
+    /// `unknown_feature`, `start`, `timed_out`, `output_incomplete`, `not_recorded`,
+    /// `bad_output`, `failed`.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
@@ -371,6 +417,7 @@ impl CodexError {
             Self::UnsupportedVersion => "unsupported_version",
             Self::ToolRan => "tool_ran",
             Self::UnknownEvent => "unknown_event",
+            Self::UnknownFeature => "unknown_feature",
             Self::Start(_) => "start",
             Self::TimedOut(_) => "timed_out",
             Self::OutputIncomplete => "output_incomplete",
@@ -407,6 +454,9 @@ impl fmt::Display for CodexError {
             ),
             Self::ToolRan => f.write_str(
                 "Codex used a tool, which Earshot does not allow, so its answer was not used",
+            ),
+            Self::UnknownFeature => f.write_str(
+                "this Codex version has a feature turned on that Earshot has not checked, so nothing was handed to it",
             ),
             Self::Start(e) => write!(f, "Codex could not be started: {e}"),
             Self::TimedOut(d) => write!(f, "Codex did not answer within {} s", d.as_secs()),
@@ -614,13 +664,13 @@ impl CodexCli {
         Ok(line.chars().take(80).collect())
     }
 
-    /// The feature names the CLI lists (`codex features list`, which reads no content):
-    /// what a run may pass to `--disable` ([`run_args`]).
+    /// The features the CLI lists (`codex features list`, which reads no content): what a
+    /// run may pass to `--disable` ([`run_args`]) and which are on ([`check_features`]).
     ///
     /// # Errors
     /// The CLI cannot be run or times out (its own error); it fails or lists no feature in
     /// the expected shape: [`CodexError::UnsupportedVersion`].
-    pub fn features(&self, timeout: Duration) -> Result<Vec<String>, CodexError> {
+    pub fn features(&self, timeout: Duration) -> Result<Vec<ListedFeature>, CodexError> {
         let out = self.query(&["features", "list"], timeout)?;
         features_of(&out).ok_or(CodexError::UnsupportedVersion)
     }
@@ -676,17 +726,17 @@ pub fn sign_in_of(out: &ChildOutput) -> CodexSignIn {
     CodexSignIn::Unknown("Codex's sign-in status was not recognised".into())
 }
 
-/// The feature names of a `codex features list` run: the first word of every line shaped
-/// `<name> <stage...> <true|false>` (codex-cli 0.169.0, this host, 2026-11-14), the name of
-/// lower-case letters, digits, `_` and `.`. `None` when the run failed or no line has that
-/// shape.
+/// The features of a `codex features list` run: every line shaped `<name> <stage...>
+/// <true|false>` (codex-cli 0.169.0, this host, 2026-11-14), the name of lower-case letters,
+/// digits, `_` and `.`, on when the last word is `true`. `None` when the run failed or no
+/// line has that shape.
 #[must_use]
-pub fn features_of(out: &ChildOutput) -> Option<Vec<String>> {
+pub fn features_of(out: &ChildOutput) -> Option<Vec<ListedFeature>> {
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let names: Vec<String> = text
+    let listed: Vec<ListedFeature> = text
         .lines()
         .filter_map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
@@ -694,11 +744,15 @@ pub fn features_of(out: &ChildOutput) -> Option<Vec<String>> {
             let named = name
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.');
-            (words.len() >= 3 && named && matches!(*last, "true" | "false"))
-                .then(|| (*name).to_owned())
+            (words.len() >= 3 && named && matches!(*last, "true" | "false")).then(|| {
+                ListedFeature {
+                    name: (*name).to_owned(),
+                    enabled: *last == "true",
+                }
+            })
         })
         .collect();
-    (!names.is_empty()).then_some(names)
+    (!listed.is_empty()).then_some(listed)
 }
 
 fn child_error(e: ChildError) -> CodexError {
@@ -816,6 +870,9 @@ pub struct CodexClient {
     clock: Arc<dyn Clock + Send + Sync>,
     log: HandoverLog<CodexError>,
     sink: Arc<Mutex<Option<Arc<dyn HandoverSink<CodexError>>>>>,
+    /// The CLI's feature list, kept after the first successful read (T14.30: read once per
+    /// client, clones share it); a failed read is not kept, so the next run asks again.
+    features: Arc<Mutex<Option<Vec<ListedFeature>>>>,
 }
 
 impl fmt::Debug for CodexClient {
@@ -834,7 +891,24 @@ impl CodexClient {
             clock,
             log: HandoverLog::new(),
             sink: Arc::new(Mutex::new(None)),
+            features: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// The CLI's feature list: the kept one, else read now (and kept when the read worked).
+    /// The lock is not held across the read (it runs a child process).
+    fn listed_features(&self) -> Result<Vec<ListedFeature>, CodexError> {
+        if let Some(kept) = self
+            .features
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            return Ok(kept);
+        }
+        let read = self.config.cli.features(STATUS_TIMEOUT)?;
+        *self.features.lock().unwrap_or_else(PoisonError::into_inner) = Some(read.clone());
+        Ok(read)
     }
 
     /// Sets (or clears) where handovers are reported as they happen; shared by clones.
@@ -865,8 +939,11 @@ impl CodexClient {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
-        // What this CLI can turn off; nothing is handed over when it cannot be read.
-        let listed = self.config.cli.features(STATUS_TIMEOUT)?;
+        // What this CLI can turn off; nothing is handed over when it cannot be read, or when
+        // it shows a feature on that Earshot has not reviewed (T14.30).
+        let features = self.listed_features()?;
+        check_features(&features)?;
+        let listed: Vec<String> = features.into_iter().map(|f| f.name).collect();
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
@@ -1213,9 +1290,17 @@ guardianv2.thread_context                removed            false
 WARNING: something
 
 ";
+        let feature = |name: &str, enabled: bool| ListedFeature {
+            name: name.into(),
+            enabled,
+        };
         assert_eq!(
             features_of(&output(listed, "", true)).unwrap(),
-            ["agent_message_board", "apps", "guardianv2.thread_context"]
+            [
+                feature("agent_message_board", false),
+                feature("apps", true),
+                feature("guardianv2.thread_context", false)
+            ]
         );
         assert_eq!(features_of(&output(listed, "", false)), None);
         assert_eq!(
@@ -1226,6 +1311,31 @@ WARNING: something
             None
         );
         assert_eq!(features_of(&output("", "", true)), None);
+    }
+
+    #[test]
+    fn codex_an_enabled_feature_outside_both_lists_refuses_the_run() {
+        let feature = |name: &str, enabled: bool| ListedFeature {
+            name: name.into(),
+            enabled,
+        };
+        // Every disabled-list feature on, and an unknown one off: the run may go ahead.
+        let mut listed: Vec<ListedFeature> =
+            DISABLED_FEATURES.iter().map(|f| feature(f, true)).collect();
+        listed.push(feature("an_invented_feature", false));
+        assert_eq!(check_features(&listed), Ok(()));
+        for f in HARMLESS_FEATURES {
+            assert!(check_features(&[feature(f, true)]).is_ok(), "{f}");
+            assert!(!DISABLED_FEATURES.contains(&f), "{f} is on both lists");
+        }
+        // The same unknown feature on: refused, with a fixed word and no name in the copy.
+        listed.push(feature("an_invented_feature", true));
+        let e = check_features(&listed).unwrap_err();
+        assert_eq!(e, CodexError::UnknownFeature);
+        assert_eq!(e.kind(), "unknown_feature");
+        assert!(!e.to_string().contains("an_invented_feature"), "{e}");
+        assert!(!e.is_retryable());
+        assert!(!e.needs_sign_in());
     }
 
     fn output(stdout: &str, stderr: &str, ok: bool) -> ChildOutput {

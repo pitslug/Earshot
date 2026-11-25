@@ -1258,6 +1258,9 @@ pub fn codex_copy(e: &earshot_runtime::codex::CodexError, ahead: bool) -> String
         CodexError::ToolRan => {
             "Earshot does not let Codex run commands or tools; re-summarise this meeting, and if it happens again choose another way to write summaries."
         }
+        CodexError::UnknownFeature => {
+            "Update Earshot, or choose another way to write summaries on the Summaries page."
+        }
         _ => "Check Codex, then re-summarise this meeting.",
     };
     format!("{lead}: {e}. {fix}")

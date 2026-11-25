@@ -128,14 +128,19 @@ mod fake {
                 std::process::exit(0);
             }
             // The shape of codex-cli 0.169.0 (this host, 2026-11-14). An older CLI lists
-            // none of the eight names T12.46 added.
+            // none of the eight names T12.46 added. `fast_mode` is listed off: a feature
+            // Earshot leaves alone (T14.30: an unreviewed feature that is on refuses the run,
+            // which `feature-unknown-on` shows).
             let old = dir.join("features-old").is_file();
             for name in earshot_llm::codex::DISABLED_FEATURES
                 .into_iter()
                 .filter(|n| !old || !super::NEWER_FEATURES.contains(n))
-                .chain(["fast_mode"])
             {
                 println!("{name:<40} stable             true");
+            }
+            println!("{:<40} stable             false", "fast_mode");
+            if dir.join("feature-unknown-on").is_file() {
+                println!("{:<40} under development  true", "an_invented_feature");
             }
             std::process::exit(0);
         }
@@ -499,6 +504,57 @@ fn codex_an_unreadable_feature_list_refuses_the_run() {
         "nothing handed over"
     );
     s.assert_temp_root_empty();
+}
+
+/// T14.30: a feature the CLI shows on that is on neither the disable list nor the reviewed
+/// harmless list refuses the run before anything is handed over.
+fn codex_an_unreviewed_enabled_feature_refuses_the_run() {
+    let s = Scenario::new("feature-unknown-on");
+    s.flag("feature-unknown-on");
+    s.script(None, &format!("reply {}", summary_json(&[1, 2])));
+    let client = s.client(|_| {});
+    let e = summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap_err();
+    assert_eq!(codex_error(&e), &CodexError::UnknownFeature, "{e}");
+    assert!(!e.to_string().contains("an_invented_feature"), "{e}");
+    assert_eq!(s.calls(), 0, "no summary run");
+    assert!(
+        client.handovers().entries().is_empty(),
+        "nothing handed over"
+    );
+    assert_eq!(s.read("status-calls"), "", "no sign-in question");
+    s.assert_temp_root_empty();
+}
+
+/// T14.30: the feature list is read once per client (clones share it); a list that could not
+/// be read is not kept, so the next run asks again.
+fn codex_the_feature_list_is_read_once_per_client() {
+    let s = Scenario::new("features-once");
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|_| {});
+    for _ in 0..2 {
+        summarise(&client.clone(), &meeting(2), &CancelToken::new())
+            .result
+            .unwrap();
+    }
+    assert_eq!(s.calls(), 2);
+    assert_eq!(s.read("features-calls"), "1");
+
+    let s = Scenario::new("features-retry");
+    s.flag("features-unreadable");
+    s.script(None, &format!("reply {}", summary_json(&[1])));
+    let client = s.client(|_| {});
+    let e = summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap_err();
+    assert_eq!(codex_error(&e), &CodexError::UnsupportedVersion, "{e}");
+    std::fs::remove_file(s.dir.join("features-unreadable")).unwrap();
+    summarise(&client, &meeting(2), &CancelToken::new())
+        .result
+        .unwrap();
+    assert_eq!(s.read("features-calls"), "2");
+    assert_eq!(s.calls(), 1);
 }
 
 /// No argument of any run holds meeting text (the prompt goes only on standard input).
@@ -1182,6 +1238,16 @@ const CASES: &[Case] = &[
     (
         "codex_an_unreadable_feature_list_refuses_the_run",
         codex_an_unreadable_feature_list_refuses_the_run,
+        false,
+    ),
+    (
+        "codex_an_unreviewed_enabled_feature_refuses_the_run",
+        codex_an_unreviewed_enabled_feature_refuses_the_run,
+        false,
+    ),
+    (
+        "codex_the_feature_list_is_read_once_per_client",
+        codex_the_feature_list_is_read_once_per_client,
         false,
     ),
     (
