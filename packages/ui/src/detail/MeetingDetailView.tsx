@@ -89,6 +89,22 @@ import { dictionaryWord, inDictionary, tokensOf } from "./dictionaryWord";
 import { useWindowWatched } from "../shell/windowWatched";
 import { LineText, WORD_ATTRIBUTE, type WordActions } from "./WordMarks";
 import {
+  FindButton,
+  type LineFind,
+  TranscriptFind,
+  sameLineFind,
+  useFindMarks,
+} from "./TranscriptFind";
+import {
+  type FindResult,
+  findCount,
+  findCountText,
+  findInTranscript,
+  findLine,
+  findSpeakers,
+  speakerKey,
+} from "./findMatches";
+import {
   COPIED_MS,
   failureText,
   handoverLine,
@@ -412,6 +428,21 @@ const useStyles = makeStyles({
   rowCited: {
     backgroundColor: tokens.colorBrandBackground2,
   },
+  // T12.98: a line of the speaker find looks for, and the turn it points at.
+  rowFound: {
+    backgroundColor: tokens.colorNeutralBackground3,
+  },
+  rowCurrentTurn: {
+    outline: `${tokens.strokeWidthThick} solid ${tokens.colorBrandStroke1}`,
+    outlineOffset: "-2px",
+  },
+  // The tabs, with the find button at the end of the row (T12.98).
+  tabRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: tokens.spacingHorizontalS,
+  },
   time: {
     color: tokens.colorNeutralForeground3,
     fontVariantNumeric: "tabular-nums",
@@ -660,6 +691,18 @@ export function MeetingDetailView({
   usePanelSpace(view, pinnedHeader, 12);
   const audio = useRef<HTMLAudioElement | null>(null);
   const audioUrl = useRef<string | null>(null);
+  // Find in the transcript (T12.98): page state only, cleared when the bar closes.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findSpeaker, setFindSpeaker] = useState<string | null>(null);
+  const [findText, setFindText] = useState("");
+  const [findAt, setFindAt] = useState(0);
+  // Bumped by every open (the button or Ctrl+F), so focus goes to the text box each time.
+  const [findFocus, setFindFocus] = useState(0);
+  const findBarId = useId();
+  const findOpenRef = useRef(findOpen);
+  findOpenRef.current = findOpen;
+  const findButton = useRef<HTMLButtonElement | null>(null);
+  const findInput = useRef<HTMLInputElement | null>(null);
 
   // `afterSync`: read again because sync changed the meeting (T12.81). A meeting deleted on
   // another computer then goes quietly: no load error, and the list (read again) moves on.
@@ -759,6 +802,91 @@ export function MeetingDetailView({
     if (row !== undefined) row.scrollIntoView?.({ block: "center" });
     else view.current?.scrollIntoView?.({ block: "start" });
   }, [tab, cited]);
+
+  // Find in the transcript (T12.98). The bar shows only on the Transcript tab: leaving it
+  // closes and clears it, as close does.
+  if (findOpen && tab !== "transcript") {
+    setFindOpen(false);
+    setFindSpeaker(null);
+    setFindText("");
+    setFindAt(0);
+  }
+  const findSpeakerList = useMemo(() => (detail === null ? [] : findSpeakers(detail.transcript)), [detail]);
+  // A chosen speaker whose lines are gone (an edit moved them) is no longer offered: any speaker.
+  const findChosen = findSpeakerList.some((s) => s.key === findSpeaker) ? findSpeaker : null;
+  const findResult = useMemo<FindResult>(
+    () => (findOpen && detail !== null ? findInTranscript(detail.transcript, findChosen, findText) : IDLE),
+    [findOpen, detail, findChosen, findText],
+  );
+  const findTotal = findCount(findResult);
+  const findIndex = findTotal === 0 ? 0 : Math.min(findAt, findTotal - 1);
+  const findView = useMemo<FindView | null>(
+    () => (findOpen ? { result: findResult, at: findIndex, speaker: findChosen } : null),
+    [findOpen, findResult, findIndex, findChosen],
+  );
+  const openFind = useCallback(() => {
+    setTab("transcript");
+    setFindOpen(true);
+    setFindFocus((n) => n + 1);
+  }, []);
+  const closeFind = () => {
+    setFindOpen(false);
+    setFindSpeaker(null);
+    setFindText("");
+    setFindAt(0);
+    findButton.current?.focus();
+  };
+  const stepFind = (by: 1 | -1) => {
+    if (findTotal === 0) return;
+    setFindAt((findIndex + by + findTotal) % findTotal);
+  };
+
+  // Ctrl+F opens find (T12.98) and never the webview's own; in the find box it selects its
+  // text. In any other text field (a line or title being edited, a name field), a dialog or a
+  // menu it does nothing at all: no bar, and focus stays where it is.
+  // Esc closes and clears an open bar from anywhere in the detail but those places (the bar
+  // handles its own, where an open speaker list closes first).
+  const shown = detail !== null;
+  const closeFindRef = useRef(closeFind);
+  closeFindRef.current = closeFind;
+  useEffect(() => {
+    if (!shown) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.defaultPrevented || e.altKey) return;
+      const at = e.target instanceof Element ? e.target : null;
+      if (e.key === "Escape") {
+        if (!findOpenRef.current || e.ctrlKey || e.metaKey || e.shiftKey || at === null) return;
+        const inDetail = at === document.body || (view.current?.contains(at) ?? false);
+        if (!inDetail || at.closest(FIND_KEY_LEFT_ALONE)) return;
+        if (at.getAttribute("aria-expanded") === "true") return;
+        e.preventDefault();
+        closeFindRef.current();
+        return;
+      }
+      if (e.key.toLowerCase() !== "f" || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+      e.preventDefault();
+      if (at !== null && at === findInput.current) {
+        findInput.current.select();
+        return;
+      }
+      if (at?.closest(FIND_KEY_LEFT_ALONE)) return;
+      openFind();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shown, openFind]);
+  useEffect(() => {
+    if (findFocus === 0) return;
+    findInput.current?.focus();
+    findInput.current?.select();
+  }, [findFocus]);
+  // The place find points at scrolls into the middle of the pane when it moves (not when the
+  // meeting is read again, so an edit with the bar open keeps the pane where it is).
+  const findRow = findLine(findResult, findIndex);
+  const findRowId = findRow === null ? null : (detail?.transcript[findRow]?.segment_id ?? null);
+  useEffect(() => {
+    if (findRowId !== null) rows.current.get(findRowId)?.scrollIntoView?.({ block: "center" });
+  }, [findRowId, findIndex]);
 
   /** The name of the person speaker `s` is linked to now, before an edit changes it. */
   const personNameOf = (s: string): string | null =>
@@ -971,10 +1099,40 @@ export function MeetingDetailView({
           </div>
         </div>
         {detail !== null && (
-          <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as Tab)}>
-            <Tab value="summary">Summary</Tab>
-            <Tab value="transcript">Transcript</Tab>
-          </TabList>
+          <div className={styles.tabRow}>
+            <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as Tab)}>
+              <Tab value="summary">Summary</Tab>
+              <Tab value="transcript">Transcript</Tab>
+            </TabList>
+            <FindButton
+              ref={findButton}
+              expanded={findOpen}
+              controls={findOpen ? findBarId : undefined}
+              // A second press closes it (and clears it, as Esc does), so aria-expanded holds.
+              onClick={() => (findOpen ? closeFind() : openFind())}
+            />
+          </div>
+        )}
+        {detail !== null && findOpen && (
+          <TranscriptFind
+            id={findBarId}
+            speakers={findSpeakerList}
+            speaker={findChosen}
+            text={findText}
+            count={findTotal}
+            countText={findCountText(findResult, findIndex)}
+            inputRef={findInput}
+            onSpeaker={(k) => {
+              setFindSpeaker(k);
+              setFindAt(0);
+            }}
+            onText={(t) => {
+              setFindText(t);
+              setFindAt(0);
+            }}
+            onStep={stepFind}
+            onClose={closeFind}
+          />
         )}
       </div>
 
@@ -1069,6 +1227,7 @@ export function MeetingDetailView({
                 <TranscriptTab
                   detail={detail}
                   cited={cited}
+                  find={findView}
                   locked={linesLocked}
                   onEdit={async (segment, text) => {
                     let offer: string[] = [];
@@ -1643,6 +1802,7 @@ function TextEditor({
 function TranscriptTab({
   detail,
   cited,
+  find,
   onEdit,
   wordActions,
   onAddWord,
@@ -1654,6 +1814,8 @@ function TranscriptTab({
 }: {
   detail: MeetingDetail;
   cited: string | null;
+  /** What find shows (T12.98), `null` while its bar is closed. */
+  find: FindView | null;
   /** Line edits and word choices are off: the meeting is busy. */
   locked: boolean;
   /** Saves a line's new text; the words the Dictionary bar offers, or `null` when it was
@@ -1744,6 +1906,19 @@ function TranscriptTab({
 
   // Only the final transcript can be corrected: the final pass replaces a draft.
   const canEdit = detail.header.transcript === "Final";
+
+  // Each line's find state (T12.98). A line keeps the object it had while its highlight is
+  // unchanged, so a keystroke renders only the lines whose highlight changes (T9.24).
+  const lastFinds = useRef(new Map<string, LineFind>());
+  const lineFinds = useMemo(() => {
+    const next = lineFindsOf(detail.transcript, find);
+    for (const [id, f] of next) {
+      const before = lastFinds.current.get(id);
+      if (before !== undefined && sameLineFind(before, f)) next.set(id, before);
+    }
+    lastFinds.current = next;
+    return next;
+  }, [detail.transcript, find]);
 
   /** Moving on to another line closes what was open under an earlier one. */
   const moveTo = (segment: string) => {
@@ -1877,6 +2052,8 @@ function TranscriptTab({
             index={i}
             movable={detail.movable_by_track[r.track_id] ?? NO_SPEAKERS}
             cited={r.segment_id === cited}
+            // A line being edited or split shows no highlights.
+            find={editing === r.segment_id || splitting === r.segment_id ? undefined : lineFinds.get(r.segment_id)}
             editing={editing === r.segment_id}
             splitting={splitting === r.segment_id}
             canEdit={canEdit}
@@ -1916,6 +2093,53 @@ const noop = () => {};
 
 /** No speaker to move a line to: one array, so a line's props stay equal (T9.24). */
 const NO_SPEAKERS: MovableSpeaker[] = [];
+
+/** Find with nothing chosen (T12.98). */
+const IDLE: FindResult = { kind: "idle" };
+
+/** Where Ctrl+F opens nothing and Esc leaves find open (T12.98): other text fields, dialogs
+ * and menus. */
+const FIND_KEY_LEFT_ALONE =
+  'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="menu"]';
+
+/** What find shows in the transcript (T12.98): its result, the place it points at and the
+ * chosen speaker. */
+interface FindView {
+  result: FindResult;
+  at: number;
+  speaker: string | null;
+}
+
+/** Each line's find state by segment id; only lines find touches have one. */
+function lineFindsOf(rows: TranscriptRow[], find: FindView | null): Map<string, LineFind> {
+  const out = new Map<string, LineFind>();
+  if (find === null) return out;
+  const get = (i: number): LineFind => {
+    const id = rows[i].segment_id;
+    let f = out.get(id);
+    if (f === undefined) {
+      f = { speaker: false, currentTurn: false, matches: [], current: -1 };
+      out.set(id, f);
+    }
+    return f;
+  };
+  if (find.speaker !== null) {
+    rows.forEach((r, i) => {
+      if (speakerKey(r) === find.speaker) get(i).speaker = true;
+    });
+  }
+  if (find.result.kind === "turns") {
+    const line = find.result.lines[find.at];
+    if (line !== undefined) get(line).currentTurn = true;
+  } else if (find.result.kind === "matches") {
+    find.result.matches.forEach((m, k) => {
+      const f = get(m.line);
+      if (k === find.at) f.current = f.matches.length;
+      (f.matches as [number, number][]).push([m.start, m.end]);
+    });
+  }
+  return out;
+}
 
 /** A line's menu, mounted only once its button is first pressed (T12.90a): a transcript of
  * thousands of lines mounts no Fluent menu (each with its positioning and focus hooks) until one
@@ -2056,6 +2280,7 @@ const TranscriptLine = memo(function TranscriptLine({
   index: i,
   movable,
   cited,
+  find,
   editing,
   splitting,
   canEdit,
@@ -2074,6 +2299,8 @@ const TranscriptLine = memo(function TranscriptLine({
    * `movable_by_track`), its own speaker included: the menu leaves it out. */
   movable: MovableSpeaker[];
   cited: boolean;
+  /** What find highlights on the line (T12.98); `undefined` for a line it leaves alone. */
+  find: LineFind | undefined;
   editing: boolean;
   /** The line's words are offered as split points (T12.90). */
   splitting: boolean;
@@ -2092,6 +2319,7 @@ const TranscriptLine = memo(function TranscriptLine({
   handlers: LineHandlers;
 }) {
   const styles = useStyles();
+  const findMarks = useFindMarks();
   const segment = r.segment_id;
   const actions = useMemo<WordActions>(
     () => ({
@@ -2127,7 +2355,14 @@ const TranscriptLine = memo(function TranscriptLine({
       role="row"
       ref={rowRef}
       aria-current={cited ? "true" : undefined}
-      className={mergeClasses(styles.row, cited && styles.rowCited)}
+      data-find-speaker={find?.speaker ? "" : undefined}
+      data-find-turn={find?.currentTurn ? "current" : undefined}
+      className={mergeClasses(
+        styles.row,
+        find?.speaker && styles.rowFound,
+        cited && styles.rowCited,
+        find?.currentTurn && styles.rowCurrentTurn,
+      )}
       onContextMenu={(e) => h.contextMenu(r, e)}
       onKeyDown={(e) => h.keyDown(r, e)}
     >
@@ -2179,9 +2414,10 @@ const TranscriptLine = memo(function TranscriptLine({
               locked={locked}
               dictionary={lineDictionary}
               tinted={offered?.filter((w) => !inDictionary(dictionary, w))}
+              find={find}
             />
           ) : (
-            r.text
+            findMarks(r.text, 0, find)
           )}
           {r.edited && <Caption1 className={styles.editedMark}>(edited)</Caption1>}
         </Body1>
