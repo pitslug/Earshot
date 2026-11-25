@@ -1259,3 +1259,5 @@ fn asr_stretch_resume_refuses_an_inconsistent_record() {
         assert!(matches!(r, Err(AsrError::Config(_))), "{done:?}: {r:?}");
     }
 }
+
+mod release;
