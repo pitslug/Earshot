@@ -288,9 +288,10 @@ fn run_stream(
 
 /// The digest of every observable value of the streams of
 /// `asr_stretch_releasing_audio_changes_nothing_a_stream_gives_out`, captured at the commit
-/// before a stream released any audio outside decoded pieces (43de71c). A change to it
-/// means the stream decodes or reports something else than it did: never update it for a
-/// change that is meant to alter only what is held.
+/// before a stream released any audio outside decoded pieces (43de71c; taken again in review
+/// on a detached worktree of that commit, with this file's digest loop less its `held()`
+/// checks: the same value). A change to it means the stream decodes or reports something else
+/// than it did: never update it for a change that is meant to alter only what is held.
 const TRACE_DIGEST: u64 = 0xdeb0_59bf_6541_6315;
 
 #[test]
@@ -579,4 +580,208 @@ fn asr_stretch_resume_equals_the_whole_track_pass_across_long_silences() {
     ];
     let resumed_mid_stream = check_resume(false, cases);
     assert!(resumed_mid_stream > 40, "{resumed_mid_stream}");
+}
+
+/// How the decode of one piece goes wrong.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fault {
+    /// The call returns an error.
+    Fails,
+    /// The call panics.
+    Panics,
+    /// The stream is cancelled during the call, which returns as cancelled.
+    CancelledDuring,
+    /// The stream is cancelled during the call, which still returns its answer: the next
+    /// piece is refused.
+    CancelledAfter,
+}
+
+/// An [`Exact`] whose call number `on` (counted from 1) goes wrong as `fault`. A call that
+/// gives no answer is not counted, so a healthy `Exact` carrying on from its calls numbers
+/// its answers as the whole-track pass does.
+struct Faulty {
+    inner: Exact,
+    on: usize,
+    fault: Fault,
+}
+
+impl Transcriber for Faulty {
+    fn transcribe(
+        &mut self,
+        audio: &MonoBuffer,
+        options: &TranscribeOptions,
+        cancel: &CancelToken,
+    ) -> Result<Transcription, AsrError> {
+        if self.inner.calls.len() + 1 == self.on {
+            match self.fault {
+                Fault::Fails => return Err(AsrError::Backend("the model gave up".into())),
+                Fault::Panics => panic!("the model fell over"),
+                Fault::CancelledDuring => {
+                    cancel.cancel();
+                    return Err(AsrError::Cancelled);
+                }
+                Fault::CancelledAfter => {
+                    let answer = self.inner.transcribe(audio, options, cancel);
+                    cancel.cancel();
+                    return answer;
+                }
+            }
+        }
+        self.inner.transcribe(audio, options, cancel)
+    }
+
+    fn backend_info(&self) -> BackendInfo {
+        self.inner.backend_info()
+    }
+}
+
+#[test]
+fn asr_stretch_resume_after_a_decode_went_wrong_equals_the_whole_track_pass_once_audio_was_let_go()
+{
+    // T14.20 review: the stream has already let go of audio (a long silence opens the track)
+    // when a decode fails, panics or is cancelled. The pieces decoded before it were handed
+    // out, each with a frontier that is valid for the kept log, and the log plus the rest from
+    // the recording is the whole-track pass: same calls with the same samples, same segments.
+    let config = PieceConfig::default();
+    let options = TranscribeOptions {
+        prompt: Some("Earshot".into()),
+        ..beam()
+    };
+    // Three turns: the second within the prompt's reach of the first, the third on its own.
+    let spec = [
+        (45 * HZ + 77, N::Quiet),
+        (3 * HZ, N::Loud),
+        (3 * HZ + 5, N::Quiet),
+        (4 * HZ, N::Loud),
+        (40 * HZ + 3, N::Quiet),
+        (2 * HZ, N::Loud),
+        (20 * HZ, N::Quiet),
+    ];
+    let samples = noisy(&spec, 21);
+    let buffer = MonoBuffer::new(PIPELINE_RATE, samples.clone());
+    let mut whole = Exact::default();
+    let (want, want_report) = transcribe_in_pieces(
+        &mut whole,
+        &mut LevelVad,
+        &buffer,
+        &options,
+        &config,
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(whole.calls.len(), 3, "three pieces, one call each");
+    assert!(whole.calls[1].2.is_some(), "the second piece has a prompt");
+
+    // The opening silence first (the release happens here), then the rest in one push (the
+    // pieces before the fault come out of the same call as the fault) or second by second.
+    let opening = 40 * HZ;
+    let mut with_pieces_before = 0;
+    for rest_push in [samples.len() - opening, HZ, 517] {
+        for fault in [
+            Fault::Fails,
+            Fault::Panics,
+            Fault::CancelledDuring,
+            Fault::CancelledAfter,
+        ] {
+            for on in 1..=3 {
+                let at = format!("{fault:?} on call {on}, pushes of {rest_push}");
+                let mut t = Faulty {
+                    inner: Exact::default(),
+                    on,
+                    fault,
+                };
+                let mut vad = LevelVad;
+                let cancel = CancelToken::new();
+                let mut s = PieceStream::new(&t, &mut vad, &options, &config).unwrap();
+                let mut done = DecodedPieces::default();
+                s.push_each(
+                    &mut t,
+                    &mut vad,
+                    &samples[..opening],
+                    &cancel,
+                    &mut |_, _| panic!("no piece in the silence"),
+                )
+                .unwrap();
+                done.through = s.decoded_through();
+                assert!(
+                    s.held() < opening / 10 && done.through > opening / 2,
+                    "the stream let go of the silence: {} held, frontier {}, {at}",
+                    s.held(),
+                    done.through
+                );
+                // Push until the fault; what the host keeps is what `on_piece` was given, and
+                // the frontier after each push that returned.
+                let mut failed = None;
+                for chunk in samples[opening..].chunks(rest_push) {
+                    let pushed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        s.push_each(&mut t, &mut vad, chunk, &cancel, &mut |p, f| {
+                            done.pieces.push(p);
+                            done.through = f;
+                        })
+                    }));
+                    match pushed {
+                        Ok(Ok(())) => done.through = s.decoded_through(),
+                        Ok(Err(e)) => {
+                            failed = Some(format!("{e:?}"));
+                            break;
+                        }
+                        Err(_) => {
+                            failed = Some("panicked".into());
+                            break;
+                        }
+                    }
+                }
+                // A cancel after the last piece's answer, with nothing pushed after it, stops
+                // nothing: every piece is decoded and the pushes simply end.
+                let nothing_left = fault == Fault::CancelledAfter && on == 3;
+                match (fault, failed.as_deref()) {
+                    (Fault::Fails, Some(e)) => assert!(e.contains("Backend"), "{e}, {at}"),
+                    (Fault::Panics, Some(e)) => assert_eq!(e, "panicked", "{at}"),
+                    (Fault::CancelledDuring | Fault::CancelledAfter, Some(e)) => {
+                        assert!(e.contains("Cancelled"), "{e}, {at}");
+                    }
+                    (_, None) => assert!(nothing_left, "nothing went wrong, {at}"),
+                }
+                // Every piece decoded before the fault was handed out: the calls that
+                // answered, one piece each, the whole-track plan's first ones.
+                let answered = t.inner.calls.len();
+                assert_eq!(done.pieces.len(), answered, "{at}");
+                let expected = match fault {
+                    Fault::CancelledAfter => on,
+                    _ => on - 1,
+                };
+                assert_eq!(answered, expected.min(3), "{at}");
+                assert_eq!(t.inner.calls[..], whole.calls[..answered], "{at}");
+                // The frontier kept with them is valid for the log.
+                done.check(samples.len()).unwrap();
+                if let Some(last) = done.pieces.last() {
+                    assert!(done.through >= last.span.end, "{at}");
+                    with_pieces_before += 1;
+                }
+                // The record survives storage, and the rest from the recording completes the
+                // whole-track pass (the healthy transcriber carries on from the calls made).
+                let json = serde_json::to_string(&done).unwrap();
+                let done: DecodedPieces = serde_json::from_str(&json).unwrap();
+                let mut rest = Exact {
+                    calls: t.inner.calls,
+                };
+                let (got, report) = transcribe_rest_in_pieces(
+                    &mut rest,
+                    &mut LevelVad,
+                    &buffer,
+                    &options,
+                    &config,
+                    &done,
+                    &CancelToken::new(),
+                )
+                .unwrap();
+                assert_eq!(rest.calls, whole.calls, "calls, {at}");
+                assert_eq!(got.segments, want.segments, "segments, {at}");
+                assert_eq!(report, want_report, "report, {at}");
+                assert_eq!(got.language, want.language, "language, {at}");
+            }
+        }
+    }
+    // Not vacuous: most faults came after pieces had been handed out.
+    assert!(with_pieces_before >= 24, "{with_pieces_before}");
 }
