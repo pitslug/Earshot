@@ -13,6 +13,17 @@ import { KEPT_LOCAL_TEXT, allowWriterText } from "./KeptLocal";
 const claudeCode: MockIpcData["summaries"] = { settings: { writer: "ClaudeCode" } };
 
 describe("keeping a meeting on this computer", () => {
+  it("is described the same way on the start screen and the meeting's page, and claims no more", () => {
+    // A kept meeting still syncs to the user's other computers and may be summarised by a model
+    // there (T14.51): only servers and online services are kept away.
+    const said = "Its summary is written only by a model on one of your own computers, never by a server or online service.";
+    expect(KEPT_LOCAL_TEXT).toBe(said);
+    expect(KEEP_LOCAL_HINT.startsWith(said)).toBe(true);
+    for (const text of [KEPT_LOCAL_TEXT, KEEP_LOCAL_HINT]) {
+      expect(text).not.toMatch(/never sent|elsewhere|this computer/);
+    }
+  });
+
   it("is off on the start screen and follows the box into the started meeting", async () => {
     for (const tick of [false, true]) {
       const { ipc, user, timer } = await setup();
