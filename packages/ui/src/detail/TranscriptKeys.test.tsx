@@ -9,7 +9,7 @@ import { IpcProvider } from "../ipc/context";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { ITEM, OTHER, panel, setup } from "../test/meetingDetail";
-import { MeetingDetailView } from "./MeetingDetailView";
+import { MeetingDetailView, PAGE_LINES, TRANSCRIPT_KEYS_COPY } from "./MeetingDetailView";
 
 const table = () => screen.getByRole("table", { name: "Transcript" });
 const rows = () => within(table()).getAllByRole("row");
@@ -90,11 +90,52 @@ describe("Transcript lines from the keyboard", () => {
     expect(screen.getByRole("button", { name: "More actions for line 1" })).toHaveFocus();
     await user.keyboard("{ArrowLeft}{ArrowLeft}");
     expect(rows()[0]).toHaveFocus();
-    // From a button, up and down go to the neighbouring lines.
+    // From a plain button, up and down go to the neighbouring lines.
+    rows()[1].focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Edit line 2" })).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(rows()[2]).toHaveFocus();
+    await user.keyboard("{Enter}{ArrowUp}");
+    expect(rows()[1]).toHaveFocus();
+    // On a menu button down opens its menu and never also moves to the next line, before the
+    // menu is first mounted and after.
+    // The menu takes focus once open, so the next line counts any focus it was given.
+    let nextFocused = 0;
+    rows()[2].addEventListener("focusin", () => (nextFocused += 1));
+    const more = screen.getByRole("button", { name: "More actions for line 2" });
+    more.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(await screen.findByRole("menuitem", { name: "Move to speaker" })).toBeInTheDocument();
+    expect(nextFocused).toBe(0);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+    // The mounted menu's trigger is a new element.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "More actions for line 2" })).toHaveFocus(),
+    );
+    expect(more).not.toBe(screen.getByRole("button", { name: "More actions for line 2" }));
+    await user.keyboard("{ArrowDown}");
+    expect(await screen.findByRole("menuitem", { name: "Move to speaker" })).toBeInTheDocument();
+    expect(nextFocused).toBe(0);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+    rows()[0].focus();
     await user.keyboard("{ArrowRight}");
     expect(edit).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(screen.getByRole("textbox", { name: "Line 1" })).toHaveFocus();
+  });
+
+  it("move by a page of lines with Page Up and Page Down, and say how the keys work", async () => {
+    const { user } = await transcript();
+    expect(table()).toHaveAccessibleDescription(TRANSCRIPT_KEYS_COPY);
+    rows()[0].focus();
+    await user.keyboard("{PageDown}");
+    // jsdom has no layout: a page is `PAGE_LINES` lines, here past the last.
+    expect(rows()[Math.min(PAGE_LINES, LINES - 1)]).toHaveFocus();
+    await user.keyboard("{PageUp}");
+    expect(rows()[Math.max(0, Math.min(PAGE_LINES, LINES - 1) - PAGE_LINES)]).toHaveFocus();
   });
 
   it("reach a line's word marks from the line, and a mark still opens its popover", async () => {

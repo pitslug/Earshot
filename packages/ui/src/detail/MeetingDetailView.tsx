@@ -348,6 +348,18 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
   },
+  // Read by assistive technology only: the transcript's keys (T14.19).
+  hiddenText: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    margin: "-1px",
+    padding: 0,
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
+    border: 0,
+  },
   row: {
     display: "grid",
     gridTemplateColumns: "56px 120px minmax(0, 1fr) auto",
@@ -1958,6 +1970,7 @@ function TranscriptTab({
   >(null);
   const undoRef = useRef<HTMLButtonElement | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
+  const keysId = useId();
   // The transcript is one tab stop (T14.19, roving tabindex): the line last focused, else the
   // first. A line's buttons are reached from it with the arrow keys (`lineKeys`).
   const [active, setActive] = useState<string | null>(null);
@@ -2125,6 +2138,12 @@ function TranscriptTab({
     const controls = [...row.querySelectorAll<HTMLElement>(LINE_CONTROL)];
     const k = controls.indexOf(at);
     if (!onRow && k < 0) return;
+    // A menu button opens its menu with up and down (Fluent's trigger or `LineMenu`), and an
+    // open popup keeps its keys: those never move to another line.
+    const vertical = e.key === "ArrowDown" || e.key === "ArrowUp";
+    if (vertical && (at.getAttribute("aria-haspopup") === "menu" || at.getAttribute("aria-expanded") === "true")) {
+      return;
+    }
     const lines = [...(tableRef.current?.querySelectorAll<HTMLElement>(':scope > [role="row"]') ?? [])];
     const i = lines.indexOf(row);
     let to: HTMLElement | null | undefined;
@@ -2135,6 +2154,12 @@ function TranscriptTab({
       case "ArrowUp":
         to = i > 0 ? lines[i - 1] : undefined;
         break;
+      case "PageDown":
+      case "PageUp": {
+        const by = linesPerPage(row);
+        to = lines[Math.max(0, Math.min(lines.length - 1, i + (e.key === "PageDown" ? by : -by)))];
+        break;
+      }
       case "Home":
       case "End":
         if (!onRow) return;
@@ -2226,9 +2251,16 @@ function TranscriptTab({
   }
 
   return (
+    <>
+    <span id={keysId} className={styles.hiddenText}>
+      {TRANSCRIPT_KEYS_COPY}
+    </span>
+    {/* A table, not a grid: lines are read as rows with their time, speaker and words as
+        cells, and the keys move by line, not by cell, which a grid would promise (T14.19). */}
     <div
       role="table"
       aria-label="Transcript"
+      aria-describedby={keysId}
       className={styles.transcript}
       ref={tableRef}
       onBlur={(e) => {
@@ -2280,6 +2312,7 @@ function TranscriptTab({
         }}
       />
     </div>
+    </>
   );
 }
 
@@ -2450,6 +2483,22 @@ function lineEditButton(root: Element | null, segment: string): HTMLElement | nu
 /** A line's own buttons, reached from the line with the arrow keys and never by Tab (T14.19):
  * its Edit, More and Choose buttons and its word marks (`WordMarks.tsx`). */
 const LINE_CONTROL = "[data-line-control]";
+/** How many lines Page Up and Page Down move when the page has no layout to measure (jsdom). */
+export const PAGE_LINES = 10;
+
+/** About a screenful of lines from `row`: the window's height over the line's, less one so a
+ * line stays in view, at least one; `PAGE_LINES` when nothing is laid out. */
+function linesPerPage(row: HTMLElement): number {
+  const line = row.getBoundingClientRect().height;
+  const view = window.innerHeight;
+  if (!(line > 0) || !(view > 0)) return PAGE_LINES;
+  return Math.max(1, Math.floor(view / line) - 1);
+}
+
+/** What the transcript says about its keys to assistive technology (T14.19). */
+export const TRANSCRIPT_KEYS_COPY =
+  "Use the up and down arrow keys to move between lines. Enter or the right arrow reaches a line's buttons.";
+
 /** What makes a button one of a line's own (`LINE_CONTROL`). */
 const LINE_CONTROL_PROPS = { tabIndex: -1, "data-line-control": "" } as const;
 
