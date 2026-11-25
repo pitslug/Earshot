@@ -34,7 +34,8 @@ const PUSH_PAGE: usize = 200;
 const MAX_PUSH_PAGES: usize = 50;
 /// The most pull pages in one tick.
 const MAX_PULL_PAGES: usize = 50;
-/// The most held rows tried again in one tick.
+/// Held rows read, opened and applied at a time, and the most the retry at the start of a
+/// tick tries (it goes on from there next tick, so every held row gets its turn).
 const MAX_RETRY: usize = 500;
 /// Sealed bytes per push request, under the relay's 4 MiB request limit after base64 and JSON.
 const PUSH_BYTES: usize = 2 * 1024 * 1024;
@@ -57,7 +58,10 @@ pub struct TickReport {
     pub written: usize,
     /// Rows not newer than the copy here.
     pub ignored: usize,
-    /// Rows held for later ([`earshot_store::HoldReason`]).
+    /// Rows this tick left held for later ([`earshot_store::HoldReason`]): each row it held
+    /// because its meeting is in use, its stamp is far ahead or a newer Earshot wrote it, and
+    /// every row that still waits for a parent when the tick ends (a row whose parent a later
+    /// page of the same tick brought is applied in that tick and not counted, T14.42).
     pub held: usize,
     /// Rows that could not be opened or read.
     pub unreadable: usize,
@@ -164,9 +168,8 @@ pub struct SyncClient {
     device: DeviceId,
     /// Set by the sync thread's stop: a tick ends at its next page.
     stop: Arc<AtomicBool>,
-    /// Whether rows held for a newer format or a far clock were tried again yet (once per
-    /// client: they clear only after an update or with time).
-    retried_all: AtomicBool,
+    /// Where the retry of held rows at the start of each tick is ([`HeldRetry`]).
+    retry: std::sync::Mutex<HeldRetry>,
     /// A summary worker's presence ([`SyncClient::as_summary_worker`]): kind `server` and the
     /// writer it names, asked at every send; `None` for the app.
     worker: Option<WorkerWriter>,
@@ -184,6 +187,51 @@ pub struct SyncClient {
 impl std::fmt::Debug for SyncClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SyncClient").finish_non_exhaustive()
+    }
+}
+
+/// Where the retry of held rows at the start of each tick is. At most [`MAX_RETRY`] rows are
+/// tried per tick, in row-key order from where the last tick stopped, so a store holding more
+/// than that still tries each of them in turn (never the same first rows every tick).
+#[derive(Debug, Default)]
+pub(super) struct HeldRetry {
+    /// The row key the next retry starts after; `None`: from the first.
+    after: Option<[u8; ROW_KEY_LEN]>,
+    /// Whether rows held for a newer format or a far clock have all been tried again by this
+    /// client (once: they clear only after an update or with time). Until then every retry
+    /// reads them too.
+    slow_done: bool,
+    /// A pass that includes the slow reasons is under way (it began at the first key).
+    slow_running: bool,
+}
+
+impl HeldRetry {
+    /// The reasons this tick's retry reads and the key it starts after.
+    pub(super) fn begin(&mut self) -> (&'static [HoldReason], Option<[u8; ROW_KEY_LEN]>) {
+        const QUICK: [HoldReason; 2] = [HoldReason::Busy, HoldReason::Parent];
+        if self.slow_done {
+            return (&QUICK, self.after);
+        }
+        if !self.slow_running {
+            // The slow pass reads every held row once, from the first key.
+            self.slow_running = true;
+            self.after = None;
+        }
+        (&HoldReason::ALL, self.after)
+    }
+
+    /// The retry read `read` rows of at most `limit`, the last with key `last`.
+    pub(super) fn read(&mut self, read: usize, limit: usize, last: Option<[u8; ROW_KEY_LEN]>) {
+        if read < limit {
+            // The end of the held rows: the next retry starts over.
+            self.after = None;
+            if self.slow_running {
+                self.slow_running = false;
+                self.slow_done = true;
+            }
+        } else {
+            self.after = last;
+        }
     }
 }
 
@@ -293,7 +341,7 @@ impl SyncClient {
             relay,
             device,
             stop: Arc::new(AtomicBool::new(false)),
-            retried_all: AtomicBool::new(false),
+            retry: std::sync::Mutex::new(HeldRetry::default()),
             worker: None,
             model_place: None,
             changes: None,
@@ -320,9 +368,8 @@ impl SyncClient {
         Ok(self
             .services
             .store()
-            .held_rows()?
-            .iter()
-            .any(|h| matches!(h.reason, HoldReason::Busy | HoldReason::Parent)))
+            .held_count(&[HoldReason::Busy, HoldReason::Parent])?
+            > 0)
     }
 
     /// The client for the relay at `address` rather than the stored one: the summary worker
@@ -524,6 +571,13 @@ impl SyncClient {
         let outcome = self.tick_into(&mut report);
         {
             let mut db = self.services.store();
+            // Rows still waiting for a parent when the tick ends, whenever they were pulled.
+            report.held = report.held.saturating_add(
+                db.held_count(&[HoldReason::Parent])
+                    .ok()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(0),
+            );
             let mut status = sync_status(&db).unwrap_or_default();
             status.unreadable = status
                 .unreadable
@@ -668,25 +722,92 @@ impl SyncClient {
         Ok(())
     }
 
-    /// Opens held rows again and applies them as one page: rows held because their meeting was
-    /// in use or a parent was missing, every tick; rows held for a newer format or a clock far
-    /// ahead, once per client (they clear only after an update or with time). A held row that
-    /// no longer opens (sealed under a vault this device left) is not retried.
+    /// Opens held rows again and applies them as one page, at most [`MAX_RETRY`] a tick, going
+    /// on next tick from where this one stopped ([`HeldRetry`]): rows held because their
+    /// meeting was in use or a parent was missing, every tick; rows held for a newer format or
+    /// a clock far ahead, once per client (they clear only after an update or with time). The
+    /// rows are selected by reason in SQL, never all read into memory. A held row that no
+    /// longer opens (sealed under a vault this device left) is not retried.
     fn retry_held(
         &self,
         keys: &Keys,
         kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
-        let held = self.services.store().held_rows()?;
-        let all = !self.retried_all.swap(true, Ordering::Relaxed);
-        let page: Vec<Incoming> = held
+        let (reasons, after) = self.retry_state().begin();
+        let held = self
+            .services
+            .store()
+            .held_page(reasons, after.as_ref(), MAX_RETRY)?;
+        self.retry_state()
+            .read(held.len(), MAX_RETRY, held.last().map(|h| h.key));
+        if self.apply_held(keys, held, kinds, report)? > 0 {
+            // A row others belong to was among them (a track whose meeting came meanwhile).
+            self.retry_parents(keys, kinds, report)?;
+        }
+        Ok(())
+    }
+
+    fn retry_state(&self) -> std::sync::MutexGuard<'_, HeldRetry> {
+        self.retry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Opens `held` and applies it as one page in the order it was pulled; returns how many
+    /// rows other rows belong to it wrote for the first time.
+    fn apply_held(
+        &self,
+        keys: &Keys,
+        held: Vec<earshot_store::Held>,
+        kinds: SyncKinds,
+        report: &mut TickReport,
+    ) -> Result<usize, SyncProblem> {
+        let mut page: Vec<Incoming> = held
             .into_iter()
-            .filter(|h| all || matches!(h.reason, HoldReason::Busy | HoldReason::Parent))
-            .take(MAX_RETRY)
             .filter_map(|h| open(keys, h.seq, &h.key, h.stamp, h.body).ok())
             .collect();
+        page.sort_by_key(|inc| inc.seq);
         self.apply(&page, kinds, report)
+    }
+
+    /// Applies again, in this tick, every row held because a row it belongs to had not arrived
+    /// (T14.42): called after a page wrote such a row for the first time (a meeting, a track,
+    /// a speaker). A pass reads every row held for a parent, [`MAX_RETRY`] at a time; passes
+    /// repeat until one frees no further parent (a line waits for its track, which waits for
+    /// its meeting). Each pass that goes on wrote a held row, so the passes end. Without this a
+    /// new computer, which pulls most rows before the meeting row they belong to (the relay
+    /// files a row at the end each time it changes), filled in a tick at a time.
+    fn retry_parents(
+        &self,
+        keys: &Keys,
+        kinds: SyncKinds,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        loop {
+            let mut after: Option<[u8; ROW_KEY_LEN]> = None;
+            let mut freed = 0;
+            loop {
+                if self.stopping() {
+                    return Ok(());
+                }
+                let held = self.services.store().held_page(
+                    &[HoldReason::Parent],
+                    after.as_ref(),
+                    MAX_RETRY,
+                )?;
+                let Some(last) = held.last() else { break };
+                after = Some(last.key);
+                let full = held.len() >= MAX_RETRY;
+                freed += self.apply_held(keys, held, kinds, report)?;
+                if !full {
+                    break;
+                }
+            }
+            if freed == 0 {
+                return Ok(());
+            }
+        }
     }
 
     fn pull(
@@ -725,11 +846,18 @@ impl SyncClient {
                     Err(()) => report.unreadable += 1,
                 }
             }
-            self.apply(&page, kinds, report)?;
-            if let Some(last) = last
-                && last > after
-                && !advance_cursor(&mut self.services.store(), after, last)?
-            {
+            let parents = self.apply(&page, kinds, report)?;
+            let moved = match last {
+                Some(last) if last > after => {
+                    advance_cursor(&mut self.services.store(), after, last)?
+                }
+                _ => true,
+            };
+            if parents > 0 {
+                // Rows pulled before a parent this page brought apply now, not next tick.
+                self.retry_parents(keys, kinds, report)?;
+            }
+            if !moved {
                 // The cursor was reset meanwhile (a switch turned on): read from there next tick.
                 return Ok(());
             }
@@ -745,14 +873,16 @@ impl SyncClient {
     }
 
     /// Runs this device's deletion of every meeting the page deletes, then applies the page.
+    /// Returns how many rows other rows belong to the page wrote for the first time
+    /// ([`earshot_store::Applied::parents_written`]).
     fn apply(
         &self,
         page: &[Incoming],
         kinds: SyncKinds,
         report: &mut TickReport,
-    ) -> Result<(), SyncProblem> {
+    ) -> Result<usize, SyncProblem> {
         if page.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         for meeting in self.meetings_deleted_elsewhere(page)? {
             match self.services.delete_meeting(meeting) {
@@ -803,7 +933,14 @@ impl SyncClient {
         }
         report.written += applied.written;
         report.ignored += applied.ignored + applied.skipped;
-        report.held += applied.held.iter().sum::<usize>();
+        // Rows held for a parent are counted once, from the store, when the tick ends: a later
+        // page of this tick may bring the parent.
+        report.held += HoldReason::ALL
+            .iter()
+            .zip(applied.held)
+            .filter(|(reason, _)| **reason != HoldReason::Parent)
+            .map(|(_, n)| n)
+            .sum::<usize>();
         report.repaired += applied.mes_merged
             + applied.summaries_replaced
             + applied.withdrawals_kept
@@ -812,7 +949,7 @@ impl SyncClient {
             + applied.speakers_revived;
         report.meetings.extend(applied.meetings);
         report.people |= applied.people;
-        Ok(())
+        Ok(applied.parents_written)
     }
 
     /// Meetings this page deletes that are live here, whatever the stamps: a meeting row

@@ -95,6 +95,14 @@ impl SyncedRow {
         each!(self, r => r.sync_id())
     }
 
+    /// Whether other rows belong to a row of this table, so that one arriving for the first
+    /// time can free rows held for it ([`HoldReason::Parent`]): a meeting (its tracks,
+    /// speakers, lines, notes, summaries and summary requests), a track and a speaker (lines).
+    #[must_use]
+    pub fn has_children(&self) -> bool {
+        matches!(self, Self::Meeting(_) | Self::Track(_) | Self::Speaker(_))
+    }
+
     /// Its sync metadata.
     #[must_use]
     pub fn meta(&self) -> &SyncMeta {
@@ -302,6 +310,10 @@ pub struct ApplyRules<'a> {
 pub struct Applied {
     /// Rows written (later than the local copy, or new).
     pub written: usize,
+    /// Of those, rows that were not here before and that other rows belong to
+    /// ([`SyncedRow::has_children`]): a row held for its parent may apply now, so the client
+    /// tries those again in the same tick (T14.42).
+    pub parents_written: usize,
     /// Rows not later than the local copy: nothing changed.
     pub ignored: usize,
     /// Voiceprint or Dictionary rows skipped because that kind's sync is off.
@@ -356,6 +368,33 @@ impl Applied {
 
 /// A `sync_pending` row as read: key, seq, wall_ms, logical, node, body, reason.
 type HeldColumns = (Vec<u8>, i64, i64, u32, Vec<u8>, Vec<u8>, String);
+
+fn held_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<HeldColumns> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+    ))
+}
+
+fn held_of((key, seq, wall, logical, node, body, reason): HeldColumns) -> Result<Held, StoreError> {
+    let bad = || StoreError::Corrupt("a held sync row".into());
+    Ok(Held {
+        key: key.try_into().map_err(|_| bad())?,
+        seq: u64::try_from(seq).map_err(|_| bad())?,
+        stamp: HlcTimestamp {
+            wall_ms: u64::try_from(wall).map_err(|_| bad())?,
+            logical,
+            node: earshot_core::identity::DeviceId::from_bytes(node.try_into().map_err(|_| bad())?),
+        },
+        body,
+        reason: HoldReason::of_word(&reason).ok_or_else(bad)?,
+    })
+}
 
 fn i64_of(v: u64) -> Result<i64, StoreError> {
     i64::try_from(v).map_err(|_| StoreError::Corrupt("a stamp past i64".into()))
@@ -950,7 +989,9 @@ impl Store {
         })
     }
 
-    /// Every held row, in sequence order.
+    /// Every held row, in sequence order. Reads every sealed body: the sync client reads held
+    /// rows a page at a time by reason ([`Store::held_page`]) and counts them in SQL
+    /// ([`Store::held_count`]).
     ///
     /// # Errors
     /// Store errors; [`StoreError::Corrupt`] for a row this build did not write.
@@ -958,37 +999,63 @@ impl Store {
         let mut st = self.conn.prepare(
             "SELECT key, seq, wall_ms, logical, node, body, reason FROM sync_pending ORDER BY seq",
         )?;
+        let raw: Vec<HeldColumns> = st.query_map([], held_columns)?.collect::<Result<_, _>>()?;
+        raw.into_iter().map(held_of).collect()
+    }
+
+    /// How many rows are held for one of `reasons`, counted in SQL (no row is read into
+    /// memory).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn held_count(&self, reasons: &[HoldReason]) -> Result<u64, StoreError> {
+        if reasons.is_empty() {
+            return Ok(0);
+        }
+        let marks = vec!["?"; reasons.len()].join(", ");
+        let words: Vec<&'static str> = reasons.iter().map(|r| r.word()).collect();
+        let n: i64 = self.conn.query_row(
+            &format!("SELECT count(*) FROM sync_pending WHERE reason IN ({marks})"),
+            rusqlite::params_from_iter(words.iter()),
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
+    /// Up to `limit` rows held for one of `reasons`, selected by reason in SQL, in row-key
+    /// order starting after the key `after` (`None`: from the first). Row-key order is the
+    /// table's own, so a caller reads every such row once by passing each page's last key,
+    /// whatever is applied or held again meanwhile; it says nothing about the order the rows
+    /// were pulled in ([`Held::seq`] does).
+    ///
+    /// # Errors
+    /// Store errors; [`StoreError::Corrupt`] for a row this build did not write.
+    pub fn held_page(
+        &self,
+        reasons: &[HoldReason],
+        after: Option<&[u8; 16]>,
+        limit: usize,
+    ) -> Result<Vec<Held>, StoreError> {
+        if reasons.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; reasons.len()].join(", ");
+        let sql = format!(
+            "SELECT key, seq, wall_ms, logical, node, body, reason FROM sync_pending \
+             WHERE key > ? AND reason IN ({marks}) ORDER BY key LIMIT ?"
+        );
+        // Every row key sorts after the empty blob.
+        let from: &[u8] = after.map_or(&[][..], |k| &k[..]);
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let words: Vec<&'static str> = reasons.iter().map(|r| r.word()).collect();
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&from];
+        values.extend(words.iter().map(|w| w as &dyn rusqlite::ToSql));
+        values.push(&limit);
+        let mut st = self.conn.prepare(&sql)?;
         let raw: Vec<HeldColumns> = st
-            .query_map([], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                ))
-            })?
+            .query_map(values.as_slice(), held_columns)?
             .collect::<Result<_, _>>()?;
-        raw.into_iter()
-            .map(|(key, seq, wall, logical, node, body, reason)| {
-                let bad = || StoreError::Corrupt("a held sync row".into());
-                Ok(Held {
-                    key: key.try_into().map_err(|_| bad())?,
-                    seq: u64::try_from(seq).map_err(|_| bad())?,
-                    stamp: HlcTimestamp {
-                        wall_ms: u64::try_from(wall).map_err(|_| bad())?,
-                        logical,
-                        node: earshot_core::identity::DeviceId::from_bytes(
-                            node.try_into().map_err(|_| bad())?,
-                        ),
-                    },
-                    body,
-                    reason: HoldReason::of_word(&reason).ok_or_else(bad)?,
-                })
-            })
-            .collect()
+        raw.into_iter().map(held_of).collect()
     }
 
     /// Applies a page of pulled rows in one transaction, in order (docs/sync-spec.md
@@ -1260,6 +1327,9 @@ impl Store {
                     crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again))?;
                 }
                 out.written += 1;
+                if local.is_none() && row.has_children() {
+                    out.parents_written += 1;
+                }
                 if let Some(m) = row.meeting() {
                     out.meetings.insert(m);
                 }

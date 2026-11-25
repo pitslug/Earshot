@@ -165,7 +165,9 @@ Input: a page of opened envelopes with their `seq` and row key, the device's kin
 
 Then, still inside the transaction: `Hlc::observe` every applied stamp; run the convergence rules (section 7); store the new pull cursor. Before the page, every `sync_pending` row whose reason may have cleared (`busy`, `parent`) is tried again by the same steps.
 
-Returned: counts of applied, ignored, pending by reason and unreadable. Never row content.
+Returned: counts of applied, ignored, pending by reason and unreadable, and how many rows other rows belong to (a meeting, a track, a speaker) were written for the first time (`Applied::parents_written`, T14.42: the client then tries rows held `parent` again in the same tick, section 6.2). Never row content.
+
+Held rows are counted (`Store::held_count`) and read a page at a time (`Store::held_page`) by reason in SQL, in row-key order from a given key (the table's own order, so no sort over the sealed bodies); nothing reads every held row into memory but tests.
 
 ### 5.4 Side effects
 
@@ -207,8 +209,9 @@ every tick (30 s, or at once after a local write, debounced 2 s):
            A row of a kind whose switch is off (voiceprints, Dictionary words) is left too.
            After the response, in one transaction: delete each entry whose row still has
            the updated_at that was sent.
-  2. pull: try every held row again (opened anew, one page); GET rows after the cursor; open
-           each; Store::apply_remote; store the cursor; repeat while more.
+  2. pull: try held rows again (opened anew, one page); GET rows after the cursor; open
+           each; Store::apply_remote; store the cursor; if the page wrote a row others belong
+           to for the first time, try the rows held `parent` again now; repeat while more.
   3. presence: every 60 s (section 8).
 ```
 
@@ -218,7 +221,8 @@ every tick (30 s, or at once after a local write, debounced 2 s):
 - A failed request ends the tick, records a problem word and backs off: 30 s, 1 min, 2 min, up to 15 min, back to 30 s on the first success.
 - `update_needed`, `key_mismatch`, `unknown_device` (this device was removed), a refused address and a missing key or token stop the loop until the user acts; the Sync page says which. A credential store that fails to answer is a retry.
 - A push response must account for every row sent (`accepted` plus `superseded`, each superseded key one that was sent); anything else is `server` and the rows stay queued.
-- Held rows are tried again every tick when held as `busy` or `parent`, and once per app start when held as `format` or `clock`, at most 500 a tick.
+- Held rows are tried again at the start of every tick when held as `busy` or `parent`, and once per app start when held as `format` or `clock`, at most 500 a tick. The retry goes on next tick from the row key it stopped at and starts over at the end, so a store holding more than 500 tries each in turn (before T14.42 it tried the same first 500 every tick).
+- Rows pulled before their parent apply in the tick that brings the parent (T14.42). The relay files a row at the end each time it changes, so a meeting edited after it was first sent sits after its own lines, and a new computer pulls most rows before the meeting row they belong to. After any page (pulled, or the retry above) that wrote a meeting, track or speaker row that was not here before, every row held `parent` is applied again, 500 per transaction, in passes that repeat until one writes no further such row (a line waits for its track, which waits for its meeting). Each pass that goes on took a row out of the held ones, so the passes end; a stop ends them at the next 500. A page that brought no new parent sets off nothing, so rows whose parent never comes cost one read per tick, not one per page. `TickReport.held` counts a row held `parent` only if it is still held when the tick ends.
 - The cursor moves only from the value the page was pulled after, under the store lock (a reset made meanwhile, by turning a kind on, wins).
 - Stopping the thread ends a tick at its next page.
 - The thread holds the store lock only inside the two transactions and the short reads. Never across a request.

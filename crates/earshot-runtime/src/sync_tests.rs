@@ -3449,5 +3449,137 @@ fn sync_ignore_legacy_flag_is_honoured_before_the_copy_and_travels_after_it() {
     assert!(!ignored_on(&b, m, v));
 }
 
+// ---- T14.42: rows pulled before their parents apply in the tick that brings the parents ----
+
+/// Stamps `m`'s tracks and speakers again and pushes them, then its meeting row: the relay
+/// files a row it accepts at the end, so it then holds the meeting's lines first, its tracks
+/// and speakers after them and the meeting row last (as for any meeting edited after its rows
+/// were first sent).
+fn file_children_before_parents(dev: &Device, m: earshot_core::identity::EntityId) {
+    dev.clock.advance_ms(1_000);
+    {
+        let clock = Arc::clone(&dev.svc.clock);
+        let mut db = dev.svc.store();
+        let (store, hlc) = db.parts();
+        for mut t in store.tracks(m).unwrap() {
+            t.meta.touch(hlc, &*clock);
+            store.put_track(t).unwrap();
+        }
+        for mut s in store.speakers(m).unwrap() {
+            s.meta.touch(hlc, &*clock);
+            store.put_speaker(s).unwrap();
+        }
+    }
+    dev.client().tick().unwrap();
+    dev.clock.advance_ms(1_000);
+    dev.rename(m, "Renamed after its rows were sent");
+    dev.client().tick().unwrap();
+}
+
+/// A first device with two meetings, one of them filed children first, and a second device
+/// that has joined and not yet pulled.
+fn vault_filed_children_first(relay: &TestRelay) -> (Device, Device) {
+    let a = Device::new("sync-parents-a");
+    set_up_first_device(&a.svc, &*a.vault, &relay.relay.url(), SECRET).unwrap();
+    let m = meeting(&a.svc, "Planning", 1);
+    meeting(&a.svc, "Review", 2);
+    a.client().tick().unwrap();
+    file_children_before_parents(&a, m);
+    let b = Device::new("sync-parents-b");
+    let offer = offer_pairing_code(&a.svc, a.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    (a, b)
+}
+
+fn assert_filled_in_one_tick(a: &Device, b: &Device, client: &SyncClient) {
+    let (report, outcome) = client.tick_reporting();
+    assert!(outcome.is_ok() && report.pull_complete, "{report:?}");
+    assert_eq!(
+        b.svc.store().held_rows().unwrap().len(),
+        0,
+        "no row waits for a parent this tick brought: {report:?}"
+    );
+    assert_eq!(report.held, 0, "{report:?}");
+    assert!(!client.holds_rows_for_retry().unwrap());
+    assert_eq!(a.rows(), b.rows(), "one tick fills the new computer in");
+}
+
+/// A new computer pulls a meeting's lines, then its tracks and speakers, then the meeting row,
+/// each in a later page: every row is applied in the tick that brings its parents, not held
+/// for a later tick.
+#[test]
+fn sync_rows_pulled_pages_before_their_parents_apply_in_the_same_tick() {
+    let relay = relay();
+    let (a, b) = vault_filed_children_first(&relay);
+    let client = b.client().with_pull_pages(200, 2);
+    assert_filled_in_one_tick(&a, &b, &client);
+}
+
+/// The same with the whole vault in one page: a row earlier in the page than its parent is
+/// applied in that tick too.
+#[test]
+fn sync_rows_pulled_before_their_parents_in_one_page_apply_in_the_same_tick() {
+    let relay = relay();
+    let (a, b) = vault_filed_children_first(&relay);
+    assert_filled_in_one_tick(&a, &b, &b.client());
+}
+
+/// A row whose parent never arrives stays held and is counted; rows held for other reasons
+/// are not touched by the retries a new parent sets off.
+#[test]
+fn sync_a_row_whose_parent_never_arrives_stays_held_and_is_counted() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Planning", 1);
+    a.client().tick().unwrap();
+    // A track of a meeting no device holds is applied on B as a pulled page: held for its
+    // parent.
+    let first = {
+        let db = a.svc.store();
+        db.tracks(m).unwrap()[0].clone()
+    };
+    let orphan = earshot_store::SyncedRow::Track(earshot_core::model::Track {
+        id: earshot_core::identity::EntityId::from_bytes([0x5a; 16]),
+        meeting_id: earshot_core::identity::EntityId::from_bytes([0x5b; 16]),
+        ..first
+    });
+    let applied = apply_page(&b, &[orphan]);
+    assert_eq!(applied.held[3], 1, "{applied:?}");
+    let client = b.client();
+    let (report, outcome) = client.tick_reporting();
+    assert!(outcome.is_ok(), "{report:?}");
+    assert_eq!(report.held, 1, "the orphan is still held: {report:?}");
+    assert!(client.holds_rows_for_retry().unwrap());
+    assert_eq!(a.rows(), b.rows(), "everything else applied");
+}
+
+/// The retry at the start of each tick reads at most a page of held rows and goes on from its
+/// last key next tick, so more held rows than one page are each tried in turn; rows held for a
+/// newer format or a far clock are read too until one pass from the first key has reached the
+/// end, then only rows held for a meeting in use or a parent.
+#[test]
+fn sync_held_row_retries_take_turns_and_read_the_slow_reasons_once() {
+    use earshot_store::HoldReason;
+    let mut retry = super::engine::HeldRetry::default();
+    let quick: &[HoldReason] = &[HoldReason::Busy, HoldReason::Parent];
+    // The first pass reads every reason from the first key, a full page at a time.
+    assert_eq!(retry.begin(), (&HoldReason::ALL[..], None));
+    retry.read(3, 3, Some([1; 16]));
+    assert_eq!(retry.begin(), (&HoldReason::ALL[..], Some([1; 16])));
+    retry.read(3, 3, Some([2; 16]));
+    assert_eq!(retry.begin(), (&HoldReason::ALL[..], Some([2; 16])));
+    // A short page is the end: the slow reasons are done, and the next retry starts over.
+    retry.read(1, 3, Some([3; 16]));
+    assert_eq!(retry.begin(), (quick, None));
+    retry.read(3, 3, Some([1; 16]));
+    assert_eq!(
+        retry.begin(),
+        (quick, Some([1; 16])),
+        "on from the last key"
+    );
+    retry.read(0, 3, None);
+    assert_eq!(retry.begin(), (quick, None), "and round again");
+}
+
 #[path = "sync_edit_tests.rs"]
 mod edits;

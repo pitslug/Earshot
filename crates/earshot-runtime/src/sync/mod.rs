@@ -643,7 +643,7 @@ pub fn sync_overview(
         set_up,
         status,
         waiting,
-        held: u64::try_from(store.held_rows()?.len()).unwrap_or(u64::MAX),
+        held: store.held_count(&earshot_store::HoldReason::ALL)?,
         settings,
     })
 }

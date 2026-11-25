@@ -340,6 +340,133 @@ fn store_sync_row_without_its_meeting_is_held_then_applied() {
     assert_eq!((a.written, a.held), (2, [0; 4]));
 }
 
+/// T14.42: held rows are counted and read a page at a time by reason, in SQL, and a page says
+/// how many rows other rows belong to arrived for the first time.
+#[test]
+fn store_sync_held_rows_are_counted_and_paged_by_reason() {
+    let mut e = env("sync-held-pages");
+    // Five tracks without their meetings (held for a parent), one row far ahead (clock) and one
+    // this build cannot read (format).
+    let mut tracks: Vec<Incoming> = (0..5u8)
+        .map(|n| {
+            incoming(
+                u64::from(n) + 1,
+                SyncedRow::Track(track(10 + n, 40 + n, at(T0 + 2, 0, THERE))),
+            )
+        })
+        .collect();
+    let ahead = at(T0 + 10_000 + MAX_CLOCK_AHEAD_MS + 1, 0, THERE);
+    let far = incoming(6, SyncedRow::Meeting(meeting(30, "Far ahead", ahead)));
+    let newer = Incoming {
+        key: [7; 16],
+        seq: 7,
+        stamp: at(T0, 0, THERE),
+        body: vec![1, 2, 3],
+        row: None,
+        entity: None,
+    };
+    let mut page = tracks.clone();
+    page.push(far.clone());
+    page.push(newer.clone());
+    let a = e.apply(&page, &rules(false));
+    assert_eq!(a.held, [1, 1, 0, 5], "{a:?}");
+    assert_eq!(a.parents_written, 0);
+    let store = &e.store;
+    assert_eq!(store.held_count(&[HoldReason::Parent]).unwrap(), 5);
+    assert_eq!(store.held_count(&[HoldReason::Clock]).unwrap(), 1);
+    assert_eq!(store.held_count(&[HoldReason::Busy]).unwrap(), 0);
+    assert_eq!(store.held_count(&HoldReason::ALL).unwrap(), 7);
+    assert_eq!(store.held_count(&[]).unwrap(), 0);
+    assert_eq!(
+        store
+            .held_count(&[HoldReason::Busy, HoldReason::Parent])
+            .unwrap(),
+        5
+    );
+    // Pages of two, each starting after the last key of the one before: every row held for a
+    // parent exactly once, in row-key order, still sealed, and no row held for another reason.
+    let mut seen: Vec<[u8; 16]> = Vec::new();
+    let mut after: Option<[u8; 16]> = None;
+    loop {
+        let got = store
+            .held_page(&[HoldReason::Parent], after.as_ref(), 2)
+            .unwrap();
+        assert!(got.len() <= 2);
+        let Some(last) = got.last() else { break };
+        after = Some(last.key);
+        for h in &got {
+            assert_eq!(h.reason, HoldReason::Parent);
+            let sent = tracks.iter().find(|t| t.key == h.key).unwrap();
+            assert_eq!(
+                (h.seq, h.stamp, &h.body),
+                (sent.seq, sent.stamp, &sent.body)
+            );
+            seen.push(h.key);
+        }
+    }
+    tracks.sort_by_key(|t| t.key);
+    assert_eq!(seen, tracks.iter().map(|t| t.key).collect::<Vec<_>>());
+    // Two reasons at once, and a page that starts after the last key holds nothing.
+    let slow = store
+        .held_page(&[HoldReason::Format, HoldReason::Clock], None, 10)
+        .unwrap();
+    let mut keys: Vec<[u8; 16]> = slow.iter().map(|h| h.key).collect();
+    keys.sort_unstable();
+    let mut expected = vec![far.key, newer.key];
+    expected.sort_unstable();
+    assert_eq!(keys, expected);
+    assert!(
+        store
+            .held_page(&HoldReason::ALL, Some(&[0xFF; 16]), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.held_page(&[], None, 10).unwrap().is_empty());
+    assert!(
+        store
+            .held_page(&HoldReason::ALL, None, 0)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// T14.42: a page counts the rows it wrote for the first time that other rows belong to (a
+/// meeting, a track, a speaker); a newer copy of one already here frees nothing.
+#[test]
+fn store_sync_a_page_counts_the_parents_that_arrived() {
+    let mut e = env("sync-parents-written");
+    let a = e.apply(
+        &[
+            incoming(
+                1,
+                SyncedRow::Meeting(meeting(1, "Remote", at(T0 + 1, 0, THERE))),
+            ),
+            incoming(2, SyncedRow::Track(track(2, 1, at(T0 + 2, 0, THERE)))),
+            incoming(3, SyncedRow::Person(person(9, false, at(T0 + 2, 0, THERE)))),
+        ],
+        &rules(false),
+    );
+    assert_eq!((a.written, a.parents_written), (3, 2), "{a:?}");
+    // A later copy of the meeting is written, and is not a parent that arrived.
+    let a = e.apply(
+        &[incoming(
+            4,
+            SyncedRow::Meeting(meeting(1, "Renamed", at(T0 + 5, 0, THERE))),
+        )],
+        &rules(false),
+    );
+    assert_eq!((a.written, a.parents_written), (1, 0), "{a:?}");
+    // A track whose meeting is missing is held: nothing arrived.
+    let a = e.apply(
+        &[incoming(
+            5,
+            SyncedRow::Track(track(7, 8, at(T0 + 2, 0, THERE))),
+        )],
+        &rules(false),
+    );
+    assert_eq!((a.written, a.parents_written), (0, 0), "{a:?}");
+}
+
 #[test]
 fn store_sync_rows_of_a_meeting_in_use_wait_for_it() {
     let mut e = env("sync-busy");
