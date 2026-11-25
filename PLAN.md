@@ -2774,11 +2774,11 @@ Lane sync (`earshot-sync`, `earshot-sync-server`, runtime `sync/`, store `sync.r
 Second wave (after the lanes above are merged):
 
 - [ ] T14.47 Replaced transcript text is erased
+  - status (2026-11-26): held out of 0.9.0 by the coordinator. The rule is written as docs/sync-spec.md section 15 ("proposed, not built"): one clearing function with one predicate, nothing cleared ahead of what replaces it, no shape change and no migration. Two spec reviews each blocked it (the first: a pushed prefix could leave another computer with no transcript; the second: counting tombstoned final lines could blank a meeting everywhere); the third revision answers both and has not been reviewed yet. Why held: it destroys words for good on every device, and three behaviours are the owner's to confirm (section 15.11: a pass that finds no speech keeps the draft; a side with no final line keeps its hidden draft words, still synced; a re-transcription that finds nothing on a side keeps that side's lines). Next: a third spec review, the owner's three answers, then the build with its own lane review.
   - deps: T14.42, T14.23
   - do: a rule in docs/sync-spec.md first (spec-reviewed): when a final pass replaces segments their tombstones hold no text or words, and once a final transcript is stored the meeting's Live-pass rows hold none either, on every device, without being read as a meeting deletion's erasure (`SegmentRow::is_erasure`, rule 4's order) and without a `ENVELOPE_FORMAT` change unless the row's shape changes. Summary history used by Undo is kept. Tests through `LocalRelay` and straight pages.
   - accept: `cargo test -p earshot-core model`; `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime post`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
 - [ ] T14.48 Speaker labelling runs before the write transaction
-  - deps: T14.47
   - do: `label_segment_speakers` runs with the store lock free (or sweeps with a pointer), with the same labels on the existing tests.
   - accept: `cargo test -p earshot-core diar`; `cargo test -p earshot-runtime post`
 - [ ] T14.49 A removed person or folder stays removed
