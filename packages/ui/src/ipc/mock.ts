@@ -414,8 +414,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   // the app does. `pastMs` back-dates what a meeting sent before the window loaded.
   const sent = createSentRecord();
   let pastMs = 0;
-  const emit = (event: MeetingEvent) => {
-    sent.apply(event, timer.now() - pastMs);
+  // `of` is the number of the meeting that sends it (its start count, as the app's driver keeps):
+  // by default the newest, the only one that sends events naming no meeting.
+  const emit = (event: MeetingEvent, of: number = seq) => {
+    sent.apply(of, event, timer.now() - pastMs);
     for (const l of [...listeners]) l(event);
   };
   // How long the meeting the mock starts at once had recorded when the window loaded.
@@ -492,6 +494,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       return timer.setTimeout(fn, ms - already);
     };
+    // This meeting's events go with its own number.
+    const mine = seq;
+    const send = (event: MeetingEvent) => emit(event, mine);
     const call = mode === "Call";
     const tracks: LiveTrack[] = call ? ["You", "Them"] : ["You"];
     const cancel: (() => void)[] = [];
@@ -509,18 +514,18 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     const voice = (track: LiveTrack, on: boolean) => {
       if (speaking[track] === on) return;
       speaking[track] = on;
-      emit({ type: "VoiceActivity", track, speaking: on });
+      send({ type: "VoiceActivity", track, speaking: on });
     };
     cancel.push(
       later(() => {
-        emit({ type: "Started", meeting: row.id, mode, tracks });
+        send({ type: "Started", meeting: row.id, mode, tracks });
         if (held) {
-          emit({ type: "Transcript", state: "WaitingForPreviousMeeting" });
+          send({ type: "Transcript", state: "WaitingForPreviousMeeting" });
         } else {
-          for (const track of tracks) emit({ type: "Backend", track, label: "GPU (CUDA)" });
+          for (const track of tracks) send({ type: "Backend", track, label: "GPU (CUDA)" });
         }
         if (data.provisionalWords !== undefined) {
-          emit({
+          send({
             type: "Warning",
             key: "provisional-words",
             kind: "ProvisionalWords",
@@ -532,7 +537,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     if (data.provisionalWords === "waiting") {
       cancel.push(
         later(() => {
-          emit({ type: "WarningCleared", key: "provisional-words" });
+          send({ type: "WarningCleared", key: "provisional-words" });
         }, PROVISIONAL_WORDS_START_AT),
       );
     }
@@ -550,13 +555,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         voice("You", you);
         if (call) voice("Them", them);
         const wave = Math.abs(Math.sin(tick / 3));
-        emit({
+        send({
           type: "Levels",
           you_dbfs: you ? -32 + 14 * wave : -62 + 4 * wave,
           them_dbfs: call ? (them ? -26 + 12 * wave : -70) : null,
         });
         if (tick % 10 === 0) {
-          emit({ type: "Lag", seconds: Math.min(38, 4 + tick / 20) });
+          send({ type: "Lag", seconds: Math.min(38, 4 + tick / 20) });
         }
       }, 100),
     );
@@ -569,7 +574,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         cancel.push(
           later(() => {
             if (holding) return;
-            emit({
+            send({
               type: "Provisional",
               track: line.track,
               words: said
@@ -581,19 +586,19 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       const land = () => {
         words += said.length;
-        emit({
+        send({
           type: "Landed",
           track: line.track,
           start_ms: start,
           end_ms: line.at,
           text: line.text,
         });
-        emit({ type: "Words", total: words });
+        send({ type: "Words", total: words });
       };
       cancel.push(later(() => (holding ? waiting.push(land) : land()), line.at));    }
     cancel.push(
       later(() => {
-        emit({
+        send({
           type: "Warning",
           key: "bluetooth",
           kind: "BluetoothHandsFree",

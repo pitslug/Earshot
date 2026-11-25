@@ -35,6 +35,7 @@ pub enum CaptureMode {
 
 /// A live track as the meeting screen names it: speaker names exist only after hang-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum LiveTrack {
     /// The mic (after echo cancellation).
     You,
@@ -69,6 +70,7 @@ impl LiveTrack {
 
 /// Why the recording ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum EndedReason {
     /// Stopped on request.
     Stopped,
@@ -80,6 +82,7 @@ pub enum EndedReason {
 
 /// Which condition a warning banner is about (the UI picks the banner's look from it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum WarningKind {
     /// The mic is a Bluetooth headset in hands-free mode.
     BluetoothHandsFree,
@@ -113,6 +116,7 @@ pub enum WarningKind {
 
 /// A step of the work after the meeting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(tag = "kind")]
 pub enum PostStep {
     /// The recordings are being read back.
@@ -139,6 +143,7 @@ pub enum PostStep {
 
 /// What the summary step did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(tag = "kind")]
 pub enum SummaryEvent {
     /// A summary was stored.
@@ -194,6 +199,7 @@ pub enum SummaryEvent {
 
 /// Where the live transcript is, for the banner at the top of the meeting's transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub enum TranscriptState {
     /// Recording; the previous meeting's final pass or summary comes first.
     WaitingForPreviousMeeting,
@@ -209,6 +215,7 @@ pub enum TranscriptState {
 
 /// A word of [`MeetingEvent::Provisional`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub struct ProvisionalWord {
     /// Start in meeting time (ms).
     pub start_ms: u64,
@@ -221,6 +228,7 @@ pub struct ProvisionalWord {
 /// meeting started: `Ended`, `PostProgress` and `Summary` say whose they are, and it sends no
 /// other event from then on.
 #[derive(Debug, Clone, PartialEq, Serialize, Type, tauri_specta::Event)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(tag = "type")]
 pub enum MeetingEvent {
     /// The meeting is recording.

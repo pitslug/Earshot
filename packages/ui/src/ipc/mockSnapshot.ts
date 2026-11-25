@@ -1,7 +1,9 @@
 // The mock's copy of the app's record of what it sent the window (`meeting_events::SentRecord`,
 // T14.51): every event the mock sends is folded in first, and `meetingSnapshot` answers from it,
-// so a window that subscribes late sees what the app would show it. Events that name no meeting
-// belong to the newest one started, as the app sends them only for that one.
+// so a window that subscribes late sees what the app would show it. As in the app, each event
+// comes with the number of the meeting that sent it (its start count): `Started`, `Ended`,
+// `PostProgress` and `Summary` name their meeting, every other event belongs to the meeting of its
+// number. Both copies run `fixtures/ui/meeting_snapshot_cases.json`, so they change together.
 
 import type {
   BannerSnapshot,
@@ -16,6 +18,7 @@ import type {
 } from "./bindings";
 
 interface Sent {
+  seq: number;
   meeting: string;
   mode: CaptureMode;
   tracks: LiveTrack[];
@@ -32,25 +35,24 @@ interface Sent {
 }
 
 export interface SentRecord {
-  /** Folds in `event`, sent at `now` (the injected clock's ms). */
-  apply(event: MeetingEvent, now: number): void;
+  /** Folds in `event` of meeting number `seq`, sent at `now` (the injected clock's ms). */
+  apply(seq: number, event: MeetingEvent, now: number): void;
   /** The snapshot at `now`. */
   snapshot(now: number): MeetingSnapshot;
-  /** Whether `meeting`'s `Started` was sent. */
-  started(meeting: string): boolean;
 }
 
 export function createSentRecord(): SentRecord {
-  // Oldest first; the last one is the meeting the screen follows, unless its result removed it.
   let meetings: Sent[] = [];
-  let followed: string | null = null;
+  // The number of the newest `Started`.
+  let followed: number | null = null;
   const byId = (id: string) => meetings.find((m) => m.meeting === id);
   return {
-    apply(event, now) {
+    apply(seq, event, now) {
       switch (event.type) {
         case "Started":
-          meetings = meetings.filter((m) => m.meeting !== event.meeting);
+          meetings = meetings.filter((m) => m.seq !== seq && m.meeting !== event.meeting);
           meetings.push({
+            seq,
             meeting: event.meeting,
             mode: event.mode,
             tracks: [...event.tracks],
@@ -65,7 +67,7 @@ export function createSentRecord(): SentRecord {
             callEndStops: false,
             progress: null,
           });
-          followed = event.meeting;
+          followed = seq;
           return;
         case "Ended": {
           const m = byId(event.meeting);
@@ -84,7 +86,7 @@ export function createSentRecord(): SentRecord {
           meetings = meetings.filter((m) => m.meeting !== event.meeting);
           return;
       }
-      const m = followed === null ? undefined : byId(followed);
+      const m = meetings.find((x) => x.seq === seq);
       if (!m) return;
       switch (event.type) {
         case "Backend":
@@ -122,7 +124,7 @@ export function createSentRecord(): SentRecord {
       }
     },
     snapshot(now) {
-      const f = followed === null ? undefined : byId(followed);
+      const f = followed === null ? undefined : meetings.find((m) => m.seq === followed);
       return {
         followed:
           f === undefined
@@ -143,10 +145,10 @@ export function createSentRecord(): SentRecord {
                 progress: f.progress,
               },
         behind: meetings
-          .filter((m) => m.meeting !== followed && m.ended !== null)
+          .filter((m) => m.seq !== followed && m.ended !== null)
+          .sort((a, b) => a.seq - b.seq)
           .map((m) => ({ meeting: m.meeting, progress: m.progress })),
       };
     },
-    started: (meeting) => byId(meeting) !== undefined,
   };
 }

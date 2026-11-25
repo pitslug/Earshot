@@ -1840,3 +1840,27 @@ fn meeting_events_snapshot_holds_the_call_end_question_as_last_sent() {
     let f = r.snapshot(t0).followed.unwrap();
     assert_eq!((f.call_end_offer, f.call_end_stops), (false, false));
 }
+
+#[test]
+fn meeting_events_snapshot_cases_are_the_shared_table() {
+    // T14.51: the UI mock's copy (`ipc/mockSnapshot.ts`) runs the same table.
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/meeting_snapshot_cases.json"
+    ))
+    .unwrap();
+    let cases = table["cases"].as_array().unwrap();
+    assert!(cases.len() >= 5);
+    let t0 = Instant::now();
+    let at = |ms: &serde_json::Value| t0 + Duration::from_millis(ms.as_u64().unwrap());
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let mut r = SentRecord::default();
+        for sent in case["events"].as_array().unwrap() {
+            let event: MeetingEvent = serde_json::from_value(sent["event"].clone())
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            r.apply(sent["seq"].as_u64().unwrap(), &event, at(&sent["at_ms"]));
+        }
+        let got = serde_json::to_value(r.snapshot(at(&case["now_ms"]))).unwrap();
+        assert_eq!(got, case["expect"], "{name}");
+    }
+}
