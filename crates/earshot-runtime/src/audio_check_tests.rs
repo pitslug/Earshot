@@ -815,3 +815,26 @@ fn audio_check_record_bytes_are_pinned() {
     assert_eq!(std::str::from_utf8(&bytes[4..]).unwrap(), raw_json);
     assert_eq!(decode(&bytes), Some(raw));
 }
+
+#[cfg(windows)]
+#[test]
+fn audio_check_source_never_tries_raw_again_mid_run() {
+    // T12.36a: a fallen-back mic's timed move onto the raw stream would be a discontinuity in
+    // the middle of a check, which fails the run; the check's source turns the tries off and
+    // keeps everything else the selection asks for.
+    let settings = crate::audio_settings::AudioSettings {
+        mic_signal: crate::audio_settings::MicSignal::Raw,
+        ..Default::default()
+    };
+    let asked = settings.devices(crate::audio_settings::DefaultCaptureMode::Call);
+    assert!(!asked.raw_retry_off, "meetings keep trying");
+    let used = check_devices(&asked);
+    assert!(used.raw_retry_off);
+    assert_eq!(
+        earshot_capture_wasapi::DeviceSelection {
+            raw_retry_off: false,
+            ..used
+        },
+        asked
+    );
+}

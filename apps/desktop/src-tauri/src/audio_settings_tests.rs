@@ -45,7 +45,8 @@ fn audio_page_defaults_and_round_trip() {
             microphone: None,
             output: None,
             capture_mode: CaptureMode::Call,
-            mic_signal: MicSignal::Processed,
+            // T12.36b: automatic by default.
+            mic_signal: MicSignal::Automatic,
         }
     );
     assert!(v.unknown.is_empty());
@@ -70,6 +71,16 @@ fn audio_page_defaults_and_round_trip() {
     };
     assert_eq!(set_settings(&svc, &raw, Ok(surface())).unwrap().value, raw);
     assert_eq!(audio_page(&svc, Ok(surface())).unwrap().value, raw);
+    // T12.36b: automatic round-trips too.
+    let automatic = AudioSettingsValue {
+        mic_signal: MicSignal::Automatic,
+        ..raw.clone()
+    };
+    assert_eq!(
+        set_settings(&svc, &automatic, Ok(surface())).unwrap().value,
+        automatic
+    );
+    set_settings(&svc, &raw, Ok(surface())).unwrap();
     assert_eq!(
         earshot_runtime::audio_settings::audio_settings(&svc.store())
             .unwrap()
@@ -263,12 +274,33 @@ fn audio_settings_reach_the_meeting_capture() {
         mic_signal: MicSignal::Raw,
     };
     set_settings(&svc, &raw, Ok(surface())).unwrap();
-    let want = raw.settings().devices();
+    use earshot_runtime::audio_settings::DefaultCaptureMode;
+    let want = raw.settings().devices(DefaultCaptureMode::Call);
     assert_ne!(want, processed);
+    assert!(!want.raw_fallback_quiet, "an explicit raw choice warns");
     for mode in [CaptureMode::InRoom, CaptureMode::Call] {
         let c = meeting_capture(&svc, &request(mode)).unwrap();
         assert_eq!(c.devices, want, "{mode:?}");
         assert!(c.notices.is_empty());
+    }
+    // T12.36b: automatic asks for raw (falling back quietly) only in a meeting in the room,
+    // whatever mode the screen preselects; a call gets the processed stream.
+    for stored_mode in [CaptureMode::Call, CaptureMode::InRoom] {
+        let automatic = AudioSettingsValue {
+            capture_mode: stored_mode,
+            mic_signal: MicSignal::Automatic,
+            ..raw.clone()
+        };
+        set_settings(&svc, &automatic, Ok(surface())).unwrap();
+        let in_room = meeting_capture(&svc, &request(CaptureMode::InRoom)).unwrap();
+        assert_eq!(
+            in_room.devices,
+            automatic.settings().devices(DefaultCaptureMode::InRoom)
+        );
+        assert!(in_room.devices.raw_fallback_quiet);
+        assert_ne!(in_room.devices, processed);
+        let call = meeting_capture(&svc, &request(CaptureMode::Call)).unwrap();
+        assert_eq!(call.devices, processed, "a call: the processed stream");
     }
     // A stored value this version cannot use is a start banner, never silent.
     svc.store()

@@ -104,7 +104,9 @@ impl AudioCheckWork for SignalWork {
             bulk_ms: 60,
             gain: 0.5,
         };
-        let asked = settings.mic_signal.is_raw();
+        let asked = settings
+            .mic_signal
+            .raw_in(earshot_runtime::audio_settings::DefaultCaptureMode::Call);
         Ok(replay.run(settings, cancel, progress)?.map(|mut m| {
             m.raw_mic = asked && !self.refuses_raw;
             m.raw_refused = asked && self.refuses_raw;

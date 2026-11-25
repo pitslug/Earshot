@@ -4239,6 +4239,87 @@ fn live_a_refused_raw_mic_is_said_once_per_meeting() {
     }
 }
 
+#[test]
+fn live_a_raw_mic_back_to_raw_is_said_and_a_later_fallback_is_said_again() {
+    // T12.36a: a mic that fell back keeps trying raw. Raw back is said once after a fallback
+    // (and never without one), and a fallback after it is said again; neither is a problem of
+    // the recording.
+    let note = |warning| DiscontinuityKind::Note { warning };
+    for at_start in [false, true] {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let session_info =
+            CaptureSession::new(ORIGIN, TrackInfo::new(R16), Some(TrackInfo::new(R16)));
+        let at = |packet: u64| ORIGIN.after_frames(packet * 160, R16);
+        let mut script = Vec::new();
+        for i in 0..60 {
+            let marked = match i {
+                // With no start warning a return with nothing to return from says nothing;
+                // with one, it is the start fallback's return.
+                5 => Some(EndpointWarning::RawMicRestored),
+                10 | 30 => Some(EndpointWarning::RawMicRefused),
+                20 | 40 | 45 => Some(EndpointWarning::RawMicRestored),
+                _ => None,
+            };
+            if let Some(w) = marked {
+                script.push(marker(TrackId::Mic, at(i), note(w)));
+            }
+            script.push(frames(TrackId::Mic, noise(i, 160, 0.01), at(i)));
+            script.push(frames(
+                TrackId::Reference,
+                noise(i + 1000, 160, 0.01),
+                at(i),
+            ));
+        }
+        script.push(Ok(CaptureEvent::End(EndOfStream {
+            at: at(60),
+            reason: EndReason::Finished,
+        })));
+        let start = if at_start {
+            vec![RuntimeWarning::RawMicRefused]
+        } else {
+            Vec::new()
+        };
+        let session = start_live_with_warnings(
+            ScriptSource::new(session_info, script),
+            svc,
+            config(earshot_core::model::ClockDomain::Qpc),
+            None,
+            Box::new(ChaCha8Rng::seed_from_u64(34)),
+            start,
+        )
+        .unwrap();
+        let (events, outcome) = collect(session);
+        let said: Vec<RuntimeWarning> = warnings(&events)
+            .into_iter()
+            .filter(|w| {
+                matches!(
+                    w,
+                    RuntimeWarning::RawMicRefused | RuntimeWarning::RawMicRestored
+                )
+            })
+            .collect();
+        let mut expected = Vec::new();
+        if at_start {
+            expected.extend([
+                RuntimeWarning::RawMicRefused,
+                RuntimeWarning::RawMicRestored,
+            ]);
+        }
+        expected.extend([
+            RuntimeWarning::RawMicRefused,
+            RuntimeWarning::RawMicRestored,
+            RuntimeWarning::RawMicRefused,
+            RuntimeWarning::RawMicRestored,
+        ]);
+        assert_eq!(said, expected, "at_start {at_start}: {events:?}");
+        assert!(outcome.problems.iter().all(|w| !matches!(
+            w,
+            RuntimeWarning::RawMicRefused | RuntimeWarning::RawMicRestored
+        )));
+    }
+}
+
 /// A source that panics on its `panic_at`th pump (a bug on the session thread, T9.19).
 struct PanicSource<S> {
     inner: S,

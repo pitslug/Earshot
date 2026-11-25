@@ -10,14 +10,18 @@
 //!   [`crate::host::wasapi_starter_on`]).
 //! - **Capture mode** ([`DefaultCaptureMode`]): what a new meeting records unless the user
 //!   picks the other one (a call: mic and computer audio; in the room: mic only).
-//! - **Microphone signal** ([`MicSignal`], T12.36): the mic stream with Windows' own
-//!   processing (the default) or raw, without it. The one place the setting becomes the
-//!   capture layer's request ([`AudioSettings::devices`]); every meeting, in a call or in the
-//!   room, starts with it. A mic that refuses raw records the default stream with a warning
-//!   (`RuntimeWarning::RawMicRefused`): the setting never costs a recording.
+//! - **Microphone signal** ([`MicSignal`], T12.36, T12.36b): automatic (the default: raw in
+//!   the room, Windows' own processing in a call), Windows' processing, or raw. The one place
+//!   the setting and the meeting's mode become the capture layer's request
+//!   ([`AudioSettings::devices`]). A mic that refuses a raw stream the user chose records the
+//!   default stream with a warning (`RuntimeWarning::RawMicRefused`); one that refuses the
+//!   automatic choice's raw stream records it quietly, because the user did not ask for raw.
+//!   The setting never costs a recording.
 //!
 //! Each value is stored as text: `default` or the endpoint id, the name, `call` or
-//! `in-room`, `default` or `raw`. A value this build cannot use reads as the default and is reported
+//! `in-room`, `auto`, `processed` or `raw` (a stored `default`, written by T12.36's builds
+//! whenever any Audio setting was saved, so not a choice, reads as `auto`). A value this build
+//! cannot use reads as the default and is reported
 //! ([`UnknownSetting`]), as the Models page settings do. Setting a value checks it first
 //! ([`validate`]).
 
@@ -127,35 +131,55 @@ impl DefaultCaptureMode {
 /// processed, which the echo canceller cannot model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MicSignal {
-    /// With the signal processing Windows or the device's driver applies by default.
+    /// Raw in a meeting in the room, Windows' processing in a call (T12.36b, the owner
+    /// 2026-11-25): in the room the other people are the ones to record, and the processed
+    /// stream's noise suppression treats distant voices as noise; in a call the far end comes
+    /// from the computer's audio. A mic that cannot give raw records processed with no warning.
     #[default]
+    Automatic,
+    /// With the signal processing Windows or the device's driver applies by default, chosen on
+    /// purpose.
     Processed,
-    /// Without it (a raw stream), where the microphone allows it.
+    /// Without it (a raw stream), where the microphone allows it; a mic that cannot is recorded
+    /// with it, with a warning.
     Raw,
 }
 
+/// The stored word T12.36's builds wrote for Windows' processing whenever any Audio setting
+/// was saved: not a choice the user made, so it reads as [`MicSignal::Automatic`] (T12.36b).
+const LEGACY_DEFAULT_SIGNAL: &str = "default";
+
 impl MicSignal {
-    /// The stored name: `default`, `raw`.
+    /// The stored name: `auto`, `processed`, `raw`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Processed => "default",
+            Self::Automatic => "auto",
+            Self::Processed => "processed",
             Self::Raw => "raw",
         }
     }
 
-    /// Reads [`MicSignal::as_str`].
+    /// Reads [`MicSignal::as_str`], and the older `default` as [`MicSignal::Automatic`].
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
-        [Self::Processed, Self::Raw]
+        if text == LEGACY_DEFAULT_SIGNAL {
+            return Some(Self::Automatic);
+        }
+        [Self::Automatic, Self::Processed, Self::Raw]
             .into_iter()
             .find(|m| m.as_str() == text)
     }
 
-    /// True for [`MicSignal::Raw`].
+    /// Whether a meeting in `mode` asks for the raw stream: [`MicSignal::Raw`] always,
+    /// [`MicSignal::Automatic`] in the room.
     #[must_use]
-    pub fn is_raw(self) -> bool {
-        self == Self::Raw
+    pub fn raw_in(self, mode: DefaultCaptureMode) -> bool {
+        match self {
+            Self::Raw => true,
+            Self::Processed => false,
+            Self::Automatic => mode == DefaultCaptureMode::InRoom,
+        }
     }
 }
 
@@ -173,19 +197,26 @@ pub struct AudioSettings {
 }
 
 impl AudioSettings {
-    /// The capture layer's device selection: the endpoints, and the microphone signal as the
-    /// mic's processing (the only place the setting becomes a raw request).
+    /// The capture layer's device selection for a meeting in `mode` (in a call or in the
+    /// room; the audio check measures a call): the endpoints, and the microphone signal as the
+    /// mic's processing ([`MicSignal::raw_in`]; the only place the setting becomes a raw
+    /// request). A raw stream only the automatic choice asked for falls back quietly
+    /// (T12.36b): no warning at the start, at a fallback or when raw comes back.
     #[cfg(windows)]
     #[must_use]
-    pub fn devices(&self) -> earshot_capture_wasapi::DeviceSelection {
+    pub fn devices(&self, mode: DefaultCaptureMode) -> earshot_capture_wasapi::DeviceSelection {
         use earshot_capture_wasapi::MicProcessing;
+        let raw = self.mic_signal.raw_in(mode);
         earshot_capture_wasapi::DeviceSelection {
             microphone: self.microphone.choice(),
             output: self.output.choice(),
-            mic_processing: match self.mic_signal {
-                MicSignal::Processed => MicProcessing::Default,
-                MicSignal::Raw => MicProcessing::Raw,
+            mic_processing: if raw {
+                MicProcessing::Raw
+            } else {
+                MicProcessing::Default
             },
+            raw_fallback_quiet: raw && self.mic_signal == MicSignal::Automatic,
+            raw_retry_off: false,
         }
     }
 }

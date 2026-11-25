@@ -210,3 +210,22 @@ What each verdict means (for the owner; each next step is a decision, not automa
 - **Raw helps:** a case for raw by default on the Surface, as its own task for the owner.
 
 A measurement that contradicts this rule is reported as it is; the rule is not changed after measuring.
+
+## T12.36a re-open: why a raw mic fell back, and how it gets back
+
+Two of the owner's Surface meetings with the raw setting on fell back to the processed stream partway through (one after a default-device change with a chosen mic, one after a stream error with no device change). Nothing recorded why: the refused re-open's error went only to the re-open report, which the live source drops. The Surface reproduction (`earshot-cli record-raw --mic-raw`, which prints each failed re-open as the failed call and HRESULT number) is still owed.
+
+### What the code shows
+
+A re-open asks for the track's rate (`Some(rate)`) and, for the mono mic, any channel count. The audio engine is asked to convert (`AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`) only when the raw mix format's rate differs from the track's rate (`format::conversion_target`). So "raw again, asking for the device's own format, accepted only when it matches the track's rate and channels" is the same request as today's re-open whenever it could be accepted, and is refused by `check_delivered` whenever it differs: it cannot help, and was not built. If the raw mix rate changed mid-meeting, a raw re-open either converts (if Windows allows raw plus conversion) or cannot keep the track's rate at all.
+
+### What changed
+
+- A live raw mic that falls back keeps the processed stream across re-opens and tries raw again on a schedule (`follow::RawRetry`): 10 s after the fallback, then doubling after each refused try, at most every 60 s (judgements, not measured). A mic whose start already fell back does the same.
+- A try opens and starts the raw stream before the running one is touched, so a refused try changes nothing and says nothing; an accepted one swaps the streams (a `DeviceChanged` marker, reason `raw_restored`) and sends one `RawMicRestored` note, which clears the meeting's `raw-mic` banner. A later fallback shows it again.
+- Tries stop when the track ends and wait while the track has no stream; a chosen mic given up for the default goes on trying there, from a fresh first wait. The audio check's source never tries (a move onto raw mid-run would fail the measurement). The raw recorder never falls back and never tries.
+- `earshot-cli record-raw` now also prints each stream error that made it re-open (the call and the HRESULT number, on its output, not in `timestamps.json`), beside the refused re-open's, so the Surface reproduction captures both codes.
+
+### Desktop measurement (pending)
+
+`cargo test -p earshot-capture-wasapi raw_reopen_requests_on_the_default_mic -- --ignored --nocapture` opens the desktop's default mic raw as the start does, then raw at the same and at another rate (with the first stream held and after it is closed) and raw beside a processed stream, printing each refusal as call and HRESULT only. Not run yet: the microphone was not free. Its outcome goes here.

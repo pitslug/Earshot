@@ -52,6 +52,20 @@ use crate::local::DeviceRecord;
 #[path = "audio_check_tests.rs"]
 mod tests;
 
+/// The selection the check's source records with: `devices` with the timed tries for raw off
+/// (T12.36a), because a move onto the raw stream mid-run is a discontinuity that fails
+/// [`measure`], and a check runs for seconds, not the minutes a meeting does.
+#[cfg(windows)]
+#[must_use]
+pub fn check_devices(
+    devices: &earshot_capture_wasapi::DeviceSelection,
+) -> earshot_capture_wasapi::DeviceSelection {
+    earshot_capture_wasapi::DeviceSelection {
+        raw_retry_off: true,
+        ..devices.clone()
+    }
+}
+
 /// `local_state` key of the stored results.
 pub const AUDIO_CHECK_KEY: &str = "audio-check";
 /// Version of the stored record (outside the payload).
@@ -609,7 +623,7 @@ pub fn run_check(
     let mut source = WasapiSource::start_on(
         MicRole::default(),
         &CaptureMode::Call(LoopbackRequest::DefaultDevice),
-        devices,
+        &check_devices(devices),
     )
     .map_err(|e| crate::capture_start_error(&e))?;
     let mic_id = source.mic_endpoint().and_then(|p| p.id.clone());

@@ -1018,10 +1018,14 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
         RuntimeWarning::RawMicRefused => warning(
             RAW_MIC_KEY.into(),
             WarningKind::Audio,
-            "Your microphone could not be recorded without Windows' sound processing, so this \
-             meeting records it with that processing. Nothing is lost."
+            "Your microphone could not be recorded without Windows' sound processing, so Earshot \
+             records it with that processing for now and keeps trying. Nothing is lost."
                 .into(),
         ),
+        // Raw is back (T12.36a): the fallback's banner goes.
+        RuntimeWarning::RawMicRestored => Some(MeetingEvent::WarningCleared {
+            key: RAW_MIC_KEY.into(),
+        }),
         RuntimeWarning::SleepNotPrevented => warning(
             "keep-awake".into(),
             WarningKind::Audio,

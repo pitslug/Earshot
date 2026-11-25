@@ -19,6 +19,66 @@ pub const RETRY_INTERVAL_QPC: u64 = QPC_UNITS_PER_SEC;
 /// judgement, not measured.
 pub const CHOSEN_DEVICE_GRACE_QPC: u64 = 5 * QPC_UNITS_PER_SEC;
 
+/// After a live raw mic fell back to the processed stream (T12.36a), the first try to open it
+/// raw again comes this long after the fallback: 10 s. Each refused try doubles the wait, up
+/// to [`RAW_RETRY_MAX_QPC`]. Long enough that Windows has finished whatever reconfiguration
+/// refused raw (a default-device change, another app changing the endpoint's format or
+/// effects), short enough that a passing refusal costs a few seconds of processed audio. A
+/// judgement, not measured: which refusals pass and how fast is not known.
+pub const RAW_RETRY_INTERVAL_QPC: u64 = 10 * QPC_UNITS_PER_SEC;
+
+/// The longest wait between two tries to open a fallen-back live raw mic raw again (T12.36a):
+/// 60 s, so a mic that lastingly refuses raw costs one open attempt a minute. A judgement.
+pub const RAW_RETRY_MAX_QPC: u64 = 60 * QPC_UNITS_PER_SEC;
+
+/// When a live mic that asked for raw and fell back to the processed stream tries raw again
+/// (T12.36a): [`RAW_RETRY_INTERVAL_QPC`] after the fallback, then doubling after each refused
+/// try up to [`RAW_RETRY_MAX_QPC`]. Platform independent and clock-free: the capture loop
+/// passes its QPC time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawRetry {
+    /// When the next try is due; `None` while no try is wanted.
+    next: Option<u64>,
+    /// The wait before `next`.
+    wait: u64,
+}
+
+impl RawRetry {
+    /// The track fell back to the processed stream at `now`: the first try is
+    /// [`RAW_RETRY_INTERVAL_QPC`] later.
+    pub fn fell_back(&mut self, now: u64) {
+        self.wait = RAW_RETRY_INTERVAL_QPC;
+        self.next = Some(now.saturating_add(self.wait));
+    }
+
+    /// Whether a try is due at `now`.
+    #[must_use]
+    pub fn due(&self, now: u64) -> bool {
+        self.next.is_some_and(|t| now >= t)
+    }
+
+    /// The try at `now` was refused: the next waits twice as long, at most
+    /// [`RAW_RETRY_MAX_QPC`].
+    pub fn refused(&mut self, now: u64) {
+        self.wait = self
+            .wait
+            .saturating_mul(2)
+            .clamp(RAW_RETRY_INTERVAL_QPC, RAW_RETRY_MAX_QPC);
+        self.next = Some(now.saturating_add(self.wait));
+    }
+
+    /// No more tries (raw is back, the track ended or gave its device up).
+    pub fn stop(&mut self) {
+        self.next = None;
+    }
+
+    /// When the next try is due, if one is wanted.
+    #[must_use]
+    pub fn next_due(&self) -> Option<u64> {
+        self.next
+    }
+}
+
 /// `AUDCLNT_E_DEVICE_INVALIDATED`: the endpoint was removed or reconfigured.
 pub const AUDCLNT_E_DEVICE_INVALIDATED: i32 = 0x8889_0004_u32 as i32;
 /// `AUDCLNT_E_SERVICE_NOT_RUNNING`: the audio service stopped.
@@ -154,6 +214,9 @@ pub enum ReopenReason {
     Retry,
     /// A known call app plays on another output, and the track moved there (T6.15).
     CallOutputMoved,
+    /// A live mic that had fallen back to the processed stream was opened raw again and moved
+    /// onto that stream (T12.36a). Never in a raw recording, whose mic never falls back.
+    RawRestored,
 }
 
 /// Re-open decisions for one capture stream.
@@ -357,6 +420,33 @@ impl StreamFollower {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_retry_waits_ten_seconds_then_doubles_up_to_a_minute() {
+        let mut r = RawRetry::default();
+        assert!(!r.due(u64::MAX), "nothing wanted before a fallback");
+        let t0 = 7;
+        r.fell_back(t0);
+        assert!(!r.due(t0 + RAW_RETRY_INTERVAL_QPC - 1));
+        assert!(r.due(t0 + RAW_RETRY_INTERVAL_QPC));
+        let mut now = t0 + RAW_RETRY_INTERVAL_QPC;
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            r.refused(now);
+            let next = r.next_due().expect("a later try");
+            waits.push((next - now) / QPC_UNITS_PER_SEC);
+            assert!(!r.due(next - 1));
+            assert!(r.due(next));
+            now = next;
+        }
+        assert_eq!(waits, [20, 40, 60, 60, 60, 60]);
+        // A new fallback starts the wait over.
+        r.fell_back(now);
+        assert_eq!(r.next_due(), Some(now + RAW_RETRY_INTERVAL_QPC));
+        r.stop();
+        assert!(!r.due(u64::MAX));
+        assert_eq!(r.next_due(), None);
+    }
 
     fn change(flow: Flow, role: Role, id: Option<&str>) -> DefaultDeviceChange {
         DefaultDeviceChange {

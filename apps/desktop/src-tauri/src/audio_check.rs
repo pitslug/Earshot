@@ -23,7 +23,7 @@ use earshot_core::audio_check::test_signal_duration;
 use earshot_runtime::audio_check::{
     self as check, AFTER_PLAYBACK, Measured, StoredCheck, StoredOutcome,
 };
-use earshot_runtime::audio_settings::{AudioSettings, DeviceSetting};
+use earshot_runtime::audio_settings::{AudioSettings, DefaultCaptureMode, DeviceSetting};
 use earshot_runtime::{RuntimeError, Services};
 use serde::Serialize;
 use specta::Type;
@@ -224,7 +224,8 @@ pub fn check_view(
     let result = devices.ok().and_then(|d| {
         let mic = opened(&d.microphones, &settings.microphone)?;
         let out = opened(&d.outputs, &settings.output)?;
-        let raw = settings.mic_signal.is_raw();
+        // The check measures a call, so a call's stream (T12.36b: automatic is processed there).
+        let raw = settings.mic_signal.raw_in(DefaultCaptureMode::Call);
         match stored.pair(&mic.id, &out.id, raw) {
             Some(c) => Some(result_view(c, max_delay())),
             None if raw => stored.pair(&mic.id, &out.id, false).map(|c| {
@@ -457,7 +458,11 @@ impl AudioCheckWork for HostAudioCheckWork {
         cancel: &CancelToken,
         progress: &mut dyn FnMut(Duration),
     ) -> Result<Option<Measured>, RuntimeError> {
-        check::run_check(&settings.devices(), cancel, progress)
+        check::run_check(
+            &settings.devices(DefaultCaptureMode::Call),
+            cancel,
+            progress,
+        )
     }
 
     #[cfg(not(windows))]

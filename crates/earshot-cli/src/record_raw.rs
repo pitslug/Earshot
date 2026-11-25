@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use earshot_capture_wasapi::{
     DeviceChange, DeviceDescription, LoopbackMode, LoopbackRequest, LoopbackSource, MicProcessing,
-    MicRole, RawRecording, SampleFormat, TrackRecording, TrackReport,
+    MicRole, RawRecording, SampleFormat, StreamError, TrackRecording, TrackReport,
 };
 
 /// Mic track file name.
@@ -216,6 +216,15 @@ pub fn describe_reopen(label: &str, c: &DeviceChange) -> String {
     format!("{label}: re-opened ({:?}) -> {to}{why}", c.reason)
 }
 
+/// One stderr line for a stream error that made the loop re-open a track's stream (T12.36a):
+/// when, in seconds from the take's start (`start_qpc`), and the failed call with its HRESULT
+/// as a number (never Windows' message text). Printed before the re-open lines, so a
+/// reproduction captures both the stream error's code and a refused re-open's.
+pub fn describe_stream_error(label: &str, start_qpc: u64, e: &StreamError) -> String {
+    let secs = e.qpc.saturating_sub(start_qpc) as f64 / 10_000_000.0;
+    format!("{label}: stream error at {secs:.3} s: {}", e.detail)
+}
+
 /// The stderr line for a take during which Windows refused to keep the computer awake (T9.16),
 /// or `None` when it agreed.
 pub fn describe_sleep_not_prevented(rec: &RawRecording) -> Option<String> {
@@ -297,6 +306,9 @@ pub fn run(
         eprintln!("{line}");
     }
     for (label, track) in [("mic", &rec.mic), ("loopback", &rec.loopback)] {
+        for e in &track.stream_errors {
+            eprintln!("{}", describe_stream_error(label, rec.start_qpc, e));
+        }
         for c in &track.device_changes {
             eprintln!("{}", describe_reopen(label, c));
         }
@@ -376,6 +388,7 @@ mod tests {
                 timeline: mic,
                 device_changes: Vec::new(),
                 raw_refused_frames: 0,
+                stream_errors: Vec::new(),
             },
             loopback: TrackRecording {
                 device_name: "Speakers".into(),
@@ -383,6 +396,7 @@ mod tests {
                 timeline: lb,
                 device_changes: Vec::new(),
                 raw_refused_frames: 0,
+                stream_errors: Vec::new(),
             },
         }
     }
@@ -756,6 +770,18 @@ mod tests {
             describe_reopen("mic", &change),
             "mic: re-opened (DefaultDeviceChanged) -> no device (the mic \"Other\" cannot be \
              opened raw)"
+        );
+    }
+
+    #[test]
+    fn describes_a_stream_error_by_its_call_and_number() {
+        let e = StreamError {
+            qpc: 25_000_000 + 12_345_000,
+            detail: "IAudioCaptureClient::GetBuffer: error 0x88890004".into(),
+        };
+        assert_eq!(
+            describe_stream_error("mic", 25_000_000, &e),
+            "mic: stream error at 1.234 s: IAudioCaptureClient::GetBuffer: error 0x88890004"
         );
     }
 
