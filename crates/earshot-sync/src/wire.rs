@@ -159,11 +159,6 @@ pub struct WireRow {
 /// The length of a vault epoch ([`PushResponse::epoch`]).
 pub const EPOCH_LEN: usize = 16;
 
-/// The largest sequence number a device may say it has seen ([`PushRequest::seen_seq`], the
-/// pull's `seen`): about half of what the relay's database can count to (2^62), so its
-/// numbering can always move past a claim. Above it a request is `bad_request`.
-pub const MAX_SEEN_SEQ: u64 = u64::MAX / 4;
-
 /// `POST /v1/rows`.
 ///
 /// `seen_seq` and `epoch` are new in T14.45 and optional both ways: a relay from before them

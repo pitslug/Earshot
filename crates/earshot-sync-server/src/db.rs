@@ -55,32 +55,45 @@ CREATE TABLE pairing (
 
 /// Version 2 (T14.45): the vault's epoch (absent until [`Db::open`] gives the vault one), the
 /// vault's highest sequence number when that epoch was taken after a restore was noticed
-/// (`epoch_floor`; NULL while this database has noticed none), and when a claim was last acted
-/// on (`claim_unix_s`, `hear_claim`). Columns on a one-row table: the step costs the same
-/// however many rows the relay holds, and touches none of them.
+/// (`epoch_floor`; NULL while this database has noticed none), when an epoch was last taken
+/// (`claim_unix_s`), and for each device the epoch its numbers are known to belong to
+/// (`served_epoch`, `hear_claim`). Columns added with no default to compute: the step costs
+/// the same however many rows the relay holds, and rewrites none of them.
 const SCHEMA_2: &str = "
 ALTER TABLE vault ADD COLUMN epoch BLOB;
 ALTER TABLE vault ADD COLUMN epoch_floor INTEGER;
 ALTER TABLE vault ADD COLUMN claim_unix_s INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE device ADD COLUMN served_epoch BLOB;
 ";
 
-/// How often, at most, the relay acts on a device's claim to have seen more than the vault
-/// holds (a new epoch, or rows filed again for a client from before the epoch): once in ten
-/// minutes per vault, a judgement. A restore is one event and is answered once; this is what
-/// keeps a device that sends ever higher claims (a fault, or a token in the wrong hands) from
-/// making every other device send its whole store again, or the relay renumber its rows, more
-/// than six times an hour. Inside the limit a claim changes nothing and is answered like any
-/// call: a device of this epoch that saw more still starts over by itself (it sees the
-/// vault's highest number below its own), and a client from before the epoch claims again at
-/// its next pull.
+/// How often, at most, the vault takes a new epoch: once in ten minutes, a judgement. A new
+/// epoch makes every device that knows of epochs send its whole store again, a restore is one
+/// event, and this is what keeps a device that sends ever higher claims (a fault, or a token
+/// in the wrong hands) from doing that to the others more than six times an hour. Inside the
+/// limit such a claim changes nothing and is answered like any call: a device of this epoch
+/// that saw more still starts over by itself (it reads the vault's highest number below its
+/// own), and a client from before the epoch claims again at its next pull. Filing rows again
+/// for a client from before the epoch is not under this limit: it makes nobody start over, and
+/// is bounded for each device by itself (once per epoch).
 pub const CLAIM_EVERY_S: u64 = 10 * 60;
 
 /// The most rows filed again in one go for a client from before the epoch (`hear_claim`):
 /// 20,000, a judgement. They are renumbered one by one in the transaction of the pull that
 /// asked, with the database held, so the number bounds how long one call can hold every
-/// other. Past it the rows are left where they are and only the numbering moves on: that old
-/// client misses them, and gets what is filed from then on.
+/// other. Past it the rows are left where they are: that old client misses them, and gets what
+/// is filed from then on.
 pub const REFILE_MAX: i64 = 20_000;
+
+/// The furthest above the vault's own highest number a claim may move its numbering: about a
+/// thousand million (2^30), a judgement. A real cursor is a number this relay once gave out,
+/// so it is above what the relay holds now by no more than the rows lost with a restore; a
+/// restored relay cannot know that figure, but no vault loses a thousand million rows (each is
+/// a sealed row of hundreds of bytes). A claim further out is taken to be at this distance,
+/// never refused and never followed: one call naming a number near the top of what the
+/// database can count to would otherwise put every later row there, and the vault could not
+/// be used again. At this step it would take thousands of millions of such claims, one every
+/// ten minutes, to run out of numbers.
+pub const MAX_CLAIM_JUMP: i64 = 1 << 30;
 
 /// A database problem.
 #[derive(Debug)]
@@ -177,6 +190,8 @@ pub(crate) struct Claim {
     pub epoch: Option<[u8; 16]>,
     /// The relay's clock when the call came (Unix seconds).
     pub now_s: u64,
+    /// The device.
+    pub device: [u8; 16],
 }
 
 /// A new vault epoch: 16 bytes from the operating system's generator. Not a secret; it only has
@@ -191,24 +206,37 @@ fn new_epoch() -> Result<[u8; 16], DbError> {
 /// sequence number before it and the vault's epoch after it.
 ///
 /// A device that has seen a sequence number this vault has not reached proves the relay lost
-/// rows: it was restored from an older copy. One restore is one new epoch. What the relay
-/// does, at most once in [`CLAIM_EVERY_S`], depends on who says so:
+/// rows: it was restored from an older copy. One restore is one new epoch. The relay keeps,
+/// for each device, the epoch its numbers are known to belong to (`device.served_epoch`): the
+/// vault's epoch once the device has named it, or has been dealt with below. What the relay
+/// does depends on who calls:
 ///
-/// - **A device that names this vault's epoch**, or names none while this database has
-///   noticed no restore yet: the vault takes a new epoch, so every device that knows of epochs
-///   sends its rows again and reads from the start. The vault's highest number at that moment
-///   is kept (`epoch_floor`): rows numbered above it were filed in the new epoch. The numbering
-///   moves past the claim, so rows filed from now on are above that device's old cursor.
-/// - **A device that names no epoch, after a restore was noticed** (a client from before the
-///   epoch, whose cursor only ever moves forward and who would never see rows numbered at or
-///   below it): no new epoch. The rows filed since the epoch was taken, numbered in
-///   `(epoch_floor, highest]`, are filed again above the claim, in their order, and the
-///   numbering moves past them, so that client's pull brings them. Devices of the epoch see
-///   the same epoch and a higher highest number, and carry on; one that had not pulled those
-///   rows yet finds them further on. More than [`REFILE_MAX`] such rows are left where they
-///   are (only the numbering moves on).
+/// - **A device whose numbers are this epoch's** (it names the epoch, or names none and was
+///   served in it), or any device that names none while this database has noticed no restore:
+///   if it has seen more than the vault holds, the vault takes a new epoch (at most once in
+///   [`CLAIM_EVERY_S`]), so every device that knows of epochs sends its rows again and reads
+///   from the start. The vault's highest number at that moment is kept (`epoch_floor`): rows
+///   numbered above it were filed in the new epoch. The numbering moves past what the device
+///   saw, so rows filed from now on are above its old cursor.
+/// - **A device that names no epoch and has not been served in this epoch, after a restore
+///   was noticed** (a client from before the epoch, at its first pull since: its cursor only
+///   ever moves forward, so it would never see rows numbered at or below it): no new epoch.
+///   The rows filed since the epoch was taken that are numbered at or below its cursor, those
+///   in `(epoch_floor, cursor]`, are filed again above everything, in their order, so its pull
+///   brings them with the rest. This is done whether or not its cursor is above what the
+///   vault holds: rows filed meanwhile may have passed it. It makes nobody start over (devices
+///   of the epoch see the same epoch and a higher highest number, and one that had pulled
+///   those rows pulls them once more and changes nothing), so it is not under the ten-minute
+///   limit: each old device is served at its own first pull, once per epoch. More than
+///   [`REFILE_MAX`] such rows are left where they are.
 /// - **A device that names another epoch**: nothing. It saw another history and starts over by
 ///   itself when it reads this vault's epoch in the answer.
+///
+/// A claim never moves the numbering more than [`MAX_CLAIM_JUMP`] above the vault's rows.
+///
+/// `epoch_floor` is kept until the vault next takes an epoch; nothing clears it sooner. It
+/// costs nothing as the vault grows: only rows numbered at or below the calling device's own
+/// cursor count towards [`REFILE_MAX`], and rows filed later are numbered above every cursor.
 fn hear_claim(tx: &rusqlite::Transaction<'_>, claim: &Claim) -> Result<(u64, [u8; 16]), DbError> {
     let (next, epoch, floor, acted_at): (i64, Vec<u8>, Option<i64>, i64) = tx.query_row(
         "SELECT next_seq, epoch, epoch_floor, claim_unix_s FROM vault WHERE id = 1",
@@ -218,61 +246,93 @@ fn hear_claim(tx: &rusqlite::Transaction<'_>, claim: &Claim) -> Result<(u64, [u8
     let highest = next - 1;
     let max = u64_of(highest);
     let epoch = blob16(epoch);
-    let Some(seen) = claim.seen.filter(|seen| *seen > max) else {
-        return Ok((max, epoch));
-    };
     if claim.epoch.is_some_and(|theirs| theirs != epoch) {
         return Ok((max, epoch));
     }
-    // Acted on a moment ago: not again yet. (A clock that reads earlier than the last time
-    // does not hold a claim back.)
-    let acted_at = u64_of(acted_at);
-    if acted_at != 0 && claim.now_s >= acted_at && claim.now_s - acted_at < CLAIM_EVERY_S {
-        return Ok((max, epoch));
-    }
-    let seen = i64_of(seen);
-    match (claim.epoch, floor) {
-        (None, Some(floor)) => {
-            let filed: i64 = tx.query_row(
-                "SELECT count(*) FROM row WHERE seq > ?1",
-                params![floor],
-                |r| r.get(0),
-            )?;
-            let mut next = seen.saturating_add(1);
-            if filed <= REFILE_MAX {
-                let keys: Vec<Vec<u8>> = {
-                    let mut st = tx.prepare("SELECT key FROM row WHERE seq > ?1 ORDER BY seq")?;
-                    st.query_map(params![floor], |r| r.get(0))?
-                        .collect::<Result<_, _>>()?
-                };
-                // Every new number is above every number in use, so none meets another on
-                // the way.
-                for key in keys {
-                    tx.execute("UPDATE row SET seq = ?1 WHERE key = ?2", params![next, key])?;
-                    next = next.saturating_add(1);
-                }
+    let served = tx
+        .query_row(
+            "SELECT served_epoch FROM device WHERE device_id = ?1",
+            params![&claim.device[..]],
+            |r| r.get::<_, Option<Vec<u8>>>(0),
+        )
+        .optional()?
+        .flatten()
+        .is_some_and(|theirs| theirs == epoch);
+    let serve = |epoch: &[u8; 16]| {
+        tx.execute(
+            "UPDATE device SET served_epoch = ?1 WHERE device_id = ?2",
+            params![&epoch[..], &claim.device[..]],
+        )
+    };
+    // What the device has seen, taken to be at most MAX_CLAIM_JUMP above what the vault holds.
+    let seen = claim
+        .seen
+        .map(|seen| i64_of(seen).min(highest.saturating_add(MAX_CLAIM_JUMP)));
+    let Some(floor) = floor.filter(|_| claim.epoch.is_none() && !served) else {
+        // The device's numbers are this epoch's (it names the epoch, or was served in it), or
+        // this database has noticed no restore. Having seen more than the vault holds, it
+        // proves a restore: a new epoch, unless one was taken a moment ago. (A clock that
+        // reads earlier than the last time does not hold one back.)
+        let Some(seen) = seen.filter(|seen| *seen > highest) else {
+            if !served {
+                serve(&epoch)?;
             }
-            tx.execute(
-                "UPDATE vault SET next_seq = ?1, claim_unix_s = ?2 WHERE id = 1",
-                params![next, i64_of(claim.now_s)],
-            )?;
-            Ok((max, epoch))
+            return Ok((max, epoch));
+        };
+        let taken_at = u64_of(acted_at);
+        if taken_at != 0 && claim.now_s >= taken_at && claim.now_s - taken_at < CLAIM_EVERY_S {
+            return Ok((max, epoch));
         }
-        _ => {
-            let epoch = new_epoch()?;
+        let epoch = new_epoch()?;
+        tx.execute(
+            "UPDATE vault SET next_seq = ?1, epoch = ?2, epoch_floor = ?3, claim_unix_s = ?4
+             WHERE id = 1",
+            params![
+                seen.saturating_add(1),
+                &epoch[..],
+                highest,
+                i64_of(claim.now_s)
+            ],
+        )?;
+        serve(&epoch)?;
+        return Ok((max, epoch));
+    };
+    // A client from before the epoch, at its first call since the epoch was taken. A push
+    // says nothing of its cursor: its pull is waited for.
+    let Some(cursor) = seen else {
+        return Ok((max, epoch));
+    };
+    let behind: i64 = tx.query_row(
+        "SELECT count(*) FROM row WHERE seq > ?1 AND seq <= ?2",
+        params![floor, cursor],
+        |r| r.get(0),
+    )?;
+    let above = cursor.max(highest);
+    let mut next_seq = above.saturating_add(1);
+    if (1..=REFILE_MAX).contains(&behind) {
+        let keys: Vec<Vec<u8>> = {
+            let mut st =
+                tx.prepare("SELECT key FROM row WHERE seq > ?1 AND seq <= ?2 ORDER BY seq")?;
+            st.query_map(params![floor, cursor], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        // Every new number is above every number in use, so none meets another on the way.
+        for key in keys {
             tx.execute(
-                "UPDATE vault SET next_seq = ?1, epoch = ?2, epoch_floor = ?3, claim_unix_s = ?4
-                 WHERE id = 1",
-                params![
-                    seen.saturating_add(1),
-                    &epoch[..],
-                    highest,
-                    i64_of(claim.now_s)
-                ],
+                "UPDATE row SET seq = ?1 WHERE key = ?2",
+                params![next_seq, key],
             )?;
-            Ok((max, epoch))
+            next_seq = next_seq.saturating_add(1);
         }
     }
+    if next_seq > next {
+        tx.execute(
+            "UPDATE vault SET next_seq = ?1 WHERE id = 1",
+            params![next_seq],
+        )?;
+    }
+    serve(&epoch)?;
+    Ok((max, epoch))
 }
 
 /// The outcome of a registration.
@@ -799,6 +859,7 @@ mod tests {
             seen: Some(50),
             epoch: None,
             now_s: 1_800_000_000,
+            device,
         };
         assert!(db.push(&device, 1, &[row(3)], &claim).unwrap().is_none());
         assert_eq!(state(&db), before);
@@ -813,9 +874,11 @@ mod tests {
     }
 
     /// T14.45 review: filing rows again for a client from before the epoch is bounded. Up to
-    /// [`REFILE_MAX`] rows filed since the epoch was taken are renumbered above its cursor; one
-    /// more than that and none is moved (the call must not hold the database for long), only
-    /// the numbering moves on, so what is filed from then on still reaches that client.
+    /// [`REFILE_MAX`] rows filed since the epoch was taken, at or below its cursor, are
+    /// renumbered above it; one more than that and none is moved (the call must not hold the
+    /// database for long), only the numbering moves on, so what is filed from then on still
+    /// reaches that client. (The device here is not registered, so each of its pulls is a first
+    /// one.)
     #[test]
     fn relay_files_at_most_a_bounded_number_of_rows_again() {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -844,6 +907,7 @@ mod tests {
             seen: Some(seen),
             epoch: None,
             now_s,
+            device: [7; 16],
         };
         let t = 1_800_000_000;
         // A restore is noticed (the first claim above the rows): a new epoch, floor 0.

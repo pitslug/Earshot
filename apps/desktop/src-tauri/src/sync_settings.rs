@@ -146,6 +146,9 @@ pub struct SyncHost {
     /// moment a new thread starts, which then owns that work (T14.45 review). Taken alone,
     /// never with the slot or the store.
     retired: Mutex<Vec<Superseder>>,
+    /// Tests: the next threads cannot be started, as when the system has no thread to give.
+    #[cfg(test)]
+    refuse_start: std::sync::atomic::AtomicBool,
 }
 
 /// What sync brought to this computer (T12.81): the meetings one pass of the sync thread (its
@@ -195,11 +198,20 @@ impl SyncHost {
             offload: Mutex::new(None),
             changes: Mutex::new(None),
             retired: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            refuse_start: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     fn retired(&self) -> std::sync::MutexGuard<'_, Vec<Superseder>> {
         self.retired.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes every start fail to get a thread, or lets them through again (tests).
+    #[cfg(test)]
+    pub fn refuse_start_for_test(&self, refuse: bool) {
+        self.refuse_start
+            .store(refuse, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The threads turned off and not yet replaced (tests).
@@ -257,11 +269,27 @@ impl SyncHost {
         self.start_locked(services);
     }
 
+    /// A new sync thread, held: it exists and has done nothing yet ([`SyncThread::start_held`]).
+    /// `None` when the thread could not be started.
+    fn spawn_held(
+        &self,
+        client: SyncClient,
+        offload: Option<Arc<dyn OffloadHost>>,
+    ) -> Option<SyncThread> {
+        #[cfg(test)]
+        if self.refuse_start.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        SyncThread::start_held(client, self.timing, offload).ok()
+    }
+
     fn start_locked(&self, services: &Services) {
         let old = self.slot().take();
-        // The running thread is told at once that it is replaced (not when the thread that
+        // The running thread is told at once that it is stopped (not when the thread that
         // joins it gets to run): it starts no further tick and runs no further offload step,
-        // so it and the thread started below never work the store together.
+        // so it and the thread started below never work the store together. This takes
+        // nothing from it whether or not a new thread starts: the plain stop it gets below
+        // hands nothing back either.
         if let Some(t) = &old {
             t.superseder().supersede();
         }
@@ -291,19 +319,18 @@ impl SyncHost {
                 Some(l) => c.with_changes(l),
                 None => c,
             })
-            .and_then(|c| {
-                // A thread is about to start: any that was turned off and is still handing
-                // summaries back stops now, and the new one owns that work (its first offload
-                // step hands back what is still owed, as after a restart). Only now: while no
-                // thread starts, the one turned off goes on with it.
-                for earlier in self.retired().drain(..) {
-                    earlier.supersede();
-                }
-                match offload {
-                    Some(host) => SyncThread::start_offloading(c, self.timing, host).ok(),
-                    None => SyncThread::start(c, self.timing).ok(),
-                }
-            });
+            .and_then(|c| self.spawn_held(c, offload));
+        if let Some(new) = &next {
+            // The new thread exists and has done nothing yet. Only now does any thread that
+            // was turned off and is still handing summaries back stop, and the new one owns
+            // that work from its first offload step (it hands back what is still owed, as
+            // after a restart). While no thread starts (sync is off, this computer is not set
+            // up, or the thread could not be started), the one turned off goes on with it.
+            for earlier in self.retired().drain(..) {
+                earlier.supersede();
+            }
+            new.begin();
+        }
         *self.slot() = next;
     }
 

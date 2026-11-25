@@ -4115,9 +4115,9 @@ fn sync_a_thread_that_was_turned_off_stops_when_another_takes_its_place() {
         .recv_timeout(long)
         .expect("the superseded thread ended");
     stopping.join().unwrap();
-    // It hands nothing more back: whatever was already on its way is all there is.
+    // The old thread has ended, so it hands nothing more back. What it sent before it ended is
+    // taken off the channel here, so the hand-back heard below can only be the new thread's.
     while handed.try_recv().is_ok() {}
-    assert!(handed.try_recv().is_err());
     // The thread that took its place owns the hand-back: its first step hands the meeting
     // back again, as a thread does after a restart.
     let next = SyncThread::start_offloading(a.client(), quick(), host).unwrap();
@@ -4129,6 +4129,91 @@ fn sync_a_thread_that_was_turned_off_stops_when_another_takes_its_place() {
     superseder.supersede();
     wait_for("the superseded thread ended", || next.ended());
     superseder.supersede();
+}
+
+/// Nothing that signals the sync thread waits for a presence send (T14.45 review). The thread
+/// took up a resume while a gone was on the wire (the presence lock held, here by the test),
+/// and used to wait for that lock with its signal lock still held: a nudge, a resume, a stop
+/// request or a superseding then waited as long as the send did.
+#[test]
+fn sync_thread_signals_never_wait_for_a_presence_send() {
+    let relay = relay();
+    let (a, _b) = pair(&relay);
+    let thread = SyncThread::start(a.client(), quick()).unwrap();
+    wait_for("the first tick", || {
+        sync_status(&a.svc.store())
+            .unwrap()
+            .last_success_unix_ms
+            .is_some()
+    });
+    let beats = thread.beats_for_test();
+    let superseder = thread.superseder();
+    let (tx, signalled) = std::sync::mpsc::channel();
+    let in_time = std::thread::scope(|scope| {
+        // A presence send in flight holds the lock.
+        let sending = beats.lock().unwrap();
+        thread.back();
+        scope.spawn(|| {
+            // The thread takes the resume up, then waits for the presence lock.
+            while thread.back_pending() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            thread.nudge();
+            thread.back();
+            superseder.supersede();
+            let _ = tx.send(superseder.is_superseded());
+        });
+        let in_time = signalled.recv_timeout(Duration::from_secs(5));
+        drop(sending);
+        in_time
+    });
+    assert_eq!(in_time, Ok(true), "a signal waited for the presence lock");
+    wait_for("the superseded thread ended", || thread.ended());
+}
+
+/// A thread started held is a thread that exists and has done nothing: a host knows it can be
+/// started before it lets the threads it replaces go (T14.45 review). Stopped as it is, it ends
+/// without having read or sent anything; begun, it ticks at once.
+#[test]
+fn sync_a_thread_started_held_does_nothing_until_it_is_begun() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = meeting(&a.svc, "Recorded before the thread", 61);
+    let queued = a.svc.store().outbox_len().unwrap();
+    assert!(queued > 0);
+    let untouched = |what: &str| {
+        assert_eq!(a.svc.store().outbox_len().unwrap(), queued, "{what}");
+        assert_eq!(
+            sync_status(&a.svc.store()).unwrap(),
+            SyncStatus::default(),
+            "{what}"
+        );
+    };
+
+    // Stopped while held: joined, and nothing was ever done.
+    let held = SyncThread::start_held(a.client(), quick(), None).unwrap();
+    assert!(!held.ended());
+    held.stop();
+    untouched("a held thread that was stopped ticked");
+    // Superseded while held: the same.
+    let held = SyncThread::start_held(a.client(), quick(), None).unwrap();
+    held.superseder().supersede();
+    wait_for("the superseded held thread ended", || held.ended());
+    untouched("a held thread that was superseded ticked");
+    drop(held);
+
+    // Begun: it ticks at once.
+    let thread = SyncThread::start_held(a.client(), quick(), None).unwrap();
+    untouched("a held thread ticked before it was begun");
+    thread.begin();
+    wait_for("the begun thread sent the meeting", || {
+        a.svc.store().outbox_len().unwrap() == 0
+    });
+    thread.begin();
+    thread.stop();
+    b.client().tick().unwrap();
+    assert_eq!(b.title(m).as_deref(), Some("Recorded before the thread"));
 }
 
 // ---- T14.45: a relay restored from a backup is noticed ----
@@ -4399,14 +4484,28 @@ fn old_client_pull(dev: &Device) -> usize {
     panic!("an old client's pull never ended");
 }
 
-/// One restore is one epoch, with computers on 0.4.2 in the vault (the review's sequence). The
-/// relay is restored; a computer of this build notices, starts over and sends its rows again,
-/// which the relay files above that computer's old cursor. Two 0.4.2 computers whose cursors
-/// are higher still would never pull those rows, and each used to make the relay take yet
-/// another epoch. Now each of them is sent every row filed since the restore, and the computer
-/// of this build starts over exactly once.
-#[test]
-fn sync_old_clients_after_a_restore_get_every_row_and_cost_no_further_epoch() {
+/// A vault with two computers of this build (A and B) and two on 0.4.2 (C and D), its relay
+/// just restored from a backup, and A having noticed.
+struct RestoredWithOldClients {
+    relay: RestorableRelay,
+    a: Device,
+    b: Device,
+    c: Device,
+    d: Device,
+    /// The epoch A took when it noticed the restore.
+    second: earshot_sync::wire::B64,
+    /// The meeting A recorded after the restore.
+    newest: earshot_core::identity::EntityId,
+    /// The meetings B recorded after the copy of the relay was made, which the restore lost: the
+    /// first reached A, C and D, the next three C and D, the last three D alone.
+    lost: Vec<earshot_core::identity::EntityId>,
+}
+
+/// B records while A, then C, then D stop pulling, so the four cursors differ (D's highest);
+/// the relay is restored to a copy made before all of it; A records one more meeting and
+/// ticks: it notices, starts over and sends its rows again, which the relay files above A's old
+/// cursor and partly below C's and D's.
+fn restored_with_old_clients() -> RestoredWithOldClients {
     let mut relay = RestorableRelay::start();
     let (a, b) = pair_on(&relay);
     let (c, d) = (
@@ -4425,13 +4524,14 @@ fn sync_old_clients_after_a_restore_get_every_row_and_cost_no_further_epoch() {
     assert_eq!((old_client_pull(&c), old_client_pull(&d)), (8, 8));
     let backup = relay.backup();
     // B goes on recording. A stops pulling first, then C, then D: their cursors differ.
+    let mut lost = Vec::new();
     for (seeds, pullers) in [
         (10..11u64, &[&a, &c, &d][..]),
         (20..23, &[&c, &d][..]),
         (30..33, &[&d][..]),
     ] {
         for seed in seeds {
-            meeting(&b.svc, "After the backup", seed);
+            lost.push(meeting(&b.svc, "After the backup", seed));
         }
         b.client().tick().unwrap();
         for dev in pullers {
@@ -4457,6 +4557,36 @@ fn sync_old_clients_after_a_restore_get_every_row_and_cost_no_further_epoch() {
     assert_ne!(second, epoch);
     assert_eq!(stored_cursor(&a).resets.len(), 1);
     assert_eq!(c.title(newest), None, "C has not heard of it yet");
+    RestoredWithOldClients {
+        relay,
+        a,
+        b,
+        c,
+        d,
+        second,
+        newest,
+        lost,
+    }
+}
+
+/// One restore is one epoch, with computers on 0.4.2 in the vault (the review's sequence). The
+/// relay is restored; a computer of this build notices, starts over and sends its rows again,
+/// which the relay files above that computer's old cursor. Two 0.4.2 computers whose cursors
+/// are higher still would never pull those rows, and each used to make the relay take yet
+/// another epoch. Now each of them is sent every row filed since the restore, and the computer
+/// of this build starts over exactly once.
+#[test]
+fn sync_old_clients_after_a_restore_get_every_row_and_cost_no_further_epoch() {
+    let RestoredWithOldClients {
+        relay,
+        a,
+        b,
+        c,
+        d,
+        second,
+        newest,
+        ..
+    } = restored_with_old_clients();
 
     // C, a 0.4.2 computer whose cursor is above everything A sent again: it is sent all of it
     // (the meeting lost with the restore and the new one), and no epoch is taken for it.
@@ -4495,6 +4625,85 @@ fn sync_old_clients_after_a_restore_get_every_row_and_cost_no_further_epoch() {
     settle(&b);
     assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&second));
     assert_eq!(stored_cursor(&a).resets.len(), 1);
+    let rows = a.rows();
+    assert_eq!(b.rows(), rows);
+    assert_eq!(c.rows(), rows, "the first old client holds everything");
+    assert_eq!(d.rows(), rows, "the second old client holds everything");
+}
+
+/// The same restore with the computers coming back in the other order, all inside ten minutes
+/// of the relay taking its epoch (the second review's sequence). B, of this build, ticks
+/// before either 0.4.2 computer pulls: it starts over and sends what the relay lost, some of
+/// which the relay files at or below C's cursor and more below D's. C and D each pull once,
+/// moments later, and each is still sent every row it lacks: the relay's limit on how often it
+/// takes an epoch holds back no old client's rows, and serving the first leaves the second
+/// served at its own first pull.
+#[test]
+fn sync_old_clients_are_served_when_a_new_one_came_back_first_within_ten_minutes() {
+    let RestoredWithOldClients {
+        relay,
+        a,
+        b,
+        c,
+        d,
+        second,
+        newest,
+        lost,
+    } = restored_with_old_clients();
+    let (at_c, at_d) = (
+        pull_cursor(&c.svc.store()).unwrap(),
+        pull_cursor(&d.svc.store()).unwrap(),
+    );
+
+    // B comes back first: it holds the old epoch, so it starts over and sends everything.
+    let r = b.client().tick().unwrap();
+    assert!(r.vault_reset, "{r:?}");
+    settle(&b);
+    assert_eq!(stored_cursor(&b).epoch.as_ref(), Some(&second));
+    // The relay filed B's rows from A's old cursor up, so some sit at or below the old
+    // clients' cursors, where a 0.4.2 pull never looks.
+    let highest = stored_cursor(&b).seen();
+    assert!(at_c < highest, "{at_c} {highest}");
+    let missing = |dev: &Device| lost.iter().filter(|m| dev.title(**m).is_none()).count();
+    assert_eq!((missing(&c), missing(&d)), (3, 0), "what each lacks of B's");
+
+    // C pulls once, seconds after the epoch was taken: it is sent the rows filed at or below
+    // its cursor as well as those above.
+    relay.advance(5);
+    let sent_c = old_client_pull(&c);
+    assert_eq!(missing(&c), 0, "C holds every meeting the relay lost");
+    assert_eq!(
+        c.title(newest).as_deref(),
+        Some("Recorded after the restore")
+    );
+    // D, whose cursor is higher still, pulls once a few seconds later: the same.
+    relay.advance(5);
+    assert_eq!(d.title(newest), None, "D has not heard of it yet");
+    let sent_d = old_client_pull(&d);
+    assert_eq!(
+        d.title(newest).as_deref(),
+        Some("Recorded after the restore")
+    );
+    assert_eq!(missing(&d), 0);
+    assert!(pull_cursor(&d.svc.store()).unwrap() > at_d);
+    // Every row filed since the restore is 64: A's lost meeting and its new one (16) and the six
+    // meetings only B still held (48). Each old client is sent all 64 once, whatever its cursor.
+    assert_eq!((sent_c, sent_d), (64, 64));
+    // Serving D gave new numbers to the 24 rows between the two cursors, so C is sent those
+    // once more: copies of rows it holds, which change nothing. After that nothing moves.
+    let held = c.rows();
+    assert_eq!((old_client_pull(&c), old_client_pull(&d)), (24, 0));
+    assert_eq!(c.rows(), held);
+    assert_eq!((old_client_pull(&c), old_client_pull(&d)), (0, 0));
+
+    // Nobody started over for it, and everyone holds the same rows.
+    let reports = [settle(&a), settle(&b)].concat();
+    assert!(reports.iter().all(|r| !r.vault_reset), "{reports:?}");
+    for dev in [&a, &b] {
+        let now = stored_cursor(dev);
+        assert_eq!(now.epoch.as_ref(), Some(&second), "one restore, one epoch");
+        assert_eq!(now.resets.len(), 1, "each started over exactly once");
+    }
     let rows = a.rows();
     assert_eq!(b.rows(), rows);
     assert_eq!(c.rows(), rows, "the first old client holds everything");

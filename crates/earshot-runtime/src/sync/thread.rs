@@ -86,11 +86,16 @@ struct Signal {
     /// A new sync thread has started on this store ([`Superseder`]): this one does nothing
     /// more, whatever it was asked to finish.
     superseded: bool,
+    /// Started held ([`SyncThread::start_held`]): the thread exists and does nothing until
+    /// [`SyncThread::begin`] or a stop.
+    held: bool,
 }
 
 /// Ends a sync thread from the moment another takes its place, without waiting for it (T14.45
 /// review). A host keeps one for each thread it has retired and not yet seen end, and calls
-/// [`Superseder::supersede`] on all of them before it starts a new thread.
+/// [`Superseder::supersede`] on all of them once the new thread exists and before it begins
+/// ([`SyncThread::start_held`], [`SyncThread::begin`]): a start that gets no thread leaves
+/// them at their work.
 ///
 /// A thread that is stopped still finishes what it was told to finish: a thread turned off
 /// goes on handing back the summaries this device asked for, for up to
@@ -114,8 +119,9 @@ impl std::fmt::Debug for Superseder {
 }
 
 impl Superseder {
-    /// Tells the thread a new one has started. Never blocks; safe to call more than once and
-    /// after the thread has ended.
+    /// Tells the thread a new one has started. Never blocks (it takes only the signal lock,
+    /// which the thread never holds while it waits for anything else); safe to call more than
+    /// once and after the thread has ended.
     pub fn supersede(&self) {
         self.stop.store(true, Ordering::Relaxed);
         let (lock, cv) = &*self.signal;
@@ -174,7 +180,7 @@ impl SyncThread {
     /// # Errors
     /// [`RuntimeError::Spawn`].
     pub fn start(client: SyncClient, timing: SyncTiming) -> Result<Self, RuntimeError> {
-        Self::start_with(client, timing, None)
+        Self::start_with(client, timing, None, false)
     }
 
     /// [`SyncThread::start`], and summary offload after every tick
@@ -187,15 +193,54 @@ impl SyncThread {
         timing: SyncTiming,
         host: Arc<dyn OffloadHost>,
     ) -> Result<Self, RuntimeError> {
-        Self::start_with(client, timing, Some((Arc::new(Offload::new()), host)))
+        Self::start_with(
+            client,
+            timing,
+            Some((Arc::new(Offload::new()), host)),
+            false,
+        )
+    }
+
+    /// [`SyncThread::start`] or, with a `host`, [`SyncThread::start_offloading`], except that
+    /// the thread waits: it reads nothing, ticks nothing and runs no offload step until
+    /// [`Self::begin`]. A stop or a superseding ends it as it is.
+    ///
+    /// For a host that replaces threads (T14.45 review): whether a thread can be started at
+    /// all is known once this returns, so the threads it takes over from are superseded only
+    /// then, and the new one begun after. A start that fails leaves them at their work.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Spawn`].
+    pub fn start_held(
+        client: SyncClient,
+        timing: SyncTiming,
+        host: Option<Arc<dyn OffloadHost>>,
+    ) -> Result<Self, RuntimeError> {
+        let offload = host.map(|host| (Arc::new(Offload::new()), host));
+        Self::start_with(client, timing, offload, true)
+    }
+
+    /// Lets a thread started with [`Self::start_held`] go: its first tick is at once. Does
+    /// nothing to a thread that was not held. Never blocks.
+    pub fn begin(&self) {
+        let (lock, cv) = &*self.signal;
+        lock.lock().unwrap_or_else(PoisonError::into_inner).held = false;
+        cv.notify_all();
     }
 
     fn start_with(
         client: SyncClient,
         timing: SyncTiming,
         offload: Option<(Arc<Offload>, Arc<dyn OffloadHost>)>,
+        held: bool,
     ) -> Result<Self, RuntimeError> {
-        let signal = Arc::new((Mutex::new(Signal::default()), Condvar::new()));
+        let signal = Arc::new((
+            Mutex::new(Signal {
+                held,
+                ..Signal::default()
+            }),
+            Condvar::new(),
+        ));
         let stop = client.stop_flag();
         let client = Arc::new(client);
         let beats = Arc::new(Mutex::new(Beats::default()));
@@ -307,6 +352,22 @@ impl SyncThread {
     pub fn ended(&self) -> bool {
         self.handle.as_ref().is_none_or(JoinHandle::is_finished)
     }
+
+    /// The presence lock, for a test that holds it as a presence send in flight does.
+    #[cfg(test)]
+    pub(crate) fn beats_for_test(&self) -> Arc<Mutex<Beats>> {
+        Arc::clone(&self.beats)
+    }
+
+    /// Whether a [`Self::back`] has not been taken up by the thread yet.
+    #[cfg(test)]
+    pub(crate) fn back_pending(&self) -> bool {
+        self.signal
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .back
+    }
 }
 
 impl Drop for SyncThread {
@@ -406,6 +467,16 @@ fn run(
     beats: &Mutex<Beats>,
     offload: Option<&(Arc<Offload>, Arc<dyn OffloadHost>)>,
 ) {
+    // Started held: nothing is read or done until the host says so, or stops this thread (the
+    // loop below then takes the stop as any other).
+    {
+        let (lock, cv) = signal;
+        let s = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        drop(
+            cv.wait_while(s, |s| s.held && !s.stop)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
     let services = client.services().clone();
     let steps = super::engine::step_lock(client.device());
     let mut failures: u32 = 0;
@@ -415,8 +486,11 @@ fn run(
     // Presence goes out after the first tick without a problem, then every `presence`.
     let mut next_presence: Option<Instant> = None;
     loop {
-        // Wait until the next tick, a poll, a nudge or a stop.
-        {
+        // Wait until the next tick, a poll, a nudge or a stop. Lock order: the signal lock is a
+        // leaf. It is never held while another lock is waited for (the presence lock can be
+        // held for as long as a presence send takes), so nothing that signals this thread
+        // (a nudge, a resume, a stop, a superseding) ever waits for more than these few lines.
+        let back = {
             let (lock, cv) = signal;
             let mut s = lock.lock().unwrap_or_else(PoisonError::into_inner);
             let due = next_presence.map_or(next, |p| p.min(next));
@@ -460,14 +534,14 @@ fn run(
             if std::mem::take(&mut s.soon) && failures == 0 {
                 next = next.min(Instant::now());
             }
-            if std::mem::take(&mut s.back) {
-                // A resume: tick at once whatever the back-off, and beat after the first tick
-                // that reaches the relay (the tick's success arm sets the beat due).
-                if beats_of(beats).come_back() {
-                    next = Instant::now();
-                    next_presence = None;
-                }
-            }
+            std::mem::take(&mut s.back)
+        };
+        // A resume: tick at once whatever the back-off, and beat after the first tick that
+        // reaches the relay (the tick's success arm sets the beat due). Behind any presence
+        // send in flight, with the signal lock released.
+        if back && beats_of(beats).come_back() {
+            next = Instant::now();
+            next_presence = None;
         }
         // A local write: tick once the outbox stops changing (only between failures).
         let len = outbox_len(&services);

@@ -465,8 +465,17 @@ fn sync_host_tells_a_turned_off_thread_when_a_new_one_takes_its_place() {
     assert!(!a.host.running());
     assert!(!off[0].is_superseded());
     assert_eq!(a.host.retired_for_test().len(), 1);
-    // Turned on again: a new thread runs, and the old one has been told.
+    // Turned on, but no thread can be started: nothing runs, so nothing has taken its place.
+    // It is still at its work and still remembered (the review's failure path: told too
+    // early, nobody would own what it had left to hand back until the next start).
+    a.host.refuse_start_for_test(true);
     set_on(&a.svc, &a.host, true).unwrap();
+    assert!(!a.host.running(), "the thread could not be started");
+    assert!(!off[0].is_superseded());
+    assert_eq!(a.host.retired_for_test().len(), 1);
+    // The next start gets its thread: a new thread runs, and the old one has been told.
+    a.host.refuse_start_for_test(false);
+    a.host.start_if_on(&a.svc);
     assert!(a.host.running());
     assert!(off[0].is_superseded());
     assert!(a.host.retired_for_test().is_empty());
