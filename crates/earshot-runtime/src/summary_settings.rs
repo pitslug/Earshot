@@ -35,7 +35,13 @@
 //!   address the key was saved for ([`bind_api_key`]). A key whose address differs from the
 //!   one in the settings reads as no key ([`api_key_bound`]): the summary is skipped with the
 //!   no-key banner and the page asks for the key again. A key saved before T14.31 has no
-//!   address and counts as saved for [`ANTHROPIC_DEFAULT_URL`] only.
+//!   address and counts as saved for [`ANTHROPIC_DEFAULT_URL`] only. What this guards
+//!   against is a changed address (a typo, a later edit, another provider's address), not a
+//!   process that can edit the store: the bound address sits in the same store as the
+//!   endpoint, so whatever can rewrite one can rewrite both. The key is bound to the address
+//!   stored when it is saved, not to one typed on the page and not yet saved (the page saves
+//!   the key on its own): a key saved before its address is asked for again once the address
+//!   is saved.
 //! - **Summarise during the meeting**: `settings/live-summaries`
 //!   ([`crate::live_summaries::LIVE_SUMMARIES_KEY`]), honoured only with a summary on this
 //!   computer (`host::live_summaries_for`).
