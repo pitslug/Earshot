@@ -61,6 +61,11 @@ pub struct TickReport {
     /// Counted in the push page that reached them (rows are read oldest stamp first, so
     /// every later one is ahead too and is not read).
     pub clock_ahead: usize,
+    /// The relay refused a push because a row in it is stamped too far past the relay's clock
+    /// (this device's clock is wrong now, or the relay's): the rows of that push and every
+    /// later one stay queued, nothing more was pushed this tick, and the tick went on to pull.
+    /// It ends with [`SyncProblem::ClockAhead`] in the status, like [`Self::clock_ahead`].
+    pub clock_refused: bool,
     /// Rows pulled (held rows tried again not included).
     pub pulled: usize,
     /// Rows written here.
@@ -646,7 +651,8 @@ impl SyncClient {
                 Ok(()) => {
                     // A tick that left rows unsent for their far stamps did everything else,
                     // so it counts as a sync; the status still says why those rows wait.
-                    status.problem = (report.clock_ahead > 0).then_some(SyncProblem::ClockAhead);
+                    status.problem = (report.clock_ahead > 0 || report.clock_refused)
+                        .then_some(SyncProblem::ClockAhead);
                     status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
                     status.unsendable = u64::try_from(report.unsendable).unwrap_or(u64::MAX);
                     status.refused = u64::try_from(report.refused).unwrap_or(u64::MAX);
@@ -667,7 +673,14 @@ impl SyncClient {
             // anything is pulled, so the list rebuilt after a page never loses them.
             crate::vocabulary::reconcile(&self.services)?;
         }
-        self.push(&keys, &secrets.token, kinds, report)?;
+        match self.push(&keys, &secrets.token, kinds, report) {
+            // The relay refused the push for a far stamp: this device's clock is wrong now, or
+            // the relay's is. The rows stay queued, as when this device finds such rows itself,
+            // and the tick goes on to receive: a wrong clock must not cut a device off from
+            // what the others send (T14.44).
+            Err(SyncProblem::ClockAhead) => report.clock_refused = true,
+            other => other?,
+        }
         if report.vault_reset {
             // Everything is queued again and the cursor is at the start: the next tick sends
             // and reads it all (it comes soon, the queue having grown).

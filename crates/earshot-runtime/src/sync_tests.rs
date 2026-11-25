@@ -3851,28 +3851,39 @@ fn sync_rows_stamped_far_ahead_are_not_sent_and_the_vault_keeps_later_edits() {
 /// A computer whose clock is wrong now (three days ahead) cannot tell by itself: the relay
 /// refuses its push by its own clock, with a word of its own, and stores nothing. The rows stay
 /// queued and are sent once the clocks agree. A row at the edge of the window is accepted.
+/// The refused computer is not cut off: the same tick goes on to pull what the other computer
+/// sent, counts as a sync and leaves the word in the status.
 #[test]
-fn sync_a_push_the_relay_refuses_for_its_far_stamp_keeps_the_rows_queued() {
+fn sync_a_push_the_relay_refuses_for_its_far_stamp_keeps_the_rows_queued_and_still_pulls() {
     let t0 = crate::testutil::T0;
     let now = Arc::new(std::sync::atomic::AtomicU64::new(t0));
     let relay = relay_on_clock(&now);
     let (a, b) = pair(&relay);
+    // The other computer, whose clock is right, has sent a meeting.
+    let theirs = meeting(&b.svc, "Recorded by a clock that is right", 2);
+    b.client().tick().unwrap();
     a.clock.advance_ms(3 * DAY_MS);
     let m = meeting(&a.svc, "Recorded by a clock that is wrong now", 1);
     let queued = a.svc.store().outbox_len().unwrap();
     let ca = a.client();
     let (r, outcome) = ca.tick_reporting();
-    assert_eq!(outcome, Err(SyncProblem::ClockAhead), "{r:?}");
+    assert!(outcome.is_ok(), "the tick went on: {r:?}");
+    assert!(r.clock_refused, "{r:?}");
     assert_eq!((r.pushed, r.clock_ahead), (0, 0), "{r:?}");
     assert_eq!(
         a.svc.store().outbox_len().unwrap(),
         queued,
         "nothing was lost"
     );
+    // It pulled in the same tick.
+    assert!(r.pull_complete && r.written == 8, "{r:?}");
     assert_eq!(
-        sync_status(&a.svc.store()).unwrap().problem,
-        Some(SyncProblem::ClockAhead)
+        a.title(theirs).as_deref(),
+        Some("Recorded by a clock that is right")
     );
+    let status = sync_status(&a.svc.store()).unwrap();
+    assert_eq!(status.problem, Some(SyncProblem::ClockAhead));
+    assert!(status.last_success_unix_ms.is_some());
     b.client().tick().unwrap();
     assert_eq!(b.title(m), None, "the relay stored none of it");
     // The relay's clock at exactly a day behind the stamps: accepted.
@@ -3888,9 +3899,8 @@ fn sync_a_push_the_relay_refuses_for_its_far_stamp_keeps_the_rows_queued() {
     assert_eq!(newest % 1000, 0, "the relay's clock counts whole seconds");
     now.store(newest - DAY_MS - 1_000, std::sync::atomic::Ordering::SeqCst);
     let (r, outcome) = ca.tick_reporting();
-    assert_eq!(
-        outcome,
-        Err(SyncProblem::ClockAhead),
+    assert!(
+        outcome.is_ok() && r.clock_refused && r.pushed == 0,
         "a second short: {r:?}"
     );
     now.store(newest - DAY_MS, std::sync::atomic::Ordering::SeqCst);
