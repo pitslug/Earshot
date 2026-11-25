@@ -58,7 +58,7 @@ cargo xtask sign-update --key "$env:USERPROFILE\.earshot-private\update-signing.
    The ARM64 installer is built and signed here but checked on the Surface: see [arm64-release.md](arm64-release.md).
 
 4. Publish both files it prints in one normal release (not a pre-release) tagged `v<version>`, so it takes the Latest mark, which is what the app asks for.
-5. Attach the two compose files to the same release: the relay's as `docker-compose.yml` and the summary worker's as `earshot-worker-compose.yml` (release files need different names). Pushing the tag builds and pushes both images, `earshot-server` (also as `earshot-sync-server` for 0.4.0 only) and `earshot-worker`, under the version (the `relay-image` workflow); the worker's is pushed only after it started on the runner and answered its health check.
+5. Attach the two compose files to the same release: the relay's as `docker-compose.yml` and the summary worker's as `earshot-worker-compose.yml` (release files need different names). Pushing the tag builds and pushes both images, `earshot-server` and `earshot-worker`, under the version and as `latest` (the `relay-image` workflow); neither is pushed until both started on the runner and answered their checks. The relay's old image name, `earshot-sync-server`, is no longer pushed (T14.4). Say in the release notes when a release raises the sync row format, so people update their computers together and the worker last ([compatibility.md](compatibility.md)).
 
 ```powershell
 Copy-Item crates\earshot-worker\docker-compose.yml target\earshot-worker-compose.yml

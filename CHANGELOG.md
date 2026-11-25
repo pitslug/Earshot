@@ -15,6 +15,9 @@ What each release changed, in plain words, newest first. It is written from the 
 - The Summaries page folds away each writer's setup, and says when Claude Code or Codex is not signed in. The Dictionary page points to the People page for saved names.
 - The Sync page's list of computers keeps up while it is open, and the first-run Sync step knows when this computer already syncs.
 - Project files: this changelog, SECURITY.md, CONTRIBUTING.md and docs/compatibility.md. README.md and PRIVACY.md rewritten.
+- The relay's compose file publishes its port on the host's loopback address only (it was every interface). If your reverse proxy is not on that host itself, read the file's comments before updating it.
+- The relay image is pushed as `earshot-server` only. The old name, `earshot-sync-server`, stops at 0.4.2.
+- Both compose files say to pin `EARSHOT_VERSION` and to update the worker last.
 
 **Updating:** the database changes (0.4.2 cannot open it afterwards) and the sync row format rises from 2 to 4, so every computer that syncs, and then the worker, must be updated.
 
