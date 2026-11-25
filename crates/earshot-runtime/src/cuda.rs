@@ -750,7 +750,7 @@ fn exclusive(dir: &Path, name: &str) -> Result<(), CudaError> {
         error: e.to_string(),
     };
     // The entry itself, never what a link points at: removing a link deletes only the link, so
-    // a file it points at elsewhere is neither asked for nor has its attribute changed (TODO 40).
+    // a file it points at elsewhere is neither asked for nor has its attribute changed.
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
