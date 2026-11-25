@@ -172,14 +172,14 @@ export interface IpcCommands
   /** "Save" on a voice that needs a name (T12.19): names it, links it to that person and
    * remembers the voice, in one step. */
   saveVoice(meeting: string, speaker: string, choice: LinkChoice): Promise<SavedVoiceResult>;
-  /** "Ignore": the voice no longer needs a name and keeps its "Speaker N" label. Rejects with
-   * `not_unnamed` or `no_stored_voice`. */
+  /** "Ignore": the voice no longer needs a name and keeps its "Speaker N" label, on every
+   * computer (T12.93). Rejects with `not_unnamed`. */
   ignoreSpeaker(meeting: string, speaker: string): Promise<void>;
   /** Undoes "Ignore": the voice needs a name again. */
   unignoreSpeaker(meeting: string, speaker: string): Promise<void>;
   /** "Not <name>" on a named voice (T12.77): unlinked from the person, back to "Speaker N" and
-   * ignored in this meeting. Rejects with `user_row`, `no_person`, `no_stored_voice` or a
-   * retryable `meeting_busy`. Resolves with what was taken back of the voice (T12.77b7). */
+   * ignored in this meeting. Rejects with `user_row`, `no_person` or a retryable
+   * `meeting_busy`. Resolves with what was taken back of the voice (T12.77b7). */
   notThisPerson(meeting: string, speaker: string): Promise<NotThisPersonResult>;
   /** Forgets every voiceprint of a person. */
   forgetPersonVoices(person: string): Promise<number>;

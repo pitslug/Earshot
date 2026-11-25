@@ -470,6 +470,14 @@ pub struct Speaker {
     pub display_name: String,
     /// The recurring person, when identified or named.
     pub person_id: Option<EntityId>,
+    /// The user chose to ignore this voice in this meeting (T12.19, T12.93): it keeps its
+    /// "Speaker N" label, no longer needs a name and is never enrolled or named as a person.
+    /// Counts only on an unnamed voice that is not the user (`ignored && role != Me &&
+    /// person_id.is_none()`, the runtime's one rule, applied to every read because a synced row
+    /// is a trust boundary). Synced since `earshot_sync::ENVELOPE_FORMAT` 3; rows of formats 1
+    /// and 2 read `false`.
+    #[serde(default)]
+    pub ignored: bool,
 }
 
 syncable_row!(Speaker, "speaker");
@@ -491,6 +499,7 @@ impl Speaker {
             role,
             display_name: display_name.into(),
             person_id,
+            ignored: false,
         }
     }
 }

@@ -357,7 +357,10 @@ describe("MeetingDetailView", () => {
     });
   });
 
-  it("offers no Ignore for a voice with nothing stored, and the mock refuses like the runtime", async () => {
+  // T12.93: Ignore no longer needs a stored voice (the choice is on the synced row), so the
+  // mock no longer refuses `no_stored_voice`; the panel still offers Ignore only where the
+  // detail's `can_ignore` (Rust's rule) says.
+  it("offers Ignore only where the detail allows it, and the mock refuses like the runtime", async () => {
     const base = sampleDetail(ITEM);
     const detail = {
       ...base,
@@ -367,9 +370,6 @@ describe("MeetingDetailView", () => {
     await screen.findByText(/TL;DR/);
     expect(within(speakerRow("Speaker 3")).queryByRole("button", { name: "Ignore" })).toBeNull();
     expect(within(speakerRow("Speaker 2")).getByRole("button", { name: "Ignore" })).toBeInTheDocument();
-    await expect(ipc.ignoreSpeaker(ITEM.id, SAMPLE_SPEAKERS.third)).rejects.toMatchObject({
-      error: { kind: "no_stored_voice" },
-    });
     await expect(ipc.ignoreSpeaker(ITEM.id, SAMPLE_SPEAKERS.priya)).rejects.toMatchObject({
       error: { kind: "not_unnamed", message: "Only a voice that needs a name can be ignored." },
     });

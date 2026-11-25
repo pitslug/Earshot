@@ -304,6 +304,9 @@ pub(crate) enum DeviceRecord {
     /// `summary-seen-start`: every meeting's summary from before T12.76 was marked seen
     /// ([`crate::summary_seen::mark_existing_once`]).
     SummarySeenStart,
+    /// `ignore-copied`: this device's legacy ignores (device-local `speaker-identities`
+    /// entries) were copied onto the synced speaker rows (T12.93; [`crate::ignore_copy`]).
+    IgnoreCopied,
 }
 
 impl DeviceRecord {
@@ -362,6 +365,7 @@ impl DeviceRecord {
         DeviceRecord::OffloadTimes,
         DeviceRecord::SummaryOrder,
         DeviceRecord::SummarySeenStart,
+        DeviceRecord::IgnoreCopied,
     ];
 
     /// Its key.
@@ -442,6 +446,7 @@ impl DeviceRecord {
                 DeviceRecord::OffloadTimes => crate::offload::OFFLOAD_TIMES_KEY,
                 DeviceRecord::SummaryOrder => crate::summary_order::SUMMARY_ORDER_KEY,
                 DeviceRecord::SummarySeenStart => crate::summary_seen::SEEN_START_KEY,
+                DeviceRecord::IgnoreCopied => crate::ignore_copy::COPIED_KEY,
             }
             .to_owned(),
         )

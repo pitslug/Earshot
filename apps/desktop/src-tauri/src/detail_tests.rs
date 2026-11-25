@@ -1321,7 +1321,6 @@ fn detail_edit_refusals_become_plain_user_copy() {
             "invalid_summary_text",
         ),
         (EditError::NotUnnamed(id), "not_unnamed"),
-        (EditError::NoStoredVoice(id), "no_stored_voice"),
         (EditError::WordNotFound(id), "word_not_found"),
         (EditError::WordNotListed, "word_not_listed"),
         (EditError::NoWordChoice(id), "no_word_choice"),
@@ -1525,15 +1524,9 @@ fn detail_an_ignored_voice_keeps_its_label_and_no_longer_needs_a_name() {
     let dir = TempDir::new("detail-ignore");
     let svc = services(&dir);
     let f = call_meeting(&svc, 60);
-    // Without a stored voice the choice has nowhere to live: not offered, and refused.
-    let d = meeting_detail(&svc, f.meeting).unwrap();
-    assert!(!card(&d, f.unnamed).can_ignore);
-    let e: IpcError = edit::ignore_speaker(&svc, f.meeting, f.unnamed)
-        .unwrap_err()
-        .into();
-    assert_eq!(e.kind, "no_stored_voice");
-
-    give_identity(&svc, f.meeting, f.unnamed);
+    // T12.93 changed this test: the choice lives on the synced row, so a voice with no stored
+    // voice (no identity entry, as on a computer that did not record the meeting) is offered
+    // Ignore too, and the old `no_stored_voice` refusal is gone.
     let d = meeting_detail(&svc, f.meeting).unwrap();
     let c = card(&d, f.unnamed);
     assert!(c.can_ignore && !c.ignored && c.needs_name);

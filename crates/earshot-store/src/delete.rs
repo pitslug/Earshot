@@ -148,6 +148,9 @@ impl Store {
                     .collect();
                 for mut row in rows.into_iter().filter(|s| theirs(s.person_id)) {
                     row.person_id = None;
+                    // A linked row is never ignored; a flag a pulled row carried must not turn
+                    // the unlinked voice into an ignored one (T12.93).
+                    row.ignored = false;
                     if row.meta.deleted {
                         row.display_name.clear();
                     } else {

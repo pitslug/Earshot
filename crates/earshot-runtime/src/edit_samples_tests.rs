@@ -126,13 +126,11 @@ fn edit_not_this_person_accepts_a_voice_with_a_sample_and_no_identity_entry() {
     let person = linked(&svc, m, alice.id, "Alice Invented");
     let row = speaker(&svc, m, "Alice Invented");
     assert!(identities_in(&svc.store(), m).unwrap().is_empty());
-    assert!(!can_not_this_person(&**svc.store(), &row, &[]).unwrap());
-    assert_eq!(
-        refused(not_this_person(&svc, m, alice.id)),
-        EditError::NoStoredVoice(alice.id)
-    );
+    // T12.93: offered with or without a sample (the ignore lives on the row); the sample is
+    // what makes this run take something back.
+    assert!(can_not_this_person(&**svc.store(), &row).unwrap());
     save_sample(&svc, m, alice.id, person, 3);
-    assert!(can_not_this_person(&**svc.store(), &row, &[]).unwrap());
+    assert!(can_not_this_person(&**svc.store(), &row).unwrap());
     let done = not_this_person(&svc, m, alice.id).unwrap();
     assert_eq!(done.took_back.taken_back, 1);
     let after = view(&svc, m)
@@ -142,10 +140,9 @@ fn edit_not_this_person_accepts_a_voice_with_a_sample_and_no_identity_entry() {
         .unwrap();
     assert_eq!(after.person_id, None);
     assert!(after.display_name.starts_with("Speaker "));
-    assert!(
-        identities_in(&svc.store(), m).unwrap().is_empty(),
-        "no ignore recorded"
-    );
+    // T12.93: the ignore is recorded on the row, with no entry needed.
+    assert!(after.ignored);
+    assert!(identities_in(&svc.store(), m).unwrap().is_empty());
 }
 
 #[test]

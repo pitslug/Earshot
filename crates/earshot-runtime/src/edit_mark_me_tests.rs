@@ -165,7 +165,7 @@ fn edit_mark_me_makes_the_voice_the_users_row_under_their_name() {
     // Its centroid stays for a re-run to match, and reads as the user's edit.
     let entry = entry_of(&svc, m, voice);
     assert!(entry.user_edited);
-    assert!(entry.edited(&row));
+    assert!(entry.edited(&row, true));
     assert!(lines(&svc, m).contains(&("Casey".into(), "the pump arrives monday".into())));
     // A later rename of the user reaches the row, as for any Me row.
     assert_eq!(rename_person(&svc, user, "Casey Lane").unwrap(), 1);
@@ -315,7 +315,7 @@ fn edit_unmark_me_puts_the_row_back_as_an_unnamed_voice() {
     assert!(!entry.user_edited);
     assert_eq!(entry.given_name, "Speaker 1");
     assert_eq!(entry.given_person, None);
-    assert!(!entry.edited(&row));
+    assert!(!entry.edited(&row, true));
     assert!(lines(&svc, m).contains(&("Speaker 1".into(), "the pump arrives monday".into())));
     // The user's person is still there.
     assert!(list_persons(&svc).unwrap().iter().any(|p| p.id == user));
@@ -529,7 +529,7 @@ fn edit_mark_me_entry_is_the_users_not_the_person_the_pass_named() {
     remove_person(&svc, robin).unwrap();
     let entry = entry_of(&svc, m, voice);
     assert!(entry.user_edited);
-    assert!(entry.edited(&row_of(&svc, m, voice)));
+    assert!(entry.edited(&row_of(&svc, m, voice), true));
     assert_eq!(me_rows(&svc, m), [voice]);
     // Undo reads as the pass's own naming again, linked to nobody.
     unmark_me(&svc, m, voice).unwrap();

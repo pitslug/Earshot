@@ -435,7 +435,7 @@ fn edit_retranscribe_role_change_of_a_kept_row_is_not_read_as_a_user_edit() {
         entry.centroid = earshot_core::diar::Embedding::new(entry.centroid.model.clone(), far);
         entry.given_stamp = Some(row.meta.updated_at);
         entry.user_edited = false;
-        assert!(!entry.edited(&row));
+        assert!(!entry.edited(&row, true));
         // Test set-up only: production writes this record through the runtime's registry.
         store
             .set_local_value(
@@ -461,7 +461,7 @@ fn edit_retranscribe_role_change_of_a_kept_row_is_not_read_as_a_user_edit() {
         .find(|i| i.speaker == speaker)
         .expect("the entry is carried");
     assert!(
-        !entry.edited(&row),
+        !entry.edited(&row, true),
         "the pass's own role change is not a user edit: {entry:?}"
     );
 }

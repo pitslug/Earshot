@@ -426,8 +426,9 @@ impl JobRunner {
 /// Voices that still need a name after a summary (as the summary-ready notice counts them).
 fn voices_to_name(services: &Services, meeting: EntityId) -> u32 {
     let db = services.store();
+    // An ignore is the row's flag (T12.93); before the one-off copy also a legacy entry flag.
     // An unreadable record ignores nobody (the count can only be higher, never hide a voice).
-    let identities = earshot_runtime::edit::identities_in(&db, meeting).unwrap_or_default();
+    let legacy = earshot_runtime::edit::legacy_ignores(&db, meeting).unwrap_or_default();
     MeetingView::load(&**db, meeting)
         .ok()
         .flatten()
@@ -439,7 +440,7 @@ fn voices_to_name(services: &Services, meeting: EntityId) -> u32 {
                     needs_name(
                         s.role,
                         s.person_id.is_some(),
-                        earshot_runtime::edit::is_ignored(s, &identities),
+                        earshot_runtime::edit::is_ignored(s, &legacy),
                     )
                 })
                 .count();

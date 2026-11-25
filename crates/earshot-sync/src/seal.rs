@@ -19,12 +19,14 @@ use crate::{SealError, Unreadable, check_plaintext};
 
 /// The envelope format this build writes and reads. A row with a higher one is kept unopened
 /// ([`Opened::NewerFormat`]) until an update. A new entity does not raise it: an older build
-/// holds a row of an entity it does not know (T11.3da kept 1 for `summary_request`). The one
-/// exception is voice samples (2, T12.77b8, docs/voice-samples.md 7.3): the relay raises a
-/// vault to the first format pushed to it, so every older build and worker in a vault that holds
-/// samples must update (a build of format 1 would misread a voiceprint whose voice lives in
-/// samples). Rows of format 1 still open.
-pub const ENVELOPE_FORMAT: u32 = 2;
+/// holds a row of an entity it does not know (T11.3da kept 1 for `summary_request`). It rises
+/// when an existing entity's shape changes, or when older builds must not hold the new rows at
+/// all; the relay raises a vault to the highest format pushed to it, so every older build and
+/// worker in that vault must update. 2: voice samples (T12.77b8, docs/voice-samples.md 7.3; a
+/// build of format 1 would misread a voiceprint whose voice lives in samples). 3: a speaker
+/// row carries the user's ignore (T12.93; a build of format 2 would write a speaker row back
+/// without it and undo the ignore on every computer). Rows of formats 1 and 2 still open.
+pub const ENVELOPE_FORMAT: u32 = 3;
 
 /// The leading byte of every sealed value this build writes.
 const SEAL_VERSION: u8 = 0x01;

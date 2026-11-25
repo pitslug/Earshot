@@ -341,7 +341,7 @@ fn post_rerun_after_undoing_an_edit_mark_names_the_voice_as_any_other() {
     let live = live_rows(&svc, meeting);
     for i in entries(&svc, meeting) {
         let row = live.iter().find(|s| s.id == i.speaker).unwrap();
-        assert!(!i.edited(row), "an undone mark is not an edit");
+        assert!(!i.edited(row, true), "an undone mark is not an edit");
     }
 }
 

@@ -71,6 +71,7 @@ pub mod folders;
 #[cfg(feature = "engines")]
 pub mod host;
 pub mod identities;
+pub mod ignore_copy;
 pub mod keep_local;
 pub mod live;
 pub mod live_summaries;

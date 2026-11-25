@@ -416,6 +416,35 @@ fn sync_host_starts_only_when_on_and_set_up() {
     a.host.stop_and_wait();
 }
 
+/// T12.93: the one-off copy of legacy ignores runs at start only on a computer with no vault;
+/// with a vault it waits for the sync thread's first completed pull, even with sync off.
+#[test]
+fn sync_host_copies_ignores_at_start_only_without_a_vault() {
+    let env = relay();
+    let lone = computer("sync-ignore-lone");
+    assert!(lone.host.copy_ignores_without_vault(&lone.svc));
+    assert!(earshot_runtime::ignore_copy::copied(&lone.svc.store()).unwrap());
+
+    let a = computer("sync-ignore-vault");
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    a.host.stop_and_wait();
+    earshot_runtime::sync::set_sync_on(&a.svc, false).unwrap();
+    assert!(
+        !a.host.copy_ignores_without_vault(&a.svc),
+        "a vault: wait for a pull"
+    );
+    assert!(!earshot_runtime::ignore_copy::copied(&a.svc.store()).unwrap());
+    // Turned on: the thread's first completed pull runs it.
+    earshot_runtime::sync::set_sync_on(&a.svc, true).unwrap();
+    a.host.start_if_on(&a.svc);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !earshot_runtime::ignore_copy::copied(&a.svc.store()).unwrap() {
+        assert!(Instant::now() < deadline, "the copy never ran after a pull");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    a.host.stop_and_wait();
+}
+
 #[test]
 fn sync_event_carries_meeting_ids_only() {
     let id = earshot_core::identity::EntityId::from_bytes([7; 16]);

@@ -312,9 +312,9 @@ pub struct MeetingErasure {
 
 /// Deletes `meeting`: the meeting row and every syncable child (tracks, speakers, segments
 /// of both passes, notes, summaries) become tombstones, so the deletion syncs, and their
-/// content is cleared (title, tags, folder, device names, speaker names and person links, segment
-/// text and words, note text, summary body and model), so only ids, parent links, times and
-/// the sync metadata remain. Rows that were already tombstones (an earlier final pass's
+/// content is cleared (title, tags, folder, device names, speaker names, person links and
+/// ignores, segment text and words, note text, summary body and model), so only ids, parent
+/// links, times and the sync metadata remain. Rows that were already tombstones (an earlier final pass's
 /// segments) are cleared too. Rows already erased are not written again, so a repeated call
 /// writes nothing. Audio files, export records and device-local records are not syncable
 /// rows: the storage adapter removes them.
@@ -351,6 +351,7 @@ pub fn delete_meeting<R: MeetingRepo + ?Sized, C: Clock + ?Sized>(
         let clear = |r: &mut Speaker| {
             r.display_name.clear();
             r.person_id = None;
+            r.ignored = false;
         };
         if let Some(new) = erased(&s, |r| &mut r.meta, clear, hlc, clock) {
             repo.put_speaker(new)?;

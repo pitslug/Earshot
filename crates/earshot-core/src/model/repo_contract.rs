@@ -106,6 +106,8 @@ impl Rows {
             role: SpeakerRole::Remote,
             display_name: "Speaker 2".into(),
             person_id: Some(self.id()),
+            // Not the default, so a repository that drops the column fails the round trip.
+            ignored: true,
         }
     }
 
@@ -572,7 +574,10 @@ pub fn meeting_deletion<R: MeetingRepo>(make: impl Fn() -> R) {
     }
     for s in repo.speakers(m.id).unwrap() {
         assert!(s.meta.deleted, "{s:?}");
-        assert!(s.display_name.is_empty() && s.person_id.is_none(), "{s:?}");
+        assert!(
+            s.display_name.is_empty() && s.person_id.is_none() && !s.ignored,
+            "{s:?}"
+        );
     }
     let segments = repo.segments(m.id).unwrap();
     assert_eq!(segments.len(), 2);

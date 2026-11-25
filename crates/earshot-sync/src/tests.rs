@@ -386,20 +386,56 @@ fn sync_debug_never_shows_key_material() {
     }
 }
 
-/// T12.77b8: rows of format 1, written before the raise, still open under format 2.
+/// T12.77b8 and T12.93: rows of formats 1 and 2, written before a raise, still open under
+/// format 3; a format-2 speaker row reads as not ignored.
 #[test]
 fn sync_format_one_rows_still_open_after_the_raise() {
-    assert_eq!(ENVELOPE_FORMAT, 2);
+    assert_eq!(ENVELOPE_FORMAT, 3);
     let keys = key(1).keys();
     let m = meeting(1, "Invented review");
-    let mut plain = serde_json::to_value(earshot_core::identity::sync_envelope(&m)).unwrap();
-    plain["format"] = 1.into();
+    for format in [1, 2] {
+        let mut plain = serde_json::to_value(earshot_core::identity::sync_envelope(&m)).unwrap();
+        plain["format"] = format.into();
+        let bytes = serde_json::to_vec(&plain).unwrap();
+        let s = seal_plaintext(&keys, keys.row_key(m.id), m.meta.updated_at, &bytes).unwrap();
+        let row = opened(open_row(&keys, s.key, s.stamp, &s.body).unwrap());
+        assert_eq!((row.format, row.entity.as_str()), (format, "meeting"));
+        let back: Meeting = serde_json::from_value(row.record).unwrap();
+        assert_eq!(back, m);
+    }
+}
+
+/// T12.93: a speaker row sealed by a format-2 build (no `ignored` field) opens and reads as
+/// not ignored; a format-3 row carries the flag both ways.
+#[test]
+fn sync_speaker_row_carries_the_ignore_and_a_format_two_row_reads_not_ignored() {
+    use earshot_core::diar::SpeakerRole;
+    use earshot_core::model::Speaker;
+    let keys = key(1).keys();
+    let mut s = Speaker {
+        id: id(7),
+        meta: meeting(1, "x").meta,
+        meeting_id: id(1),
+        role: SpeakerRole::Remote,
+        display_name: "Speaker 2".into(),
+        person_id: None,
+        ignored: true,
+    };
+    let sealed = seal_row(&keys, &s).unwrap();
+    let row = opened(open_row(&keys, sealed.key, sealed.stamp, &sealed.body).unwrap());
+    assert_eq!(row.format, ENVELOPE_FORMAT);
+    let back: Speaker = serde_json::from_value(row.record).unwrap();
+    assert_eq!(back, s);
+    let mut plain = serde_json::to_value(earshot_core::identity::sync_envelope(&s)).unwrap();
+    plain["format"] = 2.into();
+    plain["record"].as_object_mut().unwrap().remove("ignored");
     let bytes = serde_json::to_vec(&plain).unwrap();
-    let s = seal_plaintext(&keys, keys.row_key(m.id), m.meta.updated_at, &bytes).unwrap();
-    let row = opened(open_row(&keys, s.key, s.stamp, &s.body).unwrap());
-    assert_eq!((row.format, row.entity.as_str()), (1, "meeting"));
-    let back: Meeting = serde_json::from_value(row.record).unwrap();
-    assert_eq!(back, m);
+    let sealed = seal_plaintext(&keys, keys.row_key(s.id), s.meta.updated_at, &bytes).unwrap();
+    let row = opened(open_row(&keys, sealed.key, sealed.stamp, &sealed.body).unwrap());
+    assert_eq!(row.format, 2);
+    let back: Speaker = serde_json::from_value(row.record).unwrap();
+    s.ignored = false;
+    assert_eq!(back, s);
 }
 
 /// T12.77b8: a voice sample of the largest dimension seals under the real `MAX_PLAINTEXT`,

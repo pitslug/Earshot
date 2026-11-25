@@ -690,11 +690,6 @@ pub fn edit_error(e: &EditError) -> IpcError {
             "not_unnamed",
             "Only a voice that needs a name can be ignored.",
         ),
-        EditError::NoStoredVoice(_) => err(
-            "no_stored_voice",
-            "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the \
-             meeting, then ignore it.",
-        ),
         // Suggested words (T12.15e).
         EditError::WordNotFound(_) => err(
             "word_not_found",
@@ -813,20 +808,31 @@ fn duration_ms(s: &Segment) -> u64 {
 }
 
 /// Whether the final pass named `row` from a voiceprint (it linked the row to a person and
-/// the user has not edited the row since).
-fn named_by_voiceprint(row: &Speaker, identities: &[SpeakerIdentity]) -> bool {
+/// the user has not edited the row since). `legacy` is whether legacy ignores still count
+/// (`earshot_runtime::ignore_copy`).
+fn named_by_voiceprint(row: &Speaker, identities: &[SpeakerIdentity], legacy: bool) -> bool {
     identities.iter().any(|i| {
         i.speaker == row.id
             && i.given_person.is_some()
             && i.given_person == row.person_id
-            && !i.edited(row)
+            && !i.edited(row, legacy)
     })
+}
+
+/// What the Speakers panel reads beside the meeting's rows, from one snapshot.
+struct SpeakerReads {
+    /// The meeting's speaker identity entries.
+    identities: Vec<SpeakerIdentity>,
+    /// Legacy ignores still honoured (`edit::legacy_ignores`; empty after the one-off copy).
+    legacy: BTreeSet<EntityId>,
+    /// Whether the one-off copy of legacy ignores has not run yet.
+    legacy_on: bool,
 }
 
 fn speaker_cards(
     view: &MeetingView,
     persons: &[PersonInfo],
-    identities: &[SpeakerIdentity],
+    reads: &SpeakerReads,
     voiceprint_me: Option<EntityId>,
     resolved: &BTreeMap<EntityId, EntityId>,
     not_person: &BTreeSet<EntityId>,
@@ -867,13 +873,15 @@ fn speaker_cards(
                     has_voiceprint: p.has_voiceprint,
                 })
             });
-            let ignored = edit::is_ignored(s, identities);
+            let ignored = edit::is_ignored(s, &reads.legacy);
             let kind = if s.role == SpeakerRole::Me {
                 SpeakerKind::Me
             } else {
                 SpeakerKind::Other
             };
-            let source = if kind == SpeakerKind::Other && named_by_voiceprint(s, identities) {
+            let source = if kind == SpeakerKind::Other
+                && named_by_voiceprint(s, &reads.identities, reads.legacy_on)
+            {
                 SpeakerSource::Voiceprint
             } else if s.role == SpeakerRole::Remote {
                 SpeakerSource::FarEnd
@@ -886,7 +894,7 @@ fn speaker_cards(
                 kind,
                 needs_name: needs_name(s.role, s.person_id.is_some(), ignored),
                 ignored,
-                can_ignore: edit::can_ignore(s, identities),
+                can_ignore: edit::can_ignore(s),
                 can_not_this_person: not_person.contains(&s.id),
                 voice_saved_here: saved_here.contains(&s.id),
                 can_mark_me: edit::can_mark_me(&view.tracks, &view.speakers, s),
@@ -946,12 +954,16 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
                 resolved.insert(id, to);
             }
         }
-        let entries = edit::identities_in(&db, meeting)?;
+        let entries = SpeakerReads {
+            identities: edit::identities_in(&db, meeting)?,
+            legacy: edit::legacy_ignores(&db, meeting)?,
+            legacy_on: !earshot_runtime::ignore_copy::copied(&db)?,
+        };
         // Where "Not <name>" is offered (T12.77), by the runtime's own rule over this snapshot.
         let mut not_person = BTreeSet::new();
         let mut saved_here = BTreeSet::new();
         for s in &view.speakers {
-            if edit::can_not_this_person(&**db, s, &entries)? {
+            if edit::can_not_this_person(&**db, s)? {
                 not_person.insert(s.id);
             }
             if edit::voice_saved_here(&**db, s)? {

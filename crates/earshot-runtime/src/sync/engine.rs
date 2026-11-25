@@ -70,6 +70,10 @@ pub struct TickReport {
     pub meetings: BTreeSet<EntityId>,
     /// Whether a person row was written here or "Me" people merged.
     pub people: bool,
+    /// The pull reached the end of what the relay holds: its last page said `more == false`
+    /// (T12.93: with no problem in the tick, no row held and none waiting for a retry, the
+    /// one-off copy of legacy ignores may run, [`crate::ignore_copy`]).
+    pub pull_complete: bool,
 }
 
 impl TickReport {
@@ -168,6 +172,10 @@ pub struct SyncClient {
     model_place: Option<super::presence::ModelPlace>,
     /// Told after every tick that changed rows here ([`SyncClient::with_changes`]).
     changes: Option<ChangeListener>,
+    /// Pull pages per tick and rows per page: `MAX_PULL_PAGES` and `PULL_DEFAULT`, smaller only
+    /// in tests (a tick that ends with `more == true`).
+    pull_pages: usize,
+    pull_limit: u32,
 }
 
 impl std::fmt::Debug for SyncClient {
@@ -286,7 +294,32 @@ impl SyncClient {
             worker: None,
             model_place: None,
             changes: None,
+            pull_pages: MAX_PULL_PAGES,
+            pull_limit: earshot_sync::wire::PULL_DEFAULT,
         })
+    }
+
+    /// Test only: pull at most `pages` pages of `limit` rows per tick.
+    #[cfg(test)]
+    pub(crate) fn with_pull_pages(mut self, pages: usize, limit: u32) -> Self {
+        self.pull_pages = pages;
+        self.pull_limit = limit;
+        self
+    }
+
+    /// Whether the store holds pulled rows that every tick tries again (held because their
+    /// meeting was in use or a parent was missing): until they are applied, a completed pull
+    /// has not brought everything here (T12.93, [`crate::ignore_copy`]).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn holds_rows_for_retry(&self) -> Result<bool, SyncProblem> {
+        Ok(self
+            .services
+            .store()
+            .held_rows()?
+            .iter()
+            .any(|h| matches!(h.reason, HoldReason::Busy | HoldReason::Parent)))
     }
 
     /// The client for the relay at `address` rather than the stored one: the summary worker
@@ -659,7 +692,7 @@ impl SyncClient {
         token: &super::DeviceToken,
         report: &mut TickReport,
     ) -> Result<(), SyncProblem> {
-        for _ in 0..MAX_PULL_PAGES {
+        for _ in 0..self.pull_pages {
             if self.stopping() {
                 return Ok(());
             }
@@ -673,7 +706,7 @@ impl SyncClient {
                 rows,
                 more,
                 vault_format,
-            } = self.relay.pull(token, after)?;
+            } = self.relay.pull(token, after, self.pull_limit)?;
             if vault_format > ENVELOPE_FORMAT {
                 return Err(SyncProblem::UpdateNeeded);
             }
@@ -697,7 +730,11 @@ impl SyncClient {
                 // The cursor was reset meanwhile (a switch turned on): read from there next tick.
                 return Ok(());
             }
-            if !more || last.is_none() {
+            if !more {
+                report.pull_complete = true;
+                return Ok(());
+            }
+            if last.is_none() {
                 return Ok(());
             }
         }
