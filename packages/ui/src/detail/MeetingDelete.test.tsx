@@ -320,7 +320,11 @@ describe("MeetingDetailView", () => {
     expect(await screen.findByText("The meeting was not deleted")).toBeInTheDocument();
     // The job was cancelled and has not ended yet: still stopping.
     expect(screen.getByText(stopping)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Cancel the new summary" })).toHaveAttribute("aria-disabled", "true");
+    // Found once the closed dialog's deferred aria-hidden pass has let the page go (tabster).
+    expect(await screen.findByRole("button", { name: "Cancel the new summary" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it("puts the job back as running when a Stop and delete is refused for another reason", async () => {

@@ -96,6 +96,7 @@ import {
   useFindMarks,
 } from "./TranscriptFind";
 import {
+  FIND_PAUSE_MS,
   type FindResult,
   findCount,
   findCountText,
@@ -692,7 +693,10 @@ export function MeetingDetailView({
   // Find in the transcript (T12.98): page state only, cleared when the bar closes.
   const [findOpen, setFindOpen] = useState(false);
   const [findSpeaker, setFindSpeaker] = useState<string | null>(null);
+  // The box's text, and the text find looks for: the box's once typing pauses (T14.17).
   const [findText, setFindText] = useState("");
+  const [findLooked, setFindLooked] = useState("");
+  const findPause = useRef<(() => void) | null>(null);
   const [findAt, setFindAt] = useState(0);
   // Bumped by every open (the button or Ctrl+F), so focus goes to the text box each time.
   const [findFocus, setFindFocus] = useState(0);
@@ -702,11 +706,16 @@ export function MeetingDetailView({
   const findButton = useRef<HTMLButtonElement | null>(null);
   const findInput = useRef<HTMLInputElement | null>(null);
 
+  // Each read's number: an answer that comes after a newer read was asked is dropped (T14.17),
+  // so a slow older read never puts back what an edit or sync just changed.
+  const reads = useRef(0);
   // `afterSync`: read again because sync changed the meeting (T12.81). A meeting deleted on
   // another computer then goes quietly: no load error, and the list (read again) moves on.
   const reload = useCallback(async (afterSync = false) => {
+    const read = ++reads.current;
     try {
       const [d, p] = await Promise.all([ipc.getMeeting(id), ipc.listPersons()]);
+      if (read !== reads.current) return;
       setDetail(d);
       // Decided with each detail, in the same render: the first opens it exactly when a voice
       // needs a name; a later one opens it when more voices need a name than before (a
@@ -719,6 +728,7 @@ export function MeetingDetailView({
       setPersons(p);
       setLoadError(null);
     } catch (e) {
+      if (read !== reads.current) return;
       if (afterSync && e instanceof IpcFailure && e.error.kind === "meeting_not_found") {
         changedRef.current();
         return;
@@ -807,14 +817,35 @@ export function MeetingDetailView({
     setFindOpen(false);
     setFindSpeaker(null);
     setFindText("");
+    setFindLooked("");
     setFindAt(0);
   }
+  // A pause still running when the bar closes or the page goes looks for nothing.
+  useEffect(() => {
+    if (findOpen) return;
+    findPause.current?.();
+    findPause.current = null;
+  }, [findOpen]);
+  useEffect(() => () => findPause.current?.(), []);
+  /** The box's text changed: find looks once typing pauses, at once when the box is cleared. */
+  const typeFind = (t: string) => {
+    setFindText(t);
+    findPause.current?.();
+    findPause.current = null;
+    const look = () => {
+      findPause.current = null;
+      setFindLooked(t);
+      setFindAt(0);
+    };
+    if (t.trim() === "") look();
+    else findPause.current = timer.setTimeout(look, FIND_PAUSE_MS);
+  };
   const findSpeakerList = useMemo(() => (detail === null ? [] : findSpeakers(detail.transcript)), [detail]);
   // A chosen speaker whose lines are gone (an edit moved them) is no longer offered: any speaker.
   const findChosen = findSpeakerList.some((s) => s.key === findSpeaker) ? findSpeaker : null;
   const findResult = useMemo<FindResult>(
-    () => (findOpen && detail !== null ? findInTranscript(detail.transcript, findChosen, findText) : IDLE),
-    [findOpen, detail, findChosen, findText],
+    () => (findOpen && detail !== null ? findInTranscript(detail.transcript, findChosen, findLooked) : IDLE),
+    [findOpen, detail, findChosen, findLooked],
   );
   const findTotal = findCount(findResult);
   const findIndex = findTotal === 0 ? 0 : Math.min(findAt, findTotal - 1);
@@ -831,10 +862,19 @@ export function MeetingDetailView({
     setFindOpen(false);
     setFindSpeaker(null);
     setFindText("");
+    setFindLooked("");
     setFindAt(0);
     findButton.current?.focus();
   };
   const stepFind = (by: 1 | -1) => {
+    // Enter before the pause is over looks at once, at the first place.
+    if (findPause.current !== null) {
+      findPause.current();
+      findPause.current = null;
+      setFindLooked(findText);
+      setFindAt(0);
+      return;
+    }
     if (findTotal === 0) return;
     setFindAt((findIndex + by + findTotal) % findTotal);
   };
@@ -1122,16 +1162,13 @@ export function MeetingDetailView({
             speaker={findChosen}
             text={findText}
             count={findTotal}
-            countText={findCountText(findResult, findIndex)}
+            countText={findCountText(findResult, findIndex, findLooked)}
             inputRef={findInput}
             onSpeaker={(k) => {
               setFindSpeaker(k);
               setFindAt(0);
             }}
-            onText={(t) => {
-              setFindText(t);
-              setFindAt(0);
-            }}
+            onText={typeFind}
             onStep={stepFind}
             onClose={closeFind}
           />

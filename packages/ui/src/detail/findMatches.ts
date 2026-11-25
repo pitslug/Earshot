@@ -88,12 +88,26 @@ export function textMatches(text: string, query: string): [number, number][] {
   return out;
 }
 
-/** What find finds in `rows` for speaker `speaker` (a `speakerKey`, or `null` for any) and text
- * `text` (trimmed; empty means no text filter). A speaker alone gives the start of each of their
- * turns (consecutive lines of one speaker are one turn); text gives every match, in that
- * speaker's lines only when one is chosen. */
-export function findInTranscript(rows: FindRow[], speaker: string | null, text: string): FindResult {
+/** The fewest characters (code points, after trimming) text find looks for (T14.17): one letter
+ * matches nearly every line of a long transcript. */
+export const FIND_MIN_CHARS = 2;
+
+/** How long typing in the find box must pause before find looks (T14.17), so a long transcript
+ * is not searched and redrawn on every keystroke. Clearing the box applies at once. */
+export const FIND_PAUSE_MS = 250;
+
+/** `text` trimmed, or "" when it is shorter than [`FIND_MIN_CHARS`]. */
+export function findQuery(text: string): string {
   const query = text.trim();
+  return [...query].length < FIND_MIN_CHARS ? "" : query;
+}
+
+/** What find finds in `rows` for speaker `speaker` (a `speakerKey`, or `null` for any) and text
+ * `text` (trimmed; empty or shorter than [`FIND_MIN_CHARS`] means no text filter). A speaker
+ * alone gives the start of each of their turns (consecutive lines of one speaker are one turn);
+ * text gives every match, in that speaker's lines only when one is chosen. */
+export function findInTranscript(rows: FindRow[], speaker: string | null, text: string): FindResult {
+  const query = findQuery(text);
   if (query === "") {
     if (speaker === null) return { kind: "idle" };
     const lines: number[] = [];
@@ -122,9 +136,12 @@ export function findLine(result: FindResult, at: number): number | null {
   return null;
 }
 
-/** The count the bar shows for place `at` of `result`. */
-export function findCountText(result: FindResult, at: number): string {
-  if (result.kind === "idle") return "Pick a speaker or type";
+/** The count the bar shows for place `at` of `result`; `typed` is the find box's text, so a
+ * box too short to look for says so. */
+export function findCountText(result: FindResult, at: number, typed = ""): string {
+  if (result.kind === "idle") {
+    return typed.trim() === "" ? "Pick a speaker or type" : "Type 2 or more characters";
+  }
   const n = findCount(result);
   if (n === 0) return "No matches";
   return `${result.kind === "turns" ? "Turn" : "Match"} ${at + 1} of ${n}`;

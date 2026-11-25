@@ -1,7 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import type { Citation, SummaryView } from "../ipc";
-import { summaryMarkdown } from "./detail";
+import { type Citation, IpcFailure, type SummaryView } from "../ipc";
+import { failureText, summaryMarkdown } from "./detail";
+
+describe("failureText", () => {
+  const failure = (kind: string, message: string) => new IpcFailure({ kind, message, retryable: true });
+
+  it("shows the message Rust sent for any busy refusal", () => {
+    // A job of this meeting, the model check and the benchmark all refuse with `busy`.
+    const job = "This meeting is already being re-transcribed or re-summarised.";
+    const check = "The model check is running; try again when it has finished.";
+    const bench = "The benchmark is running; try again when it has finished.";
+    expect(failureText(failure("busy", job))).toBe(job);
+    expect(failureText(failure("busy", check))).toBe(check);
+    expect(failureText(failure("busy", bench))).toBe(bench);
+  });
+
+  it("keeps its own wording for a busy meeting", () => {
+    expect(failureText(failure("meeting_busy", "anything"))).toBe(
+      "This meeting is busy: it is being recorded, processed or deleted. Try again when that has finished.",
+    );
+  });
+});
 
 const CITE: Citation = { segment_id: "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", row: 41 };
 

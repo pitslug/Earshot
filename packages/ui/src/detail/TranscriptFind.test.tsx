@@ -1,10 +1,13 @@
 // Find in the transcript (T12.98), through the app: the button and Ctrl+F open the bar, Esc and
 // close clear and hide it, the count, previous and next, and what the lines show.
 import { act, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sampleDetail } from "../ipc/mockDetail";
 import { ITEM, setup } from "../test/meetingDetail";
+import type { ManualTimer } from "../time";
+import { FIND_PAUSE_MS } from "./findMatches";
 
 const table = () => screen.getByRole("table", { name: "Transcript" });
 const rows = () => within(table()).getAllByRole("row");
@@ -28,6 +31,12 @@ function marks(): string[] {
 /** The parts of the current match. */
 const currentMarks = () => [...table().querySelectorAll('mark[data-find-match="current"]')];
 const rowIndex = (el: Element) => rows().indexOf(el.closest('[role="row"]') as HTMLElement);
+
+/** Types `text` into the find box and lets the typing pause pass, so find has looked. */
+async function typeFind(user: UserEvent, timer: ManualTimer, text: string) {
+  await user.type(findBox(), text);
+  await act(async () => timer.advance(FIND_PAUSE_MS));
+}
 
 /** The detail on its Transcript tab with the bar open. */
 async function openFind(data = {}) {
@@ -71,7 +80,7 @@ describe("find in the transcript", () => {
   });
 
   it("opens with Ctrl+F, from the Summary tab too, and keeps the webview's own find closed", async () => {
-    const { user } = await setup();
+    const { user, timer } = await setup();
     expect(await screen.findByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
     const press = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true });
     act(() => {
@@ -81,7 +90,7 @@ describe("find in the transcript", () => {
     expect(screen.getByRole("tab", { name: "Transcript" })).toHaveAttribute("aria-selected", "true");
     expect(findBox()).toHaveFocus();
     // Again in the box: still the bar, its text selected.
-    await user.type(findBox(), "seals");
+    await typeFind(user, timer, "seals");
     await user.keyboard("{Control>}f{/Control}");
     expect(findBox()).toHaveFocus();
     const box = findBox() as HTMLInputElement;
@@ -105,8 +114,8 @@ describe("find in the transcript", () => {
   });
 
   it("counts text matches, case ignored, and steps with Enter, Shift+Enter and the buttons, wrapping", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "AIR FREIGHT");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "AIR FREIGHT");
     expect(count()).toBe("Match 1 of 2");
     expect(marks()).toEqual(["air freight", "air freight"]);
     expect(currentMarks().map((m) => m.textContent).join("")).toBe("air freight");
@@ -124,10 +133,63 @@ describe("find in the transcript", () => {
     expect(count()).toBe("Match 2 of 2");
   });
 
+  it("looks once typing pauses, and at once when the box is cleared", async () => {
+    const { user, timer } = await openFind();
+    await user.type(findBox(), "air freight");
+    // Still typing: nothing found or marked yet.
+    expect(count()).toBe("Pick a speaker or type");
+    expect(marks()).toEqual([]);
+    await act(async () => timer.advance(FIND_PAUSE_MS - 1));
+    expect(marks()).toEqual([]);
+    await act(async () => timer.advance(1));
+    expect(count()).toBe("Match 1 of 2");
+    expect(marks()).toEqual(["air freight", "air freight"]);
+    // Another keystroke starts the pause again; the last look stays meanwhile.
+    await user.type(findBox(), "x");
+    expect(count()).toBe("Match 1 of 2");
+    await act(async () => timer.advance(FIND_PAUSE_MS));
+    expect(count()).toBe("No matches");
+    // Clearing the box clears the marks without waiting.
+    await typeFind(user, timer, "{Backspace}");
+    expect(count()).toBe("Match 1 of 2");
+    await user.clear(findBox());
+    expect(count()).toBe("Pick a speaker or type");
+    expect(marks()).toEqual([]);
+  });
+
+  it("Enter before the pause is over looks at once, at the first match", async () => {
+    const { user } = await openFind();
+    await user.type(findBox(), "air freight{Enter}");
+    expect(count()).toBe("Match 1 of 2");
+    expect(rowIndex(currentMarks()[0])).toBe(2);
+    await user.keyboard("{Enter}");
+    expect(count()).toBe("Match 2 of 2");
+  });
+
+  it("needs two characters of text, and none with a speaker chosen", async () => {
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "a");
+    expect(count()).toBe("Type 2 or more characters");
+    expect(marks()).toEqual([]);
+    await typeFind(user, timer, "i");
+    expect(count()).not.toBe("Type 2 or more characters");
+    expect(marks().length).toBeGreaterThan(0);
+  });
+
+  it("closing the bar during the pause looks for nothing afterwards", async () => {
+    const { user, timer } = await openFind();
+    await user.type(findBox(), "seals");
+    await user.click(within(bar()).getByRole("button", { name: "Close find" }));
+    await act(async () => timer.advance(FIND_PAUSE_MS));
+    await user.click(screen.getByRole("button", { name: "Find in transcript" }));
+    expect(count()).toBe("Pick a speaker or type");
+    expect(marks()).toEqual([]);
+  });
+
   it("scrolls the line it points at into the middle of the pane", async () => {
     const scrolled = recordCentreScrolls();
-    const { user } = await openFind();
-    await user.type(findBox(), "air freight");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "air freight");
     expect(scrolled.at(-1)).toBe(rows()[2]);
     await user.keyboard("{Enter}");
     expect(scrolled.at(-1)).toBe(rows()[6]);
@@ -135,8 +197,8 @@ describe("find in the transcript", () => {
 
   it("does not scroll again when the meeting is read again after an edit", async () => {
     const scrolled = recordCentreScrolls();
-    const { user } = await openFind();
-    await user.type(findBox(), "air freight");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "air freight");
     const before = scrolled.length;
     expect(before).toBeGreaterThan(0);
     // Another line is edited with the bar open: the detail is read again.
@@ -151,8 +213,8 @@ describe("find in the transcript", () => {
   });
 
   it("says no matches and turns previous and next off", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "zebra");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "zebra");
     expect(count()).toBe("No matches");
     expect(within(bar()).getByRole("button", { name: "Next match" })).toBeDisabled();
     expect(within(bar()).getByRole("button", { name: "Previous match" })).toBeDisabled();
@@ -160,6 +222,7 @@ describe("find in the transcript", () => {
   });
 
   it("offers each speaker with lines and steps through a speaker's turns", async () => {
+    // A speaker alone needs no typing, so no pause: the turns show at once.
     const { user } = await openFind();
     const shown = sampleDetail(ITEM).transcript;
     const names = [...new Set(rows().map((r) => within(r).getAllByRole("cell")[1].textContent ?? ""))];
@@ -182,8 +245,8 @@ describe("find in the transcript", () => {
   });
 
   it("finds text only in the chosen speaker's lines", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "seals");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "seals");
     expect(count()).toBe("Match 1 of 2");
     const speakerOf = (i: number) => within(rows()[i]).getAllByRole("cell")[1].textContent ?? "";
     const owner = speakerOf(rowIndex(currentMarks()[0]));
@@ -195,16 +258,16 @@ describe("find in the transcript", () => {
   });
 
   it("marks a match inside a suggested word's mark, leaving the mark a button", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "ree");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "ree");
     const mark = screen.getByRole("button", { name: "Suggestion for Reed" });
     expect(within(mark).getByText("Ree").tagName).toBe("MARK");
     expect(mark.textContent).toBe("Reed");
   });
 
   it("shows no highlights on a line being edited", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "air freight");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "air freight");
     expect(marks()).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: "Edit line 3" }));
     expect(marks()).toEqual(["air freight"]);
@@ -214,15 +277,15 @@ describe("find in the transcript", () => {
   it("finds in a draft transcript", async () => {
     const base = sampleDetail(ITEM);
     const draft = { ...base, header: { ...base.header, transcript: "Draft" as const } };
-    const { user } = await openFind({ details: { [ITEM.id]: draft } });
-    await user.type(findBox(), "seals");
+    const { user, timer } = await openFind({ details: { [ITEM.id]: draft } });
+    await typeFind(user, timer, "seals");
     expect(count()).toBe("Match 1 of 2");
     expect(marks()).toEqual(["seals", "seals"]);
   });
 
   it("Esc clears both fields, hides the bar and returns focus to the search button", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "seals");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "seals");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("search", { name: "Find in transcript" })).not.toBeInTheDocument();
     expect(marks()).toEqual([]);
@@ -234,8 +297,8 @@ describe("find in the transcript", () => {
   });
 
   it("Esc from elsewhere in the detail closes and clears the bar too", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "seals");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "seals");
     screen.getByRole("tab", { name: "Transcript" }).focus();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("search", { name: "Find in transcript" })).not.toBeInTheDocument();
@@ -244,8 +307,8 @@ describe("find in the transcript", () => {
   });
 
   it("Esc in a line being edited or on an open speaker list leaves the bar open", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "seals");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "seals");
     await user.click(within(bar()).getByRole("combobox", { name: /^Speaker/ }));
     expect(screen.getAllByRole("option").length).toBeGreaterThan(1);
     await user.keyboard("{Escape}");
@@ -259,7 +322,7 @@ describe("find in the transcript", () => {
   });
 
   it("names the speaker choice with its chosen speaker, and the button closes an open bar", async () => {
-    const { user } = await openFind();
+    const { user, timer } = await openFind();
     // Fluent's pattern: named by the hidden label and by itself, so a screen reader reads the
     // chosen speaker with the name (jsdom's name computation reads only the label).
     const choice = within(bar()).getByRole("combobox", { name: /^Speaker/ });
@@ -271,7 +334,7 @@ describe("find in the transcript", () => {
     const name = screen.getAllByRole("option")[1].textContent ?? "";
     await user.click(screen.getByRole("option", { name }));
     expect(choice.textContent).toBe(name);
-    await user.type(findBox(), "seals");
+    await typeFind(user, timer, "seals");
     const button = screen.getByRole("button", { name: "Find in transcript" });
     expect(button).toHaveAttribute("aria-expanded", "true");
     await user.click(button);
@@ -284,13 +347,13 @@ describe("find in the transcript", () => {
   });
 
   it("close clears and hides the bar too, and leaving the tab closes it", async () => {
-    const { user } = await openFind();
-    await user.type(findBox(), "seals");
+    const { user, timer } = await openFind();
+    await typeFind(user, timer, "seals");
     await user.click(within(bar()).getByRole("button", { name: "Close find" }));
     expect(screen.queryByRole("search", { name: "Find in transcript" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Find in transcript" })).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Find in transcript" }));
-    await user.type(findBox(), "seals");
+    await typeFind(user, timer, "seals");
     await user.click(screen.getByRole("tab", { name: "Summary" }));
     expect(screen.queryByRole("search", { name: "Find in transcript" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Transcript" }));

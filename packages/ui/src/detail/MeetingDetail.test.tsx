@@ -498,9 +498,13 @@ describe("MeetingDetailView", () => {
     it("keeps the button when a re-summary is refused: the old summary stays", async () => {
       const { user, ipc } = await setup();
       await screen.findByText(/TL;DR/);
-      // A refused start: no job runs, the old summary stays.
+      // A refused start: no job runs, the old summary stays. The refusal reads as Rust sent it.
       ipc.resummarise = async () => {
-        throw new IpcFailure({ kind: "busy", message: "busy", retryable: true });
+        throw new IpcFailure({
+          kind: "busy",
+          message: "This meeting is already being re-transcribed or re-summarised.",
+          retryable: true,
+        });
       };
       await user.click(screen.getByRole("button", { name: "Re-summarise" }));
       await screen.findByText(/already being re-transcribed or re-summarised/);

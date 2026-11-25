@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   type FindRow,
+  findCountText,
   findInTranscript,
   findSpeakers,
   speakerKey,
@@ -43,6 +44,20 @@ describe("transcript find", () => {
         { line: 2, start: 0, end: 6 },
         { line: 3, start: 15, end: 21 },
       ],
+    });
+  });
+
+  it("transcript find: text needs two characters; a speaker alone needs none", () => {
+    // One letter (one code point, here outside the basic plane too) is no text filter.
+    expect(findInTranscript(ROWS, null, "g")).toEqual({ kind: "idle" });
+    expect(findInTranscript(ROWS, null, " 𐐀 ")).toEqual({ kind: "idle" });
+    expect(findInTranscript(ROWS, "ana", "g")).toEqual({ kind: "turns", lines: [0, 3] });
+    expect(findCountText({ kind: "idle" }, 0, "g")).toBe("Type 2 or more characters");
+    expect(findCountText({ kind: "idle" }, 0, " ")).toBe("Pick a speaker or type");
+    // Two characters look.
+    expect(findInTranscript(ROWS, null, "IT")).toEqual({
+      kind: "matches",
+      matches: [{ line: 1, start: 15, end: 17 }],
     });
   });
 

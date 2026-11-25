@@ -4,7 +4,8 @@
 // user's other computers that would write it now, each labelled as on the Summaries page. A
 // writer chosen there writes it alone, with no next step. On a meeting kept on this computer the
 // writers that would send it elsewhere are disabled with the reason until "Allow". The writers
-// and computers are read when the page opens and again whenever the menu opens.
+// are read when the page opens; writers and computers are read again whenever the menu opens
+// (the computers only then: asking for them reaches the relay, T14.17).
 
 import {
   Caption1,
@@ -69,9 +70,20 @@ export function ResummariseControl({ meeting, label, disabled, onOrder, onWriter
     if (h.status === "fulfilled") setHelpers(h.value);
     setLoading(false);
   }, [ipc, meeting]);
+  // On opening the page only this computer's writers are read: the other computers come from
+  // the relay, which is asked only when the menu opens (T14.17), never for every meeting shown.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let live = true;
+    ipc.resummariseWriters(meeting).then(
+      (w) => {
+        if (live) setWriters(w);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [ipc, meeting]);
 
   const computers = helpers?.helpers.filter((h) => h.available) ?? [];
   const items = writers?.writers ?? [];
