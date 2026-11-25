@@ -294,6 +294,12 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
         .map(|p| p.id)
         .collect();
     let is_me = |id: EntityId| me_ids.contains(&id);
+    // Legacy entry ignores count only until the store's one-off copy onto the rows ran
+    // (T12.93, `earshot_runtime::ignore_copy`).
+    let legacy_on = store
+        .local_value(earshot_runtime::ignore_copy::COPIED_KEY)
+        .map_err(|_| "reading the ignore copy record")?
+        .is_none();
     let mut meetings: Vec<Meeting> = store
         .meetings()
         .map_err(|_| "reading meetings")?
@@ -330,6 +336,7 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
         let rows: Vec<Speaker> = store
             .speakers(m.id)
             .map_err(|_| format!("{label_m}: reading its speakers"))?;
+        let legacy = earshot_runtime::ignore_copy::legacy_of(!legacy_on, &entries);
         for entry in entries {
             let Some(row) = rows
                 .iter()
@@ -338,7 +345,8 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
                 skipped.rows_gone += 1;
                 continue;
             };
-            if entry.ignored {
+            // The one rule (T12.93): the row's synced flag, or a legacy entry flag before the copy.
+            if earshot_runtime::edit::is_ignored(row, &legacy) {
                 skipped.ignored += 1;
                 continue;
             }
@@ -397,7 +405,12 @@ fn readout(store: &ReadOnlyStore) -> Result<Readout, String> {
             }
             let kind = match owner {
                 None => Kind::NoName,
-                Some(_) if me_row || !own.is_empty() || entry.enrolled || entry.edited(row) => {
+                Some(_)
+                    if me_row
+                        || !own.is_empty()
+                        || entry.enrolled
+                        || entry.edited(row, legacy_on) =>
+                {
                     Kind::Confirmed
                 }
                 Some(_) => Kind::Unconfirmed,

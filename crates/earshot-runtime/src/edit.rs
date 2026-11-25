@@ -186,10 +186,6 @@ pub enum EditError {
     /// The speaker is the user or already has a name (a linked person): only a voice that
     /// needs a name can be ignored ([`ignore_speaker`], T12.19).
     NotUnnamed(EntityId),
-    /// The final pass kept no voice of this speaker (no identity entry, or the meeting's
-    /// identity record cannot be read), so the choice to ignore it has nowhere to be kept
-    /// ([`ignore_speaker`]). A re-transcription stores one.
-    NoStoredVoice(EntityId),
     /// The line (the id) has no word at that position: it changed meanwhile ([`use_word`],
     /// [`put_back_word`], [`keep_word`]), or, for [`keep_word`], no word is suggested there.
     WordNotFound(EntityId),
@@ -323,10 +319,6 @@ impl fmt::Display for EditError {
             Self::NotUnnamed(id) => write!(
                 f,
                 "speaker {id} is you or has a name; only a voice that needs a name can be ignored"
-            ),
-            Self::NoStoredVoice(id) => write!(
-                f,
-                "no voice of speaker {id} is stored, so ignoring it cannot be kept; transcribe the meeting again first"
             ),
             Self::WordNotFound(id) => {
                 write!(f, "segment {id} has no word at that position")
@@ -1425,7 +1417,9 @@ impl TakenBack {
 /// ([`take_back`] with `person` as the one kept, resolved through merges inside it). The one way
 /// a user's edit changes a speaker row's person (docs/voice-samples.md 3.3, pinned by
 /// `edit_speaker_person_changes_only_through_set_row_person`); the caller sets the row's other
-/// fields first. Returns how many samples were taken back.
+/// fields first. Linking (`person` set) also ends an ignore (`Speaker::ignored`, T12.93): a
+/// named voice is not ignored, and this is the one place a user's link clears it. Returns how
+/// many samples were taken back.
 fn set_row_person(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
@@ -1434,6 +1428,9 @@ fn set_row_person(
     person: Option<EntityId>,
 ) -> Result<usize, RuntimeError> {
     row.person_id = person;
+    if person.is_some() {
+        row.ignored = false;
+    }
     row.meta.touch(stamp.hlc, stamp.clock);
     tx.put_speaker(row.clone())?;
     take_back(tx, meeting, row.id, person, stamp.hlc, stamp.clock).map_err(voiceprint_err)
@@ -2001,6 +1998,8 @@ pub fn unmark_me(
             .map(|s| s.display_name)
             .collect();
         row.role = SpeakerRole::Room;
+        // A voice that needs a name, as the doc says (a pulled Me row may carry a flag).
+        row.ignored = false;
         let old = std::mem::replace(&mut row.display_name, first_free_speaker_name(&taken));
         drop_voiceprint_me(tx, meeting, speaker)?;
         let taken_back = set_row_person(tx, stamp, meeting, &mut row, None)?;
@@ -2484,63 +2483,126 @@ pub fn identities_in(
     )
 }
 
-/// Whether the user ignored `row` in its meeting ([`ignore_speaker`]), by its entry among
-/// `identities` ([`identities_in`]). Only a voice that still needs a name counts: "Me" and a
-/// linked voice never do.
-#[must_use]
-pub fn is_ignored(row: &Speaker, identities: &[crate::identities::SpeakerIdentity]) -> bool {
-    row.role != SpeakerRole::Me
-        && row.person_id.is_none()
-        && identities.iter().any(|i| i.speaker == row.id && i.ignored)
+/// The speakers of `meeting` whose identity entry holds a legacy ignore (0.4.2 and earlier,
+/// device-local), honoured until this device's one-off copy onto the rows has run and never
+/// after ([`crate::ignore_copy::legacy_of`]); from a store the caller has locked. Pass it to
+/// [`is_ignored`].
+///
+/// # Errors
+/// Store errors.
+pub fn legacy_ignores(
+    store: &earshot_store::Store,
+    meeting: EntityId,
+) -> Result<BTreeSet<EntityId>, RuntimeError> {
+    if crate::ignore_copy::copied(store)? {
+        return Ok(BTreeSet::new());
+    }
+    Ok(crate::ignore_copy::legacy_of(
+        false,
+        &identities_in(store, meeting)?,
+    ))
 }
 
-/// Whether [`ignore_speaker`] would accept `row` with these `identities`: what the Speakers
-/// panel offers, by the refusals' own rule.
-#[must_use]
-pub fn can_ignore(row: &Speaker, identities: &[crate::identities::SpeakerIdentity]) -> bool {
-    row.role != SpeakerRole::Me
-        && row.person_id.is_none()
-        && identities.iter().any(|i| i.speaker == row.id)
+/// [`legacy_ignores`] inside a transaction.
+fn legacy_ignores_tx(
+    tx: &StoreTx<'_>,
+    meeting: EntityId,
+) -> Result<BTreeSet<EntityId>, RuntimeError> {
+    if crate::ignore_copy::copied_tx(tx)? {
+        return Ok(BTreeSet::new());
+    }
+    let key = crate::identities::record_key(meeting);
+    Ok(
+        match tx
+            .local_value(key.as_str())?
+            .map(|b| crate::identities::decode(&b))
+        {
+            Some(StoredIdentities::Record(r)) => crate::ignore_copy::legacy_of(false, &r.speakers),
+            None | Some(StoredIdentities::Unreadable(_)) => BTreeSet::new(),
+        },
+    )
 }
 
-/// "Ignore" (T12.19): the user does not want to name voice `speaker` of `meeting`. It no
-/// longer needs a name, keeps its "Speaker N" label everywhere (the row is not written), and
-/// is never enrolled or named as a person: a later final pass continues it as a user edit
-/// (`crate::post` step 4), keeping it unlinked whatever voiceprint it matches. Kept in the
-/// voice's entry of the meeting's speaker identity record
-/// (`earshot_store::identities::SpeakerIdentity::ignored`), device-locally. Returns whether
-/// anything changed (ignoring an ignored voice writes nothing). Undone by
+/// Whether the user ignored `row` in its meeting ([`ignore_speaker`], T12.19, T12.93): the
+/// row's synced flag (`Speaker::ignored`), or a legacy ignore among `legacy`
+/// ([`legacy_ignores`]) until the one-off copy ran. The one rule, applied to every read
+/// because a synced row is a trust boundary: only a voice that still needs a name counts, so
+/// "Me" and a linked voice never do whatever their flag says.
+#[must_use]
+pub fn is_ignored(row: &Speaker, legacy: &BTreeSet<EntityId>) -> bool {
+    row.role != SpeakerRole::Me
+        && row.person_id.is_none()
+        && (row.ignored || legacy.contains(&row.id))
+}
+
+/// Whether [`ignore_speaker`] would accept `row`: any unnamed voice that is not the user (what
+/// the Speakers panel offers, by the refusal's own rule).
+#[must_use]
+pub fn can_ignore(row: &Speaker) -> bool {
+    row.role != SpeakerRole::Me && row.person_id.is_none()
+}
+
+/// "Ignore" (T12.19, T12.93): the user does not want to name voice `speaker` of `meeting`. It
+/// no longer needs a name, keeps its "Speaker N" label everywhere, and is never enrolled or
+/// named as a person: a later final pass continues it as a user edit (`crate::post` step 4),
+/// keeping it unlinked whatever voiceprint it matches. Kept on the synced speaker row
+/// (`Speaker::ignored`, re-stamped), so every computer of the vault reads it; no identity
+/// entry is needed. When this device holds the voice's entry and it read as the pass's own
+/// naming before the ignore, its `given_stamp` moves to the row's new stamp in the same
+/// transaction, so ignore then un-ignore reads as the pass's naming again by stamp. Returns
+/// whether anything changed (ignoring an ignored voice writes nothing). Undone by
 /// [`unignore_speaker`]; naming the voice ([`link_speaker`]) also ends it.
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::NotUnnamed`] for "Me"
-/// or a linked voice, [`EditError::NoStoredVoice`] for a voice without an entry); store
-/// errors.
+/// or a linked voice); store errors.
 pub fn ignore_speaker(
     services: &Services,
     meeting: EntityId,
     speaker: EntityId,
 ) -> Result<bool, RuntimeError> {
-    write(services, |tx, _| {
-        let row = live_speaker(&*tx, meeting, speaker)?;
-        if row.role == SpeakerRole::Me || row.person_id.is_some() {
+    write(services, |tx, stamp| {
+        let mut row = live_speaker(&*tx, meeting, speaker)?;
+        if !can_ignore(&row) {
             return Err(EditError::NotUnnamed(speaker).into());
         }
-        let key = crate::identities::record_key(meeting);
-        let has_entry = matches!(
-            tx.local_value(key.as_str())?.map(|b| crate::identities::decode(&b)),
-            Some(StoredIdentities::Record(r)) if r.speakers.iter().any(|i| i.speaker == speaker)
-        );
-        if !has_entry {
-            return Err(EditError::NoStoredVoice(speaker).into());
+        let legacy = legacy_ignores_tx(tx, meeting)?;
+        if is_ignored(&row, &legacy) {
+            return Ok(false);
         }
-        update_identity_entry(tx, meeting, speaker, |i| i.ignored = true)
+        let key = crate::identities::record_key(meeting);
+        let legacy_on = !crate::ignore_copy::copied_tx(tx)?;
+        let unedited = match tx
+            .local_value(key.as_str())?
+            .map(|b| crate::identities::decode(&b))
+        {
+            Some(StoredIdentities::Record(r)) => r
+                .speakers
+                .iter()
+                .any(|i| i.speaker == speaker && !i.edited(&row, legacy_on)),
+            _ => false,
+        };
+        row.ignored = true;
+        row.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_speaker(row.clone())?;
+        if unedited {
+            update_identity_entry(tx, meeting, speaker, |i| {
+                i.given_stamp = Some(row.meta.updated_at);
+            })?;
+        }
+        Ok(true)
     })
 }
 
-/// Undoes [`ignore_speaker`]: voice `speaker` of `meeting` needs a name again, and its entry
-/// reads as the pass's own naming again (unless the user also edited the row). Returns
-/// whether anything changed (a voice that is not ignored writes nothing).
+/// Undoes [`ignore_speaker`]: voice `speaker` of `meeting` needs a name again. The row's flag
+/// is cleared (re-stamped) and, until the one-off copy ran, the entry's legacy flag too. When
+/// this device holds the voice's entry and the row is otherwise what the pass gave it (its
+/// name and person), the entry reads as the pass's own naming again: `given_stamp` takes the
+/// row's stamp and `user_edited` is cleared, so a later run may renumber or name it. A row the
+/// user renamed or linked stays an edit. An un-ignore made on another computer arrives by
+/// sync, which never re-stamps entries, so here the voice stays a user edit (its "Speaker N"
+/// kept unlinked across re-runs): a kept name, never a lost one. Returns whether anything
+/// changed (a voice that is not ignored writes nothing).
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or speaker); store errors.
@@ -2549,26 +2611,25 @@ pub fn unignore_speaker(
     meeting: EntityId,
     speaker: EntityId,
 ) -> Result<bool, RuntimeError> {
-    write(services, |tx, _| {
-        let row = live_speaker(&*tx, meeting, speaker)?;
+    write(services, |tx, stamp| {
+        let mut row = live_speaker(&*tx, meeting, speaker)?;
+        let legacy = legacy_ignores_tx(tx, meeting)?;
+        if !row.ignored && !legacy.contains(&speaker) {
+            return Ok(false);
+        }
+        if row.ignored {
+            row.ignored = false;
+            row.meta.touch(stamp.hlc, stamp.clock);
+            tx.put_speaker(row.clone())?;
+        }
         update_identity_entry(tx, meeting, speaker, |i| {
-            if !i.ignored {
-                return;
-            }
             i.ignored = false;
-            // A re-run carried the ignore as an edit (no stamp, `user_edited`). When the row
-            // is still what the pass gave it, nothing else of it was the user's: it reads as
-            // the pass's own naming again (as `unmark_me` leaves it), so a later run may
-            // renumber or name it. A row the user renamed or linked stays an edit.
-            if i.user_edited
-                && i.given_stamp.is_none()
-                && row.display_name == i.given_name
-                && row.person_id == i.given_person
-            {
+            if row.display_name == i.given_name && row.person_id == i.given_person {
                 i.user_edited = false;
                 i.given_stamp = Some(row.meta.updated_at);
             }
-        })
+        })?;
+        Ok(true)
     })
 }
 
@@ -2587,26 +2648,19 @@ fn is_users_row<R: VoiceprintRepo + ?Sized>(repo: &R, row: &Speaker) -> Result<b
         .is_some_and(|p| p.is_me))
 }
 
-/// Whether [`not_this_person`] would accept `row` with these `identities`, reading persons
-/// and voice samples from `repo` (a store the caller has locked): what the Speakers panel
-/// offers, by the refusals' own rules. A linked row with an identity entry or a live sample
-/// from its voice is offered; the user's rows (`is_users_row`, which follows merges) are not.
+/// Whether [`not_this_person`] would accept `row`, reading persons from `repo` (a store the
+/// caller has locked): what the Speakers panel offers, by the refusals' own rules. Any linked
+/// row that is not the user's (`is_users_row`, which follows merges) is offered: since T12.93
+/// the ignore it leaves lives on the row, so no identity entry or sample is needed (with
+/// nothing to take back it takes nothing back).
 ///
 /// # Errors
 /// Store errors.
 pub fn can_not_this_person<R: VoiceprintRepo + ?Sized>(
     repo: &R,
     row: &Speaker,
-    identities: &[crate::identities::SpeakerIdentity],
 ) -> Result<bool, RuntimeError> {
-    if row.person_id.is_none() || is_users_row(repo, row)? {
-        return Ok(false);
-    }
-    Ok(identities.iter().any(|i| i.speaker == row.id)
-        || !repo
-            .samples_from(row.meeting_id, row.id)
-            .map_err(voiceprint_err)?
-            .is_empty())
+    Ok(row.person_id.is_some() && !is_users_row(repo, row)?)
 }
 
 /// Whether this meeting's voice `row` is saved for the person it is linked to as a voice
@@ -2658,20 +2712,19 @@ pub struct NotThisPerson {
 /// smallest free "Speaker N" ([`first_free_speaker_name`]) and is ignored
 /// ([`ignore_speaker`]): its identity entry reads as the pass's own naming of that label with
 /// the ignore on top, so a re-run continues it unlinked whatever voiceprint it matches, and
-/// "Stop ignoring" ([`unignore_speaker`]) leaves a voice that needs a name. This meeting's
-/// voice samples are taken back ([`set_row_person`], docs/voice-samples.md 6.1); a voice saved
+/// "Stop ignoring" ([`unignore_speaker`]) leaves a voice that needs a name. The ignore is the
+/// row's own flag (`Speaker::ignored`, synced, T12.93), so any linked voice that is not the
+/// user's is accepted, with or without an identity entry or a sample. This meeting's voice
+/// samples are taken back ([`set_row_person`], docs/voice-samples.md 6.1); a voice saved
 /// before samples existed stays in the person's voiceprint (`SpeakerIdentity::enrolled` stays
-/// as it was) and the result says so ([`NotThisPerson::saved_before_samples`]). A row with a
-/// live sample and no identity entry is accepted too: it is unlinked and named, with no ignore
-/// recorded (there is no entry to hold it).
+/// as it was) and the result says so ([`NotThisPerson::saved_before_samples`]).
 ///
 /// Refused while a live session, a final pass, a summary or a job works on the meeting, as
 /// line edits are (`line_edit_claim`): the final pass would otherwise rewrite the entry.
 ///
 /// # Errors
 /// [`EditError`] (unknown or deleted meeting or speaker, [`EditError::UserRow`] for "Me" or a
-/// row linked to the user, [`EditError::NoPerson`] for an unlinked voice,
-/// [`EditError::NoStoredVoice`] for a voice with neither an identity entry nor a live sample);
+/// row linked to the user, [`EditError::NoPerson`] for an unlinked voice);
 /// [`RuntimeError::MeetingBusy`] (retryable) while the meeting is busy; store errors.
 pub fn not_this_person(
     services: &Services,
@@ -2695,13 +2748,6 @@ pub fn not_this_person(
             }
             _ => None,
         };
-        let has_sample = !tx
-            .samples_from(meeting, speaker)
-            .map_err(voiceprint_err)?
-            .is_empty();
-        if entry.is_none() && !has_sample {
-            return Err(EditError::NoStoredVoice(speaker).into());
-        }
         // Judged before anything is taken back (docs/voice-samples.md 5.2, 6.1).
         let saved_before = match &entry {
             Some(i) => {
@@ -2720,6 +2766,8 @@ pub fn not_this_person(
             .map(|s| s.display_name)
             .collect();
         let old = std::mem::replace(&mut row.display_name, first_free_speaker_name(&taken));
+        // An ignored "Speaker N" (T12.77), on the row so every computer reads it (T12.93).
+        row.ignored = true;
         let taken_back = set_row_person(tx, stamp, meeting, &mut row, None)?;
         crate::summary_names::name_changed_tx(tx, meeting, &old, &row.display_name)?;
         update_identity_entry(tx, meeting, speaker, |i| {
@@ -2727,7 +2775,7 @@ pub fn not_this_person(
             i.given_person = None;
             i.given_stamp = Some(row.meta.updated_at);
             i.user_edited = false;
-            i.ignored = true;
+            i.ignored = false;
         })?;
         Ok((linked, taken_back, saved_before))
     })?;

@@ -416,6 +416,36 @@ async fn relay_refuses_a_device_older_than_the_vault_format() {
     assert_eq!(v["vault_format"], 2);
 }
 
+/// T12.93: envelope format 3 (the ignore on a speaker row). Once a format-3 device has pushed,
+/// a format-2 device (0.4.0 to 0.4.2) is refused on both calls, so it can never write a speaker
+/// row back without the ignore; the relay itself needed no change (it keeps the highest format).
+#[tokio::test]
+async fn relay_refuses_a_format_two_device_at_vault_three() {
+    let h = harness("format3");
+    let t = h.register(1, 0xC1).await;
+    let push = |format: u32| serde_json::to_vec(&json!({"format": format, "rows": []})).unwrap();
+    let (s, _) = h
+        .call("POST", "/v1/rows", Some(&t), Some(2), Some(push(2)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "a format-2 vault takes format 2");
+    let body = serde_json::to_vec(&json!({"format": 3, "rows": [row(1, 1, 0, b"x")]})).unwrap();
+    let (s, _) = h
+        .call("POST", "/v1/rows", Some(&t), Some(3), Some(body))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    for (method, body) in [("GET", None), ("POST", Some(push(2)))] {
+        let (s, v) = h.call(method, "/v1/rows", Some(&t), Some(2), body).await;
+        assert_eq!(
+            (s, error_of(&v)),
+            (StatusCode::CONFLICT, "update_needed"),
+            "{method}"
+        );
+    }
+    let (s, v) = h.call("GET", "/v1/rows", Some(&t), Some(3), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["vault_format"], 3);
+}
+
 #[tokio::test]
 async fn relay_refuses_oversized_rows_requests_and_presence() {
     let h = harness("limits");

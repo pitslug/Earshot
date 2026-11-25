@@ -23,10 +23,18 @@ fn row(svc: &Services, meeting: EntityId, id: EntityId) -> Speaker {
 }
 
 fn ignored(svc: &Services, meeting: EntityId, id: EntityId) -> bool {
-    let identities = identities_in(&svc.store(), meeting).unwrap();
-    is_ignored(&row(svc, meeting, id), &identities)
+    let legacy = legacy_ignores(&svc.store(), meeting).unwrap();
+    is_ignored(&row(svc, meeting, id), &legacy)
 }
 
+/// Whether legacy entry ignores still count here (`crate::ignore_copy`).
+fn legacy_on(svc: &Services) -> bool {
+    !crate::ignore_copy::copied(&svc.store()).unwrap()
+}
+
+// T12.93 changed this test's pins: the ignore is now the synced row's own flag (the row is
+// written and re-stamped, the entry's flag stays false), and the entry's `given_stamp` follows
+// the ignore so ignore then un-ignore reads as the pass's naming by stamp.
 #[test]
 fn edit_ignore_speaker_keeps_the_label_and_is_carried_by_a_retranscribe() {
     let dir = TempDir::new("edit");
@@ -34,9 +42,8 @@ fn edit_ignore_speaker_keeps_the_label_and_is_carried_by_a_retranscribe() {
     let m = processed(&svc, 500);
     let remote = remote_speakers(&svc, m);
     let s = remote[0].clone();
-    let identities = identities_in(&svc.store(), m).unwrap();
-    assert!(can_ignore(&s, &identities));
-    assert!(!is_ignored(&s, &identities));
+    assert!(can_ignore(&s));
+    assert!(!is_ignored(&s, &legacy_ignores(&svc.store(), m).unwrap()));
 
     assert!(ignore_speaker(&svc, m, s.id).unwrap());
     assert!(
@@ -44,14 +51,20 @@ fn edit_ignore_speaker_keeps_the_label_and_is_carried_by_a_retranscribe() {
         "a repeat writes nothing"
     );
     assert!(ignored(&svc, m, s.id));
-    // The row is not written: the label and the pass's stamp stay, and the choice is the
-    // entry's, an edit of its own.
+    // The row carries the choice (synced) and keeps its label and person; the entry's flag is
+    // never written, and its stamp follows the row so it reads as an edit only by the flag.
     let after = row(&svc, m, s.id);
+    assert!(after.ignored);
     assert_eq!(after.display_name, s.display_name);
-    assert_eq!(after.meta.updated_at, s.meta.updated_at);
     assert_eq!(after.person_id, None);
+    assert_ne!(
+        after.meta.updated_at, s.meta.updated_at,
+        "re-stamped, so it syncs"
+    );
     let e = entry(&svc, m, s.id);
-    assert!(e.ignored && e.edited(&after) && !e.user_edited);
+    assert!(!e.ignored && !e.user_edited);
+    assert_eq!(e.given_stamp, Some(after.meta.updated_at));
+    assert!(e.edited(&after, legacy_on(&svc)));
     // Never enrolled: an ignored voice has nobody to be remembered for.
     assert_eq!(
         refused(remember_voices_with(&svc, m, &[s.id], &calibrated(true))),
@@ -75,16 +88,103 @@ fn edit_ignore_speaker_keeps_the_label_and_is_carried_by_a_retranscribe() {
             .all(|p| !p.ignored)
     );
     assert_eq!(row(&svc, m, s.id).display_name, s.display_name);
-    assert!(ignored(&svc, m, s.id));
+    assert!(row(&svc, m, s.id).ignored);
+    assert!(
+        !entry(&svc, m, s.id).ignored,
+        "the pass never writes the entry flag"
+    );
 
     // Un-ignored: it needs a name again and reads as the pass's naming, even though the
     // re-run carried the ignore as an edit.
     assert!(unignore_speaker(&svc, m, s.id).unwrap());
     assert!(!unignore_speaker(&svc, m, s.id).unwrap());
     assert!(!ignored(&svc, m, s.id));
+    let back = row(&svc, m, s.id);
+    assert!(!back.ignored);
     let e = entry(&svc, m, s.id);
     assert!(!e.ignored);
-    assert!(!e.edited(&row(&svc, m, s.id)), "{e:?}");
+    assert!(!e.edited(&back, legacy_on(&svc)), "{e:?}");
+}
+
+/// T12.93 (3a): ignore then un-ignore without a re-run reads as the pass's own naming again
+/// by stamp, so a later run may still renumber or name the voice.
+#[test]
+fn edit_ignore_then_unignore_reads_as_the_pass_naming_again() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 501);
+    let s = remote_speakers(&svc, m)[0].clone();
+    assert!(!entry(&svc, m, s.id).edited(&s, legacy_on(&svc)));
+    assert!(ignore_speaker(&svc, m, s.id).unwrap());
+    assert!(unignore_speaker(&svc, m, s.id).unwrap());
+    let back = row(&svc, m, s.id);
+    let e = entry(&svc, m, s.id);
+    assert_eq!(e.given_stamp, Some(back.meta.updated_at));
+    assert!(!e.user_edited && !e.edited(&back, legacy_on(&svc)), "{e:?}");
+}
+
+/// T12.93 (5a): before the one-off copy runs, a 0.4.2 entry flag is still an ignore: the
+/// rule, a re-run (which moves it onto the row) and un-ignore (which clears both) honour it.
+#[test]
+fn edit_a_legacy_entry_ignore_counts_until_the_copy() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 502);
+    let remote = remote_speakers(&svc, m);
+    let (a, b) = (remote[0].clone(), remote[1].clone());
+    // What 0.4.2 wrote: the entry flag, the row untouched.
+    for s in [&a, &b] {
+        write(&svc, |tx, _| {
+            update_identity_entry(tx, m, s.id, |i| i.ignored = true).map(|_| ())
+        })
+        .unwrap();
+    }
+    assert!(legacy_on(&svc));
+    assert!(ignored(&svc, m, a.id) && !row(&svc, m, a.id).ignored);
+    assert!(
+        !ignore_speaker(&svc, m, a.id).unwrap(),
+        "already ignored, nothing written"
+    );
+    // A re-transcription honours it and moves it onto the continued row.
+    let cancel = CancelToken::new();
+    let again = retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+    let HostPost::Done(outcome) = again.post else {
+        panic!("{:?}", again.post);
+    };
+    assert!(
+        outcome
+            .speakers
+            .iter()
+            .find(|p| p.id == a.id)
+            .unwrap()
+            .ignored
+    );
+    assert!(row(&svc, m, a.id).ignored && row(&svc, m, b.id).ignored);
+    assert!(!entry(&svc, m, a.id).ignored, "the new entry holds no flag");
+    // Un-ignore clears a legacy entry flag even when the row was never flagged.
+    write(&svc, |tx, _| {
+        update_identity_entry(tx, m, b.id, |i| i.ignored = true).map(|_| ())
+    })
+    .unwrap();
+    let mut clear = row(&svc, m, b.id);
+    clear.ignored = false;
+    clear.meta.updated_at.logical += 1;
+    svc.store().put_speaker(clear).unwrap();
+    assert!(ignored(&svc, m, b.id));
+    assert!(unignore_speaker(&svc, m, b.id).unwrap());
+    assert!(!ignored(&svc, m, b.id) && !entry(&svc, m, b.id).ignored);
+    // After the copy the entry flag is never read.
+    write(&svc, |tx, _| {
+        update_identity_entry(tx, m, b.id, |i| i.ignored = true).map(|_| ())
+    })
+    .unwrap();
+    crate::ignore_copy::copy_once(&svc).unwrap();
+    assert!(!legacy_on(&svc));
+    let mut clear = row(&svc, m, b.id);
+    clear.ignored = false;
+    clear.meta.updated_at.logical += 1;
+    svc.store().put_speaker(clear).unwrap();
+    assert!(!ignored(&svc, m, b.id));
 }
 
 #[test]
@@ -102,11 +202,13 @@ fn edit_unignoring_after_a_retranscribe_keeps_a_rename_the_user_made() {
     // The row is the user's own edit: un-ignoring does not undo it.
     let after = row(&svc, m, s);
     assert_eq!(after.display_name, "Visitor");
-    assert!(entry(&svc, m, s).edited(&after));
+    assert!(entry(&svc, m, s).edited(&after, legacy_on(&svc)));
 }
 
+// T12.93 changed this test: a voice the final pass kept nothing of can now be ignored (the
+// choice is on its row), so the old `NoStoredVoice` refusal became an acceptance.
 #[test]
-fn edit_ignore_refuses_the_user_a_named_voice_and_a_voice_with_nothing_stored() {
+fn edit_ignore_refuses_the_user_and_a_named_voice_and_takes_a_voice_with_nothing_stored() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
     let m = processed(&svc, 510);
@@ -133,10 +235,9 @@ fn edit_ignore_refuses_the_user_a_named_voice_and_a_voice_with_nothing_stored() 
         refused(ignore_speaker(&svc, m, s)),
         EditError::NotUnnamed(s)
     );
-    let identities = identities_in(&svc.store(), m).unwrap();
-    assert!(!can_ignore(&row(&svc, m, s), &identities));
-    assert!(!can_ignore(&me, &identities));
-    // A voice the final pass kept nothing of: the choice has nowhere to live.
+    assert!(!can_ignore(&row(&svc, m, s)));
+    assert!(!can_ignore(&me));
+    // A voice the final pass kept nothing of: offered and accepted.
     let quiet = add_speaker(
         &svc,
         m,
@@ -146,11 +247,9 @@ fn edit_ignore_refuses_the_user_a_named_voice_and_a_voice_with_nothing_stored() 
         9_000,
         511,
     );
-    assert!(!can_ignore(&row(&svc, m, quiet), &identities));
-    assert_eq!(
-        refused(ignore_speaker(&svc, m, quiet)),
-        EditError::NoStoredVoice(quiet)
-    );
+    assert!(can_ignore(&row(&svc, m, quiet)));
+    assert!(ignore_speaker(&svc, m, quiet).unwrap());
+    assert!(ignored(&svc, m, quiet));
     let nobody = EntityId::from_bytes([5; 16]);
     assert_eq!(
         refused(ignore_speaker(&svc, m, nobody)),
@@ -160,6 +259,29 @@ fn edit_ignore_refuses_the_user_a_named_voice_and_a_voice_with_nothing_stored() 
         refused(unignore_speaker(&svc, m, nobody)),
         EditError::SpeakerNotFound(nobody)
     );
+}
+
+/// The one rule (T12.93): a flag on "Me" or on a linked row (a pulled row is a trust boundary)
+/// never makes it ignored.
+#[test]
+fn edit_is_ignored_needs_an_unnamed_voice_that_is_not_the_user() {
+    let dir = TempDir::new("edit");
+    let (svc, _) = services(&dir);
+    let m = processed(&svc, 512);
+    let none = BTreeSet::new();
+    let mut me = view(&svc, m)
+        .speakers
+        .into_iter()
+        .find(|s| s.role == SpeakerRole::Me)
+        .unwrap();
+    me.ignored = true;
+    assert!(!is_ignored(&me, &none));
+    let mut linked = remote_speakers(&svc, m)[0].clone();
+    linked.ignored = true;
+    linked.person_id = Some(EntityId::from_bytes([6; 16]));
+    assert!(!is_ignored(&linked, &none));
+    linked.person_id = None;
+    assert!(is_ignored(&linked, &none));
 }
 
 #[test]
@@ -179,7 +301,7 @@ fn edit_naming_an_ignored_voice_ends_the_ignore() {
         },
     )
     .unwrap();
-    assert!(!entry(&svc, m, remote[0].id).ignored);
+    assert!(!entry(&svc, m, remote[0].id).ignored && !row(&svc, m, remote[0].id).ignored);
     save_voice_with(
         &svc,
         m,
@@ -190,7 +312,7 @@ fn edit_naming_an_ignored_voice_ends_the_ignore() {
         &calibrated(true),
     )
     .unwrap();
-    assert!(!entry(&svc, m, remote[1].id).ignored);
+    assert!(!entry(&svc, m, remote[1].id).ignored && !row(&svc, m, remote[1].id).ignored);
 }
 
 #[test]
@@ -444,9 +566,8 @@ fn edit_not_this_person_unlinks_relabels_and_ignores_a_named_voice() {
     )
     .unwrap()
     .person;
-    let identities = identities_in(&svc.store(), m).unwrap();
     let linked = row(&svc, m, s.id);
-    assert!(can_not_this_person(&**svc.store(), &linked, &identities).unwrap());
+    assert!(can_not_this_person(&**svc.store(), &linked).unwrap());
     let label = free_label(&svc, m, s.id);
 
     assert_eq!(not_this_person(&svc, m, s.id).unwrap().person, rowan);
@@ -455,8 +576,11 @@ fn edit_not_this_person_unlinks_relabels_and_ignores_a_named_voice() {
     assert_eq!(after.display_name, label);
     assert!(after.display_name.starts_with("Speaker "));
     assert!(ignored(&svc, m, s.id));
+    // T12.93: the ignore is the row's own flag; the entry reads as the pass's naming of the
+    // label (its own flag never written), an edit only by the row's flag.
+    assert!(after.ignored);
     let e = entry(&svc, m, s.id);
-    assert!(e.ignored && e.edited(&after));
+    assert!(!e.ignored && e.edited(&after, legacy_on(&svc)));
     assert_eq!(e.given_person, None);
     // The person stays: only this meeting's row is unlinked.
     assert!(
@@ -468,8 +592,7 @@ fn edit_not_this_person_unlinks_relabels_and_ignores_a_named_voice() {
         refused(not_this_person(&svc, m, s.id)),
         EditError::NoPerson(s.id)
     );
-    let identities = identities_in(&svc.store(), m).unwrap();
-    assert!(!can_not_this_person(&**svc.store(), &after, &identities).unwrap());
+    assert!(!can_not_this_person(&**svc.store(), &after).unwrap());
 }
 
 #[test]
@@ -526,7 +649,7 @@ fn edit_not_this_person_on_a_recognised_voice_is_carried_by_a_retranscribe() {
     );
     // "Stop ignoring" works as on any ignored voice.
     assert!(unignore_speaker(&svc, m, voice.id).unwrap());
-    assert!(!entry(&svc, m, voice.id).ignored);
+    assert!(!entry(&svc, m, voice.id).ignored && !row(&svc, m, voice.id).ignored);
 }
 
 #[test]
@@ -555,8 +678,10 @@ fn edit_not_this_person_takes_back_a_voice_saved_from_this_meeting() {
     assert_eq!(row(&svc, m, s).person_id, None);
 }
 
+// T12.93 changed this test: a named voice the final pass kept nothing of is now accepted (the
+// ignore lives on its row), so the old `NoStoredVoice` refusal became an acceptance.
 #[test]
-fn edit_not_this_person_refuses_the_user_an_unlinked_voice_and_nothing_stored() {
+fn edit_not_this_person_refuses_the_user_and_an_unlinked_voice_and_takes_nothing_stored() {
     let dir = TempDir::new("edit");
     let (svc, _) = services(&dir);
     let m = processed(&svc, 580);
@@ -570,14 +695,13 @@ fn edit_not_this_person_refuses_the_user_an_unlinked_voice_and_nothing_stored() 
         EditError::UserRow(me.id)
     );
     assert_eq!(row(&svc, m, me.id), me, "nothing written");
-    let identities = identities_in(&svc.store(), m).unwrap();
-    assert!(!can_not_this_person(&**svc.store(), &me, &identities).unwrap());
+    assert!(!can_not_this_person(&**svc.store(), &me).unwrap());
     let s = remote_speakers(&svc, m)[0].clone();
     assert_eq!(
         refused(not_this_person(&svc, m, s.id)),
         EditError::NoPerson(s.id)
     );
-    // A named voice the final pass kept nothing of: the choice has nowhere to live.
+    // A named voice the final pass kept nothing of: offered and accepted, nothing taken back.
     let quiet = add_speaker(
         &svc,
         m,
@@ -597,12 +721,11 @@ fn edit_not_this_person_refuses_the_user_an_unlinked_voice_and_nothing_stored() 
     )
     .unwrap();
     let linked = row(&svc, m, quiet);
-    assert!(!can_not_this_person(&**svc.store(), &linked, &identities).unwrap());
-    assert_eq!(
-        refused(not_this_person(&svc, m, quiet)),
-        EditError::NoStoredVoice(quiet)
-    );
-    assert_eq!(row(&svc, m, quiet), linked, "nothing written");
+    assert!(can_not_this_person(&**svc.store(), &linked).unwrap());
+    let done = not_this_person(&svc, m, quiet).unwrap();
+    assert_eq!(done.took_back.taken_back, 0);
+    let after = row(&svc, m, quiet);
+    assert!(after.person_id.is_none() && after.ignored && ignored(&svc, m, quiet));
     let nobody = EntityId::from_bytes([6; 16]);
     assert_eq!(
         refused(not_this_person(&svc, m, nobody)),
@@ -664,15 +787,14 @@ fn edit_not_this_person_refuses_a_row_linked_to_a_person_merged_into_the_user() 
     )
     .unwrap()
     .person;
-    let identities = identities_in(&svc.store(), m).unwrap();
     let before = row(&svc, m, s);
-    assert!(can_not_this_person(&**svc.store(), &before, &identities).unwrap());
+    assert!(can_not_this_person(&**svc.store(), &before).unwrap());
     let user = merge_into_me(&svc, twin).unwrap();
     assert_eq!(resolved_person(&**svc.store(), twin).unwrap(), Some(user));
     let before = row(&svc, m, s);
     let entry_before = entry(&svc, m, s);
 
-    assert!(!can_not_this_person(&**svc.store(), &before, &identities).unwrap());
+    assert!(!can_not_this_person(&**svc.store(), &before).unwrap());
     assert_eq!(refused(not_this_person(&svc, m, s)), EditError::UserRow(s));
     assert_eq!(row(&svc, m, s), before, "nothing written");
     assert_eq!(entry(&svc, m, s), entry_before, "nothing written");

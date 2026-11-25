@@ -195,6 +195,19 @@ impl SyncHost {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// At app start, before the sync thread: when this device has no vault at all, its legacy
+    /// ignores go onto the speaker rows now (T12.93, `earshot_runtime::ignore_copy`), since
+    /// nothing can arrive from another computer. With a vault (or when the vault cannot be read)
+    /// the sync thread runs the copy after its first completed pull instead, whatever the switch.
+    /// Returns whether the copy ran here. A store failure only means it is tried again at the
+    /// next start.
+    pub fn copy_ignores_without_vault(&self, services: &Services) -> bool {
+        if self.vault.has().unwrap_or(true) {
+            return false;
+        }
+        earshot_runtime::ignore_copy::copy_once(services).is_ok()
+    }
+
     /// Starts the thread when sync is on and this device is set up, replacing a running one
     /// (the old one is stopped first, on a thread of its own). A device that cannot start (no
     /// usable address) stays stopped; the page says why.

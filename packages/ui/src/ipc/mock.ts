@@ -1356,12 +1356,6 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (card.kind === "Me" || card.person !== null) {
         fail("not_unnamed", "Only a voice that needs a name can be ignored.");
       }
-      if (!card.can_ignore) {
-        fail(
-          "no_stored_voice",
-          "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the meeting, then ignore it.",
-        );
-      }
       update(meeting, (x) => ignoredVoice(x, speaker, true));
     },
     unignoreSpeaker: async (meeting, speaker) => {
@@ -1377,12 +1371,6 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         fail("user_row", "This voice is you. Only a voice named as someone else can be put back as an unnamed speaker.");
       }
       if (card.person === null) fail("no_person", "Name this voice or link it to a person first.");
-      if (!card.can_not_this_person) {
-        fail(
-          "no_stored_voice",
-          "Earshot kept nothing of this voice to remember the choice by. Re-transcribe the meeting, then ignore it.",
-        );
-      }
       const result = {
         taken_back: card.voice_saved_here ? 1 : 0,
         saved_before_samples: !card.voice_saved_here && (data.savedBeforeSamples ?? []).includes(speaker),

@@ -53,10 +53,10 @@ All derived from the vault key `K` with HKDF-SHA256, empty salt, these `info` st
 ```
 0x01 | nonce (24 bytes, random) | XChaCha20-Poly1305(k_row, nonce, plaintext, aad)
 aad = "earshot-row-v1" | row_key (16) | wall_ms (u64 BE) | logical (u32 BE) | node (16)
-plaintext = JSON of SyncEnvelope { entity, class, id, meta, record }, plus "format": 2
+plaintext = JSON of SyncEnvelope { entity, class, id, meta, record }, plus "format": 3
 ```
 
-- `"format"` is `earshot_sync::ENVELOPE_FORMAT`: 1 until T12.77b8, 2 since (voice samples, docs/voice-samples.md 7.3). Rows written at format 1 still open; a row above this build's format is kept unopened (section 5).
+- `"format"` is `earshot_sync::ENVELOPE_FORMAT`: 1 until T12.77b8, 2 from then (voice samples, docs/voice-samples.md 7.3), 3 since T12.93 (the user's ignore on a speaker row). Rows written at formats 1 and 2 still open (a format-2 speaker row reads as not ignored); a row above this build's format is kept unopened (section 5).
 
 - The stamp in the associated data is the row's `updated_at`. The relay cannot attach a ciphertext to another row key or stamp without the open failing.
 - Opening checks, in order: the leading byte, the tag, that the envelope's `id` hashes to the row key, that `meta.updated_at` equals the stamp sent beside it. Any failure is `Unreadable` with a fixed reason word, never the bytes.
@@ -321,7 +321,9 @@ What T11.3db built in the app (`apps/desktop/src-tauri/src/offload.rs`): the Syn
 
 `dictionary_word(id, META, word TEXT NOT NULL)`, class `SyncableOptIn`. Rules as `docs/sync.md` section 9. `settings/vocabulary` stays what summaries read.
 
-The one exception to "a new entity keeps the format" is voice samples (T12.77b8, the owner, 2026-11-18; docs/voice-samples.md 7.3): `ENVELOPE_FORMAT` is 2, because a format-1 build would apply the prints and hold the samples, reading a voiceprint whose voice now lives in its samples as empty. The vault rises at the first push from a 0.4.0 device, samples or not, and every older build and worker in it then gets `update_needed` until it updates.
+The first exception to "a new entity keeps the format" is voice samples (T12.77b8, the owner, 2026-11-18; docs/voice-samples.md 7.3): `ENVELOPE_FORMAT` is 2, because a format-1 build would apply the prints and hold the samples, reading a voiceprint whose voice now lives in its samples as empty. The vault rises at the first push from a 0.4.0 device, samples or not, and every older build and worker in it then gets `update_needed` until it updates.
+
+The format rises again, to 3, when an existing entity changes shape (T12.93, the owner, 2026-11-25): a speaker row carries `ignored`, the user's choice to ignore that voice in that meeting, which before lived only in the recording computer's device-local `speaker-identities` entry and so never reached the other computers. A format-2 build would deserialise a pulled speaker row without the field and write it back whole, undoing the ignore everywhere, so the vault rises at the first push from a build with format 3 and every older build and worker gets `update_needed` until it updates. The field has a serde default: rows written at format 1 or 2 read as not ignored. A row counts as ignored only when it is also unnamed and not the user (`ignored && role != Me && person_id` empty), on every read, because a pulled row is a trust boundary. Each device copies its own legacy device-local ignores onto the rows once, after its first completed pull (or at start when it has no vault), so an edit another computer made arrives first.
 
 What T11.3e ships (store migration 8; a new entity, so no `ENVELOPE_FORMAT` change: an older build holds the rows as `format`):
 

@@ -365,6 +365,15 @@ CREATE TRIGGER voiceprint_sample_sync_update AFTER UPDATE ON voiceprint_sample B
 END;
 ";
 
+/// Migration 10: an ignored voice on its synced speaker row (T12.93), so every computer of the
+/// vault reads the user's choice. Every existing row reads `0`; the device-local
+/// `speaker-identities` entries that held the choice before are copied onto the rows once at
+/// run time (`earshot_runtime::ignore_copy`), never here: a migration cannot know whether the
+/// other computers' edits have arrived.
+const V10: &str = "
+ALTER TABLE speaker ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Tables with sync metadata (the HLC high-water mark is the greatest `updated_*` in them).
 pub(crate) const SYNCED_TABLES: [&str; 12] = [
     "meeting",
@@ -383,7 +392,7 @@ pub(crate) const SYNCED_TABLES: [&str; 12] = [
 
 /// The migrations, in order, with `{META}` expanded.
 pub(crate) fn migrations() -> Vec<String> {
-    [V1, V2, V3, V4, V5, V6, V7, V8, V9]
+    [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10]
         .iter()
         .map(|m| m.replace("{META}", META))
         .collect()
@@ -406,6 +415,7 @@ mod tests {
         "2cf8b62638de4aab2956a78789c81bf374546f49e81e882a4215d1aebdadbd1d",
         "a8f780ef2d07563a4eddfb9f7d9c50f0f82cd141f41b1251447c85085f6a82ec",
         "f10864a9858e63a54c715b4f181c53658c756f8b247de4b70b5f4e46e2ab2af4",
+        "b9b652e25dd0447600dd2f29d1352b13ba8ab739c2f329dde00852dd0cc25487",
     ];
 
     /// `(type, name, tbl_name, sql)` of every schema object, sorted.
@@ -606,6 +616,28 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, 8);
+    }
+
+    /// The committed schema-9 fixture (`tests/data/schema_v9.sql`, used by
+    /// `tests/speaker_ignored.rs`) creates exactly the objects migrations 1 to 9 create, so the
+    /// ignored-voice migration (10) is tested on a real schema-9 database.
+    #[test]
+    fn store_ignore_v9_fixture_has_exactly_the_schema_of_migrations_1_to_9() {
+        let fixture = rusqlite::Connection::open_in_memory().unwrap();
+        fixture
+            .execute_batch(include_str!("../tests/data/schema_v9.sql"))
+            .unwrap();
+        let fresh = rusqlite::Connection::open_in_memory().unwrap();
+        for m in &super::migrations()[..9] {
+            fresh.execute_batch(m).unwrap();
+        }
+        let want = objects(&fresh);
+        assert!(want.iter().any(|o| o.1 == "voiceprint_sample"), "{want:?}");
+        assert_eq!(objects(&fixture), want);
+        let version: u32 = fixture
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 9);
     }
 
     /// A voice sample row holds a body exactly when it is live (migration 9's `CHECK`): a

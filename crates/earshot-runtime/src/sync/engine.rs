@@ -70,6 +70,10 @@ pub struct TickReport {
     pub meetings: BTreeSet<EntityId>,
     /// Whether a person row was written here or "Me" people merged.
     pub people: bool,
+    /// The pull reached the end of what the relay holds: its last page said `more == false`
+    /// (T12.93: with no problem in the tick, the one-off copy of legacy ignores may run,
+    /// [`crate::ignore_copy`]).
+    pub pull_complete: bool,
 }
 
 impl TickReport {
@@ -697,7 +701,11 @@ impl SyncClient {
                 // The cursor was reset meanwhile (a switch turned on): read from there next tick.
                 return Ok(());
             }
-            if !more || last.is_none() {
+            if !more {
+                report.pull_complete = true;
+                return Ok(());
+            }
+            if last.is_none() {
                 return Ok(());
             }
         }

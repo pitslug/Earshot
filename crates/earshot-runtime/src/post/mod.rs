@@ -124,9 +124,12 @@
 //!    no "Me" from the voiceprint it continues like any edit and stays the Me row; its
 //!    diarisation speaker stays a room voice, so it is never enrolled from. A voiceprint "Me"
 //!    takes the one Me row over; an unmatched voice loses the mark with its row. A voice the
-//!    user ignored ([`crate::edit::ignore_speaker`], T12.19) is an edit too: it keeps its row
-//!    and label unlinked whatever voiceprint it now matches, and its new entry stays ignored
-//!    ([`PostSpeaker::ignored`]).
+//!    user ignored ([`crate::edit::ignore_speaker`], T12.19) is an edit too: it keeps its row,
+//!    label and the row's synced ignore flag (T12.93) unlinked whatever voiceprint it now
+//!    matches ([`PostSpeaker::ignored`]). Until this device's one-off copy ran
+//!    ([`crate::ignore_copy`]) an entry's legacy ignore counts as well and moves onto the
+//!    continued row. Carrying still needs the entry: an ignored row this run cannot continue
+//!    is tombstoned like any other edit.
 //!    Earlier speakers found with another embedding model, or an identity record this build
 //!    cannot read, are not carried over ([`PostWarning::SpeakerNamesNotCarried`]). This
 //!    holds for the whole-meeting pass ([`PostConfig::reuse_live`] off) too.
@@ -467,8 +470,8 @@ pub struct PostSpeaker {
     pub display_name: String,
     /// Total speech.
     pub speech: Duration,
-    /// The user ignored this voice in an earlier run, and this run carried the choice
-    /// (T12.19): it does not need a name.
+    /// The continued row is ignored by the one rule (`crate::edit::is_ignored` over the row's
+    /// synced flag, T12.19, T12.93): it does not need a name.
     pub ignored: bool,
 }
 
@@ -1651,6 +1654,9 @@ where
                     Vec::new()
                 }
             };
+            // Until this device's one-off copy of legacy ignores onto the rows ran, an entry's
+            // own ignore flag still counts (T12.93, `crate::ignore_copy`); never after.
+            let legacy = !crate::ignore_copy::copied_tx(tx)?;
             let mut candidates: Vec<(&Speaker, &SpeakerIdentity)> = Vec::new();
             let mut other_models: BTreeSet<String> = BTreeSet::new();
             for identity in &previous {
@@ -1698,7 +1704,7 @@ where
                 .map(|(row, identity)| Candidate {
                     track: identity.track,
                     centroid: &identity.centroid,
-                    edited: identity.edited(row),
+                    edited: identity.edited(row, legacy),
                 })
                 .collect();
             let continued =
@@ -1711,7 +1717,7 @@ where
                 continued.iter().flatten().map(|(row, _)| row.id).collect();
             // A carried "Speaker N" the user chose is never given to a new speaker.
             for (row, identity) in continued.iter().flatten() {
-                if identity.edited(row)
+                if identity.edited(row, legacy)
                     && let Some(n) = speaker_number(&row.display_name)
                 {
                     next_unknown = next_unknown.max(n);
@@ -1755,7 +1761,7 @@ where
                 // follows this run's policy. A voice the user marked as themselves stays the
                 // Me row: its diarisation speaker stays a room voice, so nothing is enrolled.
                 if let Some((row, identity)) = earlier_speaker
-                    && identity.edited(row)
+                    && identity.edited(row, legacy)
                 {
                     let mut row = row.clone();
                     let role = if row.role == SpeakerRole::Me {
@@ -1763,8 +1769,13 @@ where
                     } else {
                         naming.role
                     };
-                    if row.role != role {
+                    // A legacy ignore (the entry's flag, before the one-off copy ran) moves onto
+                    // the continued row, where every computer reads it (T12.93); the row's own
+                    // flag is kept as it is.
+                    let moved_ignore = legacy && identity.ignored && !row.ignored;
+                    if row.role != role || moved_ignore {
                         row.role = role;
+                        row.ignored |= moved_ignore;
                         row.meta.touch(stamp.hlc, stamp.clock);
                         tx.put_speaker(row.clone())?;
                     }
@@ -1782,11 +1793,14 @@ where
                             // docs/voice-samples.md 5.2) still counts, so a re-save adds it
                             // nothing again.
                             enrolled: identity.enrolled,
-                            // An ignored voice stays ignored (T12.19).
-                            ignored: identity.ignored,
+                            // The ignore lives on the row (T12.93): never written here again.
+                            ignored: false,
                         });
                     }
                     row_ids[k] = Some(row.id);
+                    // The row's flag, by the one rule (an ignored voice stays ignored); a legacy
+                    // flag was moved onto the row above.
+                    let ignored = crate::edit::is_ignored(&row, &BTreeSet::new());
                     speakers.push(PostSpeaker {
                         id: row.id,
                         role,
@@ -1794,8 +1808,7 @@ where
                         person: row.person_id,
                         display_name: row.display_name,
                         speech: s.speech,
-                        // Kept only with its entry (a valid centroid), as the detail reads it.
-                        ignored: identity.ignored && s.centroid.is_valid(),
+                        ignored,
                     });
                     continue;
                 }
@@ -1833,12 +1846,15 @@ where
                 let row = match earlier_speaker {
                     Some((row, _)) => {
                         let mut row = row.clone();
-                        if (row.role, &row.display_name, row.person_id)
-                            != (naming.role, &display_name, person)
+                        // An un-edited row is not ignored (`edited` reads the flag), and a
+                        // voice this run names never is: the flag is cleared with the naming.
+                        if (row.role, &row.display_name, row.person_id, row.ignored)
+                            != (naming.role, &display_name, person, false)
                         {
                             row.role = naming.role;
                             row.display_name.clone_from(&display_name);
                             row.person_id = person;
+                            row.ignored = false;
                             row.meta.touch(stamp.hlc, stamp.clock);
                             tx.put_speaker(row.clone())?;
                         }
@@ -1937,7 +1953,7 @@ where
                     row.meta.touch(stamp.hlc, stamp.clock);
                     if previous
                         .iter()
-                        .any(|i| i.speaker == old.id && !i.edited(old))
+                        .any(|i| i.speaker == old.id && !i.edited(old, legacy))
                     {
                         restamped.push((old.id, row.meta.updated_at));
                     }

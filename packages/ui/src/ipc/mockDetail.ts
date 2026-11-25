@@ -341,7 +341,8 @@ export function newSpeakerCard(detail: MeetingDetail, id: string, role: MockRole
     sample_line: "",
     needs_name: true,
     ignored: false,
-    can_ignore: false,
+    // `edit::can_ignore`: any unnamed voice that is not the user (T12.93).
+    can_ignore: true,
     can_not_this_person: false,
     voice_saved_here: false,
     can_mark_me: false,
@@ -540,10 +541,8 @@ export function linked(detail: MeetingDetail, id: string, person: PersonItem): M
             needs_name: false,
             ignored: false,
             can_ignore: false,
-            // `edit::can_not_this_person`: not the user's row, not linked to the user, and a
-            // stored voice (the mock reads one from the voice's own offers before the link).
-            can_not_this_person:
-              s.kind === "Other" && !person.is_me && (s.can_ignore || s.can_not_this_person),
+            // `edit::can_not_this_person`: any linked voice that is not the user's (T12.93).
+            can_not_this_person: s.kind === "Other" && !person.is_me,
           }
         : s,
     ),

@@ -303,7 +303,11 @@ fn main() {
                 )));
                 let _ = std::thread::Builder::new()
                     .name("earshot-sync-start".into())
-                    .spawn(move || sync_for_start.start_if_on(&services));
+                    .spawn(move || {
+                        // The one-off copy of 0.4.2 ignores (T12.93): now only without a vault.
+                        sync_for_start.copy_ignores_without_vault(&services);
+                        sync_for_start.start_if_on(&services);
+                    });
             }
             app.manage(job_runner);
             let model_sink: model_jobs::ModelSink = emitter(app.handle());

@@ -411,6 +411,14 @@ fn run(
             Ok((report, outcome)) => (Some(report), Ok(outcome)),
             Err(panic) => (None, Err(panic)),
         };
+        // After the first completed pull, so an edit another computer made is already here
+        // (T12.93): this device's legacy ignores go onto the speaker rows, once. A failure or a
+        // panic is the next completed pull's to retry; it never ends sync.
+        if matches!(&ticked, Ok(Ok(()))) && tick_report.as_ref().is_some_and(|r| r.pull_complete) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                crate::ignore_copy::copy_once(&services)
+            }));
+        }
         let mut step_report = crate::offload::StepReport::default();
         if let Some(pair) = offload {
             // A store failure or a panic here is the next step's to retry; it never ends sync.

@@ -3058,3 +3058,287 @@ fn sync_a_malformed_pulled_sample_opens_as_no_row_with_its_entity_named() {
         assert_eq!(inc.entity.as_deref(), Some("voiceprint_sample"));
     }
 }
+
+// ---- T12.93: an ignored voice is ignored on every computer ----
+
+/// A meeting recorded and processed on `dev` (audio, a final transcript, identity entries).
+fn processed_on(dev: &Device, seed: u64) -> earshot_core::identity::EntityId {
+    use crate::host::tests::{fake_post, recorded};
+    let outcome = recorded(&dev.svc, seed);
+    let models = crate::backends::ModelDir::new(dev.svc.data.root().join("models"));
+    let (post_cancel, summary_cancel) = (
+        earshot_core::asr::CancelToken::new(),
+        earshot_core::asr::CancelToken::new(),
+    );
+    let run = crate::host::AfterMeeting {
+        models: &models,
+        model: "base.en",
+        order: &[crate::backends::Accelerator::Cpu],
+        post: true,
+        whole_pass: false,
+        summary: None,
+        no_summary: crate::host::SkipReason::NotRequested,
+        post_cancel: &post_cancel,
+        summary_cancel: &summary_cancel,
+        offload: None,
+        order_run: None,
+    };
+    let result = crate::host::after_meeting_with(&dev.svc, &outcome, &run, fake_post, &mut |_| {});
+    assert!(
+        matches!(result.post, Ok(crate::host::HostPost::Done(_))),
+        "{:?}",
+        result.post
+    );
+    outcome.meeting
+}
+
+fn retranscribed_on(dev: &Device, m: earshot_core::identity::EntityId) -> crate::post::PostOutcome {
+    let cancel = earshot_core::asr::CancelToken::new();
+    let again = crate::edit::retranscribe_with(
+        &dev.svc,
+        m,
+        &cancel,
+        crate::host::tests::fake_post,
+        &mut |_| {},
+    )
+    .unwrap();
+    match again.post {
+        crate::host::HostPost::Done(outcome) => *outcome,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn speaker_row(
+    dev: &Device,
+    m: earshot_core::identity::EntityId,
+    id: earshot_core::identity::EntityId,
+) -> earshot_core::model::Speaker {
+    dev.svc
+        .store()
+        .speakers(m)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap()
+}
+
+fn voices(dev: &Device, m: earshot_core::identity::EntityId) -> Vec<earshot_core::model::Speaker> {
+    dev.svc
+        .store()
+        .speakers(m)
+        .unwrap()
+        .into_iter()
+        .filter(|s| !s.meta.deleted && s.role != earshot_core::diar::SpeakerRole::Me)
+        .collect()
+}
+
+/// Whether `dev` reads voice `id` of `m` as ignored, by the one rule.
+fn ignored_on(
+    dev: &Device,
+    m: earshot_core::identity::EntityId,
+    id: earshot_core::identity::EntityId,
+) -> bool {
+    let legacy = crate::edit::legacy_ignores(&dev.svc.store(), m).unwrap();
+    crate::edit::is_ignored(&speaker_row(dev, m, id), &legacy)
+}
+
+/// What 0.4.2 wrote for an ignore: the entry's flag on `dev`, the row untouched.
+fn legacy_ignore_on(
+    dev: &Device,
+    m: earshot_core::identity::EntityId,
+    id: earshot_core::identity::EntityId,
+) {
+    let key = crate::identities::record_key(m);
+    let mut db = dev.svc.store();
+    let bytes = db.local_value(key.as_str()).unwrap().unwrap();
+    let crate::identities::StoredIdentities::Record(mut record) = crate::identities::decode(&bytes)
+    else {
+        panic!("unreadable record");
+    };
+    // "Me" has no entry from a pass: give it one (a voice once marked in the room has one).
+    if !record.speakers.iter().any(|i| i.speaker == id) {
+        let mut copy = record.speakers[0].clone();
+        copy.speaker = id;
+        record.speakers.push(copy);
+    }
+    record
+        .speakers
+        .iter_mut()
+        .find(|i| i.speaker == id)
+        .unwrap()
+        .ignored = true;
+    crate::local::set(&mut db, &key, &crate::identities::encode(&record)).unwrap();
+}
+
+/// Each device pushes, then each pulls what the other sent.
+fn trade(a: &Device, b: &Device) {
+    a.client().tick().unwrap();
+    b.client().tick().unwrap();
+    a.client().tick().unwrap();
+}
+
+#[test]
+fn sync_an_ignore_on_one_computer_is_read_on_the_other_and_kept_through_a_retranscribe() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    // Recorded and processed on A, which holds the identity entries; B holds none.
+    let m = processed_on(&a, 930);
+    trade(&a, &b);
+    let v = voices(&b, m)[0].id;
+    assert!(
+        crate::edit::identities_in(&b.svc.store(), m)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(crate::edit::can_ignore(&speaker_row(&b, m, v)));
+
+    // Ignored on B (no entry there), read as ignored on A.
+    b.clock.advance_ms(1_000);
+    assert!(crate::edit::ignore_speaker(&b.svc, m, v).unwrap());
+    trade(&b, &a);
+    assert!(ignored_on(&a, m, v), "A reads B's ignore");
+    // A re-transcription on A keeps it: same row, unlinked, still ignored, and it goes back.
+    let outcome = retranscribed_on(&a, m);
+    assert!(outcome.speakers.iter().find(|p| p.id == v).unwrap().ignored);
+    assert!(ignored_on(&a, m, v));
+    trade(&a, &b);
+    assert!(ignored_on(&b, m, v));
+
+    // Un-ignored on B: A reads it as needing a name again.
+    b.clock.advance_ms(1_000);
+    assert!(crate::edit::unignore_speaker(&b.svc, m, v).unwrap());
+    trade(&b, &a);
+    assert!(!ignored_on(&a, m, v), "A reads B's un-ignore");
+    // An un-ignore made elsewhere does not re-stamp A's entry: A keeps the voice as a user
+    // edit (its label, unlinked), a kept name never a lost one.
+    let outcome = retranscribed_on(&a, m);
+    let carried = outcome.speakers.iter().find(|p| p.id == v).unwrap();
+    assert!(!carried.ignored && carried.person.is_none());
+
+    // "Not <name>" on B (no entry there either): A reads an unlinked, ignored "Speaker N".
+    let w = voices(&b, m).into_iter().find(|s| s.id != v).unwrap().id;
+    b.clock.advance_ms(1_000);
+    crate::edit::link_speaker(
+        &b.svc,
+        m,
+        w,
+        &crate::edit::PersonChoice::New {
+            name: "Rowan Invented".into(),
+        },
+    )
+    .unwrap();
+    // Read the row first: `speaker_row` takes the store lock itself.
+    let linked_w = speaker_row(&b, m, w);
+    assert!(crate::edit::can_not_this_person(&**b.svc.store(), &linked_w).unwrap());
+    crate::edit::not_this_person(&b.svc, m, w).unwrap();
+    trade(&b, &a);
+    let on_a = speaker_row(&a, m, w);
+    assert!(on_a.person_id.is_none() && on_a.display_name.starts_with("Speaker "));
+    assert!(ignored_on(&a, m, w), "A reads B's Not as an ignore");
+    assert_eq!(a.rows(), b.rows());
+}
+
+/// The one-off copy waits for the sync thread's first completed pull, so a name another
+/// computer gave a 0.4.2-ignored voice is pulled first and never overwritten; the copy runs
+/// once, honours the rule (linked, Me, tombstoned and deleted-meeting rows skipped) and its
+/// flags reach the other computer.
+#[test]
+fn sync_ignore_copy_runs_after_the_first_completed_pull_and_keeps_a_pulled_name() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = processed_on(&a, 931);
+    let gone_meeting = processed_on(&a, 932);
+    trade(&a, &b);
+    let remote = voices(&a, m);
+    let (named, kept) = (remote[0].id, remote[1].id);
+    let me = a
+        .svc
+        .store()
+        .speakers(m)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.role == earshot_core::diar::SpeakerRole::Me)
+        .unwrap()
+        .id;
+    // 0.4.2 on A: three ignores in this meeting kept only in entries, one in a meeting that is
+    // deleted before the copy.
+    for id in [named, kept, me] {
+        legacy_ignore_on(&a, m, id);
+    }
+    let in_gone = voices(&a, gone_meeting)[0].id;
+    legacy_ignore_on(&a, gone_meeting, in_gone);
+    assert!(ignored_on(&a, m, named) && ignored_on(&a, m, kept));
+    // Meanwhile B (already updated) names one of them.
+    b.clock.advance_ms(1_000);
+    crate::edit::link_speaker(
+        &b.svc,
+        m,
+        named,
+        &crate::edit::PersonChoice::New {
+            name: "Avery Invented".into(),
+        },
+    )
+    .unwrap();
+    b.client().tick().unwrap();
+    a.svc.delete_meeting(gone_meeting).unwrap();
+    // A tick alone copies nothing: only the thread's completed pull does.
+    let report = a.client().tick().unwrap();
+    assert!(report.pull_complete, "{report:?}");
+    assert!(!crate::ignore_copy::copied(&a.svc.store()).unwrap());
+
+    // With sync switched off nothing runs, and the copy keeps waiting.
+    set_sync_on(&a.svc, false).unwrap();
+    assert!(!crate::ignore_copy::copied(&a.svc.store()).unwrap());
+    set_sync_on(&a.svc, true).unwrap();
+
+    let thread = SyncThread::start(a.client(), quick()).unwrap();
+    wait_for("the copy after the first completed pull", || {
+        crate::ignore_copy::copied(&a.svc.store()).unwrap()
+    });
+    thread.stop();
+    let pulled = speaker_row(&a, m, named);
+    assert_eq!(
+        pulled.display_name, "Avery Invented",
+        "the pulled name stays"
+    );
+    assert!(pulled.person_id.is_some() && !pulled.ignored);
+    assert!(!ignored_on(&a, m, named));
+    assert!(speaker_row(&a, m, kept).ignored, "copied onto the row");
+    assert!(!speaker_row(&a, m, me).ignored, "never the user");
+    // After the copy the entry flag is never read again.
+    assert!(
+        crate::edit::legacy_ignores(&a.svc.store(), m)
+            .unwrap()
+            .is_empty()
+    );
+    // Once only.
+    assert_eq!(crate::ignore_copy::copy_once(&a.svc).unwrap(), 0);
+    // The copied flag reaches B, which never had the entry.
+    trade(&a, &b);
+    assert!(ignored_on(&b, m, kept));
+}
+
+/// Before the copy, a re-transcription honours a 0.4.2 entry flag and moves it onto the row,
+/// which reaches the other computer; un-ignore clears it.
+#[test]
+fn sync_ignore_legacy_flag_is_honoured_before_the_copy_and_travels_after_a_retranscribe() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let m = processed_on(&a, 933);
+    trade(&a, &b);
+    let v = voices(&a, m)[0].id;
+    legacy_ignore_on(&a, m, v);
+    assert!(!crate::ignore_copy::copied(&a.svc.store()).unwrap());
+    assert!(ignored_on(&a, m, v) && !ignored_on(&b, m, v));
+    let outcome = retranscribed_on(&a, m);
+    assert!(outcome.speakers.iter().find(|p| p.id == v).unwrap().ignored);
+    assert!(speaker_row(&a, m, v).ignored, "moved onto the row");
+    trade(&a, &b);
+    assert!(ignored_on(&b, m, v));
+    // Un-ignore on A clears both the row and the entry flag.
+    legacy_ignore_on(&a, m, v);
+    assert!(crate::edit::unignore_speaker(&a.svc, m, v).unwrap());
+    assert!(!ignored_on(&a, m, v));
+    trade(&a, &b);
+    assert!(!ignored_on(&b, m, v));
+}

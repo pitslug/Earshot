@@ -175,7 +175,7 @@ fn post_rerun_keeps_a_renamed_speaker_and_a_person_link() {
     // Still seen as edited by the next run: the record keeps what the pass gave.
     let record = identities_of(&svc, meeting);
     assert_eq!(record.len(), 2);
-    assert!(record.iter().all(|i| i.edited(&row(i.speaker))));
+    assert!(record.iter().all(|i| i.edited(&row(i.speaker), true)));
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn post_rerun_without_edits_renumbers_densely_and_keeps_the_rows() {
     // Renamed by the pass, not by the user: not an edit for the next run.
     let record = identities_of(&svc, meeting);
     assert_eq!(record.len(), 1);
-    assert!(!record[0].edited(live.iter().find(|s| s.id == voice2).unwrap()));
+    assert!(!record[0].edited(live.iter().find(|s| s.id == voice2).unwrap(), true));
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn post_rerun_keeps_a_speaker_renamed_back_to_its_automatic_name() {
         (entry.given_name.as_str(), entry.given_person),
         "the row reads as the pass left it"
     );
-    assert!(entry.edited(&row), "but it was edited");
+    assert!(entry.edited(&row, true), "but it was edited");
 
     let only_two = scene_audio(&[SceneTurn::new(2, 20_000, 30_000)], 45_000);
     let again = run_both(
@@ -427,7 +427,7 @@ fn post_rerun_keeps_a_speaker_renamed_back_to_its_automatic_name() {
         .unwrap();
     let record = identities_of(&svc, meeting);
     assert_eq!(record.len(), 1);
-    assert!(record[0].edited(&row));
+    assert!(record[0].edited(&row, true));
 }
 
 #[test]

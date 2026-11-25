@@ -90,27 +90,28 @@ pub struct SpeakerIdentity {
     /// record and the user's names with it.
     #[serde(default)]
     pub enrolled: bool,
-    /// The user chose to ignore this voice in this meeting (T12.19,
-    /// `earshot_runtime::edit::ignore_speaker`): it keeps its "Speaker N" label, no longer
-    /// needs a name, and is never enrolled or named as a person. A user edit of its own (the
-    /// row itself is not written, so un-ignoring leaves the pass's naming as it was), carried
-    /// by a re-run like any edit. Added within version 2 with a `false` default, as
-    /// [`SpeakerIdentity::enrolled`] was: an earlier version-2 reader ignores the field (it
-    /// loses only the choice, never a name), so the version stays 2.
+    /// A legacy ignore (T12.19 to 0.4.2): the user chose to ignore this voice when the choice
+    /// was kept here, device-locally. Since T12.93 the choice lives on the synced speaker row
+    /// (`earshot_core::model::Speaker::ignored`) and nothing writes this field true again; it
+    /// is read only until this device's one-off copy onto the rows has run
+    /// (`earshot_runtime::ignore_copy`), and never after. Added within version 2 with a
+    /// `false` default, as [`SpeakerIdentity::enrolled`] was.
     #[serde(default)]
     pub ignored: bool,
 }
 
 impl SpeakerIdentity {
     /// Whether `row` was changed after the pass that wrote this entry (module docs): a
-    /// carried edit, an ignored voice ([`SpeakerIdentity::ignored`]), a row written since the
-    /// pass ([`SpeakerIdentity::given_stamp`]; so a rename back to the automatic name is
-    /// still an edit), or, for entries without a stamp, a name or person different from what
-    /// the pass gave it.
+    /// carried edit, an ignored row (`Speaker::ignored`, or this entry's legacy flag
+    /// [`SpeakerIdentity::ignored`] while `legacy_ignores` holds, that is until the one-off
+    /// copy ran), a row written since the pass ([`SpeakerIdentity::given_stamp`]; so a rename
+    /// back to the automatic name is still an edit), or, for entries without a stamp, a name
+    /// or person different from what the pass gave it.
     #[must_use]
-    pub fn edited(&self, row: &earshot_core::model::Speaker) -> bool {
+    pub fn edited(&self, row: &earshot_core::model::Speaker, legacy_ignores: bool) -> bool {
         self.user_edited
-            || self.ignored
+            || row.ignored
+            || (legacy_ignores && self.ignored)
             || self.given_stamp.is_some_and(|s| row.meta.updated_at != s)
             || row.display_name != self.given_name
             || row.person_id != self.given_person

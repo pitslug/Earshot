@@ -465,7 +465,7 @@ fn put_segment(c: &Connection, row: &SegmentRow) -> Result<(), RepoError> {
 
 // ---- speaker ----
 
-const SPEAKER: [&str; 4] = ["meeting_id", "role", "display_name", "person_id"];
+const SPEAKER: [&str; 5] = ["meeting_id", "role", "display_name", "person_id", "ignored"];
 
 fn speaker_row(r: &Row<'_>) -> rusqlite::Result<Speaker> {
     Ok(Speaker {
@@ -475,6 +475,7 @@ fn speaker_row(r: &Row<'_>) -> rusqlite::Result<Speaker> {
         role: get_enum(r, REST + 1)?,
         display_name: r.get(REST + 2)?,
         person_id: get_opt_id(r, REST + 3)?,
+        ignored: r.get::<_, i64>(REST + 4)? != 0,
     })
 }
 
@@ -510,6 +511,7 @@ fn put_speaker(c: &Connection, s: &Speaker) -> Result<(), RepoError> {
             enum_name(&s.role)?,
             text(&s.display_name),
             opt_id(s.person_id),
+            Value::Integer(i64::from(s.ignored)),
         ],
     )?;
     exec(c, &upsert_sql("speaker", &synced_cols(&SPEAKER), "id"), &v)?;

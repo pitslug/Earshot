@@ -103,6 +103,7 @@ fn fixture() -> Fixture {
         role: SpeakerRole::Me,
         display_name: "Me".into(),
         person_id: None,
+        ignored: false,
     };
     let ada = Speaker {
         id: id(11),
@@ -111,6 +112,7 @@ fn fixture() -> Fixture {
         role: SpeakerRole::Remote,
         display_name: "Ada Lovelace".into(),
         person_id: Some(id(50)),
+        ignored: false,
     };
     let seg = |n: u8, sp: EntityId, start: u64, words: &[&str]| {
         let mut s = Segment::from_words(
