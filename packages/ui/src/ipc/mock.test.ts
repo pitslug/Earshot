@@ -528,3 +528,28 @@ describe("mock IPC, the offer to record a call (T12.86)", () => {
     expect(await createMockIpc().callStartOffer()).toBe(true);
   });
 });
+
+describe("mock summary seen (T14.51)", () => {
+  it("says a summary the list does not call new changed nothing, as the app does", async () => {
+    const plain = sampleMeetings(1_000).map((m) => ({ ...m, new_summary: false }));
+    const probe = createMockIpc({ meetings: plain, now: 1_000 });
+    const summarised: string[] = [];
+    for (const m of plain) if ((await probe.getMeeting(m.id)).summary !== null) summarised.push(m.id);
+    // The first meeting with a summary has a new one; the others' were seen.
+    const meetings = plain.map((m) => ({ ...m, new_summary: m.id === summarised[0] }));
+    const ipc = createMockIpc({ meetings, now: 1_000 });
+    const withSummary = [];
+    for (const m of meetings) {
+      const d = await ipc.getMeeting(m.id);
+      if (d.summary !== null) withSummary.push({ id: m.id, summary: d.summary.id, wasNew: m.new_summary });
+    }
+    expect(withSummary.some((m) => m.wasNew)).toBe(true);
+    expect(withSummary.some((m) => !m.wasNew)).toBe(true);
+    for (const m of withSummary) {
+      expect(await ipc.markSummarySeen(m.id, m.summary)).toBe(m.wasNew);
+      // Seen once: never a change again.
+      expect(await ipc.markSummarySeen(m.id, m.summary)).toBe(false);
+    }
+    expect((await ipc.listMeetings()).some((m) => m.new_summary)).toBe(false);
+  });
+});

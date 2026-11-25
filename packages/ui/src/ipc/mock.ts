@@ -1613,10 +1613,16 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     markSummarySeen: async (meeting, summary) => {
       const row = meetings.find((m) => m.id === meeting);
       if (row === undefined || detailOf(meeting).summary?.id !== summary) return false;
+      const wasNew = row.new_summary;
       row.new_summary = false;
-      if (seenSummaries.get(meeting) === summary) return false;
+      const seen = seenSummaries.get(meeting);
+      if (seen === summary) return false;
       seenSummaries.set(meeting, summary);
-      return true;
+      // A summary the list does not call new was seen already: the app marks every summary that
+      // existed at its first start (`summary_seen::mark_existing_once`), and every later one is new
+      // until shown. Saying "changed" for it made the window read its list again for nothing, at
+      // a moment no test or user chose (T14.51).
+      return wasNew || seen !== undefined;
     },
     exportMeeting: async (meeting) => {
       call("exportMeeting", meeting);
