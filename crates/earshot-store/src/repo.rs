@@ -1502,7 +1502,8 @@ pub(crate) fn synced_by_id(
 }
 
 /// [`synced_by_id`] that tells a row whose stored values do not convert (a damaged row: its
-/// check or a column's value refused) apart from any other store error: `Ok(Err(()))` for the
+/// check or a column's value refused, or text that is not UTF-8, as [`is_unreadable`] judges
+/// it for the store's own readers) apart from any other store error: `Ok(Err(()))` for the
 /// damaged row, `Err` for everything else.
 pub(crate) fn synced_by_id_or_damaged(
     c: &Connection,
@@ -1511,7 +1512,7 @@ pub(crate) fn synced_by_id_or_damaged(
 ) -> Result<Result<Option<crate::sync::SyncedRow>, ()>, RepoError> {
     match synced_by_id_raw(c, table, id) {
         Ok(row) => Ok(Ok(row)),
-        Err(e) if is_damaged(&e) => Ok(Err(())),
+        Err(e) if is_unreadable(&e) => Ok(Err(())),
         Err(e) => Err(storage(e)),
     }
 }
@@ -1545,7 +1546,7 @@ fn is_damaged(e: &rusqlite::Error) -> bool {
 }
 
 /// [`is_damaged`], or text that is not UTF-8: a row this crate's own readers leave out and
-/// count (T14.24, T14.26). The sync outbox keeps [`is_damaged`] alone.
+/// count (T14.24, T14.26), and the sync outbox and apply count the same way.
 fn is_unreadable(e: &rusqlite::Error) -> bool {
     is_damaged(e) || matches!(e, rusqlite::Error::Utf8Error(..))
 }
