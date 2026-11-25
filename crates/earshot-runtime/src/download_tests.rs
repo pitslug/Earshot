@@ -396,7 +396,7 @@ fn download_a_resumed_transfer_hashes_the_kept_part_once() {
 }
 
 #[test]
-fn download_a_200_answer_to_a_range_request_reads_nothing_back() {
+fn download_a_200_answer_to_a_range_request_reads_only_the_kept_part_once() {
     let b = body();
     let s = serve(
         b.clone(),
@@ -417,7 +417,54 @@ fn download_a_200_answer_to_a_range_request_reads_nothing_back() {
     disk_hashed();
     let (out, _) = fetch(&d, &s.url("/file.bin"), &dest, &exp);
     assert_eq!(out.unwrap(), Outcome::Downloaded { resumed_from: 0 });
-    assert_eq!(disk_hashed(), 0, "the kept bytes were not kept");
+    // The kept bytes are hashed once before asking; the 200 discards that hash, and the new
+    // file is hashed as it is written, never read back.
+    assert_eq!(disk_hashed(), 150_000);
+    assert_eq!(fs::read(&dest).unwrap(), b);
+}
+
+#[test]
+fn download_a_cancel_during_the_kept_part_hash_is_honoured_before_any_request() {
+    // A kept part of several hash pieces; the seam cancels after the first piece.
+    let size = 4 * KEPT_CHUNK;
+    let b: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+    let s = serve(b.clone(), Behaviour::default());
+    let d = downloader(local(&[s.port]));
+    let dir = TempDir::new("dl-hash-cancel");
+    let dest = dir.0.join("file.bin");
+    let kept = 3 * KEPT_CHUNK;
+    fs::write(part_path(&dest), &b[..kept]).unwrap();
+    let sum = sha(&b);
+    let exp = Expected {
+        sha256: &sum,
+        size: size as u64,
+    };
+    let cancel = CancelToken::new();
+    cancel_kept_hash_after(KEPT_CHUNK as u64, cancel.clone());
+    disk_hashed();
+    let out = d.fetch(&s.url("/file.bin"), &dest, &exp, &cancel, &mut |_, _| {});
+    let err = out.unwrap_err();
+    assert!(
+        matches!(err, DownloadError::Cancelled { done, total }
+            if done == kept as u64 && total == size as u64),
+        "{err:?}"
+    );
+    assert!(err.resumable());
+    assert_eq!(
+        disk_hashed(),
+        KEPT_CHUNK as u64,
+        "stopped at the next look, not the end"
+    );
+    assert!(s.ranges().is_empty(), "nothing was asked for");
+    assert_eq!(fs::read(part_path(&dest)).unwrap(), b[..kept]);
+    // The resume afterwards completes as before.
+    let (out, _) = fetch(&d, &s.url("/file.bin"), &dest, &exp);
+    assert_eq!(
+        out.unwrap(),
+        Outcome::Downloaded {
+            resumed_from: kept as u64
+        }
+    );
     assert_eq!(fs::read(&dest).unwrap(), b);
 }
 

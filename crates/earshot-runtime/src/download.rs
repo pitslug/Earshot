@@ -6,9 +6,17 @@
 //!   those or its `redirect_hosts` (the hosts' CDNs) on every redirect hop.
 //! - The body streams into `<dest>.part` ([`NetClient::open`], no `max_body` buffering).
 //!   The file is renamed to `dest` only after its size and SHA-256 match. The SHA-256 of a
-//!   transfer is computed as its bytes are written (a resume reads its kept bytes once
-//!   first), so a downloaded file is not read back to be verified (T14.36); a file or a
-//!   whole `.part` already on disk is read to be verified.
+//!   transfer is computed as its bytes are written; a resume hashes its kept bytes once,
+//!   before the request, in pieces that look at the cancel token (T14.36). A file or a whole
+//!   `.part` already on disk is read to be verified.
+//! - The accepted trade (T14.36): the digest is of the bytes as written (the writer is
+//!   flushed and synced before the rename), not a read-back, so a disk that changed them on
+//!   the way is not caught here. The update installer, the CUDA parts, extracted archives and
+//!   the ONNX Runtime library are hashed again before use; model weights are not read back
+//!   after writing.
+//! - xtask's `download::fetch` follows the same rules with the same outcomes but reads the
+//!   finished file back to hash it; that difference is deliberate (a developer tool, no
+//!   multi-GB resumes to save).
 //! - A leftover `.part` is resumed with `Range: bytes=<have>-`. A 206 is trusted only when
 //!   its `Content-Range` starts at exactly `have`; a 200 restarts the file; any other
 //!   status fails. A `.part` larger than the expected size is deleted first.
@@ -419,15 +427,44 @@ fn hex_digest(hasher: Sha256) -> String {
         })
 }
 
-/// A hasher holding the first `have` bytes of `part`, the bytes a resume keeps: they are read
-/// once here, and the transfer adds what it writes after them.
-fn hash_kept(part: &Path, have: u64) -> Result<Sha256, DownloadError> {
+/// How much of a kept part [`hash_kept`] reads between two looks at the cancel token.
+const KEPT_CHUNK: usize = 1 << 20;
+
+// A test seam: cancel the given token once this thread's kept-part hash has read this many
+// bytes, so a test can cancel in the middle of the hash without timing.
+#[cfg(test)]
+thread_local!(static CANCEL_KEPT_AFTER: std::cell::RefCell<Option<(u64, CancelToken)>> =
+    const { std::cell::RefCell::new(None) });
+
+/// Makes the next kept-part hash on this thread cancel `token` after `bytes` (tests only).
+#[cfg(test)]
+fn cancel_kept_hash_after(bytes: u64, token: CancelToken) {
+    CANCEL_KEPT_AFTER.with(|c| *c.borrow_mut() = Some((bytes, token)));
+}
+
+/// A hasher holding the first `have` bytes of `part` (of `total`), the bytes a resume keeps:
+/// they are read once, before the request is sent, in [`KEPT_CHUNK`] pieces with a look at
+/// `cancel` before each, and the transfer adds what it writes after them. Nothing is written.
+///
+/// # Errors
+/// [`DownloadError::Cancelled`] (the `.part` untouched), or a read error.
+fn hash_kept(
+    part: &Path,
+    have: u64,
+    total: u64,
+    cancel: &CancelToken,
+) -> Result<Sha256, DownloadError> {
     use std::io::Read as _;
     let read = io_err(|| format!("read {}", part.display()));
     let mut kept = File::open(part).map_err(read)?.take(have);
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 1 << 20];
+    let mut buffer = vec![0u8; KEPT_CHUNK];
+    #[cfg(test)]
+    let mut hashed = 0u64;
     loop {
+        if cancel.is_cancelled() {
+            return Err(DownloadError::Cancelled { done: have, total });
+        }
         let n = kept
             .read(&mut buffer)
             .map_err(io_err(|| format!("read {}", part.display())))?;
@@ -436,7 +473,19 @@ fn hash_kept(part: &Path, have: u64) -> Result<Sha256, DownloadError> {
         }
         hasher.update(&buffer[..n]);
         #[cfg(test)]
-        count_hashed_from_disk(n as u64);
+        {
+            count_hashed_from_disk(n as u64);
+            hashed += n as u64;
+            CANCEL_KEPT_AFTER.with(|c| {
+                if c.borrow()
+                    .as_ref()
+                    .is_some_and(|(after, _)| hashed >= *after)
+                    && let Some((_, token)) = c.borrow_mut().take()
+                {
+                    token.cancel();
+                }
+            });
+        }
     }
     Ok(hasher)
 }
@@ -523,7 +572,17 @@ async fn download_each_chunk(
     // needed no request is verified from disk.
     let mut written_digest = None;
     if requested {
-        let (from, digest) = transfer(client, url, &part, have, exp.size, cancel, progress).await?;
+        // A resume's kept bytes are hashed before the request is sent, so no response waits
+        // on a long local read; an answer that restarts the file (200) discards this hasher.
+        let kept = Kept {
+            bytes: have,
+            hash: if have > 0 {
+                hash_kept(&part, have, exp.size, cancel)?
+            } else {
+                Sha256::new()
+            },
+        };
+        let (from, digest) = transfer(client, url, &part, kept, exp.size, cancel, progress).await?;
         resumed_from = from;
         written_digest = Some(digest);
     }
@@ -548,18 +607,25 @@ async fn download_each_chunk(
     })
 }
 
-/// One request into `part`, which holds `have` of `total` bytes. Returns the offset the
-/// body started at and the lower-case hex SHA-256 of the whole `part` it leaves: hashed as
-/// it is written, after the kept bytes of a resume, which are read once ([`hash_kept`]).
+/// The bytes a `.part` already holds and their hash ([`hash_kept`]; empty for none).
+struct Kept {
+    bytes: u64,
+    hash: Sha256,
+}
+
+/// One request into `part`, which holds `kept.bytes` of `total` bytes. Returns the offset the
+/// body started at and the lower-case hex SHA-256 of the whole `part` it leaves: hashed as it
+/// is written, after `kept.hash` on a 206, from empty on a 200.
 async fn transfer(
     client: &NetClient,
     url: &Url,
     part: &Path,
-    have: u64,
+    kept: Kept,
     total: u64,
     cancel: &CancelToken,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<(u64, String), DownloadError> {
+    let have = kept.bytes;
     let shown = redact(url);
     let mut req = NetRequest::get(url.clone()).timeout(transfer_deadline(total));
     if have > 0 {
@@ -595,11 +661,8 @@ async fn transfer(
         200 => 0,
         _ => return Err(DownloadError::Status { url: shown, status }),
     };
-    let mut hasher = if start > 0 {
-        hash_kept(part, start)?
-    } else {
-        Sha256::new()
-    };
+    // A 206 continues the kept bytes' hash; a 200 starts the file, and its hash, again.
+    let mut hasher = if start > 0 { kept.hash } else { Sha256::new() };
     let file = if start > 0 {
         OpenOptions::new().append(true).open(part)
     } else {
