@@ -128,7 +128,7 @@ export function SettingsView({
         ) : section === "Summaries" ? (
           <SummariesPage models={models} />
         ) : section === "Dictionary" ? (
-          <DictionaryPage />
+          <DictionaryPage onOpenPeople={() => setSection("People")} />
         ) : section === "People" ? (
           <PeoplePage />
         ) : section === "Sync" ? (

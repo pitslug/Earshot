@@ -20,7 +20,7 @@ import {
 } from "./ipc";
 import { isLocalHost } from "./localHost";
 import type { SampleMachine } from "./mockModels";
-import { peopleLeftOut, peopleOf } from "./mockWords";
+import { peopleLeftOut } from "./mockWords";
 import type { SummaryStyleView, SummaryTemplateOption } from "./summaryStyle";
 import type { SummaryVocabularyAdded, SummaryVocabularyView } from "./summaryVocabulary";
 
@@ -64,8 +64,7 @@ export function notInUseNote(n: number): string | null {
   return table.messages.not_in_use.many.replace("{n}", String(n));
 }
 
-/** What the Dictionary page says about `n` saved names left out of its Saved people list (the
- * app's copy, `summary_vocabulary::people_left_out_note`, T12.91a); `null` for none. */
+/** What the Dictionary page says about `n` saved names never given to a summary (the app's copy, `summary_vocabulary::people_left_out_note`, T12.91a); `null` for none. */
 export function peopleLeftOutNote(n: number): string | null {
   if (n <= 0) return null;
   if (n === 1) return table.messages.people_left_out.one;
@@ -364,7 +363,6 @@ export function createSummariesMock(
     max_chars: MAX_VOCABULARY_CHARS,
     not_in_use: notInUse,
     not_in_use_note: notInUseNote(notInUse),
-    people: peopleOf(vocabulary, persons()),
     people_left_out: peopleLeftOut(persons()),
     people_left_out_note: peopleLeftOutNote(peopleLeftOut(persons())),
   });

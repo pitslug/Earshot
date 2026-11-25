@@ -2492,13 +2492,7 @@ export type SummaryVocabularyView = {
 	/**  What the page says about them ([`not_in_use_note`]); `None` when every word is in use. */
 	not_in_use_note: string | null,
 	/**
-	 *  Every saved person's name a summary may be given (T12.91,
-	 *  `earshot_runtime::word_choices::summary_people`): shown read only; each request
-	 *  carries only the names that match what was said.
-	 */
-	people: string[],
-	/**
-	 *  Saved names left out of `people` for what they hold (a control or invisible formatting
+	 *  Saved names left out for what they hold (a control or invisible formatting
 	 *  character, such as a zero-width joiner, or more than 100 characters; T12.91a,
 	 *  `earshot_runtime::word_choices::people_left_out`): never given to a summary.
 	 */
