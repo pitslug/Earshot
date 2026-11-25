@@ -498,9 +498,13 @@ describe("MeetingDetailView", () => {
     it("keeps the button when a re-summary is refused: the old summary stays", async () => {
       const { user, ipc } = await setup();
       await screen.findByText(/TL;DR/);
-      // A refused start: no job runs, the old summary stays.
+      // A refused start: no job runs, the old summary stays. The refusal reads as Rust sent it.
       ipc.resummarise = async () => {
-        throw new IpcFailure({ kind: "busy", message: "busy", retryable: true });
+        throw new IpcFailure({
+          kind: "busy",
+          message: "This meeting is already being re-transcribed or re-summarised.",
+          retryable: true,
+        });
       };
       await user.click(screen.getByRole("button", { name: "Re-summarise" }));
       await screen.findByText(/already being re-transcribed or re-summarised/);
@@ -842,7 +846,7 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     return s;
   }
 
-  it("underlines the suggested word only, and Tab reaches it", async () => {
+  it("underlines the suggested word only, and the keyboard reaches it from its line", async () => {
     const { user } = await transcript();
     const mark = screen.getByRole("button", { name: "Suggestion for Reed" });
     expect(marks()).toEqual([mark]);
@@ -850,9 +854,11 @@ describe("MeetingDetailView, suggested words (T12.15e)", () => {
     expect(mark).toHaveTextContent(/^Reed$/);
     expect(mark).toHaveAttribute("data-word-mark", "suggestion");
     expect(lineCell().textContent).toBe(LINE8_TEXT);
-    // Line 7's last control is its More button (T12.90).
-    screen.getByRole("button", { name: "More actions for line 7" }).focus();
-    await user.tab();
+    // The transcript is one tab stop (T14.19): from line 7 down to line 8, then right to its
+    // first control, the mark.
+    const rows = within(screen.getByRole("table", { name: "Transcript" })).getAllByRole("row");
+    rows[6].focus();
+    await user.keyboard("{ArrowDown}{ArrowRight}");
     expect(mark).toHaveFocus();
   });
 

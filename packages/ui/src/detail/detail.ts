@@ -123,14 +123,12 @@ export function recognised(s: SpeakerCard): boolean {
   return s.source === "Voiceprint";
 }
 
-/** Plain copy for a failed call. */
+/** Plain copy for a failed call. A `busy` refusal says what is busy in Rust's own fixed copy
+ * (a job of this meeting, the model check, the benchmark, ...), so it is shown as sent. */
 export function failureText(e: unknown): string {
   if (e instanceof IpcFailure) {
     if (e.error.kind === "meeting_busy") {
       return "This meeting is busy: it is being recorded, processed or deleted. Try again when that has finished.";
-    }
-    if (e.error.kind === "busy") {
-      return "This meeting is already being re-transcribed or re-summarised.";
     }
     return e.error.message;
   }

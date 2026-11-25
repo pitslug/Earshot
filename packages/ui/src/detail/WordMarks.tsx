@@ -259,6 +259,10 @@ function WordMark(props: MarkProps) {
           {...{ [WORD_ATTRIBUTE]: props.word }}
           aria-label={name}
           className={mergeClasses(styles.mark, props.kind === "suggestion" ? styles.suggestion : styles.changed)}
+          // Reached from its line with the arrow keys, not by Tab: the transcript is one tab
+          // stop (T14.19, `LINE_CONTROL`).
+          tabIndex={-1}
+          data-line-control=""
         >
           {props.label ?? props.word}
         </button>

@@ -8,6 +8,7 @@ import { Profiler } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as detailModule from "../detail/detail";
+import { FIND_PAUSE_MS } from "../detail/findMatches";
 import {
   type Ipc,
   IpcProvider,
@@ -259,14 +260,17 @@ describe("render cost", () => {
     expect(holding).toHaveLength(1);
     await s.user.click(box);
     await s.user.paste("carry");
+    await act(async () => s.timer.advance(FIND_PAUSE_MS));
     expect(rowTimeSpy.mock.calls.map(([ms]) => ms)).toEqual([holding[0].start_ms]);
     // Its match goes: it renders again, and still no other line.
     rowTimeSpy.mockClear();
     await s.user.type(box, "x");
+    await act(async () => s.timer.advance(FIND_PAUSE_MS));
     expect(rowTimeSpy.mock.calls.map(([ms]) => ms)).toEqual([holding[0].start_ms]);
     // Typing on with no match anywhere renders nothing.
     rowTimeSpy.mockClear();
     await s.user.type(box, "yz");
+    await act(async () => s.timer.advance(FIND_PAUSE_MS));
     expect(rowTimeSpy).not.toHaveBeenCalled();
 
     // A speaker's turns: stepping renders the turn it leaves and the one it reaches, not the
@@ -293,8 +297,10 @@ describe("render cost", () => {
     expect(matching).toHaveLength(1);
     expect(theirs.length - matching.length).toBeGreaterThan(1);
     await s.user.type(box, word);
+    await act(async () => s.timer.advance(FIND_PAUSE_MS));
     rowTimeSpy.mockClear();
     await s.user.type(box, "s");
+    await act(async () => s.timer.advance(FIND_PAUSE_MS));
     expect(rowTimeSpy.mock.calls.map(([ms]) => ms)).toEqual([matching[0].start_ms]);
   });
 });

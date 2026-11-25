@@ -2656,13 +2656,13 @@ Lane ui-shell (`packages/ui/src/shell`, `meeting`, `apps/desktop/src/main.tsx`):
 
 Lane ui-detail (`packages/ui/src/detail`):
 
-- [ ] T14.17 Detail page correctness
+- [x] T14.17 Detail page correctness
   - do: a `busy` refusal shows the message Rust sent; `reload` drops an answer older than the newest request; `summaryHelpers` is asked when the menu opens, never on mount; find waits a short pause and needs two characters for text.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
-- [ ] T14.18 Long transcripts stay cheap to edit
+- [x] T14.18 Long transcripts stay cheap to edit
   - do: `reload` keeps unchanged row, word-list and movable objects by `segment_id` so memoised lines skip; off-screen lines use `content-visibility: auto` with a size hint; render-cost tests for an edit on a 50-line transcript (only the edited line renders).
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; the preview judged in light and dark
-- [ ] T14.19 Keyboard reach in a long transcript
+- [x] T14.19 Keyboard reach in a long transcript
   - do: opening the Speakers panel by its button moves focus into it; transcript lines are one tab stop with arrow keys between lines (roving tabindex), each line's buttons reached from the line.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
 
