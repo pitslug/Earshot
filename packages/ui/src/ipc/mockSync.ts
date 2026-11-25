@@ -58,6 +58,15 @@ export const SECRET_MISSING = table.secret_missing;
 /** What the app says when the last sync skipped damaged queued items (T12.77b8). */
 export const UNSENDABLE_NOTE = table.unsendable_note;
 
+/** What the app says when the last sync left `count` queued items unsent because they cannot be
+ * sealed (too large, or holding an audio file's signature; T14.43, `sync_settings::refused_note`):
+ * null for none. */
+export function refusedNote(count: number): string | null {
+  if (count <= 0) return null;
+  if (count === 1) return table.refused_note.one;
+  return table.refused_note.many.replace("{count}", () => String(count));
+}
+
 /** What the app says about an address over `MAX_ADDRESS_CHARS` (Rust's copy, not in the table). */
 export const ADDRESS_TOO_LONG = "The address is too long.";
 
@@ -108,6 +117,8 @@ export interface SyncMockData {
   unreadable?: number;
   /** Whether the last sync skipped damaged queued rows (default false). */
   unsendable?: boolean;
+  /** Queued rows the last sync could not seal and left unsent (default 0, T14.43). */
+  refused?: number;
   /** The vault's devices (default: this computer and three others). */
   devices?: SyncDeviceView[];
   /** "Write summaries for my other computers" (default false). */
@@ -288,6 +299,7 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     unreadable,
     waiting,
     unsendable_note: data.unsendable === true ? UNSENDABLE_NOTE : null,
+    refused_note: refusedNote(data.refused ?? 0),
     held,
     offers_summaries: offersSummaries,
     device_name: deviceName,

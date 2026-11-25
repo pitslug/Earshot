@@ -173,6 +173,29 @@ describe("the Sync page", () => {
     expect(screen.queryByText(table.unsendable_note)).toBeNull();
   });
 
+  it("says how many items could not be synced, with the count (T14.43)", async () => {
+    await setup({ setUp: true, refused: 3 });
+    await screen.findByRole("switch", { name: "Sync is on" });
+    const note = table.refused_note.many.replace("{count}", () => "3");
+    expect(note).toContain("3 items");
+    expect(note).not.toContain("{count}");
+    expect(screen.getByText(note)).toBeInTheDocument();
+    expect(screen.queryByText(table.refused_note.one)).toBeNull();
+  });
+
+  it("words one item that could not be synced in the singular", async () => {
+    await setup({ setUp: true, refused: 1 });
+    await screen.findByRole("switch", { name: "Sync is on" });
+    expect(table.refused_note.one.startsWith("1 item ")).toBe(true);
+    expect(screen.getByText(table.refused_note.one)).toBeInTheDocument();
+  });
+
+  it("says nothing about items that could not be synced when there are none", async () => {
+    await setup({ setUp: true, waiting: 2 });
+    await screen.findByRole("switch", { name: "Sync is on" });
+    expect(screen.queryByText(/cannot be synced/)).toBeNull();
+  });
+
   it("turns sync off and voiceprints on at once", async () => {
     const { user, calls } = await setup({ setUp: true, waiting: 3 });
     const on = await screen.findByRole("switch", { name: "Sync is on" });

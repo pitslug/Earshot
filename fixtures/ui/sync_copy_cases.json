@@ -1,5 +1,5 @@
 {
-  "_comment": "Sync page copy (T11.3a). problems: the last sync's status, by word. command_problems: a button press that failed, by word (nothing retries those). Pinned to sync_settings::problem_copy and command_copy by the desktop's tests and read by the UI mock. Shipped with the app: public copy only. device_name_too_long: the refusal of a computer name over 64 characters (T11.3db). remove_other: removing another computer from its row (T11.6c); {device} is the row's name, not_another is sync_settings::NOT_ANOTHER_DEVICE. unsendable_note: shown under the status when the last sync skipped queued items it could not read (damaged), which are then not counted as waiting (T12.77b8; sync_settings::UNSENDABLE_NOTE).",
+  "_comment": "Sync page copy (T11.3a). problems: the last sync's status, by word. command_problems: a button press that failed, by word (nothing retries those). Pinned to sync_settings::problem_copy and command_copy by the desktop's tests and read by the UI mock. Shipped with the app: public copy only. device_name_too_long: the refusal of a computer name over 64 characters (T11.3db). remove_other: removing another computer from its row (T11.6c); {device} is the row's name, not_another is sync_settings::NOT_ANOTHER_DEVICE. unsendable_note: shown under the status when the last sync skipped queued items it could not read (damaged), which are then not counted as waiting (T12.77b8; sync_settings::UNSENDABLE_NOTE). refused_note: shown under the status when the last sync left queued items unsent because they cannot be sealed (over the size limit, or holding an audio file's signature), which are then not counted as waiting either (T14.43; sync_settings::refused_note); one for a count of 1, many with {count} filled.",
   "problems": {
     "unreachable": "The sync server could not be reached. Earshot will try again.",
     "server": "The sync server gave an answer Earshot does not understand. Earshot will try again.",
@@ -43,6 +43,10 @@
   ],
   "secret_missing": "Enter the server's setup secret.",
   "unsendable_note": "Some items on this computer are damaged and could not be sent, so they were skipped. Everything else syncs as usual.",
+  "refused_note": {
+    "one": "1 item on this computer cannot be synced because it is too large or looks like audio, so it was not sent. Your other computers do not get it. Everything else syncs as usual.",
+    "many": "{count} items on this computer cannot be synced because they are too large or look like audio, so they were not sent. Your other computers do not get them. Everything else syncs as usual."
+  },
   "address_cases": [
     {
       "input": "",

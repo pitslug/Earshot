@@ -117,6 +117,37 @@ fn sync_copy_matches_the_shared_table_for_every_problem() {
     );
 }
 
+/// T14.43: the note for rows the last sync could not seal is the table's, with the count, and
+/// the page's view carries it only when there are some.
+#[test]
+fn sync_refused_note_is_the_tables_copy_with_the_count() {
+    let table = table();
+    let note = &table["refused_note"];
+    assert_eq!(refused_note(0), None);
+    assert_eq!(refused_note(1).as_deref(), note["one"].as_str());
+    let many = note["many"].as_str().unwrap();
+    assert!(many.starts_with("{count} items "), "{many}");
+    assert_eq!(refused_note(2), Some(many.replace("{count}", "2")));
+    assert_eq!(refused_note(1_204), Some(many.replace("{count}", "1204")));
+    for text in [refused_note(1).unwrap(), refused_note(7).unwrap()] {
+        assert!(!text.contains('{') && !text.contains("  "), "{text}");
+    }
+
+    let c = computer("sync-refused-view");
+    let overview = |refused: u64| {
+        let mut o = earshot_runtime::sync::sync_overview(&c.svc, &*c.vault).unwrap();
+        o.status.refused = refused;
+        o
+    };
+    assert_eq!(view_of(overview(0), false).refused_note, None);
+    assert_eq!(
+        view_of(overview(3), false).refused_note,
+        Some(many.replace("{count}", "3"))
+    );
+    let json = serde_json::to_string(&view_of(overview(1), false)).unwrap();
+    assert!(json.contains("\"refused_note\":\"1 item "), "{json}");
+}
+
 #[test]
 fn sync_address_refusals_match_the_shared_table() {
     for case in table()["address_cases"].as_array().unwrap() {

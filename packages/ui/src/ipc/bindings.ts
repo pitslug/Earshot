@@ -2592,10 +2592,18 @@ export type SyncView = {
 	stopped: boolean,
 	/**  Rows from other devices that could not be read, in all. */
 	unreadable: number,
-	/**  Rows changed here and not yet sent (damaged ones the last sync skipped left out). */
+	/**
+	 *  Rows changed here and not yet sent (damaged ones the last sync skipped and ones it could
+	 *  not seal left out).
+	 */
 	waiting: number,
 	/**  [`UNSENDABLE_NOTE`] when the last sync skipped damaged queued rows. */
 	unsendable_note: string | null,
+	/**
+	 *  [`refused_note`] when the last sync left queued rows unsent because they cannot be sealed
+	 *  (too large, or holding an audio file's signature): fixed copy with their count (T14.43).
+	 */
+	refused_note: string | null,
 	/**  Rows from other devices held for later. */
 	held: number,
 	/**  "Write summaries for my other computers" (T11.3db). */

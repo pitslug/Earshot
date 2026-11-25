@@ -597,6 +597,11 @@ pub struct SyncStatus {
     /// of the record when 0, so a status without any reads as before.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unsendable: u64,
+    /// Queued rows the last completed tick could not seal (over the size limit, or holding an
+    /// audio file's signature) and so left unsent; they stay queued and are refused again each
+    /// tick (T14.43). Left out of the record when 0, as [`Self::unsendable`] is.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub refused: u64,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
@@ -614,8 +619,9 @@ pub struct SyncOverview {
     pub settings: SyncSettings,
     /// The last tick's outcome.
     pub status: SyncStatus,
-    /// Rows changed here and not yet sent, the damaged ones ([`SyncStatus::unsendable`]) left
-    /// out.
+    /// Rows changed here and not yet sent, the damaged ones ([`SyncStatus::unsendable`]) and the
+    /// ones that cannot be sealed ([`SyncStatus::refused`]) left out: neither will go, and the
+    /// page says so in a note of its own.
     pub waiting: u64,
     /// Pulled rows held for later (a meeting in use, a missing parent, a newer format, a clock).
     pub held: u64,
@@ -635,10 +641,12 @@ pub fn sync_overview(
     let settings = sync_settings(&store)?;
     let status = sync_status(&store)?;
     // What the push would send now: a recording's rows and switched-off kinds are not behind,
-    // and damaged rows the last tick skipped are not waiting in the ordinary sense.
+    // and rows the last tick skipped as damaged or could not seal are not waiting in the
+    // ordinary sense (they will not go; the page says so beside the count).
     let waiting = store
         .outbox_len_except(&recording, settings.kinds())?
-        .saturating_sub(status.unsendable);
+        .saturating_sub(status.unsendable)
+        .saturating_sub(status.refused);
     Ok(SyncOverview {
         set_up,
         status,

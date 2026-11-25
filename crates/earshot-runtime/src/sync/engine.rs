@@ -47,7 +47,9 @@ pub struct TickReport {
     pub pushed: usize,
     /// Rows sent that the relay already held at the same or a later stamp.
     pub superseded: usize,
-    /// Rows left queued because they could not be sealed (over the size limit, or audio).
+    /// Rows left queued because they could not be sealed (over the size limit, or audio): each
+    /// such row once, however many push pages read it. Shown on the Sync page through
+    /// [`super::SyncStatus::refused`] (T14.43).
     pub refused: usize,
     /// Queued rows this device could not read to send (a damaged voice sample row), left
     /// queued and skipped; the most found in one push page.
@@ -587,6 +589,7 @@ impl SyncClient {
                     status.problem = None;
                     status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
                     status.unsendable = u64::try_from(report.unsendable).unwrap_or(u64::MAX);
+                    status.refused = u64::try_from(report.refused).unwrap_or(u64::MAX);
                 }
                 Err(p) => status.problem = Some(*p),
             }
@@ -619,6 +622,9 @@ impl SyncClient {
         // Queued rows that cannot be read (a damaged voice sample row) stay queued and are
         // reported, never sent: one damaged row never stops every push.
         let mut unreadable = 0;
+        // Rows that cannot be sealed stay queued too, so a later page of this tick reads them
+        // again: each is counted once.
+        let mut refused: BTreeSet<EntityId> = BTreeSet::new();
         let result = (|| {
             for _ in 0..MAX_PUSH_PAGES {
                 if self.stopping() {
@@ -645,7 +651,7 @@ impl SyncClient {
                     let sealed = match seal(keys, row) {
                         Ok(s) => s,
                         Err(SealError::Refused(_)) => {
-                            report.refused += 1;
+                            refused.insert(row.id());
                             continue;
                         }
                         Err(_) => return Err(SyncProblem::Internal),
@@ -667,6 +673,7 @@ impl SyncClient {
             Ok(())
         })();
         report.unsendable = unreadable;
+        report.refused = refused.len();
         result
     }
 

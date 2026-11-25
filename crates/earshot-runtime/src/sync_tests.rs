@@ -1185,6 +1185,7 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         problem: Some(SyncProblem::Unreachable),
         unreadable: 2,
         unsendable: 0,
+        refused: 0,
     };
     set_sync_status(&mut db, &status).unwrap();
     assert_eq!(
@@ -1202,6 +1203,18 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         b"\x01\x00\x00\x00{\"last_success_unix_ms\":5,\"problem\":\"unreachable\",\"unreadable\":2,\"unsendable\":3}"
     );
     assert_eq!(sync_status(&db).unwrap(), damaged);
+    // T14.43: rows that could not be sealed are in the record only when there are some, so a
+    // status without any reads and writes as before (and an older build ignores the field).
+    let refused = SyncStatus {
+        refused: 4,
+        ..status.clone()
+    };
+    set_sync_status(&mut db, &refused).unwrap();
+    assert_eq!(
+        db.local_value(SYNC_STATUS_KEY).unwrap().unwrap(),
+        b"\x01\x00\x00\x00{\"last_success_unix_ms\":5,\"problem\":\"unreachable\",\"unreadable\":2,\"refused\":4}"
+    );
+    assert_eq!(sync_status(&db).unwrap(), refused);
     // Another version, or bytes that do not read, are the defaults.
     db.set_local_value(SYNC_STATUS_KEY, b"\x02\x00\x00\x00{}")
         .unwrap();
@@ -3551,6 +3564,73 @@ fn sync_a_row_whose_parent_never_arrives_stays_held_and_is_counted() {
     assert_eq!(report.held, 1, "the orphan is still held: {report:?}");
     assert!(client.holds_rows_for_retry().unwrap());
     assert_eq!(a.rows(), b.rows(), "everything else applied");
+}
+
+// ---- T14.43: rows refused before sealing are counted and shown ----
+
+/// A row that cannot be sealed (here a meeting row over the size limit) stays queued and never
+/// goes. It is counted once per tick, however many push pages read it, kept in the status the
+/// Sync page reads and left out of "waiting to send"; everything else is sent. Once the row
+/// fits again it goes and the count clears.
+#[test]
+fn sync_rows_that_cannot_be_sealed_are_counted_once_and_are_not_waiting() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let big = meeting(&a.svc, "Planning", 1);
+    a.client().tick().unwrap();
+    a.clock.advance_ms(1_000);
+    a.rename(big, &"x".repeat(earshot_sync::MAX_PLAINTEXT + 1));
+    // More rows than one push page, all stamped after it: two pages read the refused row.
+    a.clock.advance_ms(1_000);
+    for seed in 0..30 {
+        meeting(&a.svc, "Invented later meeting", 100 + seed);
+    }
+    let ca = a.client();
+    let (r, outcome) = ca.tick_reporting();
+    assert!(outcome.is_ok(), "a refused row is not a problem: {r:?}");
+    assert!(r.pushed >= 240, "the rest went, past the first page: {r:?}");
+    assert_eq!(r.refused, 1, "once, though two push pages read it: {r:?}");
+    assert_eq!(sync_status(&a.svc.store()).unwrap().refused, 1);
+    assert_eq!(a.svc.store().outbox_len().unwrap(), 1, "it stays queued");
+    let view = sync_overview(&a.svc, &*a.vault).unwrap();
+    assert_eq!((view.waiting, view.status.refused), (0, 1));
+    // The next tick refuses it again and says the same.
+    let r = ca.tick().unwrap();
+    assert_eq!((r.pushed, r.refused), (0, 1), "{r:?}");
+    assert_eq!(sync_status(&a.svc.store()).unwrap().refused, 1);
+    // The other computer has every other meeting and still the title from before.
+    b.client().tick().unwrap();
+    assert_eq!(b.title(big).as_deref(), Some("Planning"));
+    assert_eq!(b.svc.store().meetings().unwrap().len(), 31);
+    // Shortened, it goes; nothing is counted or left behind.
+    a.clock.advance_ms(1_000);
+    a.rename(big, "Planning, shorter");
+    let r = ca.tick().unwrap();
+    assert_eq!((r.pushed, r.refused), (1, 0), "{r:?}");
+    let view = sync_overview(&a.svc, &*a.vault).unwrap();
+    assert_eq!((view.waiting, view.status.refused), (0, 0));
+    b.client().tick().unwrap();
+    assert_eq!(b.title(big).as_deref(), Some("Planning, shorter"));
+}
+
+/// A tick that ends on a problem keeps the count the last completed tick found, as it keeps
+/// the damaged count.
+#[test]
+fn sync_a_failed_tick_keeps_the_refused_count_of_the_last_completed_one() {
+    let a = Device::new("sync-refused-kept");
+    let mut db = a.svc.store();
+    let before = SyncStatus {
+        refused: 2,
+        unsendable: 1,
+        ..SyncStatus::default()
+    };
+    set_sync_status(&mut db, &before).unwrap();
+    drop(db);
+    // No address is stored: the client cannot be made, and the thread records the problem.
+    record_problem(&a.svc, SyncProblem::Unreachable);
+    let after = sync_status(&a.svc.store()).unwrap();
+    assert_eq!((after.refused, after.unsendable), (2, 1));
+    assert_eq!(after.problem, Some(SyncProblem::Unreachable));
 }
 
 /// The retry at the start of each tick reads at most a page of held rows and goes on from its

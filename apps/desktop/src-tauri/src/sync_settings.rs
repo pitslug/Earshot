@@ -33,6 +33,25 @@ pub const SYNC_ERROR_KIND: &str = "sync";
 /// sample row); names no content (`unsendable_note` in `fixtures/ui/sync_copy_cases.json`).
 pub const UNSENDABLE_NOTE: &str = "Some items on this computer are damaged and could not be sent, so they were skipped. Everything else syncs as usual.";
 
+/// Shown when the last sync left one queued item unsent because it cannot be sealed (T14.43:
+/// over the size limit, or holding an audio file's signature); names no content
+/// (`refused_note.one` in `fixtures/ui/sync_copy_cases.json`).
+pub const REFUSED_NOTE_ONE: &str = "1 item on this computer cannot be synced because it is too large or looks like audio, so it was not sent. Your other computers do not get it. Everything else syncs as usual.";
+
+/// [`REFUSED_NOTE_ONE`] for more than one item; `{count}` is the number (`refused_note.many`).
+pub const REFUSED_NOTE_MANY: &str = "{count} items on this computer cannot be synced because they are too large or look like audio, so they were not sent. Your other computers do not get them. Everything else syncs as usual.";
+
+/// The note for `count` queued items the last sync could not seal ([`REFUSED_NOTE_ONE`],
+/// [`REFUSED_NOTE_MANY`]); `None` for none. Fixed copy and a count, never what an item holds.
+#[must_use]
+pub fn refused_note(count: u64) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(REFUSED_NOTE_ONE.to_owned()),
+        n => Some(REFUSED_NOTE_MANY.replace("{count}", &n.to_string())),
+    }
+}
+
 /// Fixed copy for each problem (the words in `fixtures/ui/sync_copy_cases.json`).
 #[must_use]
 pub fn problem_copy(problem: SyncProblem) -> &'static str {
@@ -371,10 +390,14 @@ pub struct SyncView {
     pub stopped: bool,
     /// Rows from other devices that could not be read, in all.
     pub unreadable: u64,
-    /// Rows changed here and not yet sent (damaged ones the last sync skipped left out).
+    /// Rows changed here and not yet sent (damaged ones the last sync skipped and ones it could
+    /// not seal left out).
     pub waiting: u64,
     /// [`UNSENDABLE_NOTE`] when the last sync skipped damaged queued rows.
     pub unsendable_note: Option<String>,
+    /// [`refused_note`] when the last sync left queued rows unsent because they cannot be sealed
+    /// (too large, or holding an audio file's signature): fixed copy with their count (T14.43).
+    pub refused_note: Option<String>,
     /// Rows from other devices held for later.
     pub held: u64,
     /// "Write summaries for my other computers" (T11.3db).
@@ -403,6 +426,7 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         unreadable: o.status.unreadable,
         waiting: o.waiting,
         unsendable_note: (o.status.unsendable > 0).then(|| UNSENDABLE_NOTE.to_owned()),
+        refused_note: refused_note(o.status.refused),
         held: o.held,
         offers_summaries: o.settings.offers_summaries,
         device_name: o.settings.device_name,
