@@ -49,14 +49,19 @@
 //!   passes `--disable` only for the names it lists ([`run_args`]): a feature it does not
 //!   list cannot be on. A list that cannot be read refuses the run
 //!   ([`CodexError::UnsupportedVersion`]) before anything is handed over.
-//! - Fail closed on features (T14.30): a feature the list shows enabled that is on neither
-//!   [`DISABLED_FEATURES`] nor the reviewed [`HARMLESS_FEATURES`] refuses the run
-//!   ([`CodexError::UnknownFeature`], `unknown_feature`) before anything is handed over,
-//!   because a newer Codex can add a tool-providing feature that would otherwise stay on
-//!   ([`check_features`]). Both lists were checked against codex-cli 0.169.0 (2026-11-14,
-//!   T12.46); on every Codex version change, re-check them against `codex features list`
-//!   (a new tool-providing feature must be added to the disable list, a renamed one fixed, and
-//!   a name joins the harmless list only with its reason).
+//! - Only the measured feature set runs (T14.30): Earshot runs Codex with exactly the
+//!   features that were on when it was measured ([`MEASURED_ON`], codex-cli 0.169.0) minus
+//!   [`DISABLED_FEATURES`], and turns off everything else the list shows on
+//!   ([`unmeasured_on`]): a feature a newer Codex adds or switches on is passed to `--disable`
+//!   too, so it is turned off rather than trusted, and the run goes ahead. How many were
+//!   turned off is [`CodexClient::unmeasured_turned_off`]. A feature whose stage reads
+//!   `removed` is not turned off (a judgement: a removed flag is taken to be inert). The
+//!   measured set is empirical, not reviewed feature by feature: real summary runs on 0.169.0
+//!   with these on completed with no tool item (`ToolRan` and `UnknownEvent` below would
+//!   have failed them). Re-capture `codex features list` on every Codex version change and
+//!   update both lists. Not covered: a harmful feature that reads off in the list yet acts,
+//!   and whatever a `removed`-stage flag still does; `ToolRan` and `UnknownEvent` remain the
+//!   last line of defence.
 //! - Tools that run anyway: any `item.started`/`item.completed` whose item type is not an
 //!   agent message, reasoning or an error (for example `command_execution`, `file_change`,
 //!   `mcp_tool_call`, `web_search`, or a type this version adds) fails the run with
@@ -193,41 +198,84 @@ pub const DISABLED_FEATURES: [&str; 29] = [
     "write_stdin_approval",
 ];
 
-/// Features that may stay on (T14.30): each reviewed as giving the model no tool, network or
-/// file access, with its reason beside it. Empty: no capture of `codex features list` in
-/// this repository says which other features are on by default or what they do, and a name
-/// that cannot be justified from such material does not go here (the review's rule). So any
-/// enabled feature outside [`DISABLED_FEATURES`] refuses the run ([`check_features`]) until a
-/// real list of the pinned CLI is reviewed and its harmless names are added here, each with
-/// its one-line reason. Re-check on every Codex version change.
-pub const HARMLESS_FEATURES: [&str; 0] = [];
+/// The features left on in the measured run (T14.30, module docs): every name `codex features
+/// list` of codex-cli 0.169.0 showed `true` (captured 2026-11-26), less [`DISABLED_FEATURES`].
+/// The reason is empirical, not a review of each feature: real summary runs on 0.169.0 with
+/// these on completed with no tool item (`ToolRan` and `UnknownEvent` would have failed them).
+/// No claim is made about what any one of them does. Re-capture on every Codex version change.
+pub const MEASURED_ON: [&str; 43] = [
+    "api_key_cyber_access_programs",
+    "api_key_model_discovery",
+    "auth_elicitation",
+    "bedrock_setup_wizard",
+    "browser_annotation_api",
+    "cli_daybreak",
+    "code_mode_host_grpc",
+    "code_mode_host_output_truncation",
+    "code_mode_interrupt",
+    "collaboration_modes",
+    "compaction_image_budget",
+    "content_item_kinds",
+    "deferred_tool_world_state",
+    "enable_request_compression",
+    "fast_mode",
+    "guardian_approval",
+    "guardian_include_additional_context",
+    "guardian_reuse_parent_compaction",
+    "in_app_chat",
+    "in_app_dictation",
+    "in_app_updates",
+    "in_app_voice",
+    "incremental_tools_legacy_gcp",
+    "instant_interrupt",
+    "item_ids",
+    "mcp_oauth_refresh_coordination",
+    "mentions_v2",
+    "plugin_sharing",
+    "prediction_preserve_parent_tools",
+    "realtime_conversation",
+    "reasoning_effort_override",
+    "resize_all_images",
+    "retain_client_tool_outputs",
+    "secret_auth_storage",
+    "sqlite",
+    "steer",
+    "terminal_resize_reflow",
+    "tool_search_always_defer_mcp_tools",
+    "tui_app_server",
+    "unbounded_connection_retries",
+    "unified_image_budget",
+    "untrusted_as_tool_output",
+    "worktrees",
+];
 
-/// One line of `codex features list`: a feature's name and whether it is on.
+/// One line of `codex features list`: a feature's name, stage and whether it is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedFeature {
     /// The feature's name (lower-case letters, digits, `_` and `.`).
     pub name: String,
+    /// Its stage, the words between name and state (`stable`, `under development`,
+    /// `removed`, ...).
+    pub stage: String,
     /// Whether the list shows it on (`true` in the last column).
     pub enabled: bool,
 }
 
-/// Whether a run may go ahead with the features `listed` (module docs): every enabled feature
-/// is on [`DISABLED_FEATURES`] (the run turns it off) or on [`HARMLESS_FEATURES`].
-///
-/// # Errors
-/// [`CodexError::UnknownFeature`] for any other enabled feature (its name is never kept: a
-/// fixed word only).
-pub fn check_features(listed: &[ListedFeature]) -> Result<(), CodexError> {
-    let unreviewed = listed.iter().any(|f| {
-        f.enabled
-            && !DISABLED_FEATURES.contains(&f.name.as_str())
-            && !HARMLESS_FEATURES.contains(&f.name.as_str())
-    });
-    if unreviewed {
-        Err(CodexError::UnknownFeature)
-    } else {
-        Ok(())
-    }
+/// The features `listed` shows on that the measured run did not have on (module docs): on,
+/// on neither [`DISABLED_FEATURES`] nor [`MEASURED_ON`], and not at stage `removed` (a
+/// judgement: a removed flag is taken to be inert). A run turns each off with `--disable`.
+#[must_use]
+pub fn unmeasured_on(listed: &[ListedFeature]) -> Vec<String> {
+    listed
+        .iter()
+        .filter(|f| {
+            f.enabled
+                && f.stage != "removed"
+                && !DISABLED_FEATURES.contains(&f.name.as_str())
+                && !MEASURED_ON.contains(&f.name.as_str())
+        })
+        .map(|f| f.name.clone())
+        .collect()
 }
 
 /// Prefix of the working folders.
@@ -379,9 +427,6 @@ pub enum CodexError {
     /// Codex printed an event Earshot does not know (a type outside [`KNOWN_EVENTS`], or an
     /// item event without its item): the run's reply is not used.
     UnknownEvent,
-    /// The CLI lists a feature turned on that is on neither [`DISABLED_FEATURES`] nor
-    /// [`HARMLESS_FEATURES`] (T14.30): nothing was handed to it.
-    UnknownFeature,
     /// The CLI could not be started (the reason from the operating system).
     Start(String),
     /// The CLI did not finish within the deadline and was stopped.
@@ -413,9 +458,9 @@ impl CodexError {
 
     /// A fixed lower-case name of the variant (for records that must hold no text):
     /// `not_installed`, `not_signed_in`, `sign_in_expired`, `access_denied`,
-    /// `prompt_too_long`, `unsupported_version`, `tool_ran`, `unknown_event`,
-    /// `unknown_feature`, `start`, `timed_out`, `output_incomplete`, `not_recorded`,
-    /// `bad_output`, `failed`.
+    /// `prompt_too_long`, `unsupported_version`, `tool_ran`, `unknown_event`, `start`,
+    /// `timed_out`,
+    /// `output_incomplete`, `not_recorded`, `bad_output`, `failed`.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
@@ -427,7 +472,6 @@ impl CodexError {
             Self::UnsupportedVersion => "unsupported_version",
             Self::ToolRan => "tool_ran",
             Self::UnknownEvent => "unknown_event",
-            Self::UnknownFeature => "unknown_feature",
             Self::Start(_) => "start",
             Self::TimedOut(_) => "timed_out",
             Self::OutputIncomplete => "output_incomplete",
@@ -464,9 +508,6 @@ impl fmt::Display for CodexError {
             ),
             Self::ToolRan => f.write_str(
                 "Codex used a tool, which Earshot does not allow, so its answer was not used",
-            ),
-            Self::UnknownFeature => f.write_str(
-                "this Codex version has a feature turned on that Earshot has not checked, so nothing was handed to it",
             ),
             Self::Start(e) => write!(f, "Codex could not be started: {e}"),
             Self::TimedOut(d) => write!(f, "Codex did not answer within {} s", d.as_secs()),
@@ -675,7 +716,7 @@ impl CodexCli {
     }
 
     /// The features the CLI lists (`codex features list`, which reads no content): what a
-    /// run may pass to `--disable` ([`run_args`]) and which are on ([`check_features`]).
+    /// run may pass to `--disable` ([`run_args`]) and which are on ([`unmeasured_on`]).
     ///
     /// # Errors
     /// The CLI cannot be run or times out (its own error); it fails or lists no feature in
@@ -757,6 +798,7 @@ pub fn features_of(out: &ChildOutput) -> Option<Vec<ListedFeature>> {
             (words.len() >= 3 && named && matches!(*last, "true" | "false")).then(|| {
                 ListedFeature {
                     name: (*name).to_owned(),
+                    stage: words[1..words.len() - 1].join(" "),
                     enabled: *last == "true",
                 }
             })
@@ -783,9 +825,10 @@ fn child_error(e: ChildError) -> CodexError {
 
 /// The arguments of a summary run after the CLI's leading ones (module docs): `model`
 /// `None` uses Codex's default; `--disable` for each of [`DISABLED_FEATURES`] that `listed`
-/// (the installed CLI's [`CodexCli::features`]) holds.
+/// (the installed CLI's [`CodexCli::features`]) holds, on or off, then for each of
+/// [`unmeasured_on`] (T14.30: none on codex-cli 0.169.0, so its arguments are unchanged).
 #[must_use]
-pub fn run_args(model: Option<&str>, listed: &[String]) -> Vec<OsString> {
+pub fn run_args(model: Option<&str>, listed: &[ListedFeature]) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "exec",
         "--json",
@@ -813,8 +856,14 @@ pub fn run_args(model: Option<&str>, listed: &[String]) -> Vec<OsString> {
     .collect();
     for f in DISABLED_FEATURES
         .into_iter()
-        .filter(|f| listed.iter().any(|l| l == f))
+        .filter(|f| listed.iter().any(|l| l.name == *f))
     {
+        args.push("--disable".into());
+        args.push(f.into());
+    }
+    // Names from the CLI's own list: lower-case letters, digits, `_` and `.` only
+    // ([`features_of`]), so never an option and never meeting text.
+    for f in unmeasured_on(listed) {
         args.push("--disable".into());
         args.push(f.into());
     }
@@ -921,6 +970,19 @@ impl CodexClient {
         Ok(read)
     }
 
+    /// How many features this client's runs turn off because the measured run did not have
+    /// them on ([`unmeasured_on`], T14.30): 0 until the feature list was read, and on the
+    /// measured Codex version. A host can tell the user once per run, with fixed copy, that a
+    /// newer Codex ran with its new features off; no host shows it yet (returned only).
+    #[must_use]
+    pub fn unmeasured_turned_off(&self) -> usize {
+        self.features
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_deref()
+            .map_or(0, |listed| unmeasured_on(listed).len())
+    }
+
     /// Sets (or clears) where handovers are reported as they happen; shared by clones.
     pub fn set_sink(&self, sink: Option<Arc<dyn HandoverSink<CodexError>>>) {
         *self.sink.lock().unwrap_or_else(PoisonError::into_inner) = sink;
@@ -949,11 +1011,9 @@ impl CodexClient {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
-        // What this CLI can turn off; nothing is handed over when it cannot be read, or when
-        // it shows a feature on that Earshot has not reviewed (T14.30).
-        let features = self.listed_features()?;
-        check_features(&features)?;
-        let listed: Vec<String> = features.into_iter().map(|f| f.name).collect();
+        // What this CLI can turn off; nothing is handed over when it cannot be read. Anything
+        // on that the measured run did not have is turned off too (T14.30).
+        let listed = self.listed_features()?;
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
@@ -1201,11 +1261,8 @@ mod tests {
 
     #[test]
     fn codex_run_args_hold_only_fixed_text_and_the_model() {
-        let all: Vec<String> = DISABLED_FEATURES.iter().map(|f| (*f).to_owned()).collect();
-        let s: Vec<String> = run_args(Some("gpt-5.6-luna"), &all)
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        let all = listed(&DISABLED_FEATURES, "stable", true);
+        let s = strings(&run_args(Some("gpt-5.6-luna"), &all));
         let pos = |flag: &str| s.iter().position(|a| a == flag).unwrap();
         assert_eq!(s[0], "exec");
         assert_eq!(s.last().unwrap(), "-", "the prompt only on standard input");
@@ -1274,15 +1331,9 @@ mod tests {
     #[test]
     fn codex_run_args_disable_only_what_the_cli_lists() {
         // An older CLI: none of the eight T12.46 names, plus a feature Earshot leaves alone.
-        let listed: Vec<String> = DISABLED_FEATURES[..21]
-            .iter()
-            .map(|f| (*f).to_owned())
-            .chain(["fast_mode".to_owned()])
-            .collect();
-        let s: Vec<String> = run_args(None, &listed)
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        let mut features = listed(&DISABLED_FEATURES[..21], "stable", true);
+        features.extend(listed(&["fast_mode"], "stable", true));
+        let s = strings(&run_args(None, &features));
         let disabled: Vec<&str> = s
             .windows(2)
             .filter(|w| w[0] == "--disable")
@@ -1300,16 +1351,17 @@ guardianv2.thread_context                removed            false
 WARNING: something
 
 ";
-        let feature = |name: &str, enabled: bool| ListedFeature {
+        let feature = |name: &str, stage: &str, enabled: bool| ListedFeature {
             name: name.into(),
+            stage: stage.into(),
             enabled,
         };
         assert_eq!(
             features_of(&output(listed, "", true)).unwrap(),
             [
-                feature("agent_message_board", false),
-                feature("apps", true),
-                feature("guardianv2.thread_context", false)
+                feature("agent_message_board", "under development", false),
+                feature("apps", "stable", true),
+                feature("guardianv2.thread_context", "removed", false)
             ]
         );
         assert_eq!(features_of(&output(listed, "", false)), None);
@@ -1323,29 +1375,202 @@ WARNING: something
         assert_eq!(features_of(&output("", "", true)), None);
     }
 
+    /// Every name `codex features list` of codex-cli 0.169.0 showed `true` (captured
+    /// 2026-11-26). Written out here, never read from the capture or the crate.
+    const ON_IN_0_169: [&str; 68] = [
+        "api_key_cyber_access_programs",
+        "api_key_model_discovery",
+        "apps",
+        "auth_elicitation",
+        "bedrock_setup_wizard",
+        "browser_annotation_api",
+        "cli_daybreak",
+        "code_mode_host",
+        "code_mode_host_grpc",
+        "code_mode_host_output_truncation",
+        "code_mode_interrupt",
+        "collaboration_modes",
+        "compaction_image_budget",
+        "content_item_kinds",
+        "daemon_auto_start",
+        "deferred_tool_world_state",
+        "enable_request_compression",
+        "fast_mode",
+        "goals",
+        "guardian_approval",
+        "guardian_include_additional_context",
+        "guardian_reuse_parent_compaction",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "in_app_chat",
+        "in_app_dictation",
+        "in_app_local_automation",
+        "in_app_updates",
+        "in_app_voice",
+        "incremental_tools",
+        "incremental_tools_legacy_gcp",
+        "instant_interrupt",
+        "item_ids",
+        "mcp_oauth_refresh_coordination",
+        "mentions_v2",
+        "multi_agent",
+        "plugin_sharing",
+        "plugins",
+        "prediction_preserve_parent_tools",
+        "realtime_conversation",
+        "reasoning_effort_override",
+        "remote_plugin",
+        "resize_all_images",
+        "retain_client_tool_outputs",
+        "secret_auth_storage",
+        "shell_snapshot",
+        "shell_tool",
+        "skill_mcp_dependency_install",
+        "skill_search",
+        "sleep_tool",
+        "sqlite",
+        "steer",
+        "system_proxy_fallback",
+        "terminal_resize_reflow",
+        "tool_call_mcp_elicitation",
+        "tool_search_always_defer_mcp_tools",
+        "tool_suggest",
+        "tui_app_server",
+        "unbounded_connection_retries",
+        "unified_exec",
+        "unified_exec_tty",
+        "unified_image_budget",
+        "untrusted_as_tool_output",
+        "view_image",
+        "workspace_dependencies",
+        "worktrees",
+        "write_stdin_approval",
+    ];
+
+    /// The disabled features 0.169.0 listed off (captured 2026-11-26).
+    const OFF_DISABLED_IN_0_169: [&str; 4] = [
+        "memories",
+        "browser_use",
+        "computer_use",
+        "plugin_discovery_prefetch",
+    ];
+
+    fn listed(names: &[&str], stage: &str, enabled: bool) -> Vec<ListedFeature> {
+        names
+            .iter()
+            .map(|n| ListedFeature {
+                name: (*n).to_owned(),
+                stage: stage.to_owned(),
+                enabled,
+            })
+            .collect()
+    }
+
+    fn strings(args: &[OsString]) -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
-    fn codex_an_enabled_feature_outside_both_lists_refuses_the_run() {
-        let feature = |name: &str, enabled: bool| ListedFeature {
-            name: name.into(),
-            enabled,
-        };
-        // Every disabled-list feature on, and an unknown one off: the run may go ahead.
-        let mut listed: Vec<ListedFeature> =
-            DISABLED_FEATURES.iter().map(|f| feature(f, true)).collect();
-        listed.push(feature("an_invented_feature", false));
-        assert_eq!(check_features(&listed), Ok(()));
-        for f in HARMLESS_FEATURES {
-            assert!(check_features(&[feature(f, true)]).is_ok(), "{f}");
+    fn codex_measured_and_disabled_lists_split_the_measured_on_set() {
+        for f in MEASURED_ON {
             assert!(!DISABLED_FEATURES.contains(&f), "{f} is on both lists");
         }
-        // The same unknown feature on: refused, with a fixed word and no name in the copy.
-        listed.push(feature("an_invented_feature", true));
-        let e = check_features(&listed).unwrap_err();
-        assert_eq!(e, CodexError::UnknownFeature);
-        assert_eq!(e.kind(), "unknown_feature");
-        assert!(!e.to_string().contains("an_invented_feature"), "{e}");
-        assert!(!e.is_retryable());
-        assert!(!e.needs_sign_in());
+        for f in ON_IN_0_169 {
+            let n =
+                usize::from(MEASURED_ON.contains(&f)) + usize::from(DISABLED_FEATURES.contains(&f));
+            assert_eq!(n, 1, "{f} must be in exactly one list");
+        }
+        for f in MEASURED_ON {
+            assert!(ON_IN_0_169.contains(&f), "{f} was not on when measured");
+        }
+        for f in DISABLED_FEATURES {
+            assert!(
+                ON_IN_0_169.contains(&f) || OFF_DISABLED_IN_0_169.contains(&f),
+                "{f} is not in the 0.169.0 list"
+            );
+        }
+    }
+
+    /// On codex-cli 0.169.0 the arguments are byte for byte what they were before T14.30:
+    /// every disabled feature it lists, in `DISABLED_FEATURES` order, and nothing else.
+    #[test]
+    fn codex_run_args_on_the_measured_version_are_unchanged() {
+        let text: String = ON_IN_0_169
+            .iter()
+            .map(|n| format!("{n:<40} stable             true\n"))
+            .chain(
+                OFF_DISABLED_IN_0_169
+                    .iter()
+                    .map(|n| format!("{n:<40} under development  false\n")),
+            )
+            .collect();
+        let features = features_of(&output(&text, "", true)).unwrap();
+        assert!(unmeasured_on(&features).is_empty());
+        let mut want: Vec<String> = [
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--color",
+            "never",
+            "-s",
+            "read-only",
+            "-c",
+            "approval_policy=\"never\"",
+            "-c",
+            "web_search=\"disabled\"",
+            "-c",
+            "project_doc_max_bytes=0",
+            "-c",
+            "skills.max_context_tokens=1",
+            "-c",
+            "history.persistence=\"none\"",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        for f in DISABLED_FEATURES {
+            want.push("--disable".into());
+            want.push(f.into());
+        }
+        want.extend(["-m".to_owned(), "gpt-5.6-luna".to_owned(), "-".to_owned()]);
+        assert_eq!(strings(&run_args(Some("gpt-5.6-luna"), &features)), want);
+    }
+
+    /// A feature a newer Codex switches on is turned off after the known ones; one listed
+    /// off, a removed one and the measured ones are left alone.
+    #[test]
+    fn codex_features_the_measured_run_did_not_have_on_are_turned_off() {
+        let mut features = listed(&ON_IN_0_169, "stable", true);
+        features.extend(listed(&["an_invented_feature"], "experimental", true));
+        features.extend(listed(&["an_invented_off"], "stable", false));
+        features.extend(listed(&["an_invented_removed"], "removed", true));
+        features.extend(listed(&["another_invented"], "under development", true));
+        assert_eq!(
+            unmeasured_on(&features),
+            ["an_invented_feature", "another_invented"]
+        );
+        let s = strings(&run_args(None, &features));
+        let disabled: Vec<&str> = s
+            .windows(2)
+            .filter(|w| w[0] == "--disable")
+            .map(|w| w[1].as_str())
+            .collect();
+        let known: Vec<&str> = DISABLED_FEATURES
+            .into_iter()
+            .filter(|f| ON_IN_0_169.contains(f))
+            .collect();
+        assert_eq!(disabled[..known.len()], known[..]);
+        assert_eq!(
+            disabled[known.len()..],
+            ["an_invented_feature", "another_invented"]
+        );
+        assert_eq!(s.last().unwrap(), "-");
     }
 
     fn output(stdout: &str, stderr: &str, ok: bool) -> ChildOutput {

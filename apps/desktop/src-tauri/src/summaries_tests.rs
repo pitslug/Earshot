@@ -1366,17 +1366,6 @@ fn summaries_resummarise_through_codex_not_signed_in_fails_with_the_reason() {
         tool.message
     );
     assert!(!tool.message.contains('\u{2014}'));
-    // T14.30: an enabled feature Earshot has not reviewed: fixed copy, never the feature's name.
-    let feature = crate::ipc::IpcError::from(earshot_runtime::codex::runtime_error(
-        CodexError::UnknownFeature,
-    ));
-    assert_eq!(
-        feature.message,
-        "The summary did not run: this Codex version has a feature turned on that Earshot has \
-         not checked, so nothing was handed to it. Update Earshot, or choose another way to \
-         write summaries on the Summaries page."
-    );
-    assert!(!feature.retryable);
     let timed_out = crate::ipc::IpcError::from(earshot_runtime::codex::runtime_error(
         CodexError::TimedOut(std::time::Duration::from_secs(600)),
     ));

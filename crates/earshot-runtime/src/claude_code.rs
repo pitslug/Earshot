@@ -275,11 +275,7 @@ impl HandoverError for CodexError {
             CodexError::TimedOut(_) => HandoverKind::TimedOut,
             CodexError::OutputIncomplete => HandoverKind::OutputIncomplete,
             CodexError::BadOutput(_) => HandoverKind::BadOutput,
-            // `UnknownFeature` refuses before anything is handed over (T14.30), so no stored
-            // entry carries it; it maps to `Failed` rather than a new word that would need a
-            // record version bump.
             CodexError::NotInstalled
-            | CodexError::UnknownFeature
             | CodexError::Start(_)
             | CodexError::NotRecorded
             | CodexError::Failed { .. } => HandoverKind::Failed,

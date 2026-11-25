@@ -269,7 +269,6 @@ fn summary_order_run_move_on_table_lists_each_result_and_stops_on_the_rest() {
         CodexError::AccessDenied,
         CodexError::ToolRan,
         CodexError::UnknownEvent,
-        CodexError::UnknownFeature,
     ] {
         assert_eq!(
             failure_word(WriterStep::Codex, &llm(LlmError::Codex(e))),
