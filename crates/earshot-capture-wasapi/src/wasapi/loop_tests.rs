@@ -66,6 +66,9 @@ struct Platform {
     raw_open_error: Cell<Option<(&'static str, i32)>>,
     /// An endpoint id that is gone: opening it fails as a missing device (T12.36a).
     gone_device: RefCell<Option<String>>,
+    /// Drains (track, counted from 1) whose packet the engine hands out with no buffer and no
+    /// silent flag (T14.22).
+    no_buffer: RefCell<Vec<(TrackId, usize)>>,
 }
 
 impl Platform {
@@ -163,13 +166,26 @@ impl LoopStream for FakeStream {
         if frames == 0 {
             return Ok(());
         }
-        let samples = vec![0.25; frames as usize * usize::from(self.channels)];
+        // Read as the production `drain` reads a packet: no flags here, and a packet read as
+        // silence gives its observer no samples.
+        let nth = self.platform.count(Call::Drain(self.track));
+        let has_buffer = !self
+            .platform
+            .no_buffer
+            .borrow()
+            .contains(&(self.track, nth));
+        let silent = reads_as_silence(0, has_buffer);
+        let samples = if silent {
+            Vec::new()
+        } else {
+            vec![0.25; frames as usize * usize::from(self.channels)]
+        };
         sink(
             PacketInfo {
                 qpc: from,
                 device_position: 0,
                 frames,
-                silent: false,
+                silent,
                 discontinuity: false,
                 timestamp_error: false,
             },
@@ -2403,4 +2419,176 @@ fn raw_mic_is_made_only_by_the_raw_recorder() {
     assert_eq!(recorder.matches(".with_processing(").count(), 1);
     assert!(!recorder.contains("with_raw_fallback"));
     assert!(!recorder.contains("open_live_mic"));
+}
+
+/// Records a fake mic (beside a fake loopback) for `seconds` as `record_raw` does, with the
+/// packets of `no_buffer` handed out by the engine without a buffer.
+fn record_with_no_buffer(
+    no_buffer: &[(TrackId, usize)],
+    seconds: u64,
+) -> crate::recording::TrackRecording {
+    let platform = Rc::new(Platform::default());
+    *platform.no_buffer.borrow_mut() = no_buffer.to_vec();
+    let mut driver = FakeDriver {
+        platform: Rc::clone(&platform),
+    };
+    let mic_endpoint = Endpoint::Microphone(MicRole::Console);
+    let mic_stream = FakeStream::new(&platform, mic_endpoint, 1);
+    let lb_stream = FakeStream::new(&platform, Endpoint::Loopback, 2);
+    mic_stream.start().unwrap();
+    lb_stream.start().unwrap();
+    let first = DeviceDescription {
+        name: "Fake mic".into(),
+        format: MixFormat::from_waveformat_bytes(&float_waveformat_bytes(RATE, 1)).unwrap(),
+    };
+    let track = RecordingTrack::new(first, crate::timeline::TrackTimeline::new(RATE, 0));
+    let mut mic = Track::new(
+        mic_stream,
+        mic_endpoint,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Capture, Role::Console, true),
+        NotifyingTrack::new(track, |_: &HandsFreeMic| {}),
+    );
+    let mut lb = Track::new(
+        lb_stream,
+        Endpoint::Loopback,
+        DeviceChoice::Default,
+        StreamFollower::new(Flow::Render, Role::Console, true),
+        Ear::default(),
+    );
+    let end = seconds * QPC_UNITS_PER_SEC;
+    let result = run_capture(&mut driver, &mut mic, Some(&mut lb), None, |now| now >= end);
+    mic.observer
+        .into_track()
+        .finish(result.expect("the recording goes on"))
+}
+
+#[test]
+fn capture_loop_a_packet_with_no_buffer_is_recorded_as_silence() {
+    // T14.22: a packet with frames, no buffer and no silent flag (a driver fault) is that many
+    // frames of silence. The capture goes on and the track keeps its length.
+    let plain = record_with_no_buffer(&[], 2);
+    assert!(plain.timeline.packets().iter().all(|p| !p.silent));
+    let rec = record_with_no_buffer(&[(TrackId::Mic, 10)], 2);
+    assert_eq!(rec.timeline.frames(), plain.timeline.frames());
+    assert_eq!(rec.timeline.packets().len(), plain.timeline.packets().len());
+    let silent: Vec<_> = rec.timeline.packets().iter().filter(|p| p.silent).collect();
+    assert_eq!(silent.len(), 1, "{:?}", rec.timeline.packets());
+    let (from, frames) = (silent[0].track_frame as usize, silent[0].frames as usize);
+    assert!(frames > 0);
+    let samples = rec.timeline.samples();
+    assert!(samples[from..from + frames].iter().all(|&s| s == 0.0));
+    // Every other frame is the audio the mic delivered.
+    assert!(samples[..from].iter().all(|&s| s == 0.25));
+    assert!(samples[from + frames..].iter().all(|&s| s == 0.25));
+    assert_eq!(samples.len(), plain.timeline.samples().len());
+}
+
+#[test]
+fn capture_loop_a_packet_without_samples_must_be_read_as_silence() {
+    // Why the rule matters: read as audio, a packet with frames and no samples is refused by
+    // the observers with a panic, which ends the capture thread and with it the recording.
+    assert!(reads_as_silence(0, false), "no buffer");
+    assert!(reads_as_silence(AUDCLNT_BUFFERFLAGS_SILENT.0 as u32, true));
+    assert!(reads_as_silence(AUDCLNT_BUFFERFLAGS_SILENT.0 as u32, false));
+    assert!(!reads_as_silence(0, true));
+    assert!(!reads_as_silence(
+        AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32,
+        true
+    ));
+    let packet = |silent| PacketInfo {
+        qpc: 0,
+        device_position: 0,
+        frames: 480,
+        silent,
+        discontinuity: false,
+        timestamp_error: false,
+    };
+    let as_audio = std::panic::catch_unwind(|| {
+        crate::timeline::TrackTimeline::new(RATE, 0).push(packet(false), &[]);
+    });
+    assert!(as_audio.is_err());
+    let mut timeline = crate::timeline::TrackTimeline::new(RATE, 0);
+    timeline.push(packet(true), &[]);
+    assert_eq!(timeline.frames(), 480);
+}
+
+/// Bounds a start test that would otherwise wait for ever; never reached by a passing test.
+const START_GUARD: Duration = Duration::from_secs(60);
+
+#[test]
+fn capture_start_gives_up_on_a_thread_that_does_not_report() {
+    // T14.22: the capture thread is stuck in a call (here: until the test lets go). The start
+    // fails after its wait and leaves the thread.
+    let (release, held) = mpsc::channel::<()>();
+    let (seen_tx, seen) = mpsc::channel();
+    let began = std::time::Instant::now();
+    let start =
+        start_capture_thread::<u32, u32, _>(Duration::from_millis(50), move |stop, ready, tx| {
+            let _ = held.recv();
+            // A start that completes after all: told to stop, its report refused, and what it
+            // delivers has nobody to receive it.
+            let told_to_stop = stop.load(Ordering::Acquire);
+            let report_refused = ready.send(Ok(7)).is_err();
+            let output_refused = tx.send(1).is_err();
+            let _ = seen_tx.send((told_to_stop, report_refused, output_refused));
+        });
+    let error = start.err().expect("the start gave up");
+    assert!(matches!(error, CaptureError::StartTimedOut), "{error:?}");
+    assert!(began.elapsed() < START_GUARD, "{:?}", began.elapsed());
+    assert_eq!(
+        seen.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "the thread is still in its call: it was left, not waited for"
+    );
+    release.send(()).unwrap();
+    assert_eq!(seen.recv_timeout(START_GUARD), Ok((true, true, true)));
+}
+
+#[test]
+fn capture_start_returns_what_the_thread_reports_in_time() {
+    // Capture runs: what was reported, the channel, and a stop flag the thread sees.
+    let running = start_capture_thread::<u32, u32, _>(START_GUARD, |stop, ready, tx| {
+        ready.send(Ok(7)).unwrap();
+        tx.send(11).unwrap();
+        while !stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let _ = tx.send(12);
+    })
+    .expect("capture runs");
+    assert_eq!(running.started, 7);
+    assert_eq!(running.rx.recv_timeout(START_GUARD), Ok(11));
+    running.stop.store(true, Ordering::Release);
+    running.handle.join().unwrap();
+    assert_eq!(running.rx.try_recv(), Ok(12));
+    // A start that fails says why; a thread that ends without a word is reported as that.
+    let failed = start_capture_thread::<u32, u32, _>(START_GUARD, |_, ready, _| {
+        let _ = ready.send(Err(CaptureError::ActivationTimeout));
+    });
+    assert!(matches!(
+        failed.err(),
+        Some(CaptureError::ActivationTimeout)
+    ));
+    let gone = start_capture_thread::<u32, u32, _>(START_GUARD, |_, _, _| {});
+    assert!(matches!(gone.err(), Some(CaptureError::ThreadExited)));
+}
+
+#[test]
+fn capture_start_wait_is_a_bound_above_the_steps_it_covers() {
+    // A start may wait for an activation more than once (a process loopback, then the default
+    // output), and it is given longer than a stop.
+    assert!(START_WAIT >= 3 * ACTIVATION_TIMEOUT);
+    assert!(START_WAIT > crate::STOP_WAIT);
+    // Fixed words, and nothing a person can act on beyond trying again.
+    assert_eq!(
+        CaptureError::StartTimedOut.to_string(),
+        "capture did not start within 30 s"
+    );
+    assert_eq!(
+        CaptureError::StartTimedOut.start_problem(),
+        crate::StartProblem::Other
+    );
+    assert_eq!(CaptureError::StartTimedOut.hresult(), None);
+    assert!(!CaptureError::StartTimedOut.is_device_loss());
 }

@@ -117,6 +117,13 @@ pub const PROCESS_LOOPBACK_RATE: u32 = 48_000;
 pub const PROCESS_LOOPBACK_CHANNELS: u16 = 2;
 /// How long to wait for `ActivateAudioInterfaceAsync` to complete.
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long [`WasapiSource::start_on`] waits for its capture thread to say that capture runs
+/// (T14.22). A judgement, not a measurement: several times [`ACTIVATION_TIMEOUT`], because one
+/// start may wait for more than one interface in turn (a process loopback, then the default
+/// output; a chosen device, then the default one), and far above a healthy start (well under a
+/// second), yet short enough that a start stuck in a Windows call fails where a person can see
+/// it rather than never returning.
+pub const START_WAIT: Duration = Duration::from_secs(30);
 /// Timestamps beyond the recording deadline plus this margin are clamped by the
 /// timeline (bogus QPC values must not synthesize unbounded silence).
 const QPC_LIMIT_MARGIN: u64 = QPC_UNITS_PER_SEC;
@@ -143,6 +150,9 @@ pub enum CaptureError {
     Thread(std::io::Error),
     /// The capture thread exited (panicked) before capture started.
     ThreadExited,
+    /// The capture thread did not say capture runs within [`START_WAIT`] (stuck in a Windows
+    /// call): it was told to stop and left.
+    StartTimedOut,
     /// A chosen endpoint (T7.4i) is not an active endpoint of the needed direction (it was
     /// unplugged, switched off or disabled).
     DeviceGone {
@@ -215,6 +225,9 @@ impl fmt::Display for CaptureError {
             ),
             Self::Thread(e) => write!(f, "cannot spawn the capture thread: {e}"),
             Self::ThreadExited => f.write_str("capture thread exited before capture started"),
+            Self::StartTimedOut => {
+                write!(f, "capture did not start within {} s", START_WAIT.as_secs())
+            }
             Self::DeviceGone { what } => write!(f, "the chosen {what} is not connected"),
             Self::RawMic(refusal) => write!(f, "{refusal}"),
         }
@@ -232,6 +245,7 @@ impl std::error::Error for CaptureError {
             | Self::ActivationTimeout
             | Self::Selection(_)
             | Self::ThreadExited
+            | Self::StartTimedOut
             | Self::DeviceGone { .. }
             | Self::RawMic(_) => None,
         }
@@ -1232,7 +1246,8 @@ impl<'com> CaptureStream<'com> {
     /// Reads every pending packet, converts it to f32 (mono for the mic, interleaved
     /// with [`track_channels`](Self::track_channels) for a loopback) and hands it to
     /// `sink`.
-    /// For packets flagged silent the slice is empty. A QPC position of 0 is never a
+    /// For packets read as silence ([`reads_as_silence`]: flagged silent, or handed out with no
+    /// buffer) the slice is empty. A QPC position of 0 is never a
     /// valid timestamp and is reported as a timestamp error.
     pub fn drain(&mut self, mut sink: impl FnMut(PacketInfo, &[f32])) -> Result<(), CaptureError> {
         loop {
@@ -1251,7 +1266,7 @@ impl<'com> CaptureStream<'com> {
             // ReleaseBuffer, `data` points to frames * block_align readable bytes owned
             // by the engine; they are copied (converted) into `scratch` before release
             // and never touched afterwards.
-            let converted = unsafe {
+            let (converted, silent) = unsafe {
                 self.capture
                     .GetBuffer(
                         &mut data,
@@ -1261,8 +1276,8 @@ impl<'com> CaptureStream<'com> {
                         Some(&mut qpc),
                     )
                     .ctx("IAudioCaptureClient::GetBuffer")?;
-                let silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
-                let result = if silent || frames == 0 || data.is_null() {
+                let silent = reads_as_silence(flags, !data.is_null());
+                let result = if silent || frames == 0 {
                     Ok(0)
                 } else {
                     let len = frames as usize * usize::from(self.format.block_align);
@@ -1272,7 +1287,7 @@ impl<'com> CaptureStream<'com> {
                 self.capture
                     .ReleaseBuffer(frames)
                     .ctx("IAudioCaptureClient::ReleaseBuffer")?;
-                result
+                (result, silent)
             };
             converted?;
             if frames == 0 {
@@ -1282,7 +1297,7 @@ impl<'com> CaptureStream<'com> {
                 qpc,
                 device_position,
                 frames,
-                silent: flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0,
+                silent,
                 discontinuity: flags & (AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0,
                 timestamp_error: qpc == 0
                     || flags & (AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32) != 0,
@@ -1663,6 +1678,16 @@ fn wait_any(events: &[HANDLE], timeout: Duration) -> Result<(), CaptureError> {
         });
     }
     Ok(())
+}
+
+/// Whether a packet the engine handed out with `flags` is read as silence: one flagged
+/// `AUDCLNT_BUFFERFLAGS_SILENT`, or one that came with no buffer (T14.22). A packet has its
+/// frames either way, and its samples are given to the track's observer only when it is not
+/// silent: a packet with frames, no buffer and no silent flag (a driver fault) would otherwise
+/// reach the observer as audio with no samples, which the observers refuse by panicking, ending
+/// the capture.
+fn reads_as_silence(flags: u32, has_buffer: bool) -> bool {
+    flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0 || !has_buffer
 }
 
 /// One stream as the capture loop uses it (T9.21a): [`CaptureStream`] in production, a fake in
@@ -2879,7 +2904,9 @@ impl WasapiSource {
     /// Opens the default microphone for `mic_role` and, in a call, the loopback source
     /// of `mode`; starts the streams on a new capture thread and returns once capture is
     /// running. Explicit loopback processes that do not exist fail here (only `Auto`
-    /// falls back to the default device). In the room only the microphone is opened.
+    /// falls back to the default device). In the room only the microphone is opened. A capture
+    /// thread that has not said capture runs within [`START_WAIT`] (stuck in a Windows call) is
+    /// told to stop and left, and the start fails with [`CaptureError::StartTimedOut`] (T14.22).
     pub fn start(mic_role: MicRole, mode: &CaptureMode) -> Result<Self, CaptureError> {
         Self::start_on(mic_role, mode, &DeviceSelection::default())
     }
@@ -2893,34 +2920,21 @@ impl WasapiSource {
         mode: &CaptureMode,
         devices: &DeviceSelection,
     ) -> Result<Self, CaptureError> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (tx, rx) = mpsc::channel();
         let request = LiveRequest {
             mic_role,
             loopback: mode.loopback().cloned(),
             devices: devices.clone(),
         };
-        let flag = Arc::clone(&stop);
         let gauge = QueueGauge::new();
         let producer_gauge = gauge.clone();
-        let handle = std::thread::Builder::new()
-            .name("earshot-capture".into())
-            .spawn(move || {
-                capture_thread(&request, &flag, &ready_tx, tx, producer_gauge);
-            })
-            .map_err(CaptureError::Thread)?;
-        let started = match ready_rx.recv() {
-            Ok(Ok(started)) => started,
-            Ok(Err(e)) => {
-                let _ = handle.join();
-                return Err(e);
-            }
-            Err(_) => {
-                let _ = handle.join();
-                return Err(CaptureError::ThreadExited);
-            }
-        };
+        let RunningCapture {
+            started,
+            stop,
+            handle,
+            rx,
+        } = start_capture_thread(START_WAIT, move |stop, ready, tx| {
+            capture_thread(&request, stop, ready, tx, producer_gauge);
+        })?;
         let stopper = move || {
             stop.store(true, Ordering::Release);
             // A panicked capture thread surfaces through the channel instead.
@@ -3025,6 +3039,68 @@ impl AudioSource for WasapiSource {
 }
 
 type ReadyTx = mpsc::SyncSender<Result<Started, CaptureError>>;
+
+/// A capture thread that said capture runs: what it reported, the flag that stops it, its
+/// handle and the receiving end of its channel.
+struct RunningCapture<T, M> {
+    started: T,
+    stop: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+    rx: mpsc::Receiver<M>,
+}
+
+/// Runs `body` (the capture thread: its stop flag, where it reports that capture runs or why
+/// not, and the channel it delivers into) on a new `earshot-capture` thread and waits at most
+/// `wait` for its report (T14.22: a thread stuck in a Windows call must not keep a meeting
+/// from ever starting or failing).
+///
+/// A thread that has not reported in time is told to stop and left, never joined, and the start
+/// fails with [`CaptureError::StartTimedOut`]. What it does later goes nowhere: both receiving
+/// ends are dropped here, so a late report is refused (the thread ends there) or, had it just
+/// been taken into the channel, lost; the stop flag was set first, so a capture loop that
+/// starts after all ends at once; and anything it delivers has no receiver. A later start has
+/// its own thread, flag and channels.
+fn start_capture_thread<T, M, F>(
+    wait: Duration,
+    body: F,
+) -> Result<RunningCapture<T, M>, CaptureError>
+where
+    T: Send + 'static,
+    M: Send + 'static,
+    F: FnOnce(&AtomicBool, &mpsc::SyncSender<Result<T, CaptureError>>, mpsc::Sender<M>)
+        + Send
+        + 'static,
+{
+    let stop = Arc::new(AtomicBool::new(false));
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (tx, rx) = mpsc::channel();
+    let flag = Arc::clone(&stop);
+    let handle = std::thread::Builder::new()
+        .name("earshot-capture".into())
+        .spawn(move || body(&flag, &ready_tx, tx))
+        .map_err(CaptureError::Thread)?;
+    match ready_rx.recv_timeout(wait) {
+        Ok(Ok(started)) => Ok(RunningCapture {
+            started,
+            stop,
+            handle,
+            rx,
+        }),
+        Ok(Err(e)) => {
+            let _ = handle.join();
+            Err(e)
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = handle.join();
+            Err(CaptureError::ThreadExited)
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            stop.store(true, Ordering::Release);
+            drop(handle);
+            Err(CaptureError::StartTimedOut)
+        }
+    }
+}
 
 /// Body of the `earshot-capture` thread: owns the COM apartment for its lifetime.
 /// `request` is the loopback of a call; `None` captures the mic alone (in the room).
