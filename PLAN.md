@@ -1588,7 +1588,8 @@ Closed: work done after the x64 early release, before M12 existed. New ideas go 
 
 New ideas and features, after the v1 release or beside it, with their own ids (the owner, 2026-11-08). A task moved here keeps its old id in brackets, because commits and code comments name it.
 
-- [~] T12.1a An open browser does not hold off the offer to stop
+- [x] T12.1a An open browser does not hold off the offer to stop
+  - result (2026-11-25): confirmed by the owner on a real Teams call with a browser open; accept tests pass (call_end 16, session 26).
   - status (2026-11-19): built (`CallAppWatch` in `earshot-capture-wasapi::session`, used by the desktop's call signal and `teams_probe`); a dedicated app counts as seen after `DEDICATED_SEEN_READINGS` (2) readings in a row, so one notification sound during a web call does not stop the browser counting; any dedicated app still active keeps the call on (two dedicated apps: the default chosen, the owner may change it). Owed before [x]: the real Teams call with Edge open.
   - deps: T9.4
   - found (the owner, 2026-11-19, Surface, a Teams call): after hang-up both `ms-teams.exe` sessions read inactive and the far end was flat, but no offer came for minutes. `call_app_active` counts any known call app with an active session, browsers included, and Edge (many tabs open) held an active, silent render session, so the call never looked over.
@@ -1985,6 +1986,12 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - found (the owner, 2026-11-20, Surface, 0.4.0, raw mic on with the default mic, a call on the built-in speakers): the `raw-mic` banner showed partway through, with no device change the owner noticed; the canceller's delay lock moved up by about the processed stream's known extra latency at the same point and stayed there, so the rest of the call was processed. The trigger is unknown: the reproduction also covers a stream error with no device change (for example a call app or Windows changing the endpoint's format or effects), and the refused raw re-open's HRESULT says which.
   - do: reproduce with `earshot-cli record-raw --mic-raw` on the Surface (switch the default recording device to a Bluetooth headset and back, with and without a call app holding the headset); record which call failed and the HRESULT for both the stream error and the refused raw re-open. If the refusal is transient (the endpoint busy while Windows reconfigures), retry raw within the existing re-open grace before falling back; if it is lasting, keep the fallback and say so in the doc. Never fall back silently and never cost a recording.
   - accept: the measurement in docs/echo-fragments.md or a new docs note; `cargo test -p earshot-capture-wasapi` with the fake loop driving the observed failure sequence; on the Surface, the default-device switch during a raw meeting, checked by the owner
+
+- [ ] T12.36b Raw mic in the room by default
+  - deps: T12.36a
+  - why (the owner, 2026-11-25): in a room the other people are the ones to record, and the processed stream's noise suppression (on the Surface, Windows' voice processing) treats distant voices as noise. In a call the far end comes from the loopback, so suppression costs less there.
+  - do: the Audio page's microphone signal gets a third choice, Automatic, the new default: raw in an in-room meeting, Windows' processing in a call. A stored `default` from before reads as Automatic (saving any Audio setting wrote it, so it is not a choice the user made); Windows' processing chosen on purpose gets its own stored word. Under Automatic a mic that cannot give raw records processed with no banner (the user did not ask for raw); the `raw-mic` banner stays for an explicit Raw choice. The audio check key follows the stream actually opened, as today. A UI and mock change with it; the shared copy tables change together.
+  - accept: `cargo test -p earshot-runtime audio_settings`; `cargo test -p earshot-capture-wasapi`; `cargo test -p earshot-desktop --bin earshot meeting_events`; `cmd /c pnpm --filter @earshot/ui test`; an in-room meeting on the Surface, checked by the owner
 
 - [~] T12.36 A setting for the raw mic (Audio page, off by default)
   - status (2026-11-16): built and merged (off by default); still owed before [x]: the owner's real Surface meeting with the setting on, and the T12.32 take pair under a rule written first.
