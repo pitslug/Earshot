@@ -871,6 +871,140 @@ fn meeting_driver_stop_before_the_first_event_is_honoured() {
     }));
 }
 
+/// A pre-flight that says when it began and waits to be let through: the seconds a real one can
+/// take with no window showing it.
+struct GatedPrepare {
+    inner: Arc<FakePrepare>,
+    entered: Mutex<mpsc::Sender<()>>,
+    gate: Mutex<mpsc::Receiver<()>>,
+}
+
+impl GatedPrepare {
+    /// The pre-flight, what says it began and what lets it through.
+    fn new(script: Script) -> (Arc<Self>, Receiver<()>, mpsc::Sender<()>) {
+        let (entered_tx, entered) = mpsc::channel();
+        let (let_through, gate) = mpsc::channel();
+        let prepare = Arc::new(Self {
+            inner: FakePrepare::new(script),
+            entered: Mutex::new(entered_tx),
+            gate: Mutex::new(gate),
+        });
+        (prepare, entered, let_through)
+    }
+}
+
+impl Prepare for GatedPrepare {
+    fn prepare(
+        &self,
+        svc: &Services,
+        request: &StartRequest,
+        ticket: &Arc<QueueTicket>,
+    ) -> Result<Prepared, IpcError> {
+        let _ = self.entered.lock().unwrap().send(());
+        self.gate
+            .lock()
+            .unwrap()
+            .recv_timeout(MEET_GUARD)
+            .expect("the test lets the pre-flight through");
+        self.inner.prepare(svc, request, ticket)
+    }
+}
+
+fn driver_on(prepare: Arc<dyn Prepare>) -> (MeetingDriver, Receiver<MeetingEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let sink: Sink = Arc::new(move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let t0 = Instant::now();
+    (
+        MeetingDriver::new(
+            prepare,
+            sink,
+            Arc::new(move || t0),
+            crate::activity::WorkGate::new(),
+            &crate::cuda_settings::CudaLatch::resolved_off(),
+        ),
+        rx,
+    )
+}
+
+/// Starts a meeting on a thread of its own, as the shell does.
+fn start_on_a_thread(
+    d: &MeetingDriver,
+    svc: &Services,
+) -> std::thread::JoinHandle<Result<String, IpcError>> {
+    let (d, svc) = (d.clone(), svc.clone());
+    std::thread::spawn(move || d.start(&svc, request(CaptureMode::Call)))
+}
+
+#[test]
+fn meeting_driver_a_second_press_during_the_preflight_stops_nothing_and_the_meeting_records() {
+    // T14.6: the tray's item or the shortcut pressed again while the pre-flight runs. The driver
+    // calls the meeting recording from the start request, so the press was a Stop, honoured the
+    // moment the meeting started.
+    use crate::shell::{ToggleAction, press};
+    let dir = TempDir::new("driver-double-press");
+    let svc = services(&dir);
+    let (prepare, entered, let_through) = GatedPrepare::new(Script::UntilStopped);
+    let (d, rx) = driver_on(prepare);
+    let starter = start_on_a_thread(&d, &svc);
+    entered
+        .recv_timeout(MEET_GUARD)
+        .expect("the pre-flight began");
+    assert_eq!(d.phase_with_starting(), (DriverPhase::Recording, true));
+    assert_eq!(press(&d), ToggleAction::Nothing);
+    assert_eq!(press(&d), ToggleAction::Nothing);
+    assert!(!d.stop_requested());
+    let_through.send(()).unwrap();
+    let meeting = starter.join().unwrap().unwrap();
+    // Still starting until `Started` has gone out.
+    let first = events_until(&rx, |e| matches!(e, MeetingEvent::Started { .. }));
+    assert_eq!(first.len(), 1, "{first:?}");
+    // The driver notes it right after sending it.
+    let until = Instant::now() + MEET_GUARD;
+    while d.phase_with_starting().1 {
+        assert!(Instant::now() < until, "the meeting never left its start");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The meeting records: nothing asked it to stop.
+    assert_eq!(d.phase(), DriverPhase::Recording);
+    assert!(!d.stop_requested());
+    // Now a press is a Stop.
+    assert_eq!(press(&d), ToggleAction::Stop);
+    assert!(d.stop_requested());
+    let rest = until_summary(&rx);
+    assert!(rest.contains(&MeetingEvent::Ended {
+        meeting,
+        reason: EndedReason::Stopped
+    }));
+    d.join();
+    assert_eq!(press(&d), ToggleAction::Start, "nothing records");
+}
+
+#[test]
+fn meeting_driver_the_windows_own_stop_during_the_preflight_is_still_honoured() {
+    // T14.6 changes only what the tray's item and the shortcut do: the window's Stop is the
+    // driver's, as before.
+    let dir = TempDir::new("driver-preflight-stop");
+    let svc = services(&dir);
+    let (prepare, entered, let_through) = GatedPrepare::new(Script::UntilStopped);
+    let (d, rx) = driver_on(prepare);
+    let starter = start_on_a_thread(&d, &svc);
+    entered
+        .recv_timeout(MEET_GUARD)
+        .expect("the pre-flight began");
+    d.stop().unwrap();
+    let_through.send(()).unwrap();
+    let meeting = starter.join().unwrap().unwrap();
+    let events = until_summary(&rx);
+    assert!(events.contains(&MeetingEvent::Ended {
+        meeting,
+        reason: EndedReason::Stopped
+    }));
+    d.join();
+}
+
 #[test]
 fn meeting_driver_a_panic_after_the_start_ends_with_a_failed_summary_and_frees_the_driver() {
     let dir = TempDir::new("driver-panic");

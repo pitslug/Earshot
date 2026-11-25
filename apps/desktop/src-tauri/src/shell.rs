@@ -319,15 +319,33 @@ pub enum ToggleAction {
     Start,
     /// Stop the recording.
     Stop,
+    /// Nothing: a meeting is starting (T14.6).
+    Nothing,
 }
 
-/// [`ToggleAction`] from what the driver says.
+/// [`ToggleAction`] from what the driver says. `starting`: the meeting it calls recording has
+/// not sent its `Started` yet. Its pre-flight can take seconds with no window showing it, and a
+/// second press then must not stop the meeting the moment it starts (T14.6), so it does nothing.
+/// The window's own Stop is the driver's and is not decided here.
 #[must_use]
-pub fn toggle_action(phase: DriverPhase) -> ToggleAction {
+pub fn toggle_action(phase: DriverPhase, starting: bool) -> ToggleAction {
     match phase {
         DriverPhase::Idle | DriverPhase::Processing => ToggleAction::Start,
+        DriverPhase::Recording if starting => ToggleAction::Nothing,
         DriverPhase::Recording => ToggleAction::Stop,
     }
+}
+
+/// A press of the tray's item or the shortcut, as far as `driver` goes: the recording is asked
+/// to stop here; a start is the shell's to make, on a thread of its own.
+pub fn press(driver: &MeetingDriver) -> ToggleAction {
+    let (phase, starting) = driver.phase_with_starting();
+    let action = toggle_action(phase, starting);
+    if action == ToggleAction::Stop {
+        // It may have just ended by itself; the UI shows that either way.
+        let _ = driver.stop();
+    }
+    action
 }
 
 /// What "Quit Earshot" does now.
@@ -1007,11 +1025,8 @@ impl Shell {
 
     /// Starts a meeting, or stops the recording one.
     pub fn toggle(self: &Arc<Self>) {
-        match toggle_action(self.driver().phase()) {
-            ToggleAction::Stop => {
-                // It may have just ended by itself; the UI shows that either way.
-                let _ = self.driver().stop();
-            }
+        match press(&self.driver()) {
+            ToggleAction::Stop | ToggleAction::Nothing => {}
             ToggleAction::Start => {
                 if !self.tracker().begin_start() {
                     return;

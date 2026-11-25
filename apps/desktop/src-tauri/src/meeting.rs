@@ -149,6 +149,8 @@ struct Running {
     keep: Arc<AtomicBool>,
     /// True from the start request until the recording is saved.
     recording: Arc<AtomicBool>,
+    /// Set once the meeting's `Started` has gone out: until then it is starting (T14.6).
+    started: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -173,6 +175,16 @@ impl Threads {
         self.newest
             .as_ref()
             .is_some_and(|r| r.recording.load(Ordering::SeqCst) && !r.thread.is_finished())
+    }
+
+    /// Whether the newest meeting is still starting: its pre-flight or its capture's start runs,
+    /// or its `Started` has not gone out yet.
+    fn starting(&self) -> bool {
+        self.recording()
+            && self
+                .newest
+                .as_ref()
+                .is_some_and(|r| !r.started.load(Ordering::SeqCst))
     }
 }
 
@@ -328,11 +340,13 @@ impl MeetingDriver {
             let inner = Arc::clone(&self.0);
             let svc = services.clone();
             let keep = Arc::new(AtomicBool::new(false));
+            let started_flag = Arc::new(AtomicBool::new(false));
             let flags = RunFlags {
                 pass,
                 stop: Arc::clone(&stop),
                 keep: Arc::clone(&keep),
                 recording: Arc::clone(&recording),
+                started: Arc::clone(&started_flag),
             };
             let seq = self.0.started.fetch_add(1, Ordering::SeqCst) + 1;
             let thread = std::thread::Builder::new()
@@ -346,6 +360,7 @@ impl MeetingDriver {
                 stop,
                 keep,
                 recording,
+                started: started_flag,
                 thread,
             });
         }
@@ -434,14 +449,33 @@ impl MeetingDriver {
     /// Where the meetings are.
     #[must_use]
     pub fn phase(&self) -> DriverPhase {
+        self.phase_with_starting().0
+    }
+
+    /// [`MeetingDriver::phase`], and whether the meeting it calls recording is still starting
+    /// (T14.6): from the start request until its `Started` has gone out, so through its pre-flight
+    /// and its capture's start, which can take seconds with no window showing it. Read together,
+    /// for the tray's item and the shortcut: a press then is not a Stop.
+    #[must_use]
+    pub fn phase_with_starting(&self) -> (DriverPhase, bool) {
         let threads = self.threads();
         if threads.recording() {
-            DriverPhase::Recording
+            (DriverPhase::Recording, threads.starting())
         } else if threads.any_unfinished() {
-            DriverPhase::Processing
+            (DriverPhase::Processing, false)
         } else {
-            DriverPhase::Idle
+            (DriverPhase::Idle, false)
         }
+    }
+
+    /// Whether a stop was asked of the newest meeting.
+    #[cfg(test)]
+    #[must_use]
+    pub fn stop_requested(&self) -> bool {
+        self.threads()
+            .newest
+            .as_ref()
+            .is_some_and(|r| r.stop.load(Ordering::SeqCst))
     }
 
     /// Stops a recording meeting and returns once its recording is saved (at once when
@@ -838,6 +872,8 @@ struct RunFlags {
     stop: Arc<AtomicBool>,
     keep: Arc<AtomicBool>,
     recording: Arc<AtomicBool>,
+    /// Set once `Started` has gone out ([`Running::started`]).
+    started: Arc<AtomicBool>,
 }
 
 /// A meeting's entry in [`Inner::finishing`], taken out on every way off its thread, a panic's unwind
@@ -1102,6 +1138,11 @@ fn run(
                     // After the end, so it shows with the work after the recording.
                     if saved && stopped_by_call_end {
                         send(crate::meeting_events::call_end_stopped_warning());
+                    }
+                    if matches!(event, RuntimeEvent::Started { .. }) {
+                        // `Started` is out: from here a press of the tray's item or the shortcut
+                        // is a Stop (T14.6).
+                        flags.started.store(true, Ordering::SeqCst);
                     }
                     if matches!(event, RuntimeEvent::Started { .. })
                         && let Some(n) = notices.take()

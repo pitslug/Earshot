@@ -139,9 +139,20 @@ fn shell_tray_shows_the_dot_only_while_recording_and_offers_only_what_can_be_don
 
 #[test]
 fn shell_toggle_and_quit_follow_the_driver() {
-    assert_eq!(toggle_action(DriverPhase::Idle), ToggleAction::Start);
-    assert_eq!(toggle_action(DriverPhase::Recording), ToggleAction::Stop);
-    assert_eq!(toggle_action(DriverPhase::Processing), ToggleAction::Start);
+    assert_eq!(toggle_action(DriverPhase::Idle, false), ToggleAction::Start);
+    assert_eq!(
+        toggle_action(DriverPhase::Recording, false),
+        ToggleAction::Stop
+    );
+    assert_eq!(
+        toggle_action(DriverPhase::Processing, false),
+        ToggleAction::Start
+    );
+    // T14.6: a meeting that has not said `Started` yet is starting, and a press leaves it alone.
+    assert_eq!(
+        toggle_action(DriverPhase::Recording, true),
+        ToggleAction::Nothing
+    );
     assert_eq!(quit_action(DriverPhase::Idle), QuitAction::Quit);
     assert_eq!(
         quit_action(DriverPhase::Recording),
