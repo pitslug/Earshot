@@ -774,7 +774,10 @@ fn job_resummary_keeps_the_local_summary_model_in_use() {
     };
     let model_use = summary_model_use(&svc, &models).expect("a shipped summary model");
     assert_eq!(model_use.model(), expected);
-    assert_eq!(host::models_in_use(&models), [expected.clone()]);
+    assert_eq!(
+        host::models_in_use(&models),
+        std::slice::from_ref(&expected)
+    );
     // It is the model the settings' own protection names for summaries.
     let kept = host::protected_models(
         &svc.store(),
