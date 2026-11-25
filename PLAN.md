@@ -2695,13 +2695,13 @@ Lane store (`earshot-store`, runtime `search.rs`, `retention.rs`, `delete.rs`, `
 
 Lane export (`earshot-core` export, runtime `export_settings.rs`):
 
-- [ ] T14.27 Re-export keeps ticked action items
+- [x] T14.27 Re-export keeps ticked action items
   - do: merging carries `[x]` (and any other task marker) over for task lines whose text is unchanged; the identity rule (a render merged into its own output) holds.
   - accept: `cargo test -p earshot-core export`; `cargo xtask accept m5`
-- [ ] T14.28 Generated text cannot embed or fetch
+- [x] T14.28 Generated text cannot embed or fetch
   - do: generated text in a note cannot form an image or embed (`![`), raw HTML (`<`) or a wikilink embed; the user's own notes are untouched; snapshots and the m5 goldens updated by the rule in AGENTS (reviewed, copied by hand).
   - accept: `cargo test -p earshot-core export`; `cargo xtask accept m5`
-- [ ] T14.29 The Obsidian subfolder refuses names Windows refuses
+- [x] T14.29 The Obsidian subfolder refuses names Windows refuses
   - do: reserved characters, trailing dots and spaces and device names are refused at save with fixed copy (shared case table with the UI mock if the mock mirrors the rule).
   - accept: `cargo test -p earshot-runtime export_settings`; `cmd /c pnpm --filter @earshot/ui test`
 

@@ -172,10 +172,109 @@ fn dominant_eol(doc: &str) -> &'static str {
     if crlf * 2 > lf { "\r\n" } else { "\n" }
 }
 
+/// Task text with every escape `neutralise_generated` has ever written undone (`&lt;`,
+/// `&#91;`, `&#37;`, `&#36;`, `&#96;`, `&#126;`), so a line written under any version of
+/// the escaping rule compares equal to its re-render. Pinned to `neutralise_generated` by
+/// `export_plain_form_undoes_every_generated_escape`.
+pub(super) fn plain_form(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&#91;", "[")
+        .replace("&#37;", "%")
+        .replace("&#36;", "$")
+        .replace("&#96;", "`")
+        .replace("&#126;", "~")
+}
+
+/// A task line `- [<mark>] <text>` (line ending removed): its mark and its text.
+fn task_line(line: &str) -> Option<(char, &str)> {
+    let line = line.trim_end_matches(['\n', '\r']);
+    let rest = line.strip_prefix("- [")?;
+    let mut chars = rest.chars();
+    let mark = chars.next()?;
+    let text = chars.as_str().strip_prefix("] ")?;
+    (!matches!(mark, '\n' | '\r')).then_some((mark, text))
+}
+
+/// The new managed region with the task marks the user set in the old one (T14.27).
+///
+/// Earshot renders action items as unticked `- [ ]` tasks inside the region, which a
+/// re-export replaces whole. Matching runs in two passes over the task lines of the new
+/// region, each old task line used at most once, first come first served:
+///
+/// 1. Exact: every new task line, whatever its own mark, takes the first unused old line
+///    with the same text after the checkbox. Repeated identical lines pair up in order,
+///    and a line whose generated text already holds a mark (`- [x] foo` from a bullet
+///    reading `[x] foo`) uses up its own old copy, so merging a render into its own
+///    output stays the identity.
+/// 2. Appended: a new unticked line still unmatched takes the first unused old line
+///    whose text starts with the new text and a space (a task plugin added a done date
+///    or a tag after the text). Only that direction: an old line that is a prefix of the
+///    new text is another, longer item and does not match.
+///
+/// Only an unticked new line (`[ ]`) is rewritten, to the matched line's mark exactly as
+/// the user left it (`x`, `X` or another plugin's character); appended text is not
+/// carried. Texts are compared in their plain form (`plain_form`), so a line written
+/// before or after a change to the escaping rule matches its re-render. Only text between
+/// the old markers is read; every other byte of the new region is unchanged, so with no
+/// marks set the result is the new region itself.
+fn carry_task_marks(old_region: &str, new_region: &str) -> String {
+    let mut old: Vec<Option<(char, String)>> = old_region
+        .split_inclusive('\n')
+        .filter_map(task_line)
+        .map(|(m, t)| Some((m, plain_form(t))))
+        .collect();
+    if old.iter().flatten().all(|(m, _)| *m == ' ') {
+        // Nothing marked: the new region as rendered.
+        return new_region.to_owned();
+    }
+    let lines: Vec<&str> = new_region.split_inclusive('\n').collect();
+    let new: Vec<Option<(char, String)>> = lines
+        .iter()
+        .map(|l| task_line(l).map(|(m, t)| (m, plain_form(t))))
+        .collect();
+    // The old mark each new line takes (pass 1, then pass 2).
+    let mut taken: Vec<Option<char>> = vec![None; lines.len()];
+    let mut take = |matches: &dyn Fn(&str) -> bool| {
+        let slot = old
+            .iter_mut()
+            .find(|o| o.as_ref().is_some_and(|(_, t)| matches(t)))?;
+        slot.take().map(|(m, _)| m)
+    };
+    for (i, n) in new.iter().enumerate() {
+        if let Some((_, text)) = n {
+            taken[i] = take(&|t: &str| t == text);
+        }
+    }
+    for (i, n) in new.iter().enumerate() {
+        if let Some((' ', text)) = n
+            && taken[i].is_none()
+        {
+            taken[i] = take(&|t: &str| {
+                t.strip_prefix(text.as_str())
+                    .is_some_and(|rest| rest.starts_with(' '))
+            });
+        }
+    }
+    let mut out = String::with_capacity(new_region.len());
+    for ((line, n), mark) in lines.iter().zip(&new).zip(taken) {
+        match (n, mark) {
+            (Some((' ', _)), Some(mark)) => {
+                out.push_str("- [");
+                out.push(mark);
+                // `- [ ` is four bytes: the rest (`] text` and the line ending) is kept.
+                out.push_str(&line[4..]);
+            }
+            _ => out.push_str(line),
+        }
+    }
+    out
+}
+
 /// Re-exports `rendered` into the existing note `existing` (PLAN.md 3.8): owned keys are
 /// replaced in place (or appended), other keys kept verbatim, `tags` merged as a union
-/// (existing order first); the managed region is replaced, or appended after the user's
-/// text when both markers are gone; everything else is kept byte for byte, including its
+/// (existing order first); the managed region is replaced (keeping the marks the user set
+/// on task lines whose text is unchanged, see `carry_task_marks`), or appended after the
+/// user's text when both markers are gone; everything else is kept byte for byte, including its
 /// line endings and a UTF-8 BOM.
 ///
 /// # Errors
@@ -277,7 +376,7 @@ pub fn merge(existing: &str, rendered: &RenderedExport) -> Result<String, Export
                 .or_else(|| after.strip_prefix('\n'))
                 .unwrap_or(after);
             out.push_str(&body[..b]);
-            out.push_str(&region);
+            out.push_str(&carry_task_marks(&body[b..e], &region));
             out.push_str(after);
         }
         (0, _) | (_, 0) => return Err(ExportError::Markers("only one region marker present")),
