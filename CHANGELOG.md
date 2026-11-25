@@ -4,7 +4,7 @@ What each release changed, in plain words, newest first. It is written from the 
 
 [docs/compatibility.md](docs/compatibility.md) says what an update does to your data, to sync and to the relay and worker.
 
-## Unreleased (after 0.4.2)
+## 0.9.0 - 2026-11-26
 
 ### Added
 
