@@ -619,12 +619,17 @@ fn run(
             // thread's last).
             let _stepping = steps.lock().unwrap_or_else(PoisonError::into_inner);
             if !superseded(signal) {
+                // Whether the tick may have changed a summary request here: it wrote, deleted
+                // or repaired a row, or it panicked and cannot say. With nothing changed and
+                // nothing to do or wait for at the last step, the step reads no request (T14.50).
+                let rows_changed = tick_report.as_ref().is_none_or(super::TickReport::changed);
                 // Kept whatever the step ends with, as the tick's report is (T12.81).
                 let _ = catch_unwind(AssertUnwindSafe(|| {
-                    state.step_into(
+                    state.step_after_tick_into(
                         &services,
                         &mut || client.peers().ok(),
                         &**host,
+                        rows_changed,
                         &mut step_report,
                     )
                 }));

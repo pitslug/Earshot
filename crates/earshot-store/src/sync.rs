@@ -408,6 +408,20 @@ impl Wrote {
     }
 }
 
+/// A mark of the `summary_request` table ([`Store::summary_requests_mark`], T14.50): how many
+/// rows it holds and the latest `updated_at` among them. A request this device writes changes
+/// it: a new request adds a row, and any write here is stamped after every stamp this device
+/// has written or applied. A pulled copy may change a row without changing the mark (its stamp
+/// can be below the latest), so a caller that also needs to hear of pulled rows asks the sync
+/// tick ([`Applied::written`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestsMark {
+    /// Rows in the table, tombstones included.
+    pub rows: u64,
+    /// The latest `updated_at` of any row; `None` for an empty table.
+    pub latest: Option<HlcTimestamp>,
+}
+
 /// A `sync_pending` row as read: key, seq, wall_ms, logical, node, body, reason.
 type HeldColumns = (Vec<u8>, i64, i64, u32, Vec<u8>, Vec<u8>, String);
 
@@ -1518,6 +1532,44 @@ impl Store {
                 after(tx)?;
             }
             Ok(out)
+        })
+    }
+
+    /// A mark of the summary requests this store holds ([`RequestsMark`]): two aggregate reads,
+    /// no row is read into memory.
+    ///
+    /// # Errors
+    /// Store errors; [`StoreError::Corrupt`] for a stamp this build did not write.
+    pub fn summary_requests_mark(&self) -> Result<RequestsMark, StoreError> {
+        let rows: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM summary_request", [], |r| r.get(0))?;
+        let latest: Option<(i64, u32, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT updated_wall, updated_logical, updated_node FROM summary_request \
+                 ORDER BY updated_wall DESC, updated_logical DESC, updated_node DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let bad = || StoreError::Corrupt("a summary request's stamp".into());
+        let latest = latest
+            .map(
+                |(wall, logical, node)| -> Result<HlcTimestamp, StoreError> {
+                    Ok(HlcTimestamp {
+                        wall_ms: u64::try_from(wall).map_err(|_| bad())?,
+                        logical,
+                        node: earshot_core::identity::DeviceId::from_bytes(
+                            node.try_into().map_err(|_| bad())?,
+                        ),
+                    })
+                },
+            )
+            .transpose()?;
+        Ok(RequestsMark {
+            rows: u64::try_from(rows).unwrap_or(0),
+            latest,
         })
     }
 

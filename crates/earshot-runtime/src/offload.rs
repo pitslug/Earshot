@@ -873,6 +873,33 @@ pub struct Offload {
     /// Requests that need nothing more of this device (done, or declined or withdrawn with a
     /// summary since), so a step does not read their meeting again.
     settled: Mutex<BTreeSet<EntityId>>,
+    /// Set by a scan that found nothing to do or to wait for ([`Idle`]); `None` after any other
+    /// scan and before the first.
+    idle: Mutex<Option<Idle>>,
+    /// Scans made (tests: a skipped step makes none).
+    #[cfg(test)]
+    scans: std::sync::atomic::AtomicUsize,
+}
+
+/// What a scan that found nothing to do or to wait for leaves behind (T14.50), so the sync
+/// thread's next steps can tell without reading every request that nothing has changed
+/// ([`Offload::step_after_tick_into`]).
+///
+/// Such a scan looked at no request (none is open for this device as asker or helper, none
+/// closed is still to be handed back or settled) and wrote nothing. A later scan looks at one
+/// only if a request row changed, which is a row this device wrote (the `mark` moves: a new
+/// request is a new row, and any write here is stamped after every stamp in the table) or one
+/// a sync tick applied (the thread says so), or if this device's clock reads earlier than it did
+/// (`at_ms`: a closed request left alone for its age could count as recent again). Nothing else
+/// a scan reads can make it look at a request it passed over: a done request no run record
+/// waits on is never named by a later record (a record names a request only while it is open),
+/// and the requests settled in this process only grow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Idle {
+    /// The request table's mark when the scan read it (under the same store lock).
+    mark: earshot_store::RequestsMark,
+    /// This device's clock at the scan.
+    at_ms: u64,
 }
 
 /// A declined or withdrawn request whose write here started, or that a summary settled, more than
@@ -970,6 +997,46 @@ impl Offload {
         self.step_with(services, peers, host, false, report)
     }
 
+    /// [`Self::step_into`] as the sync thread runs it after each tick (T14.50): the scan of every
+    /// request is skipped when the last scan found nothing to do or to wait for ([`Idle`]), no
+    /// request row has changed since (`rows_changed`: whether the tick wrote, deleted or
+    /// repaired anything here, or cannot say; and the request table's mark, two aggregate reads)
+    /// and this device's clock has not gone back. A skipped step does nothing, as the scan would
+    /// have, and `report` stays as it was.
+    ///
+    /// # Errors
+    /// As [`Self::step_into`].
+    pub fn step_after_tick_into(
+        &self,
+        services: &Services,
+        peers: &mut dyn FnMut() -> Option<Vec<Peer>>,
+        host: &dyn OffloadHost,
+        rows_changed: bool,
+        report: &mut StepReport,
+    ) -> Result<(), RuntimeError> {
+        if !rows_changed && self.nothing_to_do(services) {
+            return Ok(());
+        }
+        self.step_with(services, peers, host, false, report)
+    }
+
+    /// Whether a scan now would find what the last one found: nothing ([`Idle`]). A mark that
+    /// cannot be read says nothing, so the scan runs.
+    fn nothing_to_do(&self, services: &Services) -> bool {
+        let Some(idle) = *self.idle.lock().unwrap_or_else(PoisonError::into_inner) else {
+            return false;
+        };
+        services.clock.now_unix_ms() >= idle.at_ms
+            && services
+                .store()
+                .summary_requests_mark()
+                .is_ok_and(|mark| mark == idle.mark)
+    }
+
+    fn set_idle(&self, idle: Option<Idle>) {
+        *self.idle.lock().unwrap_or_else(PoisonError::into_inner) = idle;
+    }
+
     /// The last step of a sync thread that stops on a problem the user must act on (this device
     /// was removed, another vault, an update needed, no usable address or key) or because sync
     /// was turned off (T11.6c). Nothing
@@ -1013,8 +1080,15 @@ impl Offload {
         report: &mut StepReport,
     ) -> Result<(), RuntimeError> {
         let (me, now) = (services.store().device(), services.clock.now_unix_ms());
-        let (seen, offers, mut times, held) = {
+        // Whatever this scan ends with, the last one's finding no longer stands.
+        self.set_idle(None);
+        #[cfg(test)]
+        self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (seen, offers, mut times, held, mark) = {
             let db = services.store();
+            // Read with the requests, under one lock: a request written after this is seen as a
+            // changed mark by the next step.
+            let mark = db.summary_requests_mark()?;
             let offers = crate::sync::sync_settings(&db)
                 .map(|s| s.offers_summaries)
                 .unwrap_or(false);
@@ -1063,8 +1137,9 @@ impl Offload {
                     final_segments,
                 });
             }
-            (seen, offers, times, held)
+            (seen, offers, times, held, mark)
         };
+        let nothing_seen = seen.is_empty();
         let before = times.clone();
         // Open readings are kept for open requests only, closed ones while the store holds them.
         times.requests.retain(|id, _| {
@@ -1110,6 +1185,10 @@ impl Offload {
             services
                 .store()
                 .transaction(|tx| store_step_times(tx, &before, &times))?;
+        } else if nothing_seen && !sync_stopped && outcome.is_ok() {
+            // Nothing looked at and nothing written: the next steps after a tick skip the scan
+            // until a request row changes ([`Idle`]).
+            self.set_idle(Some(Idle { mark, at_ms: now }));
         }
         outcome
     }

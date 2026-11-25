@@ -2458,4 +2458,348 @@ mod order_steps {
         );
         assert_eq!(a.live_summaries(m), 1);
     }
+
+    // ---- the step after a tick reads no request while nothing can have changed (T14.50) ----
+
+    fn scans(offload: &Offload) -> usize {
+        offload.scans.load(Ordering::SeqCst)
+    }
+
+    /// The step as the sync thread runs it after a tick that says `rows_changed`.
+    fn after_tick(dev: &Device, host: &Recorder, rows_changed: bool) -> StepReport {
+        let mut report = StepReport::default();
+        dev.offload
+            .step_after_tick_into(&dev.svc, &mut || None, host, rows_changed, &mut report)
+            .unwrap();
+        report
+    }
+
+    #[test]
+    fn offload_a_step_after_a_tick_reads_no_request_while_nothing_can_have_changed() {
+        let relay = relay();
+        let (a, b) = pair(&relay);
+        let host = Recorder::default();
+        // The first step of a process always reads.
+        assert_eq!(after_tick(&a, &host, false), StepReport::default());
+        assert_eq!(scans(&a.offload), 1);
+        // It found nothing to do or wait for: the next ones read no request.
+        for _ in 0..3 {
+            a.clock.advance_ms(30_000);
+            assert_eq!(after_tick(&a, &host, false), StepReport::default());
+        }
+        assert_eq!(scans(&a.offload), 1);
+        // A tick that changed rows here: read again.
+        after_tick(&a, &host, true);
+        assert_eq!(scans(&a.offload), 2);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 2);
+        // The clock went back: read again (a closed request's age is judged by it).
+        a.clock.set_ms(a.clock.now_unix_ms() - 60_000);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 3);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 3);
+        // A step that is not the thread's after-tick step always reads.
+        a.step(None, &host);
+        assert_eq!(scans(&a.offload), 4);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 4);
+
+        // This device asks: its own write is seen without any tick saying so, and while the
+        // request is open every step reads (its 90 seconds run on the clock).
+        let m = meeting(&a.svc, "Invented planning", 521);
+        let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+        assert_eq!(after_tick(&a, &host, false), StepReport::default());
+        assert_eq!(scans(&a.offload), 5);
+        a.clock.advance_ms(CLAIM_WITHIN_MS - 1);
+        assert_eq!(after_tick(&a, &host, false), StepReport::default());
+        assert_eq!(scans(&a.offload), 6);
+        a.clock.advance_ms(1);
+        let r = after_tick(&a, &host, false);
+        assert_eq!((r.withdrawn, r.written_here), (1, 1), "{r:?}");
+        assert_eq!(scans(&a.offload), 7);
+        assert_eq!(a.request(request).state, RequestState::Withdrawn);
+        // Handed back and not yet summarised: still looked at, step after step.
+        after_tick(&a, &host, false);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 9);
+        // Left alone for its age: one more read finds nothing, and the steps after it skip.
+        a.clock.advance_ms(LOOK_BACK_MS + 1);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 10);
+        after_tick(&a, &host, false);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 10);
+        // The last step of a thread whose sync stopped always reads, and leaves nothing behind
+        // for a later step to skip on.
+        a.offload.step_sync_stopped(&a.svc, &host).unwrap();
+        assert_eq!(scans(&a.offload), 11);
+        after_tick(&a, &host, false);
+        assert_eq!(scans(&a.offload), 12);
+        assert_eq!(host.here().len(), 1, "handed once in all");
+    }
+
+    /// The pages are varied and the same on every run.
+    struct Dice(u64);
+
+    impl Dice {
+        fn roll(&mut self, below: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) % below
+        }
+    }
+
+    /// One device of the varied run: its offload state (replaced on a "restart"), its host, and
+    /// whether a tick changed rows here since its last step.
+    struct Side<'d> {
+        dev: &'d Device,
+        offload: Offload,
+        host: Recorder,
+        rows_changed: bool,
+    }
+
+    #[derive(Default, Debug)]
+    struct Tally {
+        skipped: usize,
+        scanned: usize,
+        acted: usize,
+    }
+
+    /// Everything a step may change, as text.
+    fn everything(side: &Side<'_>, meetings: &[EntityId]) -> Vec<String> {
+        let db = side.dev.svc.store();
+        let mut out: Vec<String> = db
+            .summary_requests()
+            .unwrap()
+            .iter()
+            .map(|r| format!("{r:?}"))
+            .collect();
+        out.push(format!("{:?}", db.local_value(OFFLOAD_TIMES_KEY).unwrap()));
+        for m in meetings {
+            out.push(format!("{:?}", crate::summary_order::run::read(&db, *m)));
+            out.push(format!("{:?}", db.summaries(*m).map(|s| s.len())));
+        }
+        out.push(format!(
+            "{:?} {:?}",
+            side.host.here(),
+            side.host
+                .for_others()
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        ));
+        out
+    }
+
+    /// One step. When the thread's step after a tick would skip the scan, the scan is run all
+    /// the same and must have done nothing at all; the skipped step's state is then put back,
+    /// so a run of skips is judged against the scan they follow, as in the thread.
+    fn checked_step(
+        side: &mut Side<'_>,
+        peers: Option<Vec<Peer>>,
+        meetings: &[EntityId],
+        tally: &mut Tally,
+        at: &str,
+    ) {
+        let would_skip = !side.rows_changed && side.offload.nothing_to_do(&side.dev.svc);
+        side.rows_changed = false;
+        let idle = *side.offload.idle.lock().unwrap();
+        let before = everything(side, meetings);
+        let report = side
+            .offload
+            .step(&side.dev.svc, &mut || peers.clone(), &side.host)
+            .unwrap();
+        let after = everything(side, meetings);
+        if would_skip {
+            assert_eq!(report, StepReport::default(), "{at}: a skipped step acted");
+            assert_eq!(after, before, "{at}: a skipped step changed something");
+            *side.offload.idle.lock().unwrap() = idle;
+            tally.skipped += 1;
+        } else {
+            tally.scanned += 1;
+            if report != StepReport::default() || after != before {
+                tally.acted += 1;
+            }
+        }
+    }
+
+    /// T14.50: over a varied run of two devices (asks with and without a run of the order,
+    /// syncs, clocks moving on and back, the helper writing or declining, summaries stored,
+    /// meetings deleted, hosts refusing, restarts), the step after a tick never skips a scan
+    /// that would have done anything.
+    #[test]
+    fn offload_a_step_skipped_after_a_tick_is_one_a_scan_would_have_done_nothing_in() {
+        use rand_core::SeedableRng;
+        let mut tally = Tally::default();
+        for seed in 0..5u64 {
+            let relay = relay();
+            let (da, db) = pair(&relay);
+            let (ca, cb) = (da.client(), db.client());
+            let mut dice = Dice(0x0FF1_0AD0 + seed);
+            let mut a = Side {
+                dev: &da,
+                offload: Offload::new(),
+                host: Recorder::default(),
+                rows_changed: false,
+            };
+            let mut b = Side {
+                dev: &db,
+                offload: Offload::new(),
+                host: Recorder::default(),
+                rows_changed: false,
+            };
+            let mut meetings: Vec<EntityId> = Vec::new();
+            let mut written_for = 0;
+            for turn in 0..90u64 {
+                let at = format!("seed {seed} turn {turn}");
+                match dice.roll(13) {
+                    // This device asks, by itself or as a computer step of a run of the order.
+                    0 | 1 => {
+                        let m = meeting(&da.svc, "Invented meeting", 600 + seed * 100 + turn);
+                        meetings.push(m);
+                        if dice.roll(2) == 0 {
+                            ask(&da.svc, m, db.id()).unwrap();
+                        } else {
+                            let peers = helper_online(db.id());
+                            let writers = Writers::default()
+                                .choice(db.id(), decide(Some(db.id()), Some(&peers), false));
+                            start(
+                                &da,
+                                m,
+                                RunStart::Order(order(&[OrderStep::Computer(db.id()), ENDPOINT])),
+                                &writers,
+                            );
+                        }
+                    }
+                    // A sync both ways; each device hears whether its ticks changed rows.
+                    2..=4 => {
+                        a.rows_changed |= ca.tick().unwrap().changed();
+                        b.rows_changed |= cb.tick().unwrap().changed();
+                        b.rows_changed |= cb.tick().unwrap().changed();
+                        a.rows_changed |= ca.tick().unwrap().changed();
+                    }
+                    // Time passes on one device: a second, most of the claim window, past it,
+                    // past the stale and transcript waits, past the look-back.
+                    5 | 6 => {
+                        let by = [
+                            1_000,
+                            45_000,
+                            CLAIM_WITHIN_MS + 1,
+                            6 * 60_000,
+                            LOOK_BACK_MS + 1,
+                        ][usize::try_from(dice.roll(5)).unwrap()];
+                        if dice.roll(2) == 0 {
+                            da.clock.advance_ms(by);
+                        } else {
+                            db.clock.advance_ms(by);
+                        }
+                    }
+                    // The helper's host does the next piece of work it was handed: it writes
+                    // the summary, or declines.
+                    7 | 8 => {
+                        let handed = b.host.for_others();
+                        if let Some(request) = handed.get(written_for) {
+                            written_for += 1;
+                            if dice.roll(2) == 0 {
+                                let server =
+                                    MockServer::start(vec![reply("Written by the helper")])
+                                        .unwrap();
+                                write_for_request(
+                                    &db.svc,
+                                    &MeetingQueue::new(),
+                                    request,
+                                    &|_| remote_writer(&db.svc, &server),
+                                    &CancelToken::new(),
+                                );
+                            } else {
+                                let _ = decline(&db.svc, request.id, reason::FAILED);
+                            }
+                        }
+                    }
+                    // The asker's host refuses, settles or starts what it is handed.
+                    9 => {
+                        let mode = dice.roll(3);
+                        a.host.refuse_here.store(mode == 1, Ordering::SeqCst);
+                        a.host.settle_here.store(mode == 2, Ordering::SeqCst);
+                    }
+                    // A summary is stored on the asker (a write here that finished).
+                    10 => {
+                        if let Some(m) = meetings
+                            .get(usize::try_from(dice.roll(meetings.len().max(1) as u64)).unwrap())
+                        {
+                            let view =
+                                crate::view::MeetingView::load_named(&da.svc.store(), *m).unwrap();
+                            if let Some(view) = view {
+                                let summary = SummaryV1 {
+                                    title: "Invented meeting".into(),
+                                    tldr: "An invented summary.".into(),
+                                    ..SummaryV1::default()
+                                };
+                                let _ = crate::summary::store_summary(
+                                    &da.svc,
+                                    &view,
+                                    "test-model".into(),
+                                    &summary,
+                                    &mut rand_chacha::ChaCha8Rng::seed_from_u64(turn),
+                                );
+                            }
+                        }
+                    }
+                    // A meeting is deleted on the asker.
+                    11 => {
+                        if let Some(m) = meetings
+                            .get(usize::try_from(dice.roll(meetings.len().max(1) as u64)).unwrap())
+                        {
+                            let _ = da.svc.delete_meeting(*m);
+                        }
+                    }
+                    // Rarer things: the helper stops or starts offering, the asker's clock is
+                    // set back, either process restarts.
+                    _ => match dice.roll(5) {
+                        0 => set_offer_summaries(&db.svc, false).unwrap(),
+                        1 => set_offer_summaries(&db.svc, true).unwrap(),
+                        2 => da
+                            .clock
+                            .set_ms(da.clock.now_unix_ms().saturating_sub(10 * 60_000)),
+                        3 => a.offload = Offload::new(),
+                        _ => {
+                            b.offload = Offload::new();
+                            written_for = b.host.for_others().len();
+                        }
+                    },
+                }
+                // Most turns end with a step on each device, the asker with the relay's
+                // presence as it may be: unread, the helper online, stale, or missing.
+                if dice.roll(4) != 0 {
+                    let peers = match dice.roll(4) {
+                        0 => None,
+                        1 => Some(helper_online(db.id())),
+                        2 => Some(vec![peer(
+                            db.id(),
+                            Some(presence(
+                                "Invented desk",
+                                true,
+                                Some(WriterKind::Local),
+                                false,
+                            )),
+                            STALE_AFTER_S + 1,
+                        )]),
+                        _ => Some(Vec::new()),
+                    };
+                    checked_step(&mut a, peers, &meetings, &mut tally, &at);
+                }
+                if dice.roll(4) != 0 {
+                    checked_step(&mut b, None, &meetings, &mut tally, &at);
+                }
+            }
+        }
+        // Steps were skipped, scans ran, and scans did act: the run is not one where nothing
+        // ever happens or nothing is ever skipped.
+        assert!(tally.skipped > 60, "{tally:?}");
+        assert!(tally.scanned > 150, "{tally:?}");
+        assert!(tally.acted > 40, "{tally:?}");
+    }
 }
