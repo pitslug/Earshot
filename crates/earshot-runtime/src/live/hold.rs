@@ -194,7 +194,7 @@ pub(super) fn held_entry(
 }
 
 /// A track's queued audio. A chunk held for transcription and for speaker work is one
-/// allocation shared by both queues (TODO 50: two copies cost about 230 MB at the cap).
+/// allocation shared by both queues (two copies cost about 230 MB at the cap).
 #[derive(Debug, Default)]
 struct TrackQueue {
     chunks: Vec<Arc<Vec<Sample>>>,
@@ -846,7 +846,7 @@ where
 mod tests {
     use super::*;
 
-    /// TODO 50: audio held for both kinds of work is one allocation, and a queue taken last
+    /// Audio held for both kinds of work is one allocation, and a queue taken last
     /// gets it without a copy.
     #[test]
     fn meeting_queue_held_audio_is_kept_once_for_both_queues() {

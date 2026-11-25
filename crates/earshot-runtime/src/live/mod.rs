@@ -1674,7 +1674,8 @@ where
                         ..
                     } = &e
                     {
-                        // The mic's live ASR stopped for the meeting (TODO 51).
+                        // The mic's live ASR stopped for the meeting: stop keeping reference
+                        // words behind its frozen frontier.
                         self.mic_stopped(MicStop::LiveAsrError);
                     }
                     if let PipelineError::LiveAsr { track, error } = &e
@@ -1793,7 +1794,7 @@ where
     }
 
     /// The mic's live ASR stopped for the rest of the meeting: the echo filter stops keeping
-    /// reference words for it (TODO 51).
+    /// reference words for it, which would otherwise pile up behind its frozen frontier.
     fn mic_stopped(&mut self, how: MicStop) {
         #[cfg(test)]
         mic_stops::record(&self.services.data, how);
@@ -1818,7 +1819,7 @@ where
             .map(|m| (m.ended(), m.decoded_through()))
         {
             if ended {
-                // A crashed mic worker sends nothing more (TODO 51).
+                // A crashed mic worker sends nothing more: its frontier stays where it is.
                 self.mic_stopped(MicStop::WorkerEnded);
             }
             self.echo.mic_progress(done);

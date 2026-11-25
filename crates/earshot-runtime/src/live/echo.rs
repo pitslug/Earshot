@@ -177,7 +177,7 @@ impl LiveEchoFilter {
 
     /// The mic's live ASR stopped for good (its worker failed or crashed): reference words
     /// are kept only for the mic finals still held, so they no longer grow for the rest of
-    /// the meeting behind a frozen mic frontier (TODO 51).
+    /// the meeting behind a frozen mic frontier.
     pub fn mic_stopped(&mut self) {
         self.mic_stopped = true;
         self.mic_done = None;
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(texts(&f.release(false)), ["<dropped>"]);
     }
 
-    /// TODO 51: a mic worker that stopped (failed or crashed) left its frontier frozen, so
+    /// A mic worker that stopped (failed or crashed) used to leave its frontier frozen, so
     /// every later reference word was kept for the rest of the meeting.
     #[test]
     fn live_echo_a_stopped_mic_no_longer_keeps_reference_words() {

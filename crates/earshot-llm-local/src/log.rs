@@ -92,12 +92,16 @@ fn lock_within<T>(
 /// Runs `load` with the log to itself among loads: no other `load_window` runs at the same
 /// time, so the lines logged meanwhile are this load's alone (`LocalLlm::load` reads its
 /// backend from them). Returns `load`'s result and those lines, or `None` when some were
-/// already dropped from the ring; `Err` when an earlier load never finished.
+/// already dropped from the ring; `Err` when an earlier load never finished. `on_turn` runs once
+/// the lock is taken, before `load`: a caller that watches its load for a stall starts the watch
+/// there, so time spent queued behind another load is not counted against it.
 pub(crate) fn load_window<T>(
+    on_turn: impl FnOnce(),
     load: impl FnOnce() -> T,
 ) -> Result<(T, Option<Vec<String>>), &'static str> {
     let _one_load = lock_within(&LOADS, LOAD_LOCK_WAIT)
         .ok_or("an earlier model load is stuck; restart Earshot")?;
+    on_turn();
     let m = mark();
     let r = load();
     Ok((r, since(m)))
@@ -400,24 +404,36 @@ mod tests {
     #[test]
     fn log_load_windows_never_overlap() {
         let _ring = ring_test();
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static A_DONE: AtomicBool = AtomicBool::new(false);
+        static B_TURN_AFTER_A: AtomicBool = AtomicBool::new(false);
+        A_DONE.store(false, Ordering::SeqCst);
         let (inside, entered) = std::sync::mpsc::channel();
         let a = std::thread::spawn(move || {
-            load_window(|| {
-                push("log_window_test a1".into());
-                inside.send(()).unwrap();
-                // Long enough for the second load to log here if it were let in.
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                push("log_window_test a2".into());
-            })
+            load_window(
+                || {},
+                || {
+                    push("log_window_test a1".into());
+                    inside.send(()).unwrap();
+                    // Long enough for the second load to log here if it were let in.
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    push("log_window_test a2".into());
+                    A_DONE.store(true, Ordering::SeqCst);
+                },
+            )
             .unwrap()
             .1
         });
         entered.recv().unwrap();
         let b = std::thread::spawn(|| {
-            load_window(|| {
-                push("log_window_test b1".into());
-                push("log_window_test b2".into());
-            })
+            load_window(
+                // The second load's turn comes only once the first has finished.
+                || B_TURN_AFTER_A.store(A_DONE.load(Ordering::SeqCst), Ordering::SeqCst),
+                || {
+                    push("log_window_test b1".into());
+                    push("log_window_test b2".into());
+                },
+            )
             .unwrap()
             .1
         });
@@ -428,6 +444,10 @@ mod tests {
         assert_eq!(
             b.join().unwrap().unwrap(),
             ["log_window_test b1", "log_window_test b2"]
+        );
+        assert!(
+            B_TURN_AFTER_A.load(Ordering::SeqCst),
+            "the turn came while queued"
         );
     }
 

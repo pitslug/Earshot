@@ -207,7 +207,7 @@ mod tests {
         }
     }
 
-    /// TODO 87: wherever Automatic shows them, the machine is at or above the limit the notes
+    /// Wherever Automatic shows them, the machine is at or above the limit the notes
     /// name, so the "off by default" note can never go with them.
     #[test]
     fn preview_automatic_on_never_says_default_off() {

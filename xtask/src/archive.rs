@@ -687,7 +687,7 @@ mod tests {
         out
     }
 
-    /// TODO 85: Qualcomm AI Hub's Genie zip (2.5 GB, written by Python's `zipfile`) gives the
+    /// Qualcomm AI Hub's Genie zip (2.5 GB, written by Python's `zipfile`) gives the
     /// local header offset of its last entries only in zip64 extra fields; reading 0xFFFFFFFF
     /// as the offset failed with "failed to fill whole buffer".
     #[test]
