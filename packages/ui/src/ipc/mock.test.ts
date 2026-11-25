@@ -551,6 +551,20 @@ describe("mock summary seen (T14.51)", () => {
       expect(await ipc.markSummarySeen(m.id, m.summary)).toBe(false);
     }
     expect((await ipc.listMeetings()).some((m) => m.new_summary)).toBe(false);
+    // A summary stored in this session is new to the record: true the first time it is seen.
+    const timer = createManualTimer(1_000);
+    const later = createMockIpc({ meetings: plain, now: 1_000, timer });
+    const id = summarised[1];
+    const before = (await later.getMeeting(id)).summary;
+    if (before === null) throw new Error("the sample meeting has a summary");
+    expect(await later.markSummarySeen(id, before.id)).toBe(false);
+    await later.resummarise(id);
+    timer.advance(POST_STEP_MS);
+    const after = (await later.getMeeting(id)).summary;
+    if (after === null) throw new Error("the re-summary stored one");
+    expect(after.id).not.toBe(before.id);
+    expect(await later.markSummarySeen(id, after.id)).toBe(true);
+    expect(await later.markSummarySeen(id, after.id)).toBe(false);
   });
 });
 

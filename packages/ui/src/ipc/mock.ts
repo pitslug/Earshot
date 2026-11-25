@@ -823,6 +823,14 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
 
   // The mock's whole-list Dictionary write is not an `Ipc` command (T11.3e).
   const { setSummaryVocabulary: _wholeList, ...summaryCommands } = summariesMock;
+  // `summary_seen::mark_existing_once`: every summary that exists when the app first starts is seen;
+  // a meeting the list calls new has one stored since. Without this the first look at any page
+  // said "changed" and the window read its list again at a moment nobody chose (T14.51).
+  for (const row of meetings) {
+    if (row.new_summary) continue;
+    const summary = detailOf(row.id).summary;
+    if (summary !== null) seenSummaries.set(row.id, summary.id);
+  }
   const ipc: Ipc = {
     ...modelsMock,
     ...summaryCommands,
@@ -1639,16 +1647,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     markSummarySeen: async (meeting, summary) => {
       const row = meetings.find((m) => m.id === meeting);
       if (row === undefined || detailOf(meeting).summary?.id !== summary) return false;
-      const wasNew = row.new_summary;
       row.new_summary = false;
-      const seen = seenSummaries.get(meeting);
-      if (seen === summary) return false;
+      // As `summary_seen::mark_seen`: changed when the record did not already name this summary.
+      // The record starts as `mark_existing_once` leaves it (below), so a summary that existed
+      // when the mock was made answers false and one stored since answers true once (T14.51).
+      if (seenSummaries.get(meeting) === summary) return false;
       seenSummaries.set(meeting, summary);
-      // A summary the list does not call new was seen already: the app marks every summary that
-      // existed at its first start (`summary_seen::mark_existing_once`), and every later one is new
-      // until shown. Saying "changed" for it made the window read its list again for nothing, at
-      // a moment no test or user chose (T14.51).
-      return wasNew || seen !== undefined;
+      return true;
     },
     exportMeeting: async (meeting) => {
       call("exportMeeting", meeting);
