@@ -2140,6 +2140,11 @@ export type SearchResultsView = {
 	items: SearchResultItem[],
 	/**  Whether more meetings matched than `items` holds. */
 	capped: boolean,
+	/**
+	 *  Transcript lines and summaries left out of the search because they could not be read
+	 *  (`SearchResults::unreadable`): a count only, 0 normally.
+	 */
+	unreadable: number,
 };
 
 /**  Asks the UI to do something the tray, the shortcut or a notification cannot do alone. */

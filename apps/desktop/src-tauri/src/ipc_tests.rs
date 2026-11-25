@@ -716,6 +716,8 @@ fn search_answers_with_the_meetings_found_newest_first() {
 
     let found = meeting_search(&svc, " ORCHARD ", &CancelToken::new()).unwrap();
     assert!(!found.capped);
+    // Every row read: nothing left out.
+    assert_eq!(found.unreadable, 0);
     let ids: Vec<&str> = found.items.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(ids, [new.to_string(), old.to_string()]);
     assert_eq!(

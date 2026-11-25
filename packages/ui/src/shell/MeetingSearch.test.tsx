@@ -14,7 +14,7 @@ import { sampleDetail } from "../ipc/mockDetail";
 import { SEARCH_MAX_RESULTS, searchSample } from "../ipc/mockSearch";
 import { renderApp } from "../test/app";
 import { createManualTimer } from "../time";
-import { SEARCH_DEBOUNCE_MS, SEARCH_SUPERSEDED_KIND, resultLine } from "./MeetingSearch";
+import { SEARCH_DEBOUNCE_MS, SEARCH_SUPERSEDED_KIND, UNREADABLE_NOTE, resultLine } from "./MeetingSearch";
 
 const at = (day: number, hour: number) => new Date(2026, 10, day, hour, 0).getTime();
 const NOW = at(2, 16);
@@ -176,6 +176,7 @@ describe("meeting search", () => {
         },
       ],
       capped: false,
+      unreadable: 0,
     });
     await act(async () => answers.get("second")?.(hit("Second answer")));
     await act(async () => answers.get("first")?.(hit("First answer")));
@@ -193,6 +194,30 @@ describe("meeting search", () => {
     expect(screen.queryByText("No meetings found")).toBeNull();
     await settle();
     expect(resultTitles()).toEqual(["Orchard walk", "Orchard planning"]);
+  });
+
+  it("search says when some text could not be read, and only then", async () => {
+    const base = createMockIpc({ meetings: MEETINGS });
+    let unreadable = 2;
+    const searchMeetings = async (query: string) => ({ ...(await base.searchMeetings(query)), unreadable });
+    const { settle, user } = setup({ ...base, searchMeetings });
+    const input = await box();
+    await user.type(input, "orchard");
+    await settle();
+    expect(resultTitles()).toEqual(["Orchard walk", "Orchard planning"]);
+    expect(screen.getByText(UNREADABLE_NOTE)).toBeInTheDocument();
+    // Nothing found at all still says so, with the note beside it.
+    await user.clear(input);
+    await user.type(input, "quinceharvest");
+    await settle();
+    expect(screen.getByText("No meetings found")).toBeInTheDocument();
+    expect(screen.getByText(UNREADABLE_NOTE)).toBeInTheDocument();
+    unreadable = 0;
+    await user.clear(input);
+    await user.type(input, "orchard");
+    await settle();
+    expect(resultTitles()).toEqual(["Orchard walk", "Orchard planning"]);
+    expect(screen.queryByText(UNREADABLE_NOTE)).toBeNull();
   });
 
   it("search says when it stopped at the cap", async () => {
@@ -249,13 +274,14 @@ describe("meeting search", () => {
         { id: "gone", title: "Ghost", started_at_ms: at(1, 9), matched: "Title", snippet: "Ghost", line_ms: null },
       ],
       capped: false,
+      unreadable: 0,
     };
-    const answers = [ghost, { items: [], capped: false }];
+    const answers = [ghost, { items: [], capped: false, unreadable: 0 }];
     const listMeetings = vi.fn(base.listMeetings);
     const { settle, user } = setup({
       ...base,
       listMeetings,
-      searchMeetings: async () => answers.shift() ?? { items: [], capped: false },
+      searchMeetings: async () => answers.shift() ?? { items: [], capped: false, unreadable: 0 },
     });
     await user.type(await box(), "ghost");
     await settle();
@@ -334,7 +360,7 @@ describe("mock search", () => {
   });
 
   it("search of the sample treats an empty query as nothing and never splits a character", () => {
-    expect(searchSample(MEETINGS, sampleDetail, "  ")).toEqual({ items: [], capped: false });
+    expect(searchSample(MEETINGS, sampleDetail, "  ")).toEqual({ items: [], capped: false, unreadable: 0 });
     const long = `${"🦉".repeat(40)}needle${"🦉".repeat(80)}`;
     const found = searchSample([row("a", long, 1)], sampleDetail, "needle").items[0];
     expect(found.snippet).toBe(`...${"🦉".repeat(30)}needle${"🦉".repeat(70)}...`);

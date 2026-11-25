@@ -476,6 +476,9 @@ pub struct SearchResultsView {
     pub items: Vec<SearchResultItem>,
     /// Whether more meetings matched than `items` holds.
     pub capped: bool,
+    /// Transcript lines and summaries left out of the search because they could not be read
+    /// (`SearchResults::unreadable`): a count only, 0 normally.
+    pub unreadable: u32,
 }
 
 /// The error kind of a search that a newer search replaced before it answered (T9.24); the UI
@@ -517,6 +520,7 @@ pub fn meeting_search(
             })
             .collect(),
         capped: results.capped,
+        unreadable: u32::try_from(results.unreadable).unwrap_or(u32::MAX),
     })
 }
 
