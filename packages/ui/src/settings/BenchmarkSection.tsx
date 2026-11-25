@@ -20,7 +20,7 @@ import { useId } from "react";
 
 import type { BenchmarkResultView, BenchmarkRow } from "../ipc";
 import { clockTime } from "../shell/meetings";
-import { NotLoaded } from "./parts";
+import { BOX_WIDTH, FIELD_WIDTH, NotLoaded, TEXT_WIDTH } from "./parts";
 import { type BenchmarkRun, benchmarkRunning, useBenchmark } from "./useBenchmark";
 
 /** What the benchmark does. */
@@ -41,11 +41,11 @@ const useStyles = makeStyles({
     margin: 0,
   },
   text: {
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   row: {
     display: "flex",
@@ -56,7 +56,7 @@ const useStyles = makeStyles({
   running: {
     display: "grid",
     gap: tokens.spacingVerticalXS,
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   result: {
     display: "flex",
@@ -66,7 +66,7 @@ const useStyles = makeStyles({
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke1}`,
     borderRadius: tokens.borderRadiusMedium,
     backgroundColor: tokens.colorNeutralBackground1,
-    maxWidth: "70ch",
+    maxWidth: BOX_WIDTH,
   },
   rows: {
     display: "grid",

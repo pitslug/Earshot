@@ -33,7 +33,7 @@ import table from "../../../../fixtures/ui/sync_copy_cases.json";
 import type { SyncDeviceView, SyncView } from "../ipc";
 import { clockTime, recordedDate } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
-import { NotLoaded, NoticeBar, Section, usePageStyles } from "./parts";
+import { BOX_WIDTH, FIELD_WIDTH, NotLoaded, NoticeBar, Section, TEXT_WIDTH, usePageStyles } from "./parts";
 import { type SyncForm, type SyncPageState, useSync } from "./useSync";
 
 const useStyles = makeStyles({
@@ -41,16 +41,17 @@ const useStyles = makeStyles({
     margin: 0,
   },
   text: {
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
   form: {
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalS,
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   action: {
     alignSelf: "flex-start",
@@ -85,7 +86,7 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalXS,
-    maxWidth: "520px",
+    maxWidth: BOX_WIDTH,
   },
   device: {
     display: "flex",

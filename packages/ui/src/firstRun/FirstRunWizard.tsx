@@ -46,7 +46,7 @@ import { SummaryOrderChoices } from "../settings/SummariesPage";
 import { PreviewsSection } from "../settings/TranscriptionPage";
 import { JoinWithCodeForm, SYNC_INTRO, SetUpFirstForm } from "../settings/SyncPage";
 import { formatSize } from "../settings/copy";
-import { NotLoaded, UnknownSettings, usePageStyles } from "../settings/parts";
+import { FIELD_WIDTH, NotLoaded, TEXT_WIDTH, UnknownSettings, usePageStyles } from "../settings/parts";
 import { type SaveOnNext, type SaveStep, saveStep, useSaveOnNext } from "../settings/saveOnNext";
 import { checkRunning, useAudioCheck } from "../settings/useAudioCheck";
 import { type ModelsData, type ModelsLoad, type ModelsPageState, useModels } from "../settings/useModels";
@@ -233,24 +233,24 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalXS,
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   need: {
     display: "flex",
     flexDirection: "column",
     alignItems: "flex-start",
     gap: tokens.spacingVerticalS,
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   bar: {
     alignSelf: "stretch",
   },
   name: {
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   row: {
     display: "flex",

@@ -23,7 +23,7 @@ import { useId } from "react";
 
 import type { HardwareView, ModelsView, PartChoice, RunsOn } from "../ipc";
 import { hardwareRows, languageName, partName, partOf, titleOf, verdictTag } from "./copy";
-import { NoticeBar } from "./parts";
+import { FIELD_WIDTH, NoticeBar, TEXT_WIDTH } from "./parts";
 import type { Checking, Notice } from "./useModels";
 
 const useStyles = makeStyles({
@@ -64,6 +64,7 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
   check: {
     display: "flex",
@@ -91,7 +92,7 @@ const useStyles = makeStyles({
     gap: tokens.spacingVerticalS,
   },
   languages: {
-    maxWidth: "420px",
+    maxWidth: FIELD_WIDTH,
   },
 });
 

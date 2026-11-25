@@ -22,7 +22,7 @@ import { useId, useState } from "react";
 import { errorText, useIpc } from "../ipc";
 import { type ThemeChoice, useThemeChoice } from "../theme/EarshotThemeProvider";
 import { UpdatesSection } from "./UpdatesSection";
-import { NotLoaded, Section, useLoad, usePageStyles } from "./parts";
+import { NotLoaded, Section, TEXT_WIDTH, useLoad, usePageStyles } from "./parts";
 
 const useStyles = makeStyles({
   action: {
@@ -38,9 +38,10 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
   text: {
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
 });
 

@@ -47,7 +47,7 @@ import { endpointHost } from "../ipc/localHost";
 import { ModelsNotLoaded, SummaryModelChoices } from "./ModelSections";
 import { SummaryStyleSection } from "./SummaryStyleSection";
 import { partName, titleOf } from "./copy";
-import { NotLoaded, NoticeBar, Section, UnknownSettings, usePageStyles } from "./parts";
+import { FIELD_WIDTH, NotLoaded, NoticeBar, Section, TEXT_WIDTH, UnknownSettings, usePageStyles } from "./parts";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import type { ModelsPageState } from "./useModels";
 import { type CliCheck, type SummariesPageState, useSummaries } from "./useSummaries";
@@ -119,6 +119,7 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
   endpoint: {
     display: "flex",
@@ -132,7 +133,7 @@ const useStyles = makeStyles({
   fields: {
     display: "grid",
     gap: tokens.spacingVerticalM,
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   row: {
     display: "flex",

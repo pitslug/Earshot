@@ -21,7 +21,7 @@ import { type PreviewsChoice, type PreviewsView, errorText, useIpc } from "../ip
 import { ModelNotices, ModelsNotLoaded, NpuVersions, TranscriptionChoices } from "./ModelSections";
 import { LANGUAGES_LABEL, LanguagesPicker } from "./ModelsParts";
 import { SpeakerTimingSection } from "./PeoplePage";
-import { Section, usePageStyles } from "./parts";
+import { Section, TEXT_WIDTH, usePageStyles } from "./parts";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type ModelsPageState } from "./useModels";
 
@@ -31,6 +31,7 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
   option: {
     display: "flex",

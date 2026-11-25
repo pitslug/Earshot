@@ -10,7 +10,7 @@ import type { ModelItem } from "../ipc";
 import { HelpersCard, ModelCard, NpuCard } from "./ModelCard";
 import { CheckLine, Notices } from "./ModelsParts";
 import { HELPERS_WHY, NPU_WHY, ROLE_LABEL, choiceWhy, summaryLabel, summaryWhy, titleOf } from "./copy";
-import { NotLoaded, Section, UnknownSettings } from "./parts";
+import { NotLoaded, Section, TEXT_WIDTH, UnknownSettings } from "./parts";
 import type { ModelsData, ModelsLoad, ModelsPageState } from "./useModels";
 
 const useStyles = makeStyles({
@@ -20,6 +20,7 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
 });
 

@@ -25,6 +25,7 @@ import { useEffect, useState } from "react";
 
 import { IpcFailure, type ScheduleChoice, type UpdatePhase, type UpdateView, errorText, useIpc } from "../ipc";
 import { formatSize } from "./copy";
+import { NARROW_WIDTH, TEXT_WIDTH } from "./parts";
 
 const useStyles = makeStyles({
   section: {
@@ -36,10 +37,11 @@ const useStyles = makeStyles({
     alignSelf: "flex-start",
   },
   field: {
-    maxWidth: "320px",
+    maxWidth: NARROW_WIDTH,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
 });
 

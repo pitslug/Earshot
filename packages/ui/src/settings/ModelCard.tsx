@@ -15,6 +15,7 @@ import {
 
 import type { ModelItem } from "../ipc";
 import { formatSize, verdictTag } from "./copy";
+import { TEXT_WIDTH } from "./parts";
 
 const useStyles = makeStyles({
   card: {
@@ -48,6 +49,7 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground2,
     paddingLeft: "32px",
     // No width cap: the card's grid column bounds it, so the text uses the card's width.
+    maxWidth: TEXT_WIDTH,
   },
   warn: {
     color: tokens.colorPaletteMarigoldForeground2,
@@ -63,6 +65,7 @@ const useStyles = makeStyles({
   },
   muted: {
     color: tokens.colorNeutralForeground3,
+    maxWidth: TEXT_WIDTH,
   },
   bar: {
     width: "140px",

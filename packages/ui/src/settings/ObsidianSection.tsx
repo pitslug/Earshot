@@ -17,17 +17,17 @@ import {
 import { useState } from "react";
 
 import { type ObsidianSettingsView, errorText, useIpc } from "../ipc";
-import { NotLoaded, UnknownSettings, useLoad, usePageStyles } from "./parts";
+import { FIELD_WIDTH, NotLoaded, TEXT_WIDTH, UnknownSettings, useLoad, usePageStyles } from "./parts";
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 
 const useStyles = makeStyles({
   text: {
-    maxWidth: "70ch",
+    maxWidth: TEXT_WIDTH,
   },
   fields: {
     display: "grid",
     gap: tokens.spacingVerticalM,
-    maxWidth: "520px",
+    maxWidth: FIELD_WIDTH,
   },
   save: {
     justifySelf: "start",
