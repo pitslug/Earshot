@@ -365,6 +365,11 @@ const useStyles = makeStyles({
     // a line holding focus or in view is always drawn.
     contentVisibility: "auto",
     containIntrinsicSize: "auto 32px",
+    // A line focused from the keyboard (T14.19) shows the focus ring.
+    ":focus-visible": {
+      outline: `${tokens.strokeWidthThick} solid ${tokens.colorStrokeFocus2}`,
+      outlineOffset: "-2px",
+    },
     // The Edit button shows on hover and whenever the row holds focus (T12.16).
     ":hover .earshot-line-edit": { opacity: 1 },
     ":focus-within .earshot-line-edit": { opacity: 1 },
@@ -688,6 +693,15 @@ export function MeetingDetailView({
     setSpeakersLeaving(speakersWere === true && speakersOpen !== true);
   }
   const panelId = useId();
+  // Bumped when the user opens the panel with its button: focus goes to the panel's heading.
+  // Each press moves focus once: a later automatic open never does.
+  const [focusPanel, setFocusPanel] = useState(0);
+  const focusedPanel = useRef(0);
+  useEffect(() => {
+    if (focusPanel === focusedPanel.current || speakersOpen !== true) return;
+    focusedPanel.current = focusPanel;
+    document.getElementById(panelId)?.querySelector<HTMLElement>("h2")?.focus();
+  }, [focusPanel, speakersOpen, panelId]);
   const voicesBefore = useRef(0);
   const speakersButton = useRef<HTMLButtonElement | null>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -1093,7 +1107,12 @@ export function MeetingDetailView({
               aria-controls={speakersOpen === true ? panelId : undefined}
               aria-label={voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers"}
               disabled={detail === null}
-              onClick={() => setSpeakersOpen((open) => open !== true)}
+              onClick={() => {
+                // Opened by the user: focus goes into the panel, which follows the transcript in
+                // the page (T14.19). An automatic open moves nothing.
+                if (speakersOpen !== true) setFocusPanel((n) => n + 1);
+                setSpeakersOpen((open) => open !== true);
+              }}
             >
               Speakers
               {voices > 0 && (
@@ -1926,6 +1945,13 @@ function TranscriptTab({
   );
   const undoRef = useRef<HTMLButtonElement | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
+  // The transcript is one tab stop (T14.19, roving tabindex): the line last focused, else the
+  // first. A line's buttons are reached from it with the arrow keys (`lineKeys`).
+  const [active, setActive] = useState<string | null>(null);
+  const activeId =
+    active !== null && detail.transcript.some((r) => r.segment_id === active)
+      ? active
+      : (detail.transcript[0]?.segment_id ?? null);
   useEffect(() => {
     if (focusNext === null) return;
     if ("undo" in focusNext) undoRef.current?.focus();
@@ -1951,6 +1977,7 @@ function TranscriptTab({
     () => ({
       contextMenu: (r, e) => latest.current?.contextMenu(r, e),
       keyDown: (r, e) => latest.current?.keyDown(r, e),
+      focusRow: (segment) => latest.current?.focusRow(segment),
       startEdit: (segment) => latest.current?.startEdit(segment),
       saveEdit: async (segment, text) => latest.current?.saveEdit(segment, text),
       cancelEdit: () => latest.current?.cancelEdit(),
@@ -2054,13 +2081,64 @@ function TranscriptTab({
     e.preventDefault();
     openMenu(r.segment_id, words, el, el);
   };
+  /** Moving through the transcript from the keyboard (T14.19): on a line, up and down (Home,
+   * End) go to other lines, right or Enter to its first button (Enter: its Edit button; an edit
+   * still starts only from that button); on a line's button, left and right go through the
+   * line's buttons and back to the line, up and down to the other lines. A line being edited or
+   * split, its Dictionary bar and anything portalled (menus, a word's popover) keep their keys. */
+  const lineKeys = (r: TranscriptRow, e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (editing === r.segment_id || splitting === r.segment_id) return;
+    const row = e.currentTarget;
+    const at = e.target as HTMLElement;
+    if (!row.contains(at)) return;
+    const onRow = at === row;
+    const controls = [...row.querySelectorAll<HTMLElement>(LINE_CONTROL)];
+    const k = controls.indexOf(at);
+    if (!onRow && k < 0) return;
+    const lines = [...(tableRef.current?.querySelectorAll<HTMLElement>(':scope > [role="row"]') ?? [])];
+    const i = lines.indexOf(row);
+    let to: HTMLElement | null | undefined;
+    switch (e.key) {
+      case "ArrowDown":
+        to = lines[i + 1];
+        break;
+      case "ArrowUp":
+        to = i > 0 ? lines[i - 1] : undefined;
+        break;
+      case "Home":
+      case "End":
+        if (!onRow) return;
+        to = e.key === "Home" ? lines[0] : lines.at(-1);
+        break;
+      case "ArrowRight":
+        to = onRow ? controls[0] : controls[k + 1];
+        break;
+      case "ArrowLeft":
+        if (onRow) return;
+        to = k === 0 ? row : controls[k - 1];
+        break;
+      case "Enter":
+        if (!onRow) return;
+        to = lineEditButton(row, r.segment_id) ?? controls[0];
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    to?.focus();
+  };
 
   // Set once a render is committed: a render React discards leaves the committed handlers.
   useLayoutEffect(() => {
     rowRefLatest.current = rowRef;
     latest.current = {
       contextMenu: (r, e) => onRowContextMenu(r)(e),
-      keyDown: (r, e) => onRowKeyDown(r)(e),
+      keyDown: (r, e) => {
+        onRowKeyDown(r)(e);
+        lineKeys(r, e);
+      },
+      focusRow: setActive,
       startEdit: (segment) => {
         setEditing(segment);
         setSplitting(null);
@@ -2116,6 +2194,7 @@ function TranscriptTab({
             key={r.segment_id}
             row={r}
             index={i}
+            tabStop={r.segment_id === activeId}
             movable={detail.movable_by_track[r.track_id] ?? NO_SPEAKERS}
             cited={r.segment_id === cited}
             // A line being edited or split shows no highlights.
@@ -2313,10 +2392,18 @@ function lineEditButton(root: Element | null, segment: string): HTMLElement | nu
   return root?.querySelector<HTMLElement>(`[data-line-edit="${CSS.escape(segment)}"]`) ?? null;
 }
 
+/** A line's own buttons, reached from the line with the arrow keys and never by Tab (T14.19):
+ * its Edit, More and Choose buttons and its word marks (`WordMarks.tsx`). */
+const LINE_CONTROL = "[data-line-control]";
+/** What makes a button one of a line's own (`LINE_CONTROL`). */
+const LINE_CONTROL_PROPS = { tabIndex: -1, "data-line-control": "" } as const;
+
 /** What a transcript line does; each call reaches `TranscriptTab`'s current state. */
 interface LineHandlers {
   contextMenu(r: TranscriptRow, e: MouseEvent<HTMLDivElement>): void;
   keyDown(r: TranscriptRow, e: KeyboardEvent<HTMLDivElement>): void;
+  /** Focus went into line `segment`: it becomes the transcript's tab stop (T14.19). */
+  focusRow(segment: string): void;
   startEdit(segment: string): void;
   saveEdit(segment: string, text: string): Promise<void>;
   cancelEdit(): void;
@@ -2344,6 +2431,7 @@ interface LineHandlers {
 const TranscriptLine = memo(function TranscriptLine({
   row: r,
   index: i,
+  tabStop,
   movable,
   cited,
   find,
@@ -2361,6 +2449,8 @@ const TranscriptLine = memo(function TranscriptLine({
 }: {
   row: TranscriptRow;
   index: number;
+  /** The line is the transcript's one tab stop (T14.19). */
+  tabStop: boolean;
   /** The speakers lines of this line's track can move to (T12.90, the detail's
    * `movable_by_track`), its own speaker included: the menu leaves it out. */
   movable: MovableSpeaker[];
@@ -2429,6 +2519,11 @@ const TranscriptLine = memo(function TranscriptLine({
         cited && styles.rowCited,
         find?.currentTurn && styles.rowCurrentTurn,
       )}
+      // One tab stop for the whole transcript (T14.19); focus anywhere in the line moves it here.
+      tabIndex={tabStop ? 0 : -1}
+      onFocus={() => {
+        if (!tabStop) h.focusRow(segment);
+      }}
       onContextMenu={(e) => h.contextMenu(r, e)}
       onKeyDown={(e) => h.keyDown(r, e)}
     >
@@ -2444,6 +2539,7 @@ const TranscriptLine = memo(function TranscriptLine({
               appearance: "subtle",
               "aria-label": `Choose who said line ${i + 1}`,
               disabledFocusable: locked,
+              ...LINE_CONTROL_PROPS,
               children: "Choose",
             }}
             items={moveItems}
@@ -2497,6 +2593,7 @@ const TranscriptLine = memo(function TranscriptLine({
             className={mergeClasses(styles.lineEdit, "earshot-line-edit")}
             aria-label={`Edit line ${i + 1}`}
             data-line-edit={segment}
+            {...LINE_CONTROL_PROPS}
             // Focusable, so focus that comes back to it after a word's choice stays in the line.
             disabledFocusable={locked}
             onClick={() => h.startEdit(segment)}
@@ -2512,6 +2609,7 @@ const TranscriptLine = memo(function TranscriptLine({
               className: mergeClasses(styles.lineEdit, styles.lineMore, "earshot-line-edit"),
               "aria-label": `More actions for line ${i + 1}`,
               disabledFocusable: locked,
+              ...LINE_CONTROL_PROPS,
               children: "⋯",
             }}
             items={() => (

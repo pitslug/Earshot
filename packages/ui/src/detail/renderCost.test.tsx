@@ -44,6 +44,9 @@ describe("render cost of a long transcript", () => {
     await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
     const table = await screen.findByRole("table", { name: "Transcript" });
     expect(within(table).getAllByRole("row")).toHaveLength(LINES);
+    // Focus moves the transcript's one tab stop to the line first (T14.19), which renders it
+    // and the line it leaves; the edit is counted from there.
+    await act(async () => within(table).getAllByRole("row")[10].focus());
     rowTimeSpy.mockClear();
     await s.user.click(screen.getByRole("button", { name: "Edit line 11" }));
     const editor = screen.getByRole("textbox", { name: "Line 11" });
@@ -58,6 +61,17 @@ describe("render cost of a long transcript", () => {
     // The edited line rendered (into the editor, out of it, with its new text); no other did.
     const rendered = new Set(rowTimeSpy.mock.calls.map(([ms]) => ms));
     expect(rendered).toEqual(new Set([startOf(10)]));
+  });
+
+  it("render cost: moving between lines renders only the line left and the line reached", async () => {
+    const s = await setup({ details: { [ITEM.id]: longDetail() } });
+    await s.user.click(await screen.findByRole("tab", { name: "Transcript" }));
+    const table = await screen.findByRole("table", { name: "Transcript" });
+    await act(async () => within(table).getAllByRole("row")[20].focus());
+    rowTimeSpy.mockClear();
+    await s.user.keyboard("{ArrowDown}");
+    expect(within(table).getAllByRole("row")[21]).toHaveFocus();
+    expect(new Set(rowTimeSpy.mock.calls.map(([ms]) => ms))).toEqual(new Set([startOf(20), startOf(21)]));
   });
 
   it("render cost: a read with nothing changed renders no line", async () => {
