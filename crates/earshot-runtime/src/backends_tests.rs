@@ -322,7 +322,7 @@ fn backends_qnn_package_is_the_models_folder_unless_the_exe_folder_holds_the_plu
     );
     // The wrapper is the rule for this exe and build, so the exe-folder branch is the one
     // `backends_qnn_install_only_takes_the_plugin_from_beside_the_exe_alone` pins with a
-    // folder that holds the plugin (TODO 73).
+    // folder that holds the plugin (this exe's folder holds none, so it is not reached here).
     assert_eq!(
         qnn_package_dir(&models),
         qnn_package_dir_in(&models, Some(&exe), QNN_INSTALL_ONLY)
@@ -3262,9 +3262,9 @@ fn backends_nemotron_preview_load_is_used_by_no_shipped_code() {
     assert!(tests_rs.contains("#[path = \"preview_tests.rs\"]\nmod preview_tests;"));
 }
 
-/// TODO 86: the seams that take any `Hardware` are called only by `backends.rs` itself (with this
-/// computer's hardware, or inside the evaluation loader) and by `#[cfg(test)]` code: a shipped call
-/// with other hardware would skip the rule for this computer.
+/// The seams that take any `Hardware` are called only by `backends.rs` itself (with this computer's
+/// hardware, or inside the evaluation loader) and by `#[cfg(test)]` code: a shipped call with other
+/// hardware would skip the rule for this computer.
 #[test]
 fn backends_preview_hardware_seams_take_this_computers_hardware_in_shipped_code() {
     // Bare names, matched as whole identifiers (T12.75 review): an alias (`use .. as x`) or a
@@ -3442,7 +3442,7 @@ fn shipped_files_naming_ident(name: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// TODO 93: inside `backends.rs`, the evaluation-only loaders and their types are named only by
+/// Inside `backends.rs`, the evaluation-only loaders and their types are named only by
 /// evaluation-only items, so no production loader there reaches them either.
 #[test]
 fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends() {
@@ -3492,7 +3492,7 @@ fn backends_evaluation_only_items_are_named_only_by_evaluation_items_in_backends
     }
 }
 
-/// TODO 93: earshot-onnx uses its evaluation-only streaming model only inside its own module.
+/// earshot-onnx uses its evaluation-only streaming model only inside its own module.
 #[test]
 fn backends_evaluation_only_onnx_pieces_are_not_used_inside_earshot_onnx() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../earshot-onnx/src");
@@ -3517,7 +3517,7 @@ fn backends_evaluation_only_onnx_pieces_are_not_used_inside_earshot_onnx() {
     assert!(read > 5, "earshot-onnx/src: {read} files read");
 }
 
-/// TODO 137: a preview's Parakeet load says it is a preview's (only a compiled NPU model, never
+/// A preview's Parakeet load says it is a preview's (only a compiled NPU model, never
 /// recorded for the meeting's note) and the track's load says it is a track's. Whose load it is
 /// is said by the caller, so the callers are pinned here: no test can reach a QNN load off the
 /// Surface.

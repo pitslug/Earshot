@@ -181,8 +181,9 @@ impl Machine {
 /// holding `summary` on `machine`: the rule of docs/live-previews.md (T12.39). A summary off this
 /// computer never holds; an unrecorded one always does; a local one only lets live work through
 /// on a switched-on pair, with system memory for both ([`BESIDE_MIN_MEMORY`]), on another device or
-/// on the same graphics card with room for both models ([`fits_graphics_card`]), and never beside
-/// live summaries (one summary model at a time).
+/// on the same graphics card with room for both models ([`fits_graphics_card`]: [`Device`] does not
+/// say whether CUDA or Vulkan runs each, so the fit is judged on the smallest card either may land
+/// on, T14.40), and never beside live summaries (one summary model at a time).
 ///
 /// [`fits_graphics_card`]: crate::model_settings::fits_graphics_card
 #[cfg(feature = "engines")]

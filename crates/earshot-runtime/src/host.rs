@@ -1006,7 +1006,9 @@ fn summary_for(
     let chosen = writer.unwrap_or(settings.writer);
     let mut placement = local_summary_placement(store, order, hardware)?;
     let mut request = SummaryRequest {
-        graphics_memory: crate::model_settings::graphics_memory(hardware),
+        // The card the placement judged (CUDA's NVIDIA card or Vulkan's), so the model the run
+        // picks is the one the placement planned (T14.40).
+        graphics_memory: placement.card_memory,
         ..SummaryRequest::default()
     };
     // The one place a kept-local meeting's writer is decided (T12.13).
@@ -1230,7 +1232,7 @@ pub fn summary_model_for(
         placement.requested.as_deref(),
         hardware.total_memory,
         placement.gpu,
-        crate::model_settings::graphics_memory(hardware),
+        placement.card_memory,
     )
 }
 

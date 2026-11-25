@@ -776,6 +776,326 @@ fn settings_summary_on_vulkan_needs_room_on_the_card() {
     assert!(on_vulkan(&ModelPick::Automatic, Part::Automatic, &hw).gpu);
 }
 
+/// A discrete card of `vendor_id` with `gib` GiB of its own.
+fn discrete(vendor_id: u32, gib: u64) -> Gpu {
+    Gpu {
+        name: "A card".into(),
+        vendor_id,
+        dedicated_memory: Some(gib * GIB),
+        driver_version: None,
+        integrated: Some(false),
+        compute_capability: None,
+    }
+}
+
+const AMD: u32 = 0x1002;
+const NVIDIA: u32 = 0x10de;
+
+fn with_gpus(gpus: Vec<Gpu>) -> Hardware {
+    let mut hw = machine(64 * GIB, None);
+    hw.gpus = gpus;
+    hw
+}
+
+#[test]
+fn settings_cuda_reads_the_nvidia_card_and_vulkan_the_smallest_discrete_card() {
+    let mut unknown_memory = discrete(AMD, 16);
+    unknown_memory.dedicated_memory = None;
+    let cases = [
+        // (gpus, CUDA's card, Vulkan's card). Which discrete card Vulkan's first device is cannot
+        // be known, so with several the smallest counts; CUDA reads the NVIDIA card alone.
+        (
+            vec![discrete(AMD, 16), discrete(NVIDIA, 6)],
+            Some(6),
+            Some(6),
+        ),
+        (
+            vec![discrete(NVIDIA, 16), discrete(AMD, 6)],
+            Some(16),
+            Some(6),
+        ),
+        (
+            vec![discrete(AMD, 6), discrete(NVIDIA, 16)],
+            Some(16),
+            Some(6),
+        ),
+        (vec![discrete(AMD, 16), discrete(AMD, 8)], None, Some(8)),
+        // Which NVIDIA card is CUDA's device 0 cannot be known: the smaller one counts.
+        (
+            vec![discrete(NVIDIA, 16), discrete(NVIDIA, 6)],
+            Some(6),
+            Some(6),
+        ),
+        // A second card whose memory cannot be read is left out, as before.
+        (
+            vec![unknown_memory, discrete(NVIDIA, 16)],
+            Some(16),
+            Some(16),
+        ),
+        // An integrated GPU counts for neither.
+        (
+            vec![
+                Gpu {
+                    integrated: Some(true),
+                    ..discrete(AMD, 1)
+                },
+                discrete(NVIDIA, 16),
+            ],
+            Some(16),
+            Some(16),
+        ),
+        // An adapter whose kind could not be read (perhaps an integrated GPU) never shrinks the
+        // reading beside a card known to be discrete...
+        (
+            vec![
+                Gpu {
+                    integrated: None,
+                    ..discrete(AMD, 1)
+                },
+                discrete(AMD, 16),
+            ],
+            None,
+            Some(16),
+        ),
+        (
+            vec![
+                Gpu {
+                    integrated: None,
+                    ..discrete(NVIDIA, 2)
+                },
+                discrete(NVIDIA, 16),
+            ],
+            Some(16),
+            Some(16),
+        ),
+        // ...and counts when no card is known discrete, the smallest of several.
+        (
+            vec![
+                Gpu {
+                    integrated: None,
+                    ..discrete(AMD, 4)
+                },
+                Gpu {
+                    integrated: None,
+                    ..discrete(NVIDIA, 12)
+                },
+            ],
+            Some(12),
+            Some(4),
+        ),
+        // No NVIDIA card: CUDA's card is unknown.
+        (vec![discrete(AMD, 16)], None, Some(16)),
+        (vec![], None, None),
+    ];
+    for (gpus, cuda, vulkan) in cases {
+        let hw = with_gpus(gpus);
+        let gib = |m: Option<u64>| m.map(|m| m / GIB);
+        assert_eq!(gib(card_memory(&hw, Accelerator::Cuda)), cuda, "{hw:?}");
+        assert_eq!(gib(card_memory(&hw, Accelerator::Vulkan)), vulkan, "{hw:?}");
+        assert_eq!(card_memory(&hw, Accelerator::Vulkan), graphics_memory(&hw));
+    }
+}
+
+#[test]
+fn settings_cuda_fit_is_judged_on_the_nvidia_card_beside_a_larger_card() {
+    let v2 = "parakeet-tdt-0.6b-v2";
+    let small_nvidia = with_gpus(vec![discrete(AMD, 16), discrete(NVIDIA, 2)]);
+    let large_nvidia = with_gpus(vec![discrete(NVIDIA, 16), discrete(AMD, 2)]);
+    // Transcription forced onto the graphics card on CUDA.
+    let p = transcription_placement(
+        v2,
+        Part::GraphicsCard,
+        DESKTOP.to_vec(),
+        DESKTOP,
+        &small_nvidia,
+    );
+    assert_eq!(p.order, [Accelerator::Cpu]);
+    assert!(p.note.unwrap().contains("too big"));
+    let p = transcription_placement(
+        v2,
+        Part::GraphicsCard,
+        DESKTOP.to_vec(),
+        DESKTOP,
+        &large_nvidia,
+    );
+    assert_eq!(p.order, [Accelerator::Cuda, Accelerator::Cpu]);
+    // Whisper forced onto the card on Vulkan reads the smallest discrete card: small.en fits 2 GiB.
+    let p = transcription_placement(
+        "small.en",
+        Part::GraphicsCard,
+        VULKAN.to_vec(),
+        VULKAN,
+        &small_nvidia,
+    );
+    assert_eq!(p.order, [Accelerator::Vulkan, Accelerator::Cpu]);
+    // Summaries forced onto the card on CUDA: the 4B needs more than the 2 GiB NVIDIA card.
+    let cuda = &[Accelerator::Cuda, Accelerator::Cpu];
+    let four = named(LOW_MEMORY_SUMMARY_MODEL);
+    let s = placement_when(true, &four, Part::GraphicsCard, cuda, &small_nvidia).unwrap();
+    assert!(!s.gpu);
+    assert!(s.note.unwrap().contains("too big"));
+    let s = placement_when(true, &four, Part::GraphicsCard, cuda, &large_nvidia).unwrap();
+    assert_eq!((s.gpu, s.note), (true, None));
+    // On Vulkan either machine reads its smaller card (which discrete device Vulkan takes cannot be
+    // known), so the 4B fits neither 16 + 2 pair there; one 16 GiB card alone takes it.
+    for hw in [&small_nvidia, &large_nvidia] {
+        let s = on_vulkan(&four, Part::GraphicsCard, hw);
+        assert!(!s.gpu);
+        assert!(s.note.unwrap().contains("too big"));
+    }
+    let one_card = with_gpus(vec![discrete(AMD, 16)]);
+    let s = on_vulkan(&four, Part::GraphicsCard, &one_card);
+    assert_eq!((s.gpu, s.note), (true, None));
+    // The card memory the run's model choice reads is the card the summary runs on.
+    let s = placement_when(
+        true,
+        &ModelPick::Automatic,
+        Part::GraphicsCard,
+        cuda,
+        &small_nvidia,
+    )
+    .unwrap();
+    assert_eq!(s.card_memory, Some(2 * GIB));
+    let s = placement_when(
+        true,
+        &ModelPick::Automatic,
+        Part::GraphicsCard,
+        cuda,
+        &large_nvidia,
+    )
+    .unwrap();
+    assert_eq!(s.card_memory, Some(16 * GIB));
+    let s = on_vulkan(&ModelPick::Automatic, Part::GraphicsCard, &large_nvidia);
+    assert_eq!(s.card_memory, Some(2 * GIB));
+}
+
+/// The two-card machines through the callers: the summary model planned is the one run and
+/// advised, and previews follow the CUDA card.
+#[test]
+fn settings_two_card_machines_plan_and_run_the_same_summary_model() {
+    use crate::backends::{PREVIEW_MIN_CARD_MEMORY, preview_backend};
+    use crate::preview_settings::PreviewChoice;
+    use earshot_core::asr::BackendKind;
+    let cuda = &[Accelerator::Cuda, Accelerator::Cpu];
+    let two_cards = |amd: u64, nvidia: u64| {
+        let mut hw = with_gpus(vec![discrete(AMD, amd), discrete(NVIDIA, nvidia)]);
+        hw.total_memory = Some(64 * GIB);
+        hw
+    };
+    // AMD 16 + NVIDIA 6: on CUDA the 9B (needs about 2 x its size) does not fit the 6 GiB card, so
+    // automatic plans the 4B there, and the run picks the 4B too.
+    for (hw, want) in [
+        (two_cards(16, 6), LOW_MEMORY_SUMMARY_MODEL),
+        (two_cards(6, 16), DEFAULT_SUMMARY_MODEL),
+    ] {
+        let placement =
+            placement_when(true, &ModelPick::Automatic, Part::Automatic, cuda, &hw).unwrap();
+        assert!(placement.gpu, "{hw:?}");
+        assert_eq!(
+            host::summary_model_for(&placement, &hw).unwrap().model.id,
+            want,
+            "{hw:?}"
+        );
+        // The advice names what a run of this build would use, on both orders.
+        for order in [cuda.as_slice(), VULKAN] {
+            let placement =
+                summary_placement(&ModelPick::Automatic, Part::Automatic, order, &hw).unwrap();
+            assert_eq!(
+                crate::recommend::advise(&hw, order, &["en"], None)
+                    .unwrap()
+                    .summary
+                    .model
+                    .id,
+                host::summary_model_for(&placement, &hw).unwrap().model.id,
+                "{hw:?} {order:?}"
+            );
+        }
+    }
+    // Previews on a CUDA track read the NVIDIA card: 6 GiB is under the card limit, 16 is not.
+    const { assert!(6 * GIB < PREVIEW_MIN_CARD_MEMORY && 16 * GIB >= PREVIEW_MIN_CARD_MEMORY) };
+    assert_eq!(
+        preview_backend(
+            BackendKind::Cuda,
+            &two_cards(16, 6),
+            PreviewChoice::Everyone
+        ),
+        Ok(BackendKind::Cpu)
+    );
+    assert_eq!(
+        preview_backend(
+            BackendKind::Cuda,
+            &two_cards(6, 16),
+            PreviewChoice::Everyone
+        ),
+        Ok(BackendKind::Cuda)
+    );
+}
+
+/// Counts the reads of the hardware cache test's cache; the machine it reads gains a card after
+/// the first read. Only that test uses it.
+static FAKE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn fake_read() -> Hardware {
+    let n = FAKE_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if n == 0 {
+        machine(16 * GIB, None)
+    } else {
+        machine(16 * GIB, Some(8 * GIB))
+    }
+}
+
+#[test]
+fn settings_hardware_is_read_once_per_interval_and_a_new_card_is_seen_after_it() {
+    use crate::{HARDWARE_READ_INTERVAL, HardwareCache};
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    let cache = HardwareCache::new(fake_read);
+    let t0 = std::time::Instant::now();
+    let first = cache.get(t0);
+    assert!(first.gpus.is_empty());
+    // Within the interval every caller gets the same read, and nothing is read again.
+    for later in [
+        Duration::ZERO,
+        Duration::from_millis(1),
+        HARDWARE_READ_INTERVAL / 2,
+    ] {
+        assert_eq!(cache.get(t0 + later), first);
+    }
+    assert_eq!(
+        cache.get(t0 + HARDWARE_READ_INTERVAL - Duration::from_millis(1)),
+        first
+    );
+    // A clock read before the last read (another thread) reuses it rather than reading.
+    assert_eq!(
+        cache.get(t0.checked_sub(Duration::from_secs(1)).unwrap_or(t0)),
+        first
+    );
+    assert_eq!(FAKE_READS.load(Ordering::SeqCst), 1);
+    // Once the interval has passed the machine is read again, and the new card is seen.
+    let after = cache.get(t0 + HARDWARE_READ_INTERVAL);
+    assert_eq!(after.gpus.len(), 1);
+    assert_eq!(FAKE_READS.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        cache.get(t0 + HARDWARE_READ_INTERVAL + Duration::from_secs(1)),
+        after
+    );
+    assert_eq!(FAKE_READS.load(Ordering::SeqCst), 2);
+    // A judgement, kept short: an external card plugged in before a meeting is seen by it.
+    assert!(HARDWARE_READ_INTERVAL <= Duration::from_secs(5));
+}
+
+#[test]
+fn settings_a_second_summary_load_waits_out_the_longest_honest_first_load() {
+    // A load that waits for llama.cpp's load lock gives up only after the load before it would
+    // itself have been called stalled by the runtime's watch, with a margin (T14.41).
+    let longest = crate::summary::GPU_LOAD_LIMIT.max(crate::summary::CPU_LOAD_LIMIT);
+    assert!(
+        earshot_llm_local::log::LOAD_LOCK_WAIT >= longest + std::time::Duration::from_secs(30),
+        "{:?} against {longest:?}",
+        earshot_llm_local::log::LOAD_LOCK_WAIT
+    );
+}
+
 #[test]
 fn settings_summary_on_cuda_keeps_its_rule_and_a_processor_choice_always_wins() {
     let cuda = &[Accelerator::Cuda, Accelerator::Cpu];

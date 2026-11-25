@@ -2746,10 +2746,10 @@ Lane bundle (`xtask` bundle, runtime `cuda.rs`, desktop `cuda_settings.rs`):
 
 Lane engines (runtime `model_settings.rs`, `cuda_switch.rs`, `lib.rs`, `model_bench.rs`, `earshot-llm-local` `log.rs`):
 
-- [ ] T14.40 CUDA rules read the NVIDIA card's memory
+- [x] T14.40 CUDA rules read the NVIDIA card's memory
   - do: the transcription and summary fit rules for CUDA use the card CUDA runs on, never another vendor's larger card; cases with two cards.
   - accept: `cargo test -p earshot-runtime cuda_switch`; `cargo test -p earshot-runtime model_settings`
-- [ ] T14.41 Small engine fixes
+- [x] T14.41 Small engine fixes
   - do: a second local model load waits as long as a slow load may take before calling the first stuck; `earshot_runtime::hardware()` is read at most once per short interval; `model_bench` runs `reg.exe` by its System32 path; comments that cite TODO.md line numbers say what they mean instead.
   - accept: `cargo test -p earshot-llm-local log`; `cargo test -p earshot-runtime model_settings`
 

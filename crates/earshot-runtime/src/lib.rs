@@ -135,11 +135,55 @@ pub use earshot_hardware;
 pub use local::StoredRecord;
 pub use post::Calibration;
 
-/// This machine's hardware facts: `earshot_hardware::read()`, the one source of them.
+/// This machine's hardware facts: `earshot_hardware::read()`, the one source of them, read at
+/// most once per [`HARDWARE_READ_INTERVAL`] (T14.41: about twenty callers ask, several per
+/// meeting start or page load, and each read asks DXGI, DXCore, NVML and the registry). A card
+/// plugged in or out is seen within the interval.
 #[cfg(feature = "engines")]
 #[must_use]
 pub fn hardware() -> earshot_hardware::Hardware {
-    earshot_hardware::read()
+    static CACHE: HardwareCache = HardwareCache::new(earshot_hardware::read);
+    CACHE.get(std::time::Instant::now())
+}
+
+/// How long one hardware read is used for, a judgement: short enough that an external card
+/// plugged in before a meeting is seen by it, long enough that one start or page load reads
+/// once. `Instant` counts through a sleep, so a read from before one is never reused after it.
+#[cfg(feature = "engines")]
+pub const HARDWARE_READ_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The last read of [`hardware`] and when it was made; `now` is passed in so tests drive it.
+#[cfg(feature = "engines")]
+pub(crate) struct HardwareCache {
+    read: fn() -> earshot_hardware::Hardware,
+    last: std::sync::Mutex<Option<(std::time::Instant, earshot_hardware::Hardware)>>,
+}
+
+#[cfg(feature = "engines")]
+impl HardwareCache {
+    pub(crate) const fn new(read: fn() -> earshot_hardware::Hardware) -> Self {
+        Self {
+            read,
+            last: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The facts at `now`: the last read when it is younger than [`HARDWARE_READ_INTERVAL`],
+    /// else a new one. A `now` before the last read (another thread's later clock) reuses it.
+    pub(crate) fn get(&self, now: std::time::Instant) -> earshot_hardware::Hardware {
+        let mut last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, facts)) = last.as_ref()
+            && now.saturating_duration_since(*at) < HARDWARE_READ_INTERVAL
+        {
+            return facts.clone();
+        }
+        let facts = (self.read)();
+        *last = Some((now, facts.clone()));
+        facts
+    }
 }
 pub use services::{
     BoxRng, Db, MeetingActivity, MeetingJob, MeetingLease, Services, SharedClock, SystemClock,

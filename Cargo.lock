@@ -1393,6 +1393,7 @@ dependencies = [
  "earshot-hardware",
  "earshot-llm",
  "earshot-net",
+ "earshot-proc",
  "llama-cpp-sys-2",
  "serde_json",
  "tokio",
