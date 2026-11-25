@@ -2436,7 +2436,8 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - decided (the owner, 2026-11-24): part (3) gets a sync rule, as its own task (T12.92), because the clash is not only a split's: any line edit racing a re-transcription on another device leaves both versions.
   - accept: `cargo test -p earshot-runtime edit`; `cargo test -p earshot-desktop --bin earshot detail`; `cmd /c pnpm --filter @earshot/ui test`
 
-- [ ] T12.93 An ignored voice is ignored on every computer
+- [x] T12.93 An ignored voice is ignored on every computer
+  - result (2026-11-25): `Speaker::ignored` on the synced row (migration 10, `ENVELOPE_FORMAT` 3); one rule `counts_as_ignored`; Ignore and Not offered without an identity entry; 0.4.2's ignores copied once after the first completed pull with nothing held (or at start with no vault). Lane-merge review blocked once (ordering test, held rows), clear on re-review with 0 advisories.
   - found (0.4.2 hand test, 2026-11-25): a voice ignored on the desktop still needs a name on the Surface, and the Surface offers no Ignore for it. The choice lives in the device-local `speaker-identities` entry (`SpeakerIdentity::ignored`), which never syncs, and `ignore_speaker` refuses a voice with no entry (`NoStoredVoice`), which a computer that did not run the final pass never has.
   - decided (the owner, 2026-11-25): the choice moves onto the synced speaker row, accepting the format bump (every computer and the worker on the new version before they sync again, as at 0.4.0).
   - deps: T12.19, T11.3
