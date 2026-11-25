@@ -136,8 +136,8 @@ describe("MeetingDetailView", () => {
     await screen.findByText(/TL;DR/);
     listRow(OTHER).focus();
     await user.keyboard("{Shift>}{F10}{/Shift}");
-    // The menu's first item, "Move to folder" (T9.5c), takes focus; "Delete meeting..." is last.
-    const item = await screen.findByRole("menuitem", { name: "Move to folder" });
+    // The menu's first item, "Rename..." (T12.102), takes focus; "Delete meeting..." is last.
+    const item = await screen.findByRole("menuitem", { name: "Rename..." });
     await waitFor(() => expect(item).toHaveFocus());
     expect(screen.getByRole("menuitem", { name: "Delete meeting..." })).toBeInTheDocument();
     await user.keyboard("{Escape}");
@@ -145,8 +145,10 @@ describe("MeetingDetailView", () => {
     await waitFor(() => expect(listRow(OTHER)).toHaveFocus());
     // The Menu key does the same; the browser's own contextmenu event on the row opens it too.
     await user.keyboard("{ContextMenu}");
-    const first = await screen.findByRole("menuitem", { name: "Move to folder" });
+    const first = await screen.findByRole("menuitem", { name: "Rename..." });
     await waitFor(() => expect(first).toHaveFocus());
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: "Move to folder" })).toHaveFocus());
     await user.keyboard("{ArrowDown}");
     await waitFor(() => expect(screen.getByRole("menuitem", { name: "Delete meeting..." })).toHaveFocus());
     await user.keyboard("{Enter}");

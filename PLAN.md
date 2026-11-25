@@ -2490,6 +2490,11 @@ New ideas and features, after the v1 release or beside it, with their own ids (t
   - do: replace the list (`DictionaryPage.tsx` "Saved people") with one line of fixed copy, for example "Names on the People page are used too, so there is no need to add them here.", with a link or button to the People page; keep the left-out note (`people_left_out_note`) when some names are left out. If the detail's `people` list is then unused by the UI, drop it from the IPC view and regenerate bindings; keep `fixtures/ui/summary_settings_cases.json`'s cleaning rule and `left_out` cases running in both suites. Update the tests that read the list.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cargo test -p earshot-desktop --bin earshot summary`; preview screenshot
 
+- [x] T12.102 Rename a meeting from its row in the list
+  - result (2026-11-25): the row menu (right-click, Shift+F10, the Menu key) starts with "Rename...", which opens a "Rename meeting" dialog holding the stored title, selected; Save or Enter stores it through the same `renameMeeting` the header uses, a refusal stays in the dialog with what was typed, Cancel or Escape change nothing, and focus goes back to the row. The open meeting's heading reads the list, so it follows. UI 816 tests, build, preview.
+  - why (the owner, 2026-11-25): rename was only in the meeting's own header.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
+
 - [x] T12.101 The Sync page's list of computers keeps up while it is open
   - result (2026-11-25): the open page asks for the computers every 10 s (`DEVICES_REFRESH_MS`) and stops when left; this computer reads "Online" while sync is on, running and not stopped, else "Not syncing" (it has no presence of its own in the list, and its last-seen was always "just now"). UI 812 tests, build.
   - found (the owner, 2026-11-25, 0.4.2 section 8): quitting Earshot on the other computer, and starting it again, showed only after leaving the Sync page and opening it again; this computer read "Last seen just now".

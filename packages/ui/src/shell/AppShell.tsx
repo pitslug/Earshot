@@ -16,6 +16,8 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
+  Field,
+  Input,
   Menu,
   MenuDivider,
   MenuItem,
@@ -402,6 +404,8 @@ export function AppShell({
   // With what deleting it means now (T12.38), asked before the dialog opens.
   const [deleting, setDeleting] = useState<{ item: MeetingListItem; ask: DeleteAsk } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // The meeting whose Rename... dialog is open (T12.102).
+  const [renaming, setRenaming] = useState<MeetingListItem | null>(null);
   // A delete on its way: the ref refuses a second click before the buttons have re-rendered (the
   // second call would fail on a meeting now gone and report a delete that worked as refused).
   const [deletePending, setDeletePending] = useState(false);
@@ -749,6 +753,7 @@ export function AppShell({
       remove: (item) => rowLatest.current?.remove(item),
       move: (item, folder) => rowLatest.current?.move(item, folder),
       newFolderFor: (item) => rowLatest.current?.newFolderFor(item),
+      rename: (item) => rowLatest.current?.rename(item),
       // Refs attach before the layout effect below runs; this one only touches a ref.
       rowRef: (id, el) => {
         if (el) rowButtons.current.set(id, el);
@@ -763,6 +768,7 @@ export function AppShell({
       remove: (item) => void askDelete(item),
       move: (item, folder) => void moveMeeting(item, folder),
       newFolderFor: (item) => setFolderEdit({ kind: "new", moveMeeting: item.id }),
+      rename: (item) => setRenaming(item),
     };
   });
   // A result can outlast its meeting: reading the list again takes the result away too.
@@ -1421,6 +1427,20 @@ export function AppShell({
           </DialogBody>
         </DialogSurface>
       </Dialog>
+      {renaming !== null && (
+        <RenameMeetingDialog
+          item={renaming}
+          onSave={async (title) => {
+            await ipc.renameMeeting(renaming.id, title);
+            refresh();
+          }}
+          onClose={() => {
+            // Back to the row it was opened from (the same row, keyed by id, after a rename).
+            focusAfterFolders.current = `meeting:${renaming.id}`;
+            setRenaming(null);
+          }}
+        />
+      )}
       {/* Here, not in the Folders group: a delete unmounts the folder's row, and a dialog that
           unmounts with its own screen leaves the page hidden from screen readers (T7.3d). */}
       <Dialog
@@ -1484,11 +1504,87 @@ function TrashIcon() {
 }
 
 /** What a row of the meeting list does; each call reaches `AppShell`'s current state. */
+/** Renames a meeting from its row in the list (T12.102): the title as stored, saved on Save or
+ * Enter; a refusal stays in the dialog with what was typed. The open meeting's heading reads the
+ * list, so it follows. */
+function RenameMeetingDialog({
+  item,
+  onSave,
+  onClose,
+}: {
+  item: MeetingListItem;
+  onSave(title: string): Promise<void>;
+  onClose(): void;
+}) {
+  const [text, setText] = useState(item.title);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (saving) return;
+    if (text === item.title) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(text);
+      onClose();
+    } catch (e) {
+      setError(failureText(e));
+      setSaving(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      onOpenChange={(_, d) => {
+        if (!d.open && !saving) onClose();
+      }}
+    >
+      <DialogSurface>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          <DialogBody>
+            <DialogTitle>Rename meeting</DialogTitle>
+            <DialogContent>
+              <Field label="Meeting title" validationState={error !== null ? "error" : "none"} validationMessage={error}>
+                <Input
+                  value={text}
+                  autoFocus
+                  onFocus={(e) => e.currentTarget.select()}
+                  onChange={(_, d) => {
+                    setText(d.value);
+                    setError(null);
+                  }}
+                />
+              </Field>
+            </DialogContent>
+            <DialogActions>
+              {/* Focusable while saving: focus must not fall out of the open modal. */}
+              <Button type="submit" appearance="primary" disabledFocusable={saving}>
+                Save
+              </Button>
+              <Button disabledFocusable={saving} onClick={() => onClose()}>
+                Cancel
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </form>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
 interface RowHandlers {
   select(id: string): void;
   remove(item: MeetingListItem): void;
   move(item: MeetingListItem, folder: string | null): void;
   newFolderFor(item: MeetingListItem): void;
+  rename(item: MeetingListItem): void;
   rowRef(id: string, el: HTMLButtonElement | null): void;
 }
 
@@ -1587,6 +1683,7 @@ const MeetingRow = memo(function MeetingRow({
         </MenuTrigger>
         <MenuPopover>
           <MenuList>
+            <MenuItem onClick={() => h.rename(m)}>Rename...</MenuItem>
             {/* A meeting is filed once it has finished recording. */}
             <Menu>
               <MenuTrigger disableButtonEnhancement>
