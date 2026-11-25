@@ -22,7 +22,7 @@ import {
 } from "@fluentui/react-components";
 import { useId } from "react";
 
-import { BOX_WIDTH, FIELD_WIDTH, NotLoaded, TEXT_WIDTH, UnknownSettings, usePageStyles } from "./parts";
+import { FIELD_WIDTH, NotLoaded, TEXT_WIDTH, UnknownSettings, usePageStyles } from "./parts";
 import { useDictionary } from "./useDictionary";
 
 const useStyles = makeStyles({
@@ -44,7 +44,8 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalXS,
-    maxWidth: BOX_WIDTH,
+    // Short words: at the page's width each Remove button would sit far from its word.
+    maxWidth: FIELD_WIDTH,
   },
   word: {
     display: "flex",

@@ -48,7 +48,7 @@ const useStyles = makeStyles({
   why: {
     color: tokens.colorNeutralForeground2,
     paddingLeft: "32px",
-    // No width cap: the card's grid column bounds it, so the text uses the card's width.
+    // The text measure, as on the CUDA cards; a narrower card's grid column bounds it first.
     maxWidth: TEXT_WIDTH,
   },
   warn: {
