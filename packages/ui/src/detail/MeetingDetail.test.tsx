@@ -38,8 +38,10 @@ describe("MeetingDetailView", () => {
     expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
     expect(within(panel()).getByText(/Names flow into the summary and export/)).toBeInTheDocument();
     expect(screen.getByText("Tick actions in the Obsidian note.")).toBeInTheDocument();
-    const actions = screen.getByRole("table", { name: "Actions" });
-    expect(within(actions).getAllByRole("row")[0].textContent).toContain("Casey");
+    // Casey is the user here: their action is under "My actions", with no owner shown.
+    const mine = screen.getByRole("list", { name: "My actions" });
+    expect(within(mine).getAllByRole("listitem")[0].textContent).toContain("Confirm the revised commissioning date");
+    expect(mine.textContent).not.toContain("Casey");
     // The two voices that need a name, each with Save and Ignore; the named ones are collapsed.
     const needing = within(panel()).getByRole("region", { name: "Need a name" });
     expect(within(needing).getAllByRole("listitem").map((r) => r.getAttribute("aria-label"))).toEqual([

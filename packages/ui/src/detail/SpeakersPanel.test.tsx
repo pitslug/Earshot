@@ -314,7 +314,7 @@ describe("MeetingDetailView", () => {
     // Nothing is saved or linked by ignoring.
     expect(calls.some((c) => c[0] === "saveVoice" || c[0] === "linkSpeaker")).toBe(false);
     // The label stays in the summary and the transcript.
-    expect(within(screen.getByRole("table", { name: "Actions" })).getByText("Speaker 3")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Other actions" })).getByText(/Speaker 3/)).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Transcript" }));
     const table = screen.getByRole("table", { name: "Transcript" });
     expect(within(table).getAllByText("Speaker 3").length).toBeGreaterThan(0);

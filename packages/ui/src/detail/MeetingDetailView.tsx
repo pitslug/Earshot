@@ -74,7 +74,9 @@ import { stepLabel } from "../meeting/liveMeeting";
 import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
+import { type ActionItem, actionGroups, joinNames } from "./actionGroups";
 import { hidesByItself, useAutoHide } from "./autoHide";
+import { personNameKey } from "./personFilter";
 import { useLabelsFit } from "./headerFit";
 import { KeptLocal } from "./KeptLocal";
 import { keepUnchanged } from "./keepUnchanged";
@@ -366,14 +368,15 @@ const useStyles = makeStyles({
     flexDirection: "column",
     gap: tokens.spacingVerticalXS,
   },
-  actions: {
-    display: "grid",
-    gridTemplateColumns: "120px minmax(0, 1fr)",
-    columnGap: tokens.spacingHorizontalM,
-    rowGap: tokens.spacingVerticalXS,
-    alignItems: "baseline",
+  // One group of actions (T14.60): its heading, then its list.
+  actionGroup: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalXXS,
   },
-  owner: {
+  // Who else does an action, after its citations: small secondary text.
+  actionOwners: {
+    color: tokens.colorNeutralForeground3,
     overflowWrap: "anywhere",
   },
   cite: {
@@ -1128,6 +1131,9 @@ export function MeetingDetailView({
   const title = displayTitle(item);
   const jobBar = job !== undefined && !jobAskedAnotherComputer(job) ? jobNotice(job) : null;
   const voices = detail ? voicesToName(detail) : 0;
+  // The user's own name: their person's, unless it is still the default "Me" (`userNamed`).
+  const me = persons.find((p) => p.is_me);
+  const userName = me !== undefined && me.name.trim() !== "Me" ? me.name : null;
   // A new summary being written replaces the one shown, so there is nothing settled to copy.
   const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
   const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
@@ -1424,6 +1430,7 @@ export function MeetingDetailView({
               {tab === "summary" ? (
                 <SummaryTab
                   detail={detail}
+                  userName={userName}
                   onCite={openCitation}
                   onEdit={
                     writingSummary
@@ -1814,10 +1821,13 @@ function Editable({ fields, children }: { fields: EditField[]; children: ReactNo
 
 function SummaryBody({
   summary,
+  userName,
   onCite,
   onEdit,
 }: {
   summary: SummaryView;
+  /** The user's own name, or null when they have set none (the actions are then one list). */
+  userName: string | null;
   onCite(c: Citation): void;
   /** Saves one text; false when it was refused. Absent: read only. */
   onEdit?: (field: SummaryFieldRef, text: string) => Promise<boolean>;
@@ -1831,6 +1841,67 @@ function SummaryBody({
     icon: EditIcon = "pencil",
     shown?: string,
   ): EditField[] => (onEdit === undefined ? [] : [{ label, icon, shown, text, onSave: (t) => onEdit(field, t) }]);
+
+  // Actions (T14.60): "My actions" and "Other actions" when the user has a name, else one list.
+  // An owner is the user when it names them as the person filter compares names (case and
+  // accents ignored), the rule `userNamed` uses for the Speakers panel.
+  const isUser =
+    userName === null ? null : (owner: string) => personNameKey(owner) === personNameKey(userName);
+  const groups = actionGroups(summary.actions, isUser);
+  /** One group's list. `show`: "with" names the user's partners after the citations, "owners"
+   * names every owner. Editing: each pencil edits one stored action. An item that merges several
+   * stored actions offers each one's pencils, named with its owner, rather than one pencil that
+   * would write several actions in turn: those writes are separate requests, so a refusal or a
+   * failure part way would leave the actions half changed. After such an edit the actions differ
+   * and show as separate items. A render function, not a component, so an open editor survives
+   * the page's re-renders. */
+  const actionList = (label: string, items: ActionItem[], show: "with" | "owners", heading: boolean) => (
+    <div className={styles.actionGroup} key={label}>
+      {heading && (
+        <Body1Strong as="h3" className={styles.sectionHeading}>
+          {label}
+        </Body1Strong>
+      )}
+      <ul className={styles.list} aria-label={label}>
+        {items.map((item) => {
+          const merged = item.indices.length > 1;
+          const fields = item.indices.flatMap((i) => {
+            const a = summary.actions[i];
+            const whose = merged ? ` for ${a.owner}` : "";
+            return [
+              ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}${whose}`, a.task),
+              ...(a.due === null
+                ? []
+                : edit(
+                    { kind: "ActionDue", index: i },
+                    `when action ${i + 1} is due${whose}`,
+                    a.due,
+                    "calendar",
+                    // The editor replaces the action's text, so the date alone needs a label.
+                    `When action ${i + 1} is due`,
+                  )),
+              ...edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}`, a.owner),
+            ];
+          });
+          const partners = show === "with" ? item.owners.filter((o) => isUser === null || !isUser(o)) : [];
+          const owners =
+            show === "owners" ? joinNames(item.owners) : partners.length > 0 ? `with ${joinNames(partners)}` : null;
+          return (
+            <li key={item.indices[0]}>
+              <Editable fields={fields}>
+                <Body1>
+                  {item.task}
+                  {item.due !== null && ` (by ${item.due})`}
+                </Body1>
+                <Citations citations={item.citations} onCite={onCite} />
+                {owners !== null && <Caption1 className={styles.actionOwners}>{` · ${owners}`}</Caption1>}
+              </Editable>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
   return (
     <>
       <div className={styles.section}>
@@ -1863,42 +1934,14 @@ function SummaryBody({
           <Subtitle2 as="h2" className={styles.sectionHeading}>
             Actions
           </Subtitle2>
-          <div role="table" aria-label="Actions" className={styles.actions}>
-            {summary.actions.map((a, i) => (
-              <div role="row" key={i} style={{ display: "contents" }}>
-                <Body1Strong role="cell" className={styles.owner}>
-                  <Editable
-                    fields={edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}`, a.owner)}
-                  >
-                    {a.owner}
-                  </Editable>
-                </Body1Strong>
-                <span role="cell">
-                  <Editable
-                    fields={[
-                      ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}`, a.task),
-                      ...(a.due === null
-                        ? []
-                        : edit(
-                            { kind: "ActionDue", index: i },
-                            `when action ${i + 1} is due`,
-                            a.due,
-                            "calendar",
-                            // The editor replaces the action's text, so the date alone needs a label.
-                            `When action ${i + 1} is due`,
-                          )),
-                    ]}
-                  >
-                    <Body1>
-                      {a.task}
-                      {a.due !== null && ` (by ${a.due})`}
-                    </Body1>
-                    <Citations citations={a.citations} onCite={onCite} />
-                  </Editable>
-                </span>
-              </div>
-            ))}
-          </div>
+          {groups.kind === "split" ? (
+            <>
+              {groups.mine.length > 0 && actionList("My actions", groups.mine, "with", true)}
+              {groups.others.length > 0 && actionList("Other actions", groups.others, "owners", true)}
+            </>
+          ) : (
+            actionList("Actions", groups.all, "owners", false)
+          )}
           <Caption1 className={styles.muted}>Tick actions in the Obsidian note.</Caption1>
         </div>
       )}
@@ -1993,11 +2036,14 @@ function SummaryBanners({
 
 function SummaryTab({
   detail,
+  userName,
   onCite,
   onEdit,
   onUndo,
 }: {
   detail: MeetingDetail;
+  /** The user's own name, or null when they have set none. */
+  userName: string | null;
   onCite(c: Citation): void;
   /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
    * being written. */
@@ -2020,6 +2066,7 @@ function SummaryTab({
       ) : (
         <SummaryBody
           summary={s}
+          userName={userName}
           onCite={onCite}
           onEdit={onEdit === undefined ? undefined : (field, text) => onEdit(s.id, field, text)}
         />
