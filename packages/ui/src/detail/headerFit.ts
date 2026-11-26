@@ -5,7 +5,7 @@
 // the set of buttons changes, so drawing the icons never changes the answer (no back and forth
 // between the two forms). jsdom does no layout: tests set `headerFit.measure`.
 
-import { type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** What the button row needs with its labels, and what its container offers, in pixels. */
 export interface RowSpace {
@@ -41,13 +41,29 @@ export function useLabelsFit(row: RefObject<HTMLElement | null>, buttons: string
   // The labelled row's need, measured for `measuredFor`; null until measured.
   const need = useRef<number | null>(null);
   const measuredFor = useRef<string | null>(null);
+  // Counts loads of the page's fonts: a label measured in a fallback font is too narrow or wide.
+  const [fonts, setFonts] = useState(0);
+
+  // Measure once more when the fonts have loaded (jsdom has no `document.fonts`).
+  useEffect(() => {
+    const ready = typeof document === "undefined" ? undefined : document.fonts?.ready;
+    if (ready === undefined) return;
+    let live = true;
+    void ready.then(() => {
+      if (live) setFonts((n) => n + 1);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const el = row.current;
     if (el === null) return;
-    if (measuredFor.current !== buttons) {
+    const key = `${buttons}#${fonts}`;
+    if (measuredFor.current !== key) {
       need.current = null;
-      measuredFor.current = buttons;
+      measuredFor.current = key;
     }
     if (need.current !== null) return;
     // Measure only the labelled row: draw it first if the icons are showing.
@@ -58,7 +74,7 @@ export function useLabelsFit(row: RefObject<HTMLElement | null>, buttons: string
     const space = headerFit.measure(el);
     need.current = space.need;
     setFit(labelsFit(space));
-  }, [row, buttons, fit]);
+  }, [row, buttons, fit, fonts]);
 
   useLayoutEffect(() => {
     const el = row.current;

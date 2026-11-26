@@ -97,6 +97,26 @@ describe("the meeting header's buttons", () => {
     expect(exportButton()).toHaveTextContent("Export to Obsidian");
   });
 
+  it("keeps focus on the same Speakers, Export and Copy buttons across a change of form", async () => {
+    const width = { available: 1000 };
+    headerOf(width);
+    const resized = watchResizes();
+    await setup();
+    await screen.findByText(/TL;DR/);
+    for (const find of [speakers, exportButton, copyButton]) {
+      const before = find();
+      act(() => before.focus());
+      width.available = 600;
+      resized();
+      expect(find()).toBe(before);
+      expect(before).toHaveFocus();
+      width.available = 1000;
+      resized();
+      expect(find()).toBe(before);
+      expect(before).toHaveFocus();
+    }
+  });
+
   it("says why Re-transcribe is unavailable once the recording is gone", async () => {
     await setup({ details: { [ITEM.id]: { ...sampleDetail(ITEM), audio_kept: false } } });
     await screen.findByText(/TL;DR/);
@@ -135,6 +155,29 @@ describe("useLabelsFit", () => {
     key = "with copy";
     rerender(<Row buttons={key} />);
     expect(screen.getByTestId("row")).toHaveTextContent("icons");
+  });
+
+  it("measures the labelled row once more when the fonts have loaded", async () => {
+    let loaded: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      loaded = resolve;
+    });
+    Object.defineProperty(document, "fonts", { value: { ready }, configurable: true });
+    try {
+      // The fallback font is narrow enough; the loaded one is not.
+      let need = 500;
+      headerFit.measure = (row) => ({ need: row.textContent === "labelled" ? need : 10, available: 600 });
+      render(<Row buttons="same" />);
+      expect(screen.getByTestId("row")).toHaveTextContent("labelled");
+      need = 700;
+      await act(async () => {
+        loaded();
+        await ready;
+      });
+      expect(screen.getByTestId("row")).toHaveTextContent("icons");
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
   });
 });
 

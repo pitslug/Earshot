@@ -1127,10 +1127,19 @@ export function MeetingDetailView({
   const summariseLabel = detail !== null && detail.summary === null ? "Summarise" : "Re-summarise";
   const gone = detail !== null && recordingsGone(detail);
   // Speakers, Export and Copy show only their icons when the labelled buttons do not fit on one
-  // row (T14.55). The key names every button and label that changes the labelled row's width.
+  // row (T14.55). The key names every button and label that changes the labelled row's width:
+  // ResummariseControl's width follows its label, whether it is disabled (`detail === null`)
+  // and whether the finishing button replaces it; its menu opens in a popover, off the row.
   const labelled = useLabelsFit(
     headerButtons,
-    [detail !== null, voices, summaryText !== "", gone, finishing, summariseLabel].join("|"),
+    [
+      detail !== null,
+      voices,
+      summaryText !== "",
+      gone,
+      finishing,
+      `resummarise:${summariseLabel}:${finishing ? "finishing" : detail === null ? "disabled" : "enabled"}`,
+    ].join("|"),
   );
   const speakersName = voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers";
   // Success and info banners with nothing but Dismiss hide by themselves (T14.59): a notice, and
