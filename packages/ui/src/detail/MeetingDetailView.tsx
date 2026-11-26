@@ -1299,73 +1299,81 @@ export function MeetingDetailView({
             onClose={closeFind}
           />
         )}
+        {/* Every banner stays in view with the buttons while the page scrolls (T14.58). */}
+        {status}
+        {/* The one banner for a summary written on another computer (T12.81): on either tab, and
+            gone once the summary arrives or the request settles, by sync or here. */}
+        {detail?.waiting_for != null && (
+          <MessageBar intent="info" role="status">
+            <MessageBarBody>
+              <MessageBarTitle>{WAITING_TITLE}</MessageBarTitle>
+              {detail.waiting_for}
+            </MessageBarBody>
+          </MessageBar>
+        )}
+        {jobBar !== null && (
+          <MessageBar intent={jobBar.intent}>
+            <MessageBarBody>
+              {jobBar.title !== undefined && <MessageBarTitle>{jobBar.title}</MessageBarTitle>}
+              {jobBar.text}
+            </MessageBarBody>
+            <MessageBarActions>
+              {jobBar.busy ? (
+                <>
+                  <Spinner size="extra-tiny" aria-label="Working" />
+                  {/* Focusable while disabled, so focus stays on it after the press. */}
+                  <Button
+                    size="small"
+                    aria-label={job?.job === "Resummarise" ? "Cancel the new summary" : "Cancel the re-transcription"}
+                    disabledFocusable={job?.cancelling === true}
+                    onClick={onJobCancel}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button size="small" appearance="transparent" onClick={onJobDismissed}>
+                  Dismiss
+                </Button>
+              )}
+            </MessageBarActions>
+          </MessageBar>
+        )}
+        {notice !== null && (
+          <MessageBar intent={notice.intent}>
+            <MessageBarBody>
+              {notice.title !== undefined && <MessageBarTitle>{notice.title}</MessageBarTitle>}
+              {notice.text}
+            </MessageBarBody>
+            <MessageBarActions>
+              {notice.busy ? (
+                <Spinner size="extra-tiny" aria-label="Working" />
+              ) : (
+                <Button size="small" appearance="transparent" onClick={() => setNotice(null)}>
+                  Dismiss
+                </Button>
+              )}
+            </MessageBarActions>
+          </MessageBar>
+        )}
+
+        {loadError !== null && (
+          <MessageBar intent="error">
+            <MessageBarBody>
+              <MessageBarTitle>The meeting could not be loaded</MessageBarTitle>
+              {loadError}
+            </MessageBarBody>
+          </MessageBar>
+        )}
+        {detail !== null && tab === "summary" && (
+          <SummaryBanners
+            detail={detail}
+            onResummarise={() => void startJob("resummarise")}
+            onAllowWriter={() => void run(() => ipc.allowSummaryWriter(id), "The meeting could not be changed")}
+          />
+        )}
       </div>
 
-      {status}
-      {/* The one banner for a summary written on another computer (T12.81): on either tab, and
-          gone once the summary arrives or the request settles, by sync or here. */}
-      {detail?.waiting_for != null && (
-        <MessageBar intent="info" role="status">
-          <MessageBarBody>
-            <MessageBarTitle>{WAITING_TITLE}</MessageBarTitle>
-            {detail.waiting_for}
-          </MessageBarBody>
-        </MessageBar>
-      )}
-      {jobBar !== null && (
-        <MessageBar intent={jobBar.intent}>
-          <MessageBarBody>
-            {jobBar.title !== undefined && <MessageBarTitle>{jobBar.title}</MessageBarTitle>}
-            {jobBar.text}
-          </MessageBarBody>
-          <MessageBarActions>
-            {jobBar.busy ? (
-              <>
-                <Spinner size="extra-tiny" aria-label="Working" />
-                {/* Focusable while disabled, so focus stays on it after the press. */}
-                <Button
-                  size="small"
-                  aria-label={job?.job === "Resummarise" ? "Cancel the new summary" : "Cancel the re-transcription"}
-                  disabledFocusable={job?.cancelling === true}
-                  onClick={onJobCancel}
-                >
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <Button size="small" appearance="transparent" onClick={onJobDismissed}>
-                Dismiss
-              </Button>
-            )}
-          </MessageBarActions>
-        </MessageBar>
-      )}
-      {notice !== null && (
-        <MessageBar intent={notice.intent}>
-          <MessageBarBody>
-            {notice.title !== undefined && <MessageBarTitle>{notice.title}</MessageBarTitle>}
-            {notice.text}
-          </MessageBarBody>
-          <MessageBarActions>
-            {notice.busy ? (
-              <Spinner size="extra-tiny" aria-label="Working" />
-            ) : (
-              <Button size="small" appearance="transparent" onClick={() => setNotice(null)}>
-                Dismiss
-              </Button>
-            )}
-          </MessageBarActions>
-        </MessageBar>
-      )}
-
-      {loadError !== null && (
-        <MessageBar intent="error">
-          <MessageBarBody>
-            <MessageBarTitle>The meeting could not be loaded</MessageBarTitle>
-            {loadError}
-          </MessageBarBody>
-        </MessageBar>
-      )}
       {detail === null && loadError === null && <Spinner label="Loading the meeting" />}
 
       {detail !== null && (
@@ -1382,11 +1390,7 @@ export function MeetingDetailView({
                       : (summary, field, text) =>
                           save(() => ipc.editSummary(id, summary, field, text), "The summary was not changed")
                   }
-                  onResummarise={() => void startJob("resummarise")}
                   onUndo={() => void run(() => ipc.undoSummary(id), "The previous summary could not be restored")}
-                  onAllowWriter={() =>
-                    void run(() => ipc.allowSummaryWriter(id), "The meeting could not be changed")
-                  }
                 />
               ) : (
                 <TranscriptTab
@@ -1902,25 +1906,17 @@ function SummaryBody({
   );
 }
 
-function SummaryTab({
+/** The Summary tab's banners, pinned at the top of the page with the header while that tab
+ * shows (T14.58). */
+function SummaryBanners({
   detail,
-  onCite,
-  onEdit,
   onResummarise,
-  onUndo,
   onAllowWriter,
 }: {
   detail: MeetingDetail;
-  onCite(c: Citation): void;
-  /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
-   * being written. */
-  onEdit?: (summary: string, field: SummaryFieldRef, text: string) => Promise<boolean>;
   onResummarise(): void;
-  onUndo(): void;
   onAllowWriter(): void;
 }) {
-  const styles = useStyles();
-  const s = detail.summary;
   return (
     <>
       {detail.summary_stale && (
@@ -1950,6 +1946,27 @@ function SummaryTab({
         }
         onAllow={onAllowWriter}
       />
+    </>
+  );
+}
+
+function SummaryTab({
+  detail,
+  onCite,
+  onEdit,
+  onUndo,
+}: {
+  detail: MeetingDetail;
+  onCite(c: Citation): void;
+  /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
+   * being written. */
+  onEdit?: (summary: string, field: SummaryFieldRef, text: string) => Promise<boolean>;
+  onUndo(): void;
+}) {
+  const styles = useStyles();
+  const s = detail.summary;
+  return (
+    <>
       {handoverLine(detail) !== null && <Caption1 className={styles.muted}>{handoverLine(detail)}</Caption1>}
       {s === null ? (
         <Body1 className={styles.muted}>
