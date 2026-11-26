@@ -144,6 +144,17 @@ function scrollingAncestor(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
+/** The least height the Speakers panel is given, in pixels (T14.58): with several banners pinned
+ * on a short window the space left below the header can shrink towards nothing; the panel keeps
+ * this much and the page scrolls instead. A judgement: a voice row and its buttons. */
+export const PANEL_MIN_HEIGHT = 200;
+
+/** The Speakers panel's height: what the pane shows below the pinned header (`top`), never less
+ * than `PANEL_MIN_HEIGHT`. `paneInner` is the pane's height inside its padding. */
+export function panelHeight(paneInner: number, top: number): number {
+  return Math.max(PANEL_MIN_HEIGHT, paneInner - top);
+}
+
 /**
  * Keeps `PANEL_TOP` and `PANEL_HEIGHT` on `root` up to date, so the Speakers panel sticks just
  * below the pinned header and fits in the pane whatever the header's height and the window's.
@@ -164,8 +175,8 @@ function usePanelSpace(
       if (pane !== null) {
         const style = getComputedStyle(pane);
         const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-        const height = pane.clientHeight - (Number.isNaN(padding) ? 0 : padding) - top;
-        if (height > 0) view.style.setProperty(PANEL_HEIGHT, `${height}px`);
+        const height = panelHeight(pane.clientHeight - (Number.isNaN(padding) ? 0 : padding), top);
+        view.style.setProperty(PANEL_HEIGHT, `${height}px`);
       }
     };
     measure();

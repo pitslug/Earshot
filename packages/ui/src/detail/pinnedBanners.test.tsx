@@ -9,7 +9,7 @@ import { IpcProvider } from "../ipc/context";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { createManualTimer } from "../time";
 import { ITEM, OTHER } from "../test/meetingDetail";
-import { type JobView, MeetingDetailView } from "./MeetingDetailView";
+import { type JobView, MeetingDetailView, PANEL_MIN_HEIGHT, panelHeight } from "./MeetingDetailView";
 
 /** The pinned area: the element that holds the header's buttons and the tabs. */
 function pinned(): HTMLElement {
@@ -38,6 +38,19 @@ function show(job: JobView | undefined, details = {}) {
     </EarshotThemeProvider>,
   );
 }
+
+describe("panelHeight", () => {
+  it("gives the Speakers panel the space below the pinned header", () => {
+    expect(panelHeight(800, 200)).toBe(600);
+  });
+
+  it("never gives it less than the floor, however much is pinned", () => {
+    expect(panelHeight(450, 300)).toBe(PANEL_MIN_HEIGHT);
+    expect(panelHeight(450, 450)).toBe(PANEL_MIN_HEIGHT);
+    expect(panelHeight(450, 900)).toBe(PANEL_MIN_HEIGHT);
+    expect(panelHeight(450, 450 - PANEL_MIN_HEIGHT)).toBe(PANEL_MIN_HEIGHT);
+  });
+});
 
 describe("the meeting page's banners", () => {
   it("keeps the job bar inside the pinned header", async () => {
