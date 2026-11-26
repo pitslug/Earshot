@@ -676,7 +676,7 @@ describe("MeetingDetailView", () => {
     expect(play).toBeDisabled();
     const item = screen.getByRole("button", { name: /Re-transcribe/ });
     expect(item).toHaveAttribute("aria-disabled", "true");
-    expect(item).toHaveTextContent("Recording no longer kept");
+    expect(item).toHaveAccessibleDescription("Recording not available");
     await user.click(item);
     expect(calls.some((c) => c[0] === "retranscribe")).toBe(false);
   });
@@ -689,7 +689,7 @@ describe("MeetingDetailView", () => {
     await screen.findByText(/TL;DR/);
     const item = screen.getByRole("button", { name: /Re-transcribe/ });
     expect(item).toHaveAttribute("aria-disabled", "true");
-    expect(item).toHaveTextContent("No usable audio from this recording");
+    expect(item).toHaveAccessibleDescription("Recording not available");
     await user.click(item);
     expect(calls.some((c) => c[0] === "retranscribe")).toBe(false);
   });

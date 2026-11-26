@@ -11,7 +11,7 @@ import {
   Button,
   type ButtonProps,
   Caption1,
-  CompoundButton,
+  CounterBadge,
   Input,
   Label,
   Link,
@@ -38,6 +38,7 @@ import {
 import {
   type KeyboardEvent,
   type MouseEvent,
+  type ReactElement,
   type ReactNode,
   type RefObject,
   memo,
@@ -73,6 +74,7 @@ import { stepLabel } from "../meeting/liveMeeting";
 import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
+import { useLabelsFit } from "./headerFit";
 import { KeptLocal } from "./KeptLocal";
 import { keepUnchanged } from "./keepUnchanged";
 import { scrollLineIntoView } from "./scrollLine";
@@ -112,8 +114,8 @@ import {
   failureText,
   handoverLine,
   headerLine,
+  RECORDING_GONE_TIP,
   recordingsGone,
-  recordingsGoneReason,
   rowTime,
   summaryMarkdown,
   voicesBadge,
@@ -244,6 +246,37 @@ const useStyles = makeStyles({
   // Wide enough for "Copy summary", so the header's buttons stay put when it says "Copied".
   copyButton: {
     minWidth: "124px",
+  },
+  // Fluent's own icon-only Button size (medium), for a button whose only child is hidden text.
+  iconOnlyButton: {
+    minWidth: "32px",
+    maxWidth: "32px",
+    paddingLeft: "5px",
+    paddingRight: "5px",
+    // The hidden text is positioned against the button, not the page.
+    position: "relative",
+  },
+  // An icon-only header button's icon, with the count of voices that need a name on its corner.
+  iconWithCount: {
+    position: "relative",
+    display: "inline-flex",
+  },
+  iconCount: {
+    position: "absolute",
+    top: "-8px",
+    right: "-10px",
+  },
+  // Read by assistive technology, not drawn (the usual clip pattern).
+  srOnly: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    margin: "-1px",
+    padding: 0,
+    overflow: "hidden",
+    clip: "rect(0 0 0 0)",
+    whiteSpace: "nowrap",
+    border: 0,
   },
   muted: {
     color: tokens.colorNeutralForeground3,
@@ -721,6 +754,7 @@ export function MeetingDetailView({
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
   const pinnedHeader = useRef<HTMLDivElement | null>(null);
+  const headerButtons = useRef<HTMLDivElement | null>(null);
   // 12px is the root's gap (spacingVerticalM): the panel sticks where its column starts.
   usePanelSpace(view, pinnedHeader, 12);
   const audio = useRef<HTMLAudioElement | null>(null);
@@ -1089,6 +1123,15 @@ export function MeetingDetailView({
   // job on it): they are off here too, and a refusal that still comes is shown as before.
   const linesLocked =
     finishing || item.state === "Recording" || (job !== undefined && !isTerminal(job.last));
+  const summariseLabel = detail !== null && detail.summary === null ? "Summarise" : "Re-summarise";
+  const gone = detail !== null && recordingsGone(detail);
+  // Speakers, Export and Copy show only their icons when the labelled buttons do not fit on one
+  // row (T14.55). The key names every button and label that changes the labelled row's width.
+  const labelled = useLabelsFit(
+    headerButtons,
+    [detail !== null, voices, summaryText !== "", gone, finishing, summariseLabel].join("|"),
+  );
+  const speakersName = voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers";
 
   return (
     <section ref={view} className={styles.root} aria-label="Meeting detail">
@@ -1121,45 +1164,75 @@ export function MeetingDetailView({
             )}
             {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
           </div>
-          <div className={styles.headerButtons}>
-            <Button
-              ref={speakersButton}
-              aria-expanded={speakersOpen === true}
-              aria-controls={speakersOpen === true ? panelId : undefined}
-              aria-label={voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers"}
-              disabled={detail === null}
-              onClick={() => {
-                // Opened by the user: focus goes into the panel, which follows the transcript in
-                // the page (T14.19). An automatic open moves nothing.
-                if (speakersOpen !== true) setFocusPanel((n) => n + 1);
-                setSpeakersOpen((open) => open !== true);
-              }}
-            >
-              Speakers
-              {voices > 0 && (
-                <Badge className={styles.badge} appearance="filled" color="brand" size="small">
-                  {voicesBadge(voices)}
-                </Badge>
-              )}
-            </Button>
-            <Button onClick={() => void exportNote()} disabled={detail === null}>
-              Export to Obsidian
-            </Button>
+          <div ref={headerButtons} className={styles.headerButtons}>
+            <IconTip content={speakersName} iconOnly={!labelled}>
+              <Button
+                ref={speakersButton}
+                aria-expanded={speakersOpen === true}
+                aria-controls={speakersOpen === true ? panelId : undefined}
+                aria-label={speakersName}
+                disabled={detail === null}
+                icon={
+                  labelled ? undefined : (
+                    <span className={styles.iconWithCount}>
+                      <PeopleIcon />
+                      {voices > 0 && (
+                        <CounterBadge
+                          className={styles.iconCount}
+                          count={voices}
+                          appearance="filled"
+                          color="brand"
+                          size="small"
+                        />
+                      )}
+                    </span>
+                  )
+                }
+                onClick={() => {
+                  // Opened by the user: focus goes into the panel, which follows the transcript in
+                  // the page (T14.19). An automatic open moves nothing.
+                  if (speakersOpen !== true) setFocusPanel((n) => n + 1);
+                  setSpeakersOpen((open) => open !== true);
+                }}
+              >
+                {labelled ? (
+                  <>
+                    Speakers
+                    {voices > 0 && (
+                      <Badge className={styles.badge} appearance="filled" color="brand" size="small">
+                        {voicesBadge(voices)}
+                      </Badge>
+                    )}
+                  </>
+                ) : undefined}
+              </Button>
+            </IconTip>
+            <IconTip content="Export to Obsidian" iconOnly={!labelled}>
+              <Button
+                aria-label={labelled ? undefined : "Export to Obsidian"}
+                icon={labelled ? undefined : <ExportIcon />}
+                onClick={() => void exportNote()}
+                disabled={detail === null}
+              >
+                {labelled ? "Export to Obsidian" : undefined}
+              </Button>
+            </IconTip>
             {summaryText !== "" && (
               <CopySummaryButton
                 text={summaryText}
                 timer={timer}
+                iconOnly={!labelled}
                 onCopied={() => setNotice((n) => (n?.key === "copy" ? null : n))}
                 onFailed={() =>
                   setNotice({ key: "copy", intent: "error", text: "The summary could not be copied." })
                 }
               />
             )}
-            {detail !== null && recordingsGone(detail) ? (
+            {gone ? (
               // Focusable, so a keyboard reaches the reason.
-              <CompoundButton disabledFocusable secondaryContent={recordingsGoneReason(detail)}>
-                Re-transcribe
-              </CompoundButton>
+              <Tooltip content={RECORDING_GONE_TIP} relationship="description">
+                <Button disabledFocusable>Re-transcribe</Button>
+              </Tooltip>
             ) : finishing ? (
               <Tooltip content={FINISHING_TIP} relationship="description">
                 <Button disabledFocusable>Re-transcribe</Button>
@@ -1174,14 +1247,12 @@ export function MeetingDetailView({
             )}
             {finishing ? (
               <Tooltip content={FINISHING_TIP} relationship="description">
-                <Button disabledFocusable>
-                  {detail !== null && detail.summary !== null ? "Re-summarise" : "Summarise"}
-                </Button>
+                <Button disabledFocusable>{summariseLabel}</Button>
               </Tooltip>
             ) : (
               <ResummariseControl
                 meeting={id}
-                label={detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
+                label={summariseLabel}
                 disabled={detail === null}
                 onOrder={() => void startJob("resummarise")}
                 onWriter={(step) => void resummariseWith(step)}
@@ -1487,11 +1558,14 @@ export function MeetingDetailView({
 function CopySummaryButton({
   text,
   timer,
+  iconOnly,
   onCopied,
   onFailed,
 }: {
   text: string;
   timer: Timer;
+  /** Only the icon shows; the label stays for a screen reader and shows on hover. */
+  iconOnly: boolean;
   onCopied(): void;
   onFailed(): void;
 }) {
@@ -1515,10 +1589,81 @@ function CopySummaryButton({
     cancelReset.current = timer.setTimeout(() => setCopied(false), COPIED_MS);
   };
 
+  const label = copied ? "Copied" : "Copy summary";
+  // One button at every width, so a change of form never moves focus off it.
   return (
-    <Button className={styles.copyButton} onClick={() => void copy()}>
-      <span aria-live="polite">{copied ? "Copied" : "Copy summary"}</span>
-    </Button>
+    <IconTip content={label} iconOnly={iconOnly}>
+      <Button
+        // The live text is a child even in icon form, so Button's own icon-only sizing does not
+        // apply: the same size is set here.
+        className={iconOnly ? styles.iconOnlyButton : styles.copyButton}
+        icon={iconOnly ? <CopyIcon /> : undefined}
+        onClick={() => void copy()}
+      >
+        <span
+          aria-live="polite"
+          className={iconOnly ? styles.srOnly : undefined}
+          data-sr-only={iconOnly ? "" : undefined}
+        >
+          {label}
+        </span>
+      </Button>
+    </IconTip>
+  );
+}
+
+/**
+ * A header button's tooltip: its full label, shown on hover and focus only while the button
+ * shows just its icon. The button names itself (`aria-label`), so the tooltip adds nothing for a
+ * screen reader. The Tooltip stays mounted at every width, so the button is never remounted
+ * (and never loses focus) when the header changes form.
+ */
+function IconTip({ content, iconOnly, children }: { content: string; iconOnly: boolean; children: ReactElement }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <Tooltip
+      content={content}
+      relationship="inaccessible"
+      visible={iconOnly && shown}
+      onVisibleChange={(_, data) => setShown(data.visible)}
+    >
+      {children}
+    </Tooltip>
+  );
+}
+
+/** Two people, for Speakers when it shows only its icon. */
+function PeopleIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <circle cx="7.5" cy="6.5" r="2.75" />
+      <path d="M2.5 16c0-2.75 2.25-4.75 5-4.75s5 2 5 4.75" strokeLinecap="round" />
+      <circle cx="13.75" cy="7.25" r="2.25" />
+      <path d="M13.5 11.5c2.25 0 4 1.75 4 4.25" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A box with an arrow leaving it, for Export to Obsidian when it shows only its icon. */
+function ExportIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <path
+        d="M8.5 4H5a1.5 1.5 0 0 0-1.5 1.5v9.5A1.5 1.5 0 0 0 5 16.5h9.5A1.5 1.5 0 0 0 16 15v-3.5"
+        strokeLinecap="round"
+      />
+      <path d="M11.5 3.5h5v5M16.5 3.5L9.5 10.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Two sheets, for Copy summary when it shows only its icon. */
+function CopyIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <rect x="6.5" y="6.5" width="10" height="10.5" rx="1.5" />
+      <path d="M13.5 6.5V4.5A1.5 1.5 0 0 0 12 3H5A1.5 1.5 0 0 0 3.5 4.5v8A1.5 1.5 0 0 0 5 14h1.5" />
+    </svg>
   );
 }
 
