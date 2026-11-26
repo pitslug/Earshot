@@ -24,6 +24,8 @@ export interface HoldHandlers {
   onPointerLeave(): void;
   onFocus(): void;
   onBlur(e: FocusEvent<HTMLElement>): void;
+  /** The banner's element, read when a new banner replaces the one held. */
+  ref(el: HTMLElement | null): void;
 }
 
 /**
@@ -38,12 +40,15 @@ export function useAutoHide(timer: Timer, active: boolean, shown: unknown, hide:
   hideRef.current = hide;
   const held = pointer || focus;
 
-  // A banner that goes away while held fires no leave: the next one starts unheld.
+  const element = useRef<HTMLElement | null>(null);
+
+  // A banner replaced or gone while held fires no leave event, so the hold is cleared whenever
+  // the banner shown changes, and taken again only from what holds the new one: focus still
+  // inside the element (the bar is re-used for a banner in the same place) or the pointer on it.
   useEffect(() => {
-    if (shown === null || shown === undefined) {
-      setPointer(false);
-      setFocus(false);
-    }
+    const el = element.current;
+    setPointer(el !== null && el.matches(":hover"));
+    setFocus(el !== null && el.contains(document.activeElement));
   }, [shown]);
 
   useEffect(() => {
@@ -52,6 +57,9 @@ export function useAutoHide(timer: Timer, active: boolean, shown: unknown, hide:
   }, [timer, active, held, shown]);
 
   return {
+    ref: (el) => {
+      element.current = el;
+    },
     onPointerEnter: () => setPointer(true),
     onPointerLeave: () => setPointer(false),
     onFocus: () => setFocus(true),

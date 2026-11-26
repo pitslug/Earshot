@@ -1155,12 +1155,21 @@ export function MeetingDetailView({
   const speakersName = voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers";
   // Success and info banners with nothing but Dismiss hide by themselves (T14.59): a notice, and
   // a finished job's bar (a new job event, a new `seq`, starts the countdown again).
-  const noticeHold = useAutoHide(timer, notice !== null && hidesByItself(notice), notice, () =>
+  // A countdown runs only while the window is watched, so a person away from it still finds the
+  // banner when they come back. A summary job that wrote nothing ("Skipped", with its reason)
+  // never hides by itself: it stays until dismissed.
+  const skippedSummary = job?.last?.type === "Summary" && job.last.result.kind === "Skipped";
+  const noticeHold = useAutoHide(timer, watched && notice !== null && hidesByItself(notice), notice, () =>
     setNotice(null),
   );
   const jobHold = useAutoHide(
     timer,
-    jobBar !== null && job !== undefined && isTerminal(job.last) && hidesByItself(jobBar),
+    watched &&
+      jobBar !== null &&
+      job !== undefined &&
+      isTerminal(job.last) &&
+      !skippedSummary &&
+      hidesByItself(jobBar),
     jobBar === null ? null : job?.seq,
     onJobDismissed,
   );

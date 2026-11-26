@@ -10,6 +10,7 @@ import { IpcProvider } from "../ipc/context";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
 import { ITEM, OTHER } from "../test/meetingDetail";
+import { setWindowWatched } from "../test/windowWatched";
 import { BANNER_HIDE_MS, hidesByItself } from "./autoHide";
 import { type JobView, MeetingDetailView } from "./MeetingDetailView";
 
@@ -104,6 +105,31 @@ describe("banners that hide by themselves", () => {
     expect(screen.queryByText(EXPORTED)).toBeNull();
   });
 
+  it("lets go of a pointer hold when a new banner replaces the held one", async () => {
+    const { timer, dismissed, rerender } = show({}, { job: "Retranscribe", last: retranscribed(), seq: 3 });
+    const bar = (await screen.findByText("The meeting was transcribed again.")).closest(".fui-MessageBar") as HTMLElement;
+    fireEvent.pointerEnter(bar);
+    advance(timer, BANNER_HIDE_MS * 2);
+    expect(dismissed).not.toHaveBeenCalled();
+    // The pointer left the old banner without a leave event (it moved while the bar changed).
+    rerender({ job: "Retranscribe", last: retranscribed(), seq: 4 });
+    advance(timer, BANNER_HIDE_MS);
+    expect(dismissed).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts down only while the window is watched", async () => {
+    const { timer, dismissed } = show({}, { job: "Retranscribe", last: retranscribed(), seq: 3 });
+    await screen.findByText("The meeting was transcribed again.");
+    act(() => setWindowWatched(false, false, true));
+    advance(timer, BANNER_HIDE_MS * 4);
+    expect(dismissed).not.toHaveBeenCalled();
+    act(() => setWindowWatched(true, true, true));
+    advance(timer, BANNER_HIDE_MS - 1);
+    expect(dismissed).not.toHaveBeenCalled();
+    advance(timer, 1);
+    expect(dismissed).toHaveBeenCalledTimes(1);
+  });
+
   it("holds while focus is inside it", async () => {
     const { timer } = show({ vault: "C:\\Vault" });
     await exported(timer);
@@ -149,6 +175,25 @@ describe("banners that never hide by themselves", () => {
   it("keeps a finished job's warning bar", async () => {
     const { timer, dismissed } = show({}, { job: "Retranscribe", last: retranscribed({ warnings: ["Invented note."] }), seq: 2 });
     await screen.findByText(/Invented note\./);
+    advance(timer, LONG);
+    expect(dismissed).not.toHaveBeenCalled();
+  });
+
+  it("keeps a summary job that wrote nothing, with its reason", async () => {
+    const { timer, dismissed } = show(
+      {},
+      {
+        job: "Resummarise",
+        last: {
+          type: "Summary",
+          meeting: ITEM.id,
+          result: { kind: "Skipped", reason: "Invented reason." },
+          note: null,
+        },
+        seq: 2,
+      },
+    );
+    await screen.findByText(/Invented reason\./);
     advance(timer, LONG);
     expect(dismissed).not.toHaveBeenCalled();
   });
