@@ -74,15 +74,14 @@ import { stepLabel } from "../meeting/liveMeeting";
 import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
-import { type ActionItem, actionGroups, joinNames } from "./actionGroups";
+import { type ActionItem, actionGroups, joinNames, shownOwners } from "./actionGroups";
 import { hidesByItself, useAutoHide } from "./autoHide";
-import { personNameKey } from "./personFilter";
 import { useLabelsFit } from "./headerFit";
 import { KeptLocal } from "./KeptLocal";
 import { keepUnchanged } from "./keepUnchanged";
 import { scrollLineIntoView } from "./scrollLine";
 import { ResummariseControl } from "./ResummariseControl";
-import { SpeakersPanel } from "./SpeakersPanel";
+import { SpeakersPanel, userNamed } from "./SpeakersPanel";
 import {
   DictionaryBar,
   type DictionaryNote,
@@ -1131,9 +1130,14 @@ export function MeetingDetailView({
   const title = displayTitle(item);
   const jobBar = job !== undefined && !jobAskedAnotherComputer(job) ? jobNotice(job) : null;
   const voices = detail ? voicesToName(detail) : 0;
-  // The user's own name: their person's, unless it is still the default "Me" (`userNamed`).
+  // Whether an action owner's name is the user, by the Speakers panel's one rule (`userNamed`):
+  // null when the user has no name set (their own name then names no one), so the summary's
+  // actions are one list.
   const me = persons.find((p) => p.is_me);
-  const userName = me !== undefined && me.name.trim() !== "Me" ? me.name : null;
+  const isUser =
+    me !== undefined && userNamed(me.name, persons) !== null
+      ? (name: string) => userNamed(name, persons) !== null
+      : null;
   // A new summary being written replaces the one shown, so there is nothing settled to copy.
   const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
   const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
@@ -1430,7 +1434,7 @@ export function MeetingDetailView({
               {tab === "summary" ? (
                 <SummaryTab
                   detail={detail}
-                  userName={userName}
+                  isUser={isUser}
                   onCite={openCitation}
                   onEdit={
                     writingSummary
@@ -1821,13 +1825,14 @@ function Editable({ fields, children }: { fields: EditField[]; children: ReactNo
 
 function SummaryBody({
   summary,
-  userName,
+  isUser,
   onCite,
   onEdit,
 }: {
   summary: SummaryView;
-  /** The user's own name, or null when they have set none (the actions are then one list). */
-  userName: string | null;
+  /** Whether an owner's name is the user (`userNamed`); null when the user has set no name
+   * (the actions are then one list). */
+  isUser: ((name: string) => boolean) | null;
   onCite(c: Citation): void;
   /** Saves one text; false when it was refused. Absent: read only. */
   onEdit?: (field: SummaryFieldRef, text: string) => Promise<boolean>;
@@ -1843,10 +1848,7 @@ function SummaryBody({
   ): EditField[] => (onEdit === undefined ? [] : [{ label, icon, shown, text, onSave: (t) => onEdit(field, t) }]);
 
   // Actions (T14.60): "My actions" and "Other actions" when the user has a name, else one list.
-  // An owner is the user when it names them as the person filter compares names (case and
-  // accents ignored), the rule `userNamed` uses for the Speakers panel.
-  const isUser =
-    userName === null ? null : (owner: string) => personNameKey(owner) === personNameKey(userName);
+  // Each owner is split into names (`ownerNames`), and a name is the user by `userNamed`.
   const groups = actionGroups(summary.actions, isUser);
   /** One group's list. `show`: "with" names the user's partners after the citations, "owners"
    * names every owner. Editing: each pencil edits one stored action. An item that merges several
@@ -1880,12 +1882,12 @@ function SummaryBody({
                     // The editor replaces the action's text, so the date alone needs a label.
                     `When action ${i + 1} is due`,
                   )),
-              ...edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}`, a.owner),
+              ...edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}${whose}`, a.owner),
             ];
           });
-          const partners = show === "with" ? item.owners.filter((o) => isUser === null || !isUser(o)) : [];
+          const names = shownOwners(item, show === "with", isUser);
           const owners =
-            show === "owners" ? joinNames(item.owners) : partners.length > 0 ? `with ${joinNames(partners)}` : null;
+            show === "owners" ? joinNames(names) : names.length > 0 ? `with ${joinNames(names)}` : null;
           return (
             <li key={item.indices[0]}>
               <Editable fields={fields}>
@@ -2036,14 +2038,14 @@ function SummaryBanners({
 
 function SummaryTab({
   detail,
-  userName,
+  isUser,
   onCite,
   onEdit,
   onUndo,
 }: {
   detail: MeetingDetail;
-  /** The user's own name, or null when they have set none. */
-  userName: string | null;
+  /** Whether an owner's name is the user; null when the user has set no name. */
+  isUser: ((name: string) => boolean) | null;
   onCite(c: Citation): void;
   /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
    * being written. */
@@ -2066,7 +2068,7 @@ function SummaryTab({
       ) : (
         <SummaryBody
           summary={s}
-          userName={userName}
+          isUser={isUser}
           onCite={onCite}
           onEdit={onEdit === undefined ? undefined : (field, text) => onEdit(s.id, field, text)}
         />

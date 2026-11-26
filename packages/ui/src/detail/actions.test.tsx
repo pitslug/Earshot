@@ -6,7 +6,9 @@ import { describe, expect, it } from "vitest";
 
 import { type ActionView, type Citation, sampleDetail, samplePersons } from "../ipc";
 import { ITEM, setup } from "../test/meetingDetail";
-import { actionGroups, joinNames, mergeActions } from "./actionGroups";
+import ownerTable from "../../../../fixtures/ui/action_owner_cases.json";
+import { actionGroups, joinNames, mergeActions, ownerNames, shownOwners } from "./actionGroups";
+import { userNamed } from "./SpeakersPanel";
 
 const base = sampleDetail(ITEM);
 const summary = base.summary!;
@@ -51,6 +53,45 @@ describe("mergeActions", () => {
   it("puts actions that cite nothing after the cited ones, in summary order", () => {
     const merged = mergeActions([act("A", "One", []), act("B", "Two", late), act("C", "Three", [])]);
     expect(merged.map((m) => m.task)).toEqual(["Two", "One", "Three"]);
+  });
+});
+
+interface OwnerCase {
+  note: string;
+  owner: string;
+  user: string | null;
+  group: "mine" | "others" | "single";
+  shown: string[];
+}
+
+describe("action owners (fixtures/ui/action_owner_cases.json)", () => {
+  for (const c of (ownerTable as { cases: OwnerCase[] }).cases) {
+    it(c.note, () => {
+      const persons = c.user === null ? [] : [{ ...samplePersons()[0], name: c.user, is_me: true }];
+      const isUser = c.user === null ? null : (name: string) => userNamed(name, persons) !== null;
+      const groups = actionGroups([act(c.owner, "Invented task", early)], isUser);
+      const [group, item] =
+        groups.kind === "single"
+          ? (["single", groups.all[0]] as const)
+          : groups.mine.length > 0
+            ? (["mine", groups.mine[0]] as const)
+            : (["others", groups.others[0]] as const);
+      expect(group).toBe(c.group);
+      expect(shownOwners(item, group === "mine", isUser)).toEqual(c.shown);
+    });
+  }
+
+  it("folds one name across merged actions, keeping the first spelling", () => {
+    const [item] = mergeActions([act("Robin Vale", "Same", early), act("ROBIN  VALE", "Same", early)]);
+    expect(item.owners).toEqual(["Robin Vale"]);
+    expect(item.indices).toEqual([0, 1]);
+  });
+
+  it("splits only on the listed separators", () => {
+    expect(ownerNames(" Robin Vale ")).toEqual(["Robin Vale"]);
+    expect(ownerNames("Robin Vale, , Tamsin Ode")).toEqual(["Robin Vale", "Tamsin Ode"]);
+    expect(ownerNames("Everyone")).toEqual(["Everyone"]);
+    expect(ownerNames("ALL")).toEqual(["ALL"]);
   });
 });
 
@@ -107,6 +148,13 @@ describe("the meeting page's actions", () => {
     expect(screen.getByText("Tick actions in the Obsidian note.")).toBeInTheDocument();
   });
 
+  it("puts an owner naming the user among others under My actions, the others after \"with\"", async () => {
+    await setup(withActions([act("casey & Robin Vale", "Book the crane", late)]));
+    await screen.findByText(/TL;DR/);
+    expect(items("My actions")).toEqual([expect.stringMatching(/^Book the crane\[\d+\] · with Robin Vale$/)]);
+    expect(screen.queryByRole("list", { name: "Other actions" })).toBeNull();
+  });
+
   it("leaves out a group with nothing in it", async () => {
     await setup(withActions([act("Robin Vale", "Order the seals", late)]));
     await screen.findByText(/TL;DR/);
@@ -151,6 +199,8 @@ describe("the meeting page's actions", () => {
     );
     await screen.findByText(/TL;DR/);
     expect(screen.getByRole("button", { name: "Edit action 1 for Robin Vale" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit who does action 1 for Robin Vale" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit who does action 2 for Tamsin Ode" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Edit action 2 for Tamsin Ode" }));
     const field = screen.getByRole("textbox", { name: "action 2 for Tamsin Ode" });
     await user.clear(field);

@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "note": "One person who is not the user: Other actions, the name as written.",
+      "owner": "Robin Vale",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["Robin Vale"]
+    },
+    {
+      "note": "The user alone: My actions, no one shown.",
+      "owner": "Casey",
+      "user": "Casey",
+      "group": "mine",
+      "shown": []
+    },
+    {
+      "note": "The user is matched without case or accents, as people's names are compared.",
+      "owner": "casey",
+      "user": "Casey",
+      "group": "mine",
+      "shown": []
+    },
+    {
+      "note": "Split on \" and \": the user with another is the user's, the other shown after \"with\".",
+      "owner": "Casey and Robin Vale",
+      "user": "Casey",
+      "group": "mine",
+      "shown": ["Robin Vale"]
+    },
+    {
+      "note": "Split on \", \" and \" & \", each name trimmed and empty ones dropped.",
+      "owner": "Robin Vale,  Tamsin Ode & Casey",
+      "user": "Casey",
+      "group": "mine",
+      "shown": ["Robin Vale", "Tamsin Ode"]
+    },
+    {
+      "note": "Several names, none the user: Other actions, every name.",
+      "owner": "Tamsin Ode and Robin Vale",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["Tamsin Ode", "Robin Vale"]
+    },
+    {
+      "note": "A name twice in other spellings is one name, the first spelling shown.",
+      "owner": "Robin Vale and robin vale",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["Robin Vale"]
+    },
+    {
+      "note": "\"Everyone\" names no one person: kept whole, as written, in Other actions.",
+      "owner": "Everyone",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["Everyone"]
+    },
+    {
+      "note": "\"All\" and \"Team\" likewise, in any case.",
+      "owner": "team",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["team"]
+    },
+    {
+      "note": "No user name set (null): one list, every name shown.",
+      "owner": "Casey and Robin Vale",
+      "user": null,
+      "group": "single",
+      "shown": ["Casey", "Robin Vale"]
+    }
+  ]
+}

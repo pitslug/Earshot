@@ -4,7 +4,7 @@
 // work, the waiting-for-another-computer banner, the meeting status and the Summary tab's
 // banners never hide by themselves.
 
-import { type FocusEvent, useEffect, useRef, useState } from "react";
+import { type FocusEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import type { MessageBarIntent } from "../meeting/types";
 import type { Timer } from "../time";
@@ -56,10 +56,13 @@ export function useAutoHide(timer: Timer, active: boolean, shown: unknown, hide:
     return timer.setTimeout(() => hideRef.current(), BANNER_HIDE_MS);
   }, [timer, active, held, shown]);
 
+  // A stable ref, so React does not detach and attach it on every render.
+  const ref = useCallback((el: HTMLElement | null) => {
+    element.current = el;
+  }, []);
+
   return {
-    ref: (el) => {
-      element.current = el;
-    },
+    ref,
     onPointerEnter: () => setPointer(true),
     onPointerLeave: () => setPointer(false),
     onFocus: () => setFocus(true),
