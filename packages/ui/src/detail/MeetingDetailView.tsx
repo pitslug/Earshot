@@ -11,7 +11,7 @@ import {
   Button,
   type ButtonProps,
   Caption1,
-  CompoundButton,
+  CounterBadge,
   Input,
   Label,
   Link,
@@ -38,6 +38,7 @@ import {
 import {
   type KeyboardEvent,
   type MouseEvent,
+  type ReactElement,
   type ReactNode,
   type RefObject,
   memo,
@@ -73,11 +74,14 @@ import { stepLabel } from "../meeting/liveMeeting";
 import type { MessageBarIntent } from "../meeting/types";
 import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
+import { type ActionItem, actionGroups, joinNames, shownOwners } from "./actionGroups";
+import { hidesByItself, useAutoHide } from "./autoHide";
+import { useLabelsFit } from "./headerFit";
 import { KeptLocal } from "./KeptLocal";
 import { keepUnchanged } from "./keepUnchanged";
 import { scrollLineIntoView } from "./scrollLine";
 import { ResummariseControl } from "./ResummariseControl";
-import { SpeakersPanel } from "./SpeakersPanel";
+import { SpeakersPanel, userNamed } from "./SpeakersPanel";
 import {
   DictionaryBar,
   type DictionaryNote,
@@ -112,8 +116,8 @@ import {
   failureText,
   handoverLine,
   headerLine,
+  RECORDING_GONE_TIP,
   recordingsGone,
-  recordingsGoneReason,
   rowTime,
   summaryMarkdown,
   voicesBadge,
@@ -141,6 +145,17 @@ function scrollingAncestor(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
+/** The least height the Speakers panel is given, in pixels (T14.58): with several banners pinned
+ * on a short window the space left below the header can shrink towards nothing; the panel keeps
+ * this much and the page scrolls instead. A judgement: a voice row and its buttons. */
+export const PANEL_MIN_HEIGHT = 200;
+
+/** The Speakers panel's height: what the pane shows below the pinned header (`top`), never less
+ * than `PANEL_MIN_HEIGHT`. `paneInner` is the pane's height inside its padding. */
+export function panelHeight(paneInner: number, top: number): number {
+  return Math.max(PANEL_MIN_HEIGHT, paneInner - top);
+}
+
 /**
  * Keeps `PANEL_TOP` and `PANEL_HEIGHT` on `root` up to date, so the Speakers panel sticks just
  * below the pinned header and fits in the pane whatever the header's height and the window's.
@@ -161,8 +176,8 @@ function usePanelSpace(
       if (pane !== null) {
         const style = getComputedStyle(pane);
         const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-        const height = pane.clientHeight - (Number.isNaN(padding) ? 0 : padding) - top;
-        if (height > 0) view.style.setProperty(PANEL_HEIGHT, `${height}px`);
+        const height = panelHeight(pane.clientHeight - (Number.isNaN(padding) ? 0 : padding), top);
+        view.style.setProperty(PANEL_HEIGHT, `${height}px`);
       }
     };
     measure();
@@ -245,6 +260,37 @@ const useStyles = makeStyles({
   copyButton: {
     minWidth: "124px",
   },
+  // Fluent's own icon-only Button size (medium), for a button whose only child is hidden text.
+  iconOnlyButton: {
+    minWidth: "32px",
+    maxWidth: "32px",
+    paddingLeft: "5px",
+    paddingRight: "5px",
+    // The hidden text is positioned against the button, not the page.
+    position: "relative",
+  },
+  // An icon-only header button's icon, with the count of voices that need a name on its corner.
+  iconWithCount: {
+    position: "relative",
+    display: "inline-flex",
+  },
+  iconCount: {
+    position: "absolute",
+    top: "-8px",
+    right: "-10px",
+  },
+  // Read by assistive technology, not drawn (the usual clip pattern).
+  srOnly: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    margin: "-1px",
+    padding: 0,
+    overflow: "hidden",
+    clip: "rect(0 0 0 0)",
+    whiteSpace: "nowrap",
+    border: 0,
+  },
   muted: {
     color: tokens.colorNeutralForeground3,
   },
@@ -321,14 +367,15 @@ const useStyles = makeStyles({
     flexDirection: "column",
     gap: tokens.spacingVerticalXS,
   },
-  actions: {
-    display: "grid",
-    gridTemplateColumns: "120px minmax(0, 1fr)",
-    columnGap: tokens.spacingHorizontalM,
-    rowGap: tokens.spacingVerticalXS,
-    alignItems: "baseline",
+  // One group of actions (T14.60): its heading, then its list.
+  actionGroup: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalXXS,
   },
-  owner: {
+  // Who else does an action, after its citations: small secondary text.
+  actionOwners: {
+    color: tokens.colorNeutralForeground3,
     overflowWrap: "anywhere",
   },
   cite: {
@@ -721,6 +768,7 @@ export function MeetingDetailView({
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
   const pinnedHeader = useRef<HTMLDivElement | null>(null);
+  const headerButtons = useRef<HTMLDivElement | null>(null);
   // 12px is the root's gap (spacingVerticalM): the panel sticks where its column starts.
   usePanelSpace(view, pinnedHeader, 12);
   const audio = useRef<HTMLAudioElement | null>(null);
@@ -1082,6 +1130,14 @@ export function MeetingDetailView({
   const title = displayTitle(item);
   const jobBar = job !== undefined && !jobAskedAnotherComputer(job) ? jobNotice(job) : null;
   const voices = detail ? voicesToName(detail) : 0;
+  // Whether an action owner's name is the user, by the Speakers panel's one rule (`userNamed`):
+  // null when the user has no name set (their own name then names no one), so the summary's
+  // actions are one list.
+  const me = persons.find((p) => p.is_me);
+  const isUser =
+    me !== undefined && userNamed(me.name, persons) !== null
+      ? (name: string) => userNamed(name, persons) !== null
+      : null;
   // A new summary being written replaces the one shown, so there is nothing settled to copy.
   const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
   const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
@@ -1089,6 +1145,44 @@ export function MeetingDetailView({
   // job on it): they are off here too, and a refusal that still comes is shown as before.
   const linesLocked =
     finishing || item.state === "Recording" || (job !== undefined && !isTerminal(job.last));
+  const summariseLabel = detail !== null && detail.summary === null ? "Summarise" : "Re-summarise";
+  const gone = detail !== null && recordingsGone(detail);
+  // Speakers, Export and Copy show only their icons when the labelled buttons do not fit on one
+  // row (T14.55). The key names every button and label that changes the labelled row's width:
+  // ResummariseControl's width follows its label, whether it is disabled (`detail === null`)
+  // and whether the finishing button replaces it; its menu opens in a popover, off the row.
+  const labelled = useLabelsFit(
+    headerButtons,
+    [
+      detail !== null,
+      voices,
+      summaryText !== "",
+      gone,
+      finishing,
+      `resummarise:${summariseLabel}:${finishing ? "finishing" : detail === null ? "disabled" : "enabled"}`,
+    ].join("|"),
+  );
+  const speakersName = voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers";
+  // Success and info banners with nothing but Dismiss hide by themselves (T14.59): a notice, and
+  // a finished job's bar (a new job event, a new `seq`, starts the countdown again).
+  // A countdown runs only while the window is watched, so a person away from it still finds the
+  // banner when they come back. A summary job that wrote nothing ("Skipped", with its reason)
+  // never hides by itself: it stays until dismissed.
+  const skippedSummary = job?.last?.type === "Summary" && job.last.result.kind === "Skipped";
+  const noticeHold = useAutoHide(timer, watched && notice !== null && hidesByItself(notice), notice, () =>
+    setNotice(null),
+  );
+  const jobHold = useAutoHide(
+    timer,
+    watched &&
+      jobBar !== null &&
+      job !== undefined &&
+      isTerminal(job.last) &&
+      !skippedSummary &&
+      hidesByItself(jobBar),
+    jobBar === null ? null : job?.seq,
+    onJobDismissed,
+  );
 
   return (
     <section ref={view} className={styles.root} aria-label="Meeting detail">
@@ -1121,45 +1215,75 @@ export function MeetingDetailView({
             )}
             {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
           </div>
-          <div className={styles.headerButtons}>
-            <Button
-              ref={speakersButton}
-              aria-expanded={speakersOpen === true}
-              aria-controls={speakersOpen === true ? panelId : undefined}
-              aria-label={voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers"}
-              disabled={detail === null}
-              onClick={() => {
-                // Opened by the user: focus goes into the panel, which follows the transcript in
-                // the page (T14.19). An automatic open moves nothing.
-                if (speakersOpen !== true) setFocusPanel((n) => n + 1);
-                setSpeakersOpen((open) => open !== true);
-              }}
-            >
-              Speakers
-              {voices > 0 && (
-                <Badge className={styles.badge} appearance="filled" color="brand" size="small">
-                  {voicesBadge(voices)}
-                </Badge>
-              )}
-            </Button>
-            <Button onClick={() => void exportNote()} disabled={detail === null}>
-              Export to Obsidian
-            </Button>
+          <div ref={headerButtons} className={styles.headerButtons}>
+            <IconTip content={speakersName} iconOnly={!labelled}>
+              <Button
+                ref={speakersButton}
+                aria-expanded={speakersOpen === true}
+                aria-controls={speakersOpen === true ? panelId : undefined}
+                aria-label={speakersName}
+                disabled={detail === null}
+                icon={
+                  labelled ? undefined : (
+                    <span className={styles.iconWithCount}>
+                      <PeopleIcon />
+                      {voices > 0 && (
+                        <CounterBadge
+                          className={styles.iconCount}
+                          count={voices}
+                          appearance="filled"
+                          color="brand"
+                          size="small"
+                        />
+                      )}
+                    </span>
+                  )
+                }
+                onClick={() => {
+                  // Opened by the user: focus goes into the panel, which follows the transcript in
+                  // the page (T14.19). An automatic open moves nothing.
+                  if (speakersOpen !== true) setFocusPanel((n) => n + 1);
+                  setSpeakersOpen((open) => open !== true);
+                }}
+              >
+                {labelled ? (
+                  <>
+                    Speakers
+                    {voices > 0 && (
+                      <Badge className={styles.badge} appearance="filled" color="brand" size="small">
+                        {voicesBadge(voices)}
+                      </Badge>
+                    )}
+                  </>
+                ) : undefined}
+              </Button>
+            </IconTip>
+            <IconTip content="Export to Obsidian" iconOnly={!labelled}>
+              <Button
+                aria-label={labelled ? undefined : "Export to Obsidian"}
+                icon={labelled ? undefined : <ExportIcon />}
+                onClick={() => void exportNote()}
+                disabled={detail === null}
+              >
+                {labelled ? "Export to Obsidian" : undefined}
+              </Button>
+            </IconTip>
             {summaryText !== "" && (
               <CopySummaryButton
                 text={summaryText}
                 timer={timer}
+                iconOnly={!labelled}
                 onCopied={() => setNotice((n) => (n?.key === "copy" ? null : n))}
                 onFailed={() =>
                   setNotice({ key: "copy", intent: "error", text: "The summary could not be copied." })
                 }
               />
             )}
-            {detail !== null && recordingsGone(detail) ? (
+            {gone ? (
               // Focusable, so a keyboard reaches the reason.
-              <CompoundButton disabledFocusable secondaryContent={recordingsGoneReason(detail)}>
-                Re-transcribe
-              </CompoundButton>
+              <Tooltip content={RECORDING_GONE_TIP} relationship="description">
+                <Button disabledFocusable>Re-transcribe</Button>
+              </Tooltip>
             ) : finishing ? (
               <Tooltip content={FINISHING_TIP} relationship="description">
                 <Button disabledFocusable>Re-transcribe</Button>
@@ -1174,14 +1298,12 @@ export function MeetingDetailView({
             )}
             {finishing ? (
               <Tooltip content={FINISHING_TIP} relationship="description">
-                <Button disabledFocusable>
-                  {detail !== null && detail.summary !== null ? "Re-summarise" : "Summarise"}
-                </Button>
+                <Button disabledFocusable>{summariseLabel}</Button>
               </Tooltip>
             ) : (
               <ResummariseControl
                 meeting={id}
-                label={detail !== null && detail.summary === null ? "Summarise" : "Re-summarise"}
+                label={summariseLabel}
                 disabled={detail === null}
                 onOrder={() => void startJob("resummarise")}
                 onWriter={(step) => void resummariseWith(step)}
@@ -1228,73 +1350,81 @@ export function MeetingDetailView({
             onClose={closeFind}
           />
         )}
+        {/* Every banner stays in view with the buttons while the page scrolls (T14.58). */}
+        {status}
+        {/* The one banner for a summary written on another computer (T12.81): on either tab, and
+            gone once the summary arrives or the request settles, by sync or here. */}
+        {detail?.waiting_for != null && (
+          <MessageBar intent="info" role="status">
+            <MessageBarBody>
+              <MessageBarTitle>{WAITING_TITLE}</MessageBarTitle>
+              {detail.waiting_for}
+            </MessageBarBody>
+          </MessageBar>
+        )}
+        {jobBar !== null && (
+          <MessageBar intent={jobBar.intent} {...jobHold}>
+            <MessageBarBody>
+              {jobBar.title !== undefined && <MessageBarTitle>{jobBar.title}</MessageBarTitle>}
+              {jobBar.text}
+            </MessageBarBody>
+            <MessageBarActions>
+              {jobBar.busy ? (
+                <>
+                  <Spinner size="extra-tiny" aria-label="Working" />
+                  {/* Focusable while disabled, so focus stays on it after the press. */}
+                  <Button
+                    size="small"
+                    aria-label={job?.job === "Resummarise" ? "Cancel the new summary" : "Cancel the re-transcription"}
+                    disabledFocusable={job?.cancelling === true}
+                    onClick={onJobCancel}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button size="small" appearance="transparent" onClick={onJobDismissed}>
+                  Dismiss
+                </Button>
+              )}
+            </MessageBarActions>
+          </MessageBar>
+        )}
+        {notice !== null && (
+          <MessageBar intent={notice.intent} {...noticeHold}>
+            <MessageBarBody>
+              {notice.title !== undefined && <MessageBarTitle>{notice.title}</MessageBarTitle>}
+              {notice.text}
+            </MessageBarBody>
+            <MessageBarActions>
+              {notice.busy ? (
+                <Spinner size="extra-tiny" aria-label="Working" />
+              ) : (
+                <Button size="small" appearance="transparent" onClick={() => setNotice(null)}>
+                  Dismiss
+                </Button>
+              )}
+            </MessageBarActions>
+          </MessageBar>
+        )}
+
+        {loadError !== null && (
+          <MessageBar intent="error">
+            <MessageBarBody>
+              <MessageBarTitle>The meeting could not be loaded</MessageBarTitle>
+              {loadError}
+            </MessageBarBody>
+          </MessageBar>
+        )}
+        {detail !== null && tab === "summary" && (
+          <SummaryBanners
+            detail={detail}
+            onResummarise={() => void startJob("resummarise")}
+            onAllowWriter={() => void run(() => ipc.allowSummaryWriter(id), "The meeting could not be changed")}
+          />
+        )}
       </div>
 
-      {status}
-      {/* The one banner for a summary written on another computer (T12.81): on either tab, and
-          gone once the summary arrives or the request settles, by sync or here. */}
-      {detail?.waiting_for != null && (
-        <MessageBar intent="info" role="status">
-          <MessageBarBody>
-            <MessageBarTitle>{WAITING_TITLE}</MessageBarTitle>
-            {detail.waiting_for}
-          </MessageBarBody>
-        </MessageBar>
-      )}
-      {jobBar !== null && (
-        <MessageBar intent={jobBar.intent}>
-          <MessageBarBody>
-            {jobBar.title !== undefined && <MessageBarTitle>{jobBar.title}</MessageBarTitle>}
-            {jobBar.text}
-          </MessageBarBody>
-          <MessageBarActions>
-            {jobBar.busy ? (
-              <>
-                <Spinner size="extra-tiny" aria-label="Working" />
-                {/* Focusable while disabled, so focus stays on it after the press. */}
-                <Button
-                  size="small"
-                  aria-label={job?.job === "Resummarise" ? "Cancel the new summary" : "Cancel the re-transcription"}
-                  disabledFocusable={job?.cancelling === true}
-                  onClick={onJobCancel}
-                >
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <Button size="small" appearance="transparent" onClick={onJobDismissed}>
-                Dismiss
-              </Button>
-            )}
-          </MessageBarActions>
-        </MessageBar>
-      )}
-      {notice !== null && (
-        <MessageBar intent={notice.intent}>
-          <MessageBarBody>
-            {notice.title !== undefined && <MessageBarTitle>{notice.title}</MessageBarTitle>}
-            {notice.text}
-          </MessageBarBody>
-          <MessageBarActions>
-            {notice.busy ? (
-              <Spinner size="extra-tiny" aria-label="Working" />
-            ) : (
-              <Button size="small" appearance="transparent" onClick={() => setNotice(null)}>
-                Dismiss
-              </Button>
-            )}
-          </MessageBarActions>
-        </MessageBar>
-      )}
-
-      {loadError !== null && (
-        <MessageBar intent="error">
-          <MessageBarBody>
-            <MessageBarTitle>The meeting could not be loaded</MessageBarTitle>
-            {loadError}
-          </MessageBarBody>
-        </MessageBar>
-      )}
       {detail === null && loadError === null && <Spinner label="Loading the meeting" />}
 
       {detail !== null && (
@@ -1304,6 +1434,7 @@ export function MeetingDetailView({
               {tab === "summary" ? (
                 <SummaryTab
                   detail={detail}
+                  isUser={isUser}
                   onCite={openCitation}
                   onEdit={
                     writingSummary
@@ -1311,11 +1442,7 @@ export function MeetingDetailView({
                       : (summary, field, text) =>
                           save(() => ipc.editSummary(id, summary, field, text), "The summary was not changed")
                   }
-                  onResummarise={() => void startJob("resummarise")}
                   onUndo={() => void run(() => ipc.undoSummary(id), "The previous summary could not be restored")}
-                  onAllowWriter={() =>
-                    void run(() => ipc.allowSummaryWriter(id), "The meeting could not be changed")
-                  }
                 />
               ) : (
                 <TranscriptTab
@@ -1487,11 +1614,14 @@ export function MeetingDetailView({
 function CopySummaryButton({
   text,
   timer,
+  iconOnly,
   onCopied,
   onFailed,
 }: {
   text: string;
   timer: Timer;
+  /** Only the icon shows; the label stays for a screen reader and shows on hover. */
+  iconOnly: boolean;
   onCopied(): void;
   onFailed(): void;
 }) {
@@ -1515,10 +1645,81 @@ function CopySummaryButton({
     cancelReset.current = timer.setTimeout(() => setCopied(false), COPIED_MS);
   };
 
+  const label = copied ? "Copied" : "Copy summary";
+  // One button at every width, so a change of form never moves focus off it.
   return (
-    <Button className={styles.copyButton} onClick={() => void copy()}>
-      <span aria-live="polite">{copied ? "Copied" : "Copy summary"}</span>
-    </Button>
+    <IconTip content={label} iconOnly={iconOnly}>
+      <Button
+        // The live text is a child even in icon form, so Button's own icon-only sizing does not
+        // apply: the same size is set here.
+        className={iconOnly ? styles.iconOnlyButton : styles.copyButton}
+        icon={iconOnly ? <CopyIcon /> : undefined}
+        onClick={() => void copy()}
+      >
+        <span
+          aria-live="polite"
+          className={iconOnly ? styles.srOnly : undefined}
+          data-sr-only={iconOnly ? "" : undefined}
+        >
+          {label}
+        </span>
+      </Button>
+    </IconTip>
+  );
+}
+
+/**
+ * A header button's tooltip: its full label, shown on hover and focus only while the button
+ * shows just its icon. The button names itself (`aria-label`), so the tooltip adds nothing for a
+ * screen reader. The Tooltip stays mounted at every width, so the button is never remounted
+ * (and never loses focus) when the header changes form.
+ */
+function IconTip({ content, iconOnly, children }: { content: string; iconOnly: boolean; children: ReactElement }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <Tooltip
+      content={content}
+      relationship="inaccessible"
+      visible={iconOnly && shown}
+      onVisibleChange={(_, data) => setShown(data.visible)}
+    >
+      {children}
+    </Tooltip>
+  );
+}
+
+/** Two people, for Speakers when it shows only its icon. */
+function PeopleIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <circle cx="7.5" cy="6.5" r="2.75" />
+      <path d="M2.5 16c0-2.75 2.25-4.75 5-4.75s5 2 5 4.75" strokeLinecap="round" />
+      <circle cx="13.75" cy="7.25" r="2.25" />
+      <path d="M13.5 11.5c2.25 0 4 1.75 4 4.25" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A box with an arrow leaving it, for Export to Obsidian when it shows only its icon. */
+function ExportIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <path
+        d="M8.5 4H5a1.5 1.5 0 0 0-1.5 1.5v9.5A1.5 1.5 0 0 0 5 16.5h9.5A1.5 1.5 0 0 0 16 15v-3.5"
+        strokeLinecap="round"
+      />
+      <path d="M11.5 3.5h5v5M16.5 3.5L9.5 10.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Two sheets, for Copy summary when it shows only its icon. */
+function CopyIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <rect x="6.5" y="6.5" width="10" height="10.5" rx="1.5" />
+      <path d="M13.5 6.5V4.5A1.5 1.5 0 0 0 12 3H5A1.5 1.5 0 0 0 3.5 4.5v8A1.5 1.5 0 0 0 5 14h1.5" />
+    </svg>
   );
 }
 
@@ -1624,10 +1825,14 @@ function Editable({ fields, children }: { fields: EditField[]; children: ReactNo
 
 function SummaryBody({
   summary,
+  isUser,
   onCite,
   onEdit,
 }: {
   summary: SummaryView;
+  /** Whether an owner's name is the user (`userNamed`); null when the user has set no name
+   * (the actions are then one list). */
+  isUser: ((name: string) => boolean) | null;
   onCite(c: Citation): void;
   /** Saves one text; false when it was refused. Absent: read only. */
   onEdit?: (field: SummaryFieldRef, text: string) => Promise<boolean>;
@@ -1641,6 +1846,64 @@ function SummaryBody({
     icon: EditIcon = "pencil",
     shown?: string,
   ): EditField[] => (onEdit === undefined ? [] : [{ label, icon, shown, text, onSave: (t) => onEdit(field, t) }]);
+
+  // Actions (T14.60): "My actions" and "Other actions" when the user has a name, else one list.
+  // Each owner is split into names (`ownerNames`), and a name is the user by `userNamed`.
+  const groups = actionGroups(summary.actions, isUser);
+  /** One group's list. `show`: "with" names the user's partners after the citations, "owners"
+   * names every owner. Editing: each pencil edits one stored action. An item that merges several
+   * stored actions offers each one's pencils, named with its owner, rather than one pencil that
+   * would write several actions in turn: those writes are separate requests, so a refusal or a
+   * failure part way would leave the actions half changed. After such an edit the actions differ
+   * and show as separate items. A render function, not a component, so an open editor survives
+   * the page's re-renders. */
+  const actionList = (label: string, items: ActionItem[], show: "with" | "owners", heading: boolean) => (
+    <div className={styles.actionGroup} key={label}>
+      {heading && (
+        <Body1Strong as="h3" className={styles.sectionHeading}>
+          {label}
+        </Body1Strong>
+      )}
+      <ul className={styles.list} aria-label={label}>
+        {items.map((item) => {
+          const merged = item.indices.length > 1;
+          const fields = item.indices.flatMap((i) => {
+            const a = summary.actions[i];
+            const whose = merged ? ` for ${a.owner}` : "";
+            return [
+              ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}${whose}`, a.task),
+              ...(a.due === null
+                ? []
+                : edit(
+                    { kind: "ActionDue", index: i },
+                    `when action ${i + 1} is due${whose}`,
+                    a.due,
+                    "calendar",
+                    // The editor replaces the action's text, so the date alone needs a label.
+                    `When action ${i + 1} is due`,
+                  )),
+              ...edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}${whose}`, a.owner),
+            ];
+          });
+          const names = shownOwners(item, show === "with", isUser);
+          const owners =
+            show === "owners" ? joinNames(names) : names.length > 0 ? `with ${joinNames(names)}` : null;
+          return (
+            <li key={item.indices[0]}>
+              <Editable fields={fields}>
+                <Body1>
+                  {item.task}
+                  {item.due !== null && ` (by ${item.due})`}
+                </Body1>
+                <Citations citations={item.citations} onCite={onCite} />
+                {owners !== null && <Caption1 className={styles.actionOwners}>{` · ${owners}`}</Caption1>}
+              </Editable>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
   return (
     <>
       <div className={styles.section}>
@@ -1673,42 +1936,14 @@ function SummaryBody({
           <Subtitle2 as="h2" className={styles.sectionHeading}>
             Actions
           </Subtitle2>
-          <div role="table" aria-label="Actions" className={styles.actions}>
-            {summary.actions.map((a, i) => (
-              <div role="row" key={i} style={{ display: "contents" }}>
-                <Body1Strong role="cell" className={styles.owner}>
-                  <Editable
-                    fields={edit({ kind: "ActionOwner", index: i }, `who does action ${i + 1}`, a.owner)}
-                  >
-                    {a.owner}
-                  </Editable>
-                </Body1Strong>
-                <span role="cell">
-                  <Editable
-                    fields={[
-                      ...edit({ kind: "ActionTask", index: i }, `action ${i + 1}`, a.task),
-                      ...(a.due === null
-                        ? []
-                        : edit(
-                            { kind: "ActionDue", index: i },
-                            `when action ${i + 1} is due`,
-                            a.due,
-                            "calendar",
-                            // The editor replaces the action's text, so the date alone needs a label.
-                            `When action ${i + 1} is due`,
-                          )),
-                    ]}
-                  >
-                    <Body1>
-                      {a.task}
-                      {a.due !== null && ` (by ${a.due})`}
-                    </Body1>
-                    <Citations citations={a.citations} onCite={onCite} />
-                  </Editable>
-                </span>
-              </div>
-            ))}
-          </div>
+          {groups.kind === "split" ? (
+            <>
+              {groups.mine.length > 0 && actionList("My actions", groups.mine, "with", true)}
+              {groups.others.length > 0 && actionList("Other actions", groups.others, "owners", true)}
+            </>
+          ) : (
+            actionList("Actions", groups.all, "owners", false)
+          )}
           <Caption1 className={styles.muted}>Tick actions in the Obsidian note.</Caption1>
         </div>
       )}
@@ -1757,25 +1992,17 @@ function SummaryBody({
   );
 }
 
-function SummaryTab({
+/** The Summary tab's banners, pinned at the top of the page with the header while that tab
+ * shows (T14.58). */
+function SummaryBanners({
   detail,
-  onCite,
-  onEdit,
   onResummarise,
-  onUndo,
   onAllowWriter,
 }: {
   detail: MeetingDetail;
-  onCite(c: Citation): void;
-  /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
-   * being written. */
-  onEdit?: (summary: string, field: SummaryFieldRef, text: string) => Promise<boolean>;
   onResummarise(): void;
-  onUndo(): void;
   onAllowWriter(): void;
 }) {
-  const styles = useStyles();
-  const s = detail.summary;
   return (
     <>
       {detail.summary_stale && (
@@ -1805,6 +2032,30 @@ function SummaryTab({
         }
         onAllow={onAllowWriter}
       />
+    </>
+  );
+}
+
+function SummaryTab({
+  detail,
+  isUser,
+  onCite,
+  onEdit,
+  onUndo,
+}: {
+  detail: MeetingDetail;
+  /** Whether an owner's name is the user; null when the user has set no name. */
+  isUser: ((name: string) => boolean) | null;
+  onCite(c: Citation): void;
+  /** Saves one text of summary `summary`; false when refused. Absent while a new summary is
+   * being written. */
+  onEdit?: (summary: string, field: SummaryFieldRef, text: string) => Promise<boolean>;
+  onUndo(): void;
+}) {
+  const styles = useStyles();
+  const s = detail.summary;
+  return (
+    <>
       {handoverLine(detail) !== null && <Caption1 className={styles.muted}>{handoverLine(detail)}</Caption1>}
       {s === null ? (
         <Body1 className={styles.muted}>
@@ -1817,6 +2068,7 @@ function SummaryTab({
       ) : (
         <SummaryBody
           summary={s}
+          isUser={isUser}
           onCite={onCite}
           onEdit={onEdit === undefined ? undefined : (field, text) => onEdit(s.id, field, text)}
         />

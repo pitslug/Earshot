@@ -164,9 +164,8 @@ export function recordingsGone(detail: MeetingDetail): boolean {
   );
 }
 
-/** Why there is no recording, for a meeting [`recordingsGone`] says so of. An Interrupted
- * meeting has no usable audio at this start: none was saved, or recovery could not read it
- * (it tries again at the next start), so the copy claims neither. */
-export function recordingsGoneReason(detail: MeetingDetail): string {
-  return detail.state === "Interrupted" ? "No usable audio from this recording" : "Recording no longer kept";
-}
+/** Why Re-transcribe is unavailable, for a meeting [`recordingsGone`] says so of: one copy for
+ * every case (T14.55). An Interrupted meeting has no usable audio at this start (none was saved,
+ * or recovery could not read it and tries again at the next start), and a Ready one's was not
+ * kept; the copy claims neither cause. */
+export const RECORDING_GONE_TIP = "Recording not available";
