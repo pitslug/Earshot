@@ -1481,7 +1481,7 @@ fn export_merge_appended_text_never_hides_an_owner_list() {
     );
     let merged = merged_from(
         &r,
-        "### Other actions\n\n- [x] Send numbers (Ada Lovelace) \u{2705} 2026-11-20\n",
+        "### My actions\n\n_None_\n\n### Other actions\n\n- [x] Send numbers (Ada Lovelace) \u{2705} 2026-11-20\n",
     );
     assert!(
         merged.contains("- [x] Send numbers (Ada Lovelace)\n"),
@@ -1533,15 +1533,22 @@ fn export_merge_reads_one_list_lines_as_one_list_only_without_subheadings() {
         ],
         Some(casey()),
     );
-    // "### My actions" deleted: its lines now sit above "### Other actions" and could be
-    // anyone's, so nothing carries from them.
-    for old in [
+    // "### My actions" deleted: its bare lines could be anyone's, so nothing carries from
+    // them; a line naming its owners still does.
+    let merged = merged_from(
+        &r,
         "- [x] Book the room\n\n### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n",
-        "- [x] Send numbers (Ada Lovelace)\n\n### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n",
-    ] {
-        let merged = merged_from(&r, old);
-        assert!(!merged.contains("- [x]"), "{old:?}: {merged}");
-    }
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
+    let merged = merged_from(
+        &r,
+        "- [x] Send numbers (Ada Lovelace)\n\n### Other actions\n\n- [ ] Book the room\n",
+    );
+    assert!(
+        merged.contains("- [x] Send numbers (Ada Lovelace)\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
     // Both deleted: a one list again. An owner list carries; a line with none is not the
     // user's own.
     let merged = merged_from(
@@ -1661,6 +1668,62 @@ fn export_note_sections_named_like_action_groups_hold_no_action_lines() {
     let merged = merge(&doc, &r2).unwrap();
     assert!(
         merged.contains("## Action items\n\n### My actions\n\n- [ ] Book the room\n"),
+        "{merged}"
+    );
+}
+
+#[test]
+fn export_merge_trusts_places_only_under_both_headings_in_order() {
+    // The user's own "Book" and an ownerless "Book".
+    let r = render_items(
+        vec![
+            item("Casey Lane", "Book", None, 20),
+            item("", "Book", None, 21),
+        ],
+        Some(casey()),
+    );
+    // Both headings deleted, the user's own ticked: it cannot be told from the ownerless
+    // one, so nothing carries, and the ownerless "Book" stays unticked.
+    let merged = merged_from(&r, "- [x] Book\n\n- [ ] Book\n");
+    assert!(!merged.contains("- [x]"), "{merged}");
+    // Only one heading left, either one: the same.
+    for old in [
+        "### My actions\n\n- [x] Book\n\n- [ ] Book\n",
+        "- [x] Book\n\n### Other actions\n\n- [ ] Book\n",
+        // Headings swapped round: not in order, so not trusted.
+        "### Other actions\n\n- [ ] Book\n\n### My actions\n\n- [x] Book\n",
+    ] {
+        let merged = merged_from(&r, old);
+        assert!(!merged.contains("- [x]"), "{old:?}: {merged}");
+    }
+    // The control: both headings in order carry the user's own tick to the user's own line.
+    let merged = merged_from(
+        &r,
+        "### My actions\n\n- [x] Book\n\n### Other actions\n\n- [ ] Book\n",
+    );
+    assert!(
+        merged.contains("### My actions\n\n- [x] Book\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+    // The control: a note from before T14.61 names its owners, so it carries.
+    let r = render_items(
+        vec![
+            item("Casey Lane", "Book", None, 20),
+            item("Ada Lovelace", "Send numbers", None, 21),
+        ],
+        Some(casey()),
+    );
+    let merged = merged_from(
+        &r,
+        "- [x] **Casey Lane**: Book\n- [x] **Ada Lovelace**: Send numbers\n",
+    );
+    assert!(
+        merged.contains("### My actions\n\n- [x] Book\n"),
+        "{merged}"
+    );
+    assert!(
+        merged.contains("- [x] Send numbers (Ada Lovelace)\n"),
         "{merged}"
     );
 }

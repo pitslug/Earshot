@@ -205,6 +205,10 @@ enum Place {
     Mine,
     Other,
     Single,
+    /// An old action-item line whose place is not trusted (the new render has both
+    /// subheadings and the old region does not, in order): it carries only when it names its
+    /// owners itself.
+    Loose,
     Elsewhere,
 }
 
@@ -218,6 +222,7 @@ impl Place {
         match (self, new) {
             (Place::Elsewhere, Place::Elsewhere) | (Place::Mine, Place::Mine) => true,
             (Place::Elsewhere, _) | (_, Place::Elsewhere) => false,
+            (Place::Loose, _) | (_, Place::Loose) => false,
             (Place::Mine, _) | (_, Place::Mine) => false,
             (Place::Other, _) => true,
             (Place::Single, _) => !old_has_subheadings,
@@ -372,6 +377,13 @@ impl NewAction {
                 self.mine && others == self.others
             }
             Place::Other | Place::Single => name_set(listed) == self.owners,
+            // Only a line naming its owners outright: never a bare task, never "(with ...)",
+            // which leaves the user implied.
+            Place::Loose => {
+                !listed.is_empty()
+                    && !listed.starts_with("with ")
+                    && name_set(listed) == self.owners
+            }
             Place::Elsewhere => false,
         };
         if fits { OldMatch::Whole } else { OldMatch::No }
@@ -434,15 +446,28 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
     let subheadings = old_places
         .iter()
         .any(|p| matches!(p, Place::Mine | Place::Other));
-    // "### My actions" without "### Other actions": the user may have deleted the Other
-    // heading, leaving other people's (or ownerless) lines under My actions, so no line
-    // there is trusted to be the user's. Lost, never moved. The render always writes both
-    // headings once a user name is set (an empty group holds "_None_", which is not a task
-    // line), so only an edited note, or one an earlier build of T14.61 wrote, loses here.
-    if old_places.contains(&Place::Mine) && !old_places.contains(&Place::Other) {
-        for o in &mut old {
-            if o.as_ref().is_some_and(|(_, _, p)| *p == Place::Mine) {
-                *o = None;
+    // Place trust. With a user name the render always writes "### My actions" then
+    // "### Other actions" (an empty group holds "_None_", not a task line). When the new
+    // render has them, an old action line is trusted by its place only if the old region
+    // has both, in that order; otherwise (a heading deleted, a one-list or pre-T14.61 note)
+    // every old action line is `Loose` and carries only when it names its owners itself:
+    // "**X**: task", or "task (<owners>)"; a bare "task" carries nothing, since a deleted
+    // heading leaves no way to tell the user's own line from an ownerless one. An old line
+    // above the first subheading is `Loose` too. Accepted limit: a heading the user moved
+    // (not deleted) is still trusted, the same "identical text is the same action" limit
+    // as pass 1, across groups. Without a user name the new render is one list and the
+    // `Place::compatible` rules apply as they stand.
+    let new_lines_places = places(new_region);
+    if new_lines_places
+        .iter()
+        .any(|p| matches!(p, Place::Mine | Place::Other))
+    {
+        let first = |want: Place| old_places.iter().position(|p| *p == want);
+        let both = matches!((first(Place::Mine), first(Place::Other)), (Some(m), Some(o)) if m < o);
+        for o in old.iter_mut().flatten() {
+            if matches!(o.2, Place::Single) || (!both && matches!(o.2, Place::Mine | Place::Other))
+            {
+                o.2 = Place::Loose;
             }
         }
     }
