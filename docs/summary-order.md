@@ -160,3 +160,206 @@ Review: T12.63a changes which provider receives meeting content, so it gets the 
 ## 10. Copy
 
 All copy here (step names, destinations, outcome words, banners, re-summarise items, the disabled reason, the named hand-back) lives in `fixtures/ui/summary_order_cases.json`, read by the desktop's tests and the UI mock's tests. `fixtures/ui/offload_copy_cases.json` keeps the helper and waiting copy.
+
+## 11. T14.66: stopping a summary written elsewhere, and saying failed writers as they happen
+
+Status: design (T14.66, PLAN.md section 8, with the owner's additions of 2026-11-27 in 11.6 to 11.8); not built, not yet spec-reviewed.
+
+### 11.1 What went wrong
+
+A re-summarise ran [local model, Claude Code, a summary worker]. The local step and Claude failed and the run moved on, but:
+
+- The run sent no warning mid-run. The job then ended `JobEvent::Offloaded`, and `JobView` keeps only a job's last event.
+- The meeting list reads `MeetingState` from this process's leases only. A run `Waiting` on another computer holds none, so the row showed no working dot.
+- Nothing could stop the worker. A withdrawal only stops it storing (`offload::still_claimed` in its write transaction). The worker's token is cancelled only when the worker stops (`Worker::cancel`). The desktop helper passes `CancelToken::new()` to `write_for_request`, so nothing ever cancels it.
+
+### 11.2 Stop (the asker)
+
+**Where.** The waiting banner on the meeting page (`MeetingDetail.waiting_for`, built by `offload::waiting_banner` from `offload::waiting_shown` and `run_view`) gets one action, "Stop". It can show only on the asker: `waiting_shown` reads only requests this device asked.
+
+**Command.** `stop_waiting_summary(meeting)` in `apps/desktop/src-tauri/src/offload.rs` (async, through `ipc::blocking`) calls a new `summary_order::run::stop_waiting(services, meeting) -> StopAnswer`. That is one `edit::write` transaction under the store lock, re-reading everything inside it:
+
+1. Find this device's open request for the meeting (`offload::open_request`: asked by me, not deleted, requested or claimed, `authored`).
+2. If there is one, write it `Withdrawn` (the asker is its only allowed writer), then by the run record:
+   - **The record waits on it** (`waiting_on == Some(request)`, `state: waiting`): end the run in the same transaction with `put_own_tx`. Push the new outcome `OutcomeWord::Stopped` for step `cursor - 1`, clear `waiting_on`, set `state: ended`. This is 4.1's "the run stops" ending, written in its own transaction as `hand_back`'s named branch is. No later step runs, whatever the run's origin.
+   - **No record** (a legacy request): also write a fresh ended record (`origin: named`, steps `[computer]`, outcome `stopped`). Without it, the next offload step would read the withdrawal as `HandBack::Legacy` and write the summary here.
+   - **Unreadable, or naming another request or none**: leave the record. `hand_back` already settles those with no job.
+   Answer `Stopped`.
+3. **No open request, but the helper has already written** (a `Done` request the record waits on, or `summarised_since`): write nothing to the request, end the run with that computer as writer as `end_after_done` does, and answer `AlreadyWritten`.
+4. **Otherwise** (withdrawn by the 90 s or stale rule and a continuation job already runs, or the run already ended): write nothing and answer `NotWaiting`. A running continuation is stopped by the job's existing Cancel (`JobRunner::cancel`).
+
+After a commit that withdrew, the command calls `SyncHost::nudge`, so the withdrawal goes out at the next poll rather than the next regular tick.
+
+**Afterwards.** The asker's offload step sees a withdrawn request its record no longer waits on, so `hand_back` answers `Settle`: no job, no continuation, also after a restart.
+
+**Races.**
+- **The helper's `Done` is applied first.** Case 3: the summary shows, nothing is withdrawn.
+- **Stop commits first, but the helper had already stored.** The helper stored before it pulled the withdrawal. Its summary row arrives and is kept (rule 7.2, and sync-spec 10.1 "a done answer stays last writer wins"). The stop note (11.7) shows only while no summary created after the request exists (`summarised_since`), so it never says "stopped" over a summary.
+- **A withdrawal written by a device that is not the asker.** `authored` ignores it in every reader and in the helper's cancel check (11.3). Stop only ever writes this device's own requests.
+- **Sync off on the asker.** Stop still withdraws and ends the run here. The withdrawal waits in the outbox, and the helper writes on until it finishes or the asker's presence goes stale. Its summary, arriving when sync resumes, is kept as above.
+- **Re-summarise pressed at the same moment.** `start` withdraws open requests and replaces the record in one transaction. Both transactions re-read, so the second one to commit sees the first's state (`NotWaiting`, or nothing open to withdraw).
+
+**What the user sees.**
+- The command's result reloads the detail and the waiting banner goes.
+- The run note says the summary was stopped (`stopped_note`).
+- A summary stored before the run stays shown, and Undo is unchanged.
+- The list row loses its dot at its next read.
+
+### 11.3 The helper stops writing
+
+**One token per handed request.** `Offload` gains `writing: Mutex<BTreeMap<EntityId, CancelToken>>`. `as_helper` creates a token when it hands a request. `OffloadHost::write_for(request, cancel: CancelToken)` (a trait change) passes it to `write_for_request`:
+- **Desktop.** `HostOffload::write_for` passes the token instead of `CancelToken::new()`.
+- **Worker.** `WorkerHost` keeps the tokens it was given (`Mutex<Vec<CancelToken>>` plus a stopping flag). `Worker::cancel` sets the flag and cancels them all, and a token registered after the flag is cancelled at once. The worker's single `cancel` field goes.
+
+**The check.** In `Offload::step_with`, the scan also wants any request with `target_device == me`, `state == Withdrawn`, `authored` and its id in `writing`.
+- It collects those ids under the store lock.
+- After the lock is dropped, and before the per-request loop, it cancels and removes each token.
+- It also drops entries whose request reads `Done`, `Declined` or deleted.
+- It runs in every step, `step_sync_stopped` included. No lock is held across a cancel.
+
+The T14.50 skip rule is unaffected. While a write runs, its request is claimed and open, so the scan is never idle. A pulled withdrawal is a row the tick applied, which forces the next scan.
+
+**A cancelled helper writes nothing.**
+- `write_for_request` returns `HelperOutcome::Cancelled` (`Err(_) if cancel.is_cancelled()`, or `wait_turn` refusing).
+- It writes no decline: sync-spec 10.1 lets the target write only `Claimed`, `Done` and `Declined`, and `move_request(Claimed -> Declined)` would find `Withdrawn` anyway.
+- Its write transaction stores nothing, because `still_claimed` fails.
+
+`HelperOutcome::Cancelled`'s doc is corrected to cover both causes: the worker stopping (the request stays claimed) and a withdrawal (nothing more to do).
+
+**The bound**, from the asker's commit:
+
+| Part | Bound |
+|---|---|
+| Asker pushes | after `nudge`: the next poll, `SyncTiming::poll` (2 s), plus one push |
+| Helper hears it | its next tick, at most `TICK` (30 s) after its last, plus that tick's pull and the step |
+| Endpoint writer (the worker always: its own model is an HTTP endpoint too; the desktop's endpoint or Anthropic) | in-flight request abandoned within `CANCEL_POLL` (20 ms, earshot-llm `client.rs`) |
+| Claude Code, Codex (desktop helper) | the CLI's job killed within `earshot_proc::POLL` (10 ms) |
+| Local llama on the CPU (desktop helper) | the next generated token (`generate_cancellable`). A load in progress is not interruptible and runs to its end (at most `cpu_load_limit`, 600 s); the run then stops before its first request |
+| GPU summary child | killed at the parent's next watch poll (`summary_child::watch_lines`) |
+| Waiting for a queue turn | at once (`wait_turn(cancel)`) |
+
+So on a healthy relay, writing stops within about 35 s plus the writer's own latency. A helper whose relay keeps failing backs off up to `MAX_BACKOFF` (15 min) and hears nothing until it reaches the relay, but it still never stores (`still_claimed`).
+
+### 11.4 The meeting list shows a summary written elsewhere
+
+**Source.** A new `offload::meetings_waiting_shown(store, me) -> BTreeSet<EntityId>`. It uses the same rule as `waiting_shown`, so the list and the page agree.
+- It is read once in `ipc::meeting_list`, inside `Services::live_meetings`' single lock, with the first meeting, as the folders are.
+- It costs one `summary_requests()` read (open, asked by me, `authored`, not deleted), then one `summarised_since` per meeting in that set (usually none or one). There is no loop over every meeting.
+
+**Display.**
+- A new field `MeetingListItem.summary_elsewhere: bool` (bindings regenerated).
+- `rowDot` counts it as `working`.
+- `workWord` gives `list_elsewhere` when no local work is heard.
+- `MeetingState` is unchanged.
+
+**Refresh.** The list is already re-read on the meeting's `Summary` event, a job's terminal event and `SyncEvent.meetings` (`StepReport.meetings` covers withdrawals and hand-backs). A successful Stop re-reads it too.
+
+### 11.5 Failed writers said as they happen
+
+**Runtime.**
+- A new `summary_order::run::run_summary_order_reporting(.., on_step: &mut dyn FnMut(StepMoved))`. `run_summary_order` becomes it with a no-op, so existing callers and tests stay.
+- `StepMoved { step: OrderStep, word: OutcomeWord, next: OrderStep }` is called in `run_steps` right after each `run.push(i, word)` for a step tried and left, and only when `run.next_step(i + 1)` names a step. It only observes: outcomes do not change.
+- It is not called for steps dropped for a kept-local meeting (pushed before the run starts), nor when the last step fails (the end banner follows at once). `not now` and a computer that was not asked are reported like any other move.
+- It is a parameter, not a `RunPlan` field, because `after_meeting` forwards it into its own `progress: &mut dyn FnMut(HostStep)`, which a shared plan built before it cannot borrow.
+
+**A meeting's own summary.**
+- `host::after_meeting` passes `&mut |m| progress(HostStep::SummaryStepMoved(m))` (a new variant).
+- The driver's watch counts it as the summary phase (unwatched, so T9.22's timings do not change).
+- The driver maps it through `Inner::send` to `MeetingEvent::Warning { key: STEPS_BANNER_KEY, kind: Backend, message: summary_order::step_moved_text(&m, &cx) }`. That is the run's existing `summary-steps` key: each move replaces the last, and the end-of-run banner (`later_writer` or `no_summary`) replaces the moves.
+- It is sent after `Ended`, so `afterMeetingBanners` shows it, and the existing Warning fold arm in `SentRecord` covers it.
+
+**A re-summarise.** `jobs::summarise_run_with` passes `&mut |m| warn(step_moved_text(&m, &cx))`, so each move is a `JobEvent::Warning` mid-run. A job that ends `Offloaded` replaces its warnings, so the waiting banner also lists the steps already left (`earlier`, 11.7), read from the run record. That account survives the job's end and a window reload.
+
+**CLI.** `earshot-cli` prints `<step>: <word>` as moves arrive, as well as its end-of-run lines.
+
+### 11.6 No stale notes while a summary is written (owner addition 5)
+
+`MeetingDetailView` computes `summaryInProgress = writingSummary || detail.waiting_for !== null`:
+- `writingSummary` already exists: a re-summarise job on the meeting, not terminal.
+- `waiting_for` is the waiting banner's own source, `offload::waiting_shown`, which also turns null once a summary created after the request exists.
+
+While `summaryInProgress` holds, the `summary_stale` bar is not rendered. That bar holds both the earlier-name and earlier-transcript texts, and its Re-summarise button. It returns once the run ends: the job's terminal event, or a detail read with `waiting_for` null. No Rust change.
+
+### 11.7 The header says a new summary is being written (owner addition 6), and run notes
+
+**Header line.** `detail.ts::headerLine(d, writing)` takes `writing: { on: string | null } | null`.
+- With a current summary, its part reads "Summary by <writer> · <in_progress>". Without one, only "<in_progress>".
+- `in_progress_here` is used for a job here, and `in_progress_on` while the run waits on a computer.
+- `{device}` comes from a new `MeetingDetail.waiting_device: Option<String>`: the name, or `unnamed_inline`. It is built in `detail.rs` beside `waiting_for`, from the same request (`StepContext::device`).
+
+**Banners and notes.**
+- `waiting_banner` appends `earlier` when the waiting run's record holds moved steps, reusing `step_outcome` and `joiner`.
+- `run_note` gets an arm for an ended run holding `stopped`: `stopped_note`, plus `earlier` when other steps moved first.
+
+### 11.8 The header keeps a readable title (owner addition 7)
+
+**Choice.** Collapse the buttons to their icons whenever their labels would leave the title less than a readable width. Rejected: giving the buttons their own row always.
+
+**Why.**
+- T14.55's measured switch without back and forth (`useLabelsFit`) is already built and tested. The fault is one measurement: `measureRow` compares the buttons' need with the whole header (`row.parentElement.clientWidth`) and ignores the title, which keeps only its 240 px flex basis.
+- A row of their own costs a line of height on every meeting at every width, and pushes the banners down.
+
+**The change.**
+- `measureRow` reports `available = header width - TITLE_MIN_PX - column gap`.
+- `TITLE_MIN_PX` is 360, a judgement (about 30 characters of `Title2`). It also becomes `headerText`'s `flexBasis`, so the measure and the layout agree.
+- The buttons that collapse are T14.55's set: Speakers, Export to Obsidian and Copy summary. Re-transcribe and Re-summarise have no icon in that set and keep their labels.
+- If even the icons leave the title under 360 px (a very narrow window), the header's existing `flexWrap` puts the buttons on the next line.
+
+### 11.9 Copy (drafts for the owner)
+
+New keys in `fixtures/ui/summary_order_cases.json`. The UI and its mock import them, the desktop's tests pin them, and `_comment` gains a line for each.
+
+| Key | Draft |
+|---|---|
+| `words.stopped` | stopped |
+| `step_moved` | {writer}: {word}. Trying {next} next. |
+| `earlier` | Tried first: {steps}. |
+| `stopped_note` | You stopped the summary on {device}. Re-summarise to write it again. |
+| `stop_button` | Stop |
+| `stop_label` | Stop the summary on {device} (accessible name) |
+| `stop_already_written` | {device} had already written the summary. |
+| `stop_not_waiting` | This summary is no longer waiting for another computer. |
+| `stop_failed` | The summary could not be stopped. Try again. |
+| `in_progress_here` | New summary being written |
+| `in_progress_on` | New summary being written on {device} |
+| `list_elsewhere` | Summarising on another computer... |
+
+`{device}` is filled with a function replacer, because a name can hold `$&`.
+
+### 11.10 Privacy
+
+- **Records.** The run record gains one fixed word (`stopped`). The request gains no field, and `offload-times` is unchanged.
+- **Events and fields.** `HostStep::SummaryStepMoved`, the warnings, `StopAnswer`, `summary_elsewhere` and `waiting_device` hold fixed words, step kinds and a computer's name the page already shows.
+- **Logs.** No log line is added.
+- **Wire.** Nothing new is sent. Stop writes the existing `Withdrawn` state, which only the asker may write. A cancelled helper sends nothing and writes no decline.
+- **Older builds.** An older build reading a record holding `stopped` finds an unknown word. It reads the record as `Unreadable` ("The summary was interrupted"), failing closed. `RUN_VERSION` stays 1, because the record is device-local and a downgrade is its only other reader.
+
+### 11.11 Contradictions found in the code
+
+1. **The desktop helper cannot be cancelled.** `HostOffload::write_for` passes `CancelToken::new()`, so its write is never cancelled, not even on quit. Sync-spec 10.1's "a cancel leaves it claimed" holds only for the worker.
+2. **`HelperOutcome::Cancelled`'s doc is wrong after a withdrawal.** It says the request "stays claimed and is handed again at the next start". After a withdrawal the request is withdrawn, and nothing hands it again.
+3. **4.1's list of record writers is incomplete.** It names three writers of the run record. `end_after_done`, `step_sync_stopped`'s hand-back and now `stop_waiting` also write it. Each is a read-modify-write in one transaction, so the locking rule holds.
+4. **A stopped run has no account.** `steps_text` returns `None` for a run that ended with steps untried. 11.7 adds a note for `stopped` only.
+5. **`measureRow` ignores the title** (11.8).
+6. **The list could never show 10.1's waiting state.** Its working dot reads only this process's leases.
+
+### 11.12 Tests (each with its control)
+
+1. **Stop on a waiting order run.** `stop_waiting` withdraws the request and ends the run with `stopped` in one transaction; an injected fault between them leaves neither. Control: a record waiting on another request is untouched (`NotWaiting`).
+2. **No continuation after a stop.** The asker's offload step settles the stopped request with no `continue_run`, also with a fresh `Offload` (a restart). Control: the same request withdrawn by the 90 s rule continues the run.
+3. **Stop on a legacy request.** Stop with no record writes an ended record, and the step does not write here. Control: a legacy withdrawal without Stop writes here (`HandBack::Legacy`).
+4. **`Done` already applied.** A `Done` applied before Stop gives `AlreadyWritten`: nothing withdrawn, and the run ends with that writer. Control: the same with no `Done` gives `Stopped`.
+5. **A summary arriving after the stop.** It is kept, and the stop note is hidden. Control: with no summary, the note shows.
+6. **The helper's cancel.** A step after a pulled, asker-authored withdrawal cancels the helper's token, and `write_for_request` returns `Cancelled` with nothing stored and no decline written. Controls: a withdrawal row last written by a third device cancels nothing; a request still claimed is not cancelled.
+7. **No lock across a cancel.** A fake host's token hook takes `services.store()` with a bounded wait.
+8. **Worker stop.** `Worker::cancel` cancels every registered token, and one registered after it is cancelled at once. Control: a withdrawal cancels only its own request's token.
+9. **The bound.** With short `SyncTiming` and an endpoint mock that never answers, the helper's request is abandoned within one tick plus a `CANCEL_POLL` margin of the withdrawal reaching it. Control: without the withdrawal, it is still in flight after that time.
+10. **The list's source.** `meetings_waiting_shown` lists a meeting with an open, authored request asked here, and `meeting_list` sets `summary_elsewhere` from it. Controls: a request asked by another device, a closed request, and one with a summary created after it are left out.
+11. **Reporting moves.** `run_summary_order_reporting` calls `on_step` once per tried-and-left step that has a next step, in order, and the outcome equals `run_summary_order`'s over the same scripted writers. Control: no call for kept-local dropped steps or a failing last step.
+12. **The meeting driver.** A two-step order whose first step fails sends one `summary-steps` warning with `step_moved` text before the result. Control: a first step that writes sends none.
+13. **A job.** The same arrives as a `JobEvent::Warning`, and after `Offloaded` the waiting banner holds `earlier`. Control: a run asked at step 1 has no `earlier`.
+14. **The stale bar (UI).** It is hidden while a re-summarise job runs or `waiting_for` is set, and back after the terminal event or a detail read without `waiting_for`. Control: with neither, it shows.
+15. **The header line (UI).** `headerLine` with `writing` gives both drafts. Control: `null` gives today's line byte for byte.
+16. **Stop (UI).** Stop calls `stopWaitingSummary`, and the page and list re-read. Controls: each answer's copy (`AlreadyWritten`, `NotWaiting`, a failure), and no Stop while `waiting_for` is null.
+17. **Header width (UI, `headerButtons.test.tsx`).** Labels whose need fits the whole header but not the header less `TITLE_MIN_PX` show icons. Control: a header wide enough for both keeps labels. Plus a Browser-pane check of the Vite preview with an invented long title ("Quarterly planning review for the northern warehouse fit-out and supplier onboarding") at 1024 px and narrower, in light and dark.
+18. **Copy.** The new keys in `summary_order_cases.json` are read by both suites (the desktop's copy tests and the UI mock's tests), with no em dash and no run of spaces.
