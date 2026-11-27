@@ -21,7 +21,6 @@ use earshot_core::prompt::Template;
 use earshot_core::summary::SummaryV1;
 
 use crate::repo::for_deletion;
-use earshot_core::voiceprint::{VoiceprintRepo, identity_of};
 use rusqlite::Connection;
 
 use crate::db::{Store, StoreError, StoreTx};
@@ -56,6 +55,160 @@ pub struct PersonRemoval {
     pub samples_forgotten: usize,
     /// Speakers in kept meetings that went back to "Speaker N".
     pub speakers_unnamed: usize,
+    /// Rows here that did not read and were left as they are, each `(table, rowid)` once
+    /// (docs/sync-spec.md 16.7). Counts only.
+    pub damaged_skipped: usize,
+}
+
+/// [`Store::remove_person`]'s transaction (docs/sync-spec.md 16.5 item 21): the identity
+/// placed inside it ([`crate::identity_in`]), its biometrics erased
+/// ([`crate::identities::forget_identity_biometrics`]'s erasure), its speaker rows unlinked
+/// ([`unlink_speakers_tx`]) and its person rows tombstoned with the name cleared, a row that
+/// does not read by rowid. Erasures write in today's order, stamps taken in that order.
+///
+/// # Errors
+/// Store errors other than a row that does not read.
+pub fn remove_person_in<C: Clock + ?Sized>(
+    g: &mut crate::GuardedTx<'_, '_>,
+    person: EntityId,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<PersonRemoval, StoreError> {
+    let mut report = PersonRemoval::default();
+    let identity = crate::identity_in(g, person)?;
+    // Before the rows are unlinked: it finds a centroid through the row's link too.
+    let forgotten = crate::identities::forget_identity_voices(
+        g,
+        &identity,
+        hlc,
+        clock,
+        crate::identities::Erasure::User,
+    )?;
+    report.voiceprints_forgotten = forgotten.voiceprints;
+    report.samples_forgotten = forgotten.samples;
+    report.speakers_unnamed = unlink_speakers_tx(g, &identity.members, hlc, clock)?;
+    for &id in &identity.members {
+        match g.person_or_damaged(id)? {
+            None => continue,
+            Some(Ok(mut row)) => {
+                row.display_name.clear();
+                if row.meta.deleted {
+                    row.meta.touch(hlc, clock);
+                } else {
+                    row.meta.mark_deleted(hlc, clock);
+                }
+                g.put_person(row)?;
+            }
+            Some(Err(())) => {
+                // A member was placed by its `id` and `merged_into`, so both read: tombstoned by
+                // rowid with the name cleared (16.4).
+                let rowid = g
+                    .person_links()?
+                    .into_iter()
+                    .find(|l| l.id == crate::Col::Read(id))
+                    .map(|l| l.rowid);
+                let Some(rowid) = rowid else { continue };
+                g.tombstone_person_by_rowid(hlc, clock, rowid)?;
+            }
+        }
+        report.persons_removed += 1;
+    }
+    report.damaged_skipped = g.damaged_skipped();
+    Ok(report)
+}
+
+/// Unlinks every speaker row linked to one of `members` (docs/sync-spec.md 16.5 item 21): a
+/// readable row is rewritten as before (unlinked, not ignored, the first free "Speaker N" of
+/// its meeting when live, no name when a tombstone); a damaged row whose `person_id` reads as
+/// a member is unlinked by rowid under the written-columns rule of 16.4 ("Speaker N" only when
+/// its name and `deleted` read and it is live, `''` when `deleted` reads `Yes`, else the name
+/// as stored); a damaged row whose `person_id` or `meeting_id` does not read is left as it is
+/// and counted. Returns how many live rows went back to "Speaker N".
+///
+/// # Errors
+/// Store errors.
+pub fn unlink_speakers_tx<C: Clock + ?Sized>(
+    g: &mut crate::GuardedTx<'_, '_>,
+    members: &[EntityId],
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<usize, StoreError> {
+    use crate::{Col, Deleted};
+    let theirs = |p: Option<EntityId>| p.is_some_and(|p| members.contains(&p));
+    let mut unnamed = 0;
+    for l in g.speaker_links(None)? {
+        if !l.meeting_id.reads() || !l.person_id.reads() {
+            g.count_damaged("speaker", &[l.rowid]);
+        }
+    }
+    for meeting in g.meetings_lenient()? {
+        let Col::Read(m) = meeting.id else { continue };
+        let rows = g.speakers_in_order(m)?;
+        let links = g.speaker_links(Some(m))?;
+        let link_of = |rowid: i64| links.iter().find(|l| l.rowid == rowid);
+        // Names held by the meeting's other live rows (a name that does not read is held by
+        // no row).
+        let mut taken: Vec<String> = Vec::new();
+        for (rowid, row) in &rows {
+            match row {
+                Some(s) if !s.meta.deleted && !theirs(s.person_id) => {
+                    taken.push(s.display_name.clone());
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(l) = link_of(*rowid)
+                        && l.deleted == Deleted::No
+                        && !matches!(l.person_id, Col::Read(p) if theirs(p))
+                        && let Col::Read(name) = &l.display_name
+                    {
+                        taken.push(name.clone());
+                    }
+                }
+            }
+        }
+        for (rowid, row) in rows {
+            match row {
+                Some(mut row) => {
+                    if !theirs(row.person_id) {
+                        continue;
+                    }
+                    row.person_id = None;
+                    // A linked row is never ignored; a flag a pulled row carried must not turn
+                    // the unlinked voice into an ignored one (T12.93).
+                    row.ignored = false;
+                    if row.meta.deleted {
+                        row.display_name.clear();
+                    } else {
+                        row.display_name = crate::first_free_speaker_name(&taken);
+                        taken.push(row.display_name.clone());
+                        unnamed += 1;
+                    }
+                    row.meta.touch(hlc, clock);
+                    g.put_speaker(row)?;
+                }
+                None => {
+                    let Some(l) = link_of(rowid).cloned() else {
+                        continue;
+                    };
+                    if !matches!(l.person_id, Col::Read(p) if theirs(p)) || !l.meeting_id.reads() {
+                        continue;
+                    }
+                    let name = match (l.deleted, &l.display_name) {
+                        (Deleted::Yes, _) => Some(String::new()),
+                        (Deleted::No, Col::Read(_)) => {
+                            let n = crate::first_free_speaker_name(&taken);
+                            taken.push(n.clone());
+                            unnamed += 1;
+                            Some(n)
+                        }
+                        _ => None,
+                    };
+                    g.unlink_speaker_by_rowid(hlc, clock, rowid, name.as_deref())?;
+                }
+            }
+        }
+    }
+    Ok(unnamed)
 }
 
 impl Store {
@@ -163,55 +316,7 @@ impl Store {
         hlc: &mut Hlc,
         clock: &C,
     ) -> Result<PersonRemoval, StoreError> {
-        let storage = |e: earshot_core::voiceprint::VoiceprintError| {
-            StoreError::Repo(RepoError::Storage(e.to_string()))
-        };
-        let report = self.transaction(|tx| -> Result<PersonRemoval, StoreError> {
-            let mut report = PersonRemoval::default();
-            let identity = identity_of(tx, person).map_err(storage)?;
-            // Before the rows are unlinked: it finds a centroid through the row's link too.
-            let forgotten = crate::identities::forget_identity_biometrics(tx, person, hlc, clock)?;
-            report.voiceprints_forgotten = forgotten.voiceprints;
-            report.samples_forgotten = forgotten.samples;
-            for meeting in tx.meetings().map_err(StoreError::Repo)? {
-                let rows = tx.speakers(meeting.id).map_err(StoreError::Repo)?;
-                let theirs = |p: Option<EntityId>| p.is_some_and(|p| identity.contains(&p));
-                let mut taken: Vec<String> = rows
-                    .iter()
-                    .filter(|s| !s.meta.deleted && !theirs(s.person_id))
-                    .map(|s| s.display_name.clone())
-                    .collect();
-                for mut row in rows.into_iter().filter(|s| theirs(s.person_id)) {
-                    row.person_id = None;
-                    // A linked row is never ignored; a flag a pulled row carried must not turn
-                    // the unlinked voice into an ignored one (T12.93).
-                    row.ignored = false;
-                    if row.meta.deleted {
-                        row.display_name.clear();
-                    } else {
-                        row.display_name = first_free_speaker_name(&taken);
-                        taken.push(row.display_name.clone());
-                        report.speakers_unnamed += 1;
-                    }
-                    row.meta.touch(hlc, clock);
-                    tx.put_speaker(row).map_err(StoreError::Repo)?;
-                }
-            }
-            for id in identity {
-                let Some(mut row) = tx.person(id).map_err(storage)? else {
-                    continue;
-                };
-                row.display_name.clear();
-                if row.meta.deleted {
-                    row.meta.touch(hlc, clock);
-                } else {
-                    row.meta.mark_deleted(hlc, clock);
-                }
-                tx.put_person(row).map_err(storage)?;
-                report.persons_removed += 1;
-            }
-            Ok(report)
-        })?;
+        let report = self.guarded_transaction(|g| remove_person_in(g, person, hlc, clock))?;
         self.flush_erasures()?;
         Ok(report)
     }

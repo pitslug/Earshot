@@ -40,10 +40,9 @@ use std::str::FromStr;
 use earshot_core::capture::TrackId;
 use earshot_core::diar::Embedding;
 use earshot_core::identity::{Clock, EntityId, Hlc, HlcTimestamp};
-use earshot_core::model::{MeetingRepo, RepoError};
 use serde::{Deserialize, Serialize};
 
-use crate::{StoreError, StoreTx};
+use crate::{GuardedTx, StoreError};
 
 /// The format of the stored record (version 2 adds [`SpeakerIdentity::given_stamp`] and
 /// [`SpeakerIdentity::user_edited`]; [`SpeakerIdentity::enrolled`] and
@@ -177,85 +176,198 @@ pub fn decode(bytes: &[u8]) -> StoredIdentities {
     }
 }
 
-/// Forgets every piece of biometric data of the identity `person` inside `tx`: its
-/// voiceprints ([`earshot_core::voiceprint::forget_voiceprints`]) and its speaker centroids
-/// in every meeting's record ([`forget_identity`] over
-/// [`earshot_core::voiceprint::identity_of`]). The one path for both
-/// [`crate::Store::forget_voiceprints`] and [`crate::Store::remove_person`]. Returns how many
-/// voiceprints and voice samples were forgotten; the caller checkpoints after the commit.
-pub(crate) fn forget_identity_biometrics<C: Clock + ?Sized>(
-    tx: &mut StoreTx<'_>,
+/// Who started an erasure ([`forget_identity_biometrics`]): an identity entry that cannot be
+/// placed is kept when it could be the user's only for a pulled person tombstone
+/// (docs/sync-spec.md 16.5 item 20, 16.12 b); an erasure the user started drops it whatever it
+/// might be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Erasure {
+    /// Remove, Forget voice, Forget my voice: started by this device's user.
+    User,
+    /// A pulled person tombstone's side effect.
+    Pulled,
+}
+
+/// Forgets every piece of biometric data of the identity `person` inside `g`
+/// (docs/sync-spec.md 16.5 item 11): its speaker centroids in every meeting's record
+/// ([`forget_identity`]), then its prints (tombstoned with the vector zeroed by rowid, a
+/// vector that does not read included, 16.4) and its live samples (erased by id, or by rowid
+/// when the id does not read), with no core call. The identity is [`crate::identity_in`]:
+/// membership by `id` and `merged_into` only. The one path for
+/// [`crate::Store::forget_voiceprints`], [`crate::Store::remove_person`] and a pulled person
+/// tombstone. The caller checkpoints after the commit.
+///
+/// # Errors
+/// Store errors other than a row that does not read.
+pub fn forget_identity_biometrics<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
     person: EntityId,
     hlc: &mut Hlc,
     clock: &C,
+    who: Erasure,
 ) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
-    let storage = |e: earshot_core::voiceprint::VoiceprintError| {
-        StoreError::Repo(RepoError::Storage(e.to_string()))
+    let identity = crate::identity_in(g, person)?;
+    forget_identity_voices(g, &identity, hlc, clock, who)
+}
+
+/// [`forget_identity_biometrics`] for an identity the caller has placed.
+pub(crate) fn forget_identity_voices<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    identity: &crate::Identity,
+    hlc: &mut Hlc,
+    clock: &C,
+    who: Erasure,
+) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
+    use crate::{Col, Deleted};
+    let mut out = earshot_core::voiceprint::Forgotten {
+        skipped: identity.skipped,
+        ..Default::default()
     };
-    let identity = earshot_core::voiceprint::identity_of(tx, person).map_err(storage)?;
-    forget_identity(tx, &identity)?;
-    earshot_core::voiceprint::forget_voiceprints(tx, person, hlc, clock).map_err(storage)
+    let (entries, kept) = forget_identity(g, &identity.members, who)?;
+    out.entries = entries;
+    out.skipped += kept;
+    let rows = g.voice_rows_of(&identity.members)?;
+    // Prints in identity order, each member's by id (core `forget_voiceprints`' order).
+    for p in rows.prints.iter().filter(|p| p.deleted != Deleted::Yes) {
+        g.erase_print_by_rowid(hlc, clock, p.rowid)?;
+        out.voiceprints += 1;
+        if !p.sum_reads {
+            out.zeroed += 1;
+        }
+    }
+    // Samples in id order, then those whose id does not read.
+    for s in &rows.samples {
+        let erased = match s.id {
+            Col::Read(id) => g.erase_sample_by_id(hlc, clock, id)?,
+            Col::Unreadable => g.erase_sample_by_rowid(hlc, clock, s.rowid)?,
+        };
+        if erased {
+            out.samples += 1;
+        }
+    }
+    Ok(out)
 }
 
 /// Drops from every meeting's record the entries of the identity `persons` (a person and
-/// everyone merged into it, `earshot_core::voiceprint::identity_of`): entries whose speaker
-/// row links to one of them now, or that the pass linked to one of them. A record that
-/// cannot be read is deleted whole (it may hold such entries and carries nothing anyway);
-/// a record left empty is deleted. Returns how many entries were dropped (an unreadable
-/// record counts as one). The caller checkpoints after the commit (`secure_delete` zeroes
-/// the replaced pages).
-pub(crate) fn forget_identity(
-    tx: &mut StoreTx<'_>,
+/// everyone merged into it, [`crate::identity_in`]): entries the pass linked to one of them,
+/// or whose speaker row links to one of them now. An entry that cannot be placed (its row's
+/// `person_id` does not read, or it matches no readable row while the meeting holds a row
+/// whose `id` does not read) is dropped too, except that for a pulled person tombstone
+/// ([`Erasure::Pulled`]) one that could be the user's is kept (docs/sync-spec.md 16.5 item 20,
+/// 16.12 b). A record that cannot be read is deleted whole (it may hold such entries and
+/// carries nothing anyway), counting as one; a record left empty is deleted. Returns how many
+/// entries were dropped and how many were kept because they could be the user's. Only the
+/// device-local entry goes; no row is written. The caller checkpoints after the commit
+/// (`secure_delete` zeroes the replaced pages).
+///
+/// # Errors
+/// Store errors.
+pub fn forget_identity(
+    g: &mut GuardedTx<'_, '_>,
     persons: &[EntityId],
-) -> Result<usize, StoreError> {
-    let keys: Vec<String> = {
-        let mut stmt = tx
-            .conn
-            .prepare("SELECT key FROM local_state WHERE substr(key, 1, ?1) = ?2")?;
-        let rows = stmt.query_map(
-            rusqlite::params![
-                i64::try_from(RECORD_PREFIX.chars().count()).unwrap_or(i64::MAX),
-                RECORD_PREFIX
-            ],
-            |r| r.get::<_, String>(0),
-        )?;
-        rows.collect::<Result<_, _>>()?
+    who: Erasure,
+) -> Result<(usize, usize), StoreError> {
+    use crate::{Col, SpeakerLink};
+    let keys = g.identity_record_keys()?;
+    // Persons whose `is_me` reads `true` or does not read: a pulled tombstone keeps an entry
+    // that could be theirs.
+    let maybe_user: Vec<EntityId> = if who == Erasure::Pulled {
+        g.person_links()?
+            .into_iter()
+            .filter(|l| l.is_me != Col::Read(false))
+            .filter_map(|l| l.id.read())
+            .collect()
+    } else {
+        Vec::new()
     };
     let mut dropped = 0;
+    let mut kept = 0;
     for key in keys {
-        let Some(bytes) = tx.local_value(&key)? else {
+        let Some(bytes) = g.local_value(&key)? else {
             continue;
         };
         let mut record = match decode(&bytes) {
             StoredIdentities::Record(r) => r,
             StoredIdentities::Unreadable(_) => {
-                tx.delete_local_value(&key)?;
+                g.delete_local_value(&key)?;
                 dropped += 1;
                 continue;
             }
         };
-        let rows = match EntityId::from_str(&key[RECORD_PREFIX.len()..]) {
-            Ok(meeting) => tx.speakers(meeting).map_err(StoreError::Repo)?,
+        let rows: Vec<SpeakerLink> = match EntityId::from_str(&key[RECORD_PREFIX.len()..]) {
+            Ok(meeting) => g.speaker_links(Some(meeting))?,
             Err(_) => Vec::new(),
         };
-        let theirs = |i: &SpeakerIdentity| {
-            i.given_person.is_some_and(|p| persons.contains(&p))
-                || rows
-                    .iter()
-                    .any(|s| s.id == i.speaker && s.person_id.is_some_and(|p| persons.contains(&p)))
+        for r in &rows {
+            if !r.id.reads() || !r.person_id.reads() {
+                g.count_damaged("speaker", &[r.rowid]);
+            }
+        }
+        let user_row = |r: &SpeakerLink| {
+            matches!(
+                r.role,
+                Col::Read(earshot_core::diar::SpeakerRole::Me) | Col::Unreadable
+            ) || match r.person_id {
+                Col::Read(Some(p)) => maybe_user.contains(&p),
+                Col::Read(None) => false,
+                Col::Unreadable => true,
+            }
+        };
+        let unplaced_rows: Vec<&SpeakerLink> = rows.iter().filter(|r| !r.id.reads()).collect();
+        // `Some(true)` drop, `Some(false)` keep, `None` keep because it could be the user's.
+        let decide = |i: &SpeakerIdentity| -> Option<bool> {
+            if i.given_person.is_some_and(|p| persons.contains(&p)) {
+                return Some(true);
+            }
+            let could_be_user = |row_says: bool| {
+                who == Erasure::Pulled
+                    && (row_says || i.given_person.is_some_and(|p| maybe_user.contains(&p)))
+            };
+            match rows.iter().find(|r| r.id == Col::Read(i.speaker)) {
+                Some(r) => match r.person_id {
+                    Col::Read(Some(p)) => Some(persons.contains(&p)),
+                    Col::Read(None) => Some(false),
+                    Col::Unreadable => {
+                        if could_be_user(user_row(r)) {
+                            None
+                        } else {
+                            Some(true)
+                        }
+                    }
+                },
+                None if unplaced_rows.is_empty() => Some(false),
+                None => {
+                    if could_be_user(unplaced_rows.iter().any(|r| user_row(r))) {
+                        None
+                    } else {
+                        Some(true)
+                    }
+                }
+            }
         };
         let before = record.speakers.len();
-        record.speakers.retain(|i| !theirs(i));
+        let mut keep = Vec::with_capacity(before);
+        for i in record.speakers {
+            match decide(&i) {
+                Some(true) => {}
+                Some(false) => keep.push(i),
+                None => {
+                    kept += 1;
+                    keep.push(i);
+                }
+            }
+        }
+        record.speakers = keep;
         let n = before - record.speakers.len();
         if n == 0 {
             continue;
         }
         dropped += n;
         if record.speakers.is_empty() {
-            tx.delete_local_value(&key)?;
+            g.delete_local_value(&key)?;
         } else {
-            tx.set_local_value(&key, &encode(&record))?;
+            g.set_local_value(&key, &encode(&record))?;
         }
     }
-    Ok(dropped)
+    Ok((dropped, kept))
 }

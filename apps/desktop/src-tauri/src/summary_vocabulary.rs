@@ -171,7 +171,8 @@ pub fn refusal(e: SetVocabularyError) -> IpcError {
         SetVocabularyError::Refused(_)
         | SetVocabularyError::NotAWord
         | SetVocabularyError::NotInUse
-        | SetVocabularyError::Stale => IpcError::invalid(sentence(&e.to_string())),
+        | SetVocabularyError::Stale
+        | SetVocabularyError::Damaged => IpcError::invalid(sentence(&e.to_string())),
     }
 }
 

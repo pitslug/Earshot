@@ -725,6 +725,7 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
             voiceprints_forgotten: 1,
             samples_forgotten: 1,
             speakers_unnamed: 1,
+            damaged_skipped: 0,
         }
     );
     let gone = store.person(dee.id).unwrap().unwrap();
@@ -798,6 +799,7 @@ fn store_remove_person_takes_everyone_merged_into_them() {
             voiceprints_forgotten: 2,
             samples_forgotten: 2,
             speakers_unnamed: 1,
+            damaged_skipped: 0,
         }
     );
     assert!(

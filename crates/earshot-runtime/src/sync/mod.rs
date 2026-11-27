@@ -799,6 +799,11 @@ pub struct SyncStatus {
     /// tick (T14.43). Left out of the record when 0, as [`Self::unsendable`] is.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refused: u64,
+    /// Rows here that did not read and that the last completed tick's pages skipped
+    /// (docs/sync-spec.md 16.7). Left out of the record when 0, so a status without any reads
+    /// as before and an older build reads a newer record.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub damaged_skipped: u64,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference

@@ -194,9 +194,9 @@ pub fn set_timing(
 /// # Errors
 /// Store errors (`store`, retryable when the deletion is committed but the checkpoint was
 /// blocked).
-pub fn forget_voice(services: &Services) -> Result<u32, IpcError> {
+pub fn forget_voice(services: &Services) -> Result<crate::detail::VoicesForgottenView, IpcError> {
     let n = my_voice::forget_my_voice(services)?;
-    Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    Ok(crate::detail::VoicesForgottenView::of(n))
 }
 
 /// How a saved or refused sample ended.
@@ -586,7 +586,7 @@ pub fn cancel_voice_sample(voice: tauri::State<'_, VoiceJobs>) {
 #[specta::specta]
 pub async fn forget_my_voice(
     state: tauri::State<'_, crate::ipc::AppState>,
-) -> Result<u32, IpcError> {
+) -> Result<crate::detail::VoicesForgottenView, IpcError> {
     let services = state.services()?;
     crate::ipc::blocking(move || forget_voice(&services)).await
 }

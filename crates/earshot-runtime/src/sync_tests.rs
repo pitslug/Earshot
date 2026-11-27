@@ -1232,6 +1232,8 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         unreadable: 2,
         unsendable: 0,
         refused: 0,
+        // T14.57: left out of the record when 0, so the bytes below are as before.
+        damaged_skipped: 0,
     };
     set_sync_status(&mut db, &status).unwrap();
     assert_eq!(
@@ -2520,9 +2522,11 @@ fn dictionary_sync_switched_off_inside_the_apply_leaves_the_list_alone() {
     let rebuilt = a
         .svc
         .store()
-        .transaction(|tx| crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep))
+        .guarded_transaction(|g| {
+            crate::vocabulary::rebuild_tx(g, crate::vocabulary::OverRefused::Keep)
+        })
         .unwrap();
-    assert_eq!(rebuilt, None);
+    assert_eq!(rebuilt, crate::vocabulary::Rebuild::Nothing);
     assert_eq!(words(&a), ["Ostrelby"]);
 }
 

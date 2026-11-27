@@ -501,6 +501,18 @@ pub(crate) fn set_tx(
     tx.set_local_value(key.as_str(), value)
 }
 
+/// [`set_tx`] inside a guarded transaction (T14.57, docs/sync-spec.md 16.3).
+///
+/// # Errors
+/// As `set_tx`.
+pub(crate) fn set_guarded(
+    g: &mut earshot_store::GuardedTx<'_, '_>,
+    key: &LocalKey,
+    value: &[u8],
+) -> Result<(), StoreError> {
+    g.set_local_value(key.as_str(), value)
+}
+
 /// A device-local setting as read ([`read_setting`], [`setting_of`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Setting<T> {

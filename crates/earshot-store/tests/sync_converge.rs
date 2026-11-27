@@ -563,7 +563,7 @@ fn speaker_row(
         id: id(n),
         meta,
         meeting_id: id(meeting),
-        role: if n % 5 == 0 {
+        role: if n.is_multiple_of(5) {
             earshot_core::diar::SpeakerRole::Me
         } else {
             earshot_core::diar::SpeakerRole::Remote
@@ -574,7 +574,7 @@ fn speaker_row(
             format!("Invented speaker {n}")
         },
         person_id: person.map(id),
-        ignored: n % 7 == 0,
+        ignored: n.is_multiple_of(7),
     }
 }
 

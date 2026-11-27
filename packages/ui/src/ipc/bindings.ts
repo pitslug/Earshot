@@ -127,7 +127,7 @@ export const commands = {
 	/**  Renames a person (and their speaker rows in every meeting); returns how many rows changed. */
 	renamePerson: (person: string, name: string) => typedError<number, IpcError>(__TAURI_INVOKE("rename_person", { person, name })),
 	/**  Every live person, by name. */
-	listPersons: () => typedError<PersonItem[], IpcError>(__TAURI_INVOKE("list_persons")),
+	listPersons: () => typedError<PersonListView, IpcError>(__TAURI_INVOKE("list_persons")),
 	/**
 	 *  "Save" on a voice that needs a name (T12.19): names it, links it to that person and
 	 *  remembers the voice, in one step (the user's consent for this one voice).
@@ -149,9 +149,9 @@ export const commands = {
 	 *  Forgets every voiceprint of a person; returns how many voiceprints and voice samples were
 	 *  forgotten.
 	 */
-	forgetPersonVoices: (person: string) => typedError<number, IpcError>(__TAURI_INVOKE("forget_person_voices", { person })),
+	forgetPersonVoices: (person: string) => typedError<VoicesForgottenView, IpcError>(__TAURI_INVOKE("forget_person_voices", { person })),
 	/**  Removes a person: their name and voice, from this computer (the Speakers page). */
-	removePerson: (person: string) => typedError<null, IpcError>(__TAURI_INVOKE("remove_person", { person })),
+	removePerson: (person: string) => typedError<PersonRemovedView, IpcError>(__TAURI_INVOKE("remove_person", { person })),
 	/**  A speaker's play-sample audio (a base64 WAV file); `None` when the audio is gone. */
 	speakerSample: (meeting: string, speaker: string) => typedError<string | null, IpcError>(__TAURI_INVOKE("speaker_sample", { meeting, speaker })),
 	/**  Starts a re-transcription of `meeting` (`JobEvent`s follow). */
@@ -302,7 +302,7 @@ export const commands = {
 	/**  Cancels the voice sample; nothing is saved. */
 	cancelVoiceSample: () => __TAURI_INVOKE<void>("cancel_voice_sample"),
 	/**  Forgets the user's voice; returns how many voiceprints and voice samples were forgotten. */
-	forgetMyVoice: () => typedError<number, IpcError>(__TAURI_INVOKE("forget_my_voice")),
+	forgetMyVoice: () => typedError<VoicesForgottenView, IpcError>(__TAURI_INVOKE("forget_my_voice")),
 	/**  The Obsidian page settings (and stored values this version cannot use). */
 	obsidianSettings: () => typedError<ObsidianSettingsView, IpcError>(__TAURI_INVOKE("obsidian_settings")),
 	/**
@@ -1924,6 +1924,18 @@ export type PersonItem = {
 	meetings: number,
 };
 
+/**
+ *  The People page's list (T14.57, docs/sync-spec.md 16.7): the persons, and whether a damaged
+ *  row on this computer was left out (`list_damaged_note` in
+ *  `fixtures/ui/people_copy_cases.json`). Never names a damaged row.
+ */
+export type PersonListView = {
+	/**  The persons listed, by name. */
+	persons: PersonItem[],
+	/**  Some damaged row was left out. */
+	damaged: boolean,
+};
+
 /**  The person a speaker is linked to. */
 export type PersonRef = {
 	/**  Person id (hyphenated UUID). */
@@ -1932,6 +1944,12 @@ export type PersonRef = {
 	name: string,
 	/**  A voiceprint is stored for them. */
 	has_voiceprint: boolean,
+};
+
+/**  What Remove did (T14.57): whether a damaged row was left as it is (`remove_damaged_note`). */
+export type PersonRemovedView = {
+	/**  Some damaged row was left as it is. */
+	damaged: boolean,
 };
 
 /**  A step of the work after the meeting. */
@@ -2721,8 +2739,8 @@ export type SyncView = {
 	 *  not seal left out).
 	 */
 	waiting: number,
-	/**  [`UNSENDABLE_NOTE`] when the last sync skipped damaged queued rows. */
-	unsendable_note: string | null,
+	/**  [`DAMAGED_NOTE`] when the last sync skipped damaged rows (queued or pulled). */
+	damaged_note: string | null,
 	/**
 	 *  [`refused_note`] when the last sync left queued rows unsent because they cannot be sealed
 	 *  (too large, or holding an audio file's signature): fixed copy with their count (T14.43).
@@ -2928,6 +2946,20 @@ export type VoiceView = {
 	sample_ms: number,
 	/**  The name the user gave; empty until they give one (T9.1h). */
 	name: string,
+};
+
+/**
+ *  What Forget voice or Forget my voice did (T14.57): the count shown, and whether a damaged
+ *  row was left (`forget_damaged_note`) or, for Forget my voice, not all of the user's voice
+ *  may have been reached (`forget_my_voice_incomplete`).
+ */
+export type VoicesForgottenView = {
+	/**  Voiceprints and voice samples forgotten. */
+	forgotten: number,
+	/**  Some damaged row was left as it is. */
+	damaged: boolean,
+	/**  Forget my voice only: not all of the user's voice may have been forgotten. */
+	incomplete: boolean,
 };
 
 /**  Which condition a warning banner is about (the UI picks the banner's look from it). */

@@ -21,8 +21,7 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 
 use crate::credentials::{CredentialManager, KeyVault};
 use crate::detail::{
-    self, ExportDone, LinkChoice, MeetingDetail, PersonItem, SavedVoiceResult, SummaryFieldRef,
-    parse_id,
+    self, ExportDone, LinkChoice, MeetingDetail, SavedVoiceResult, SummaryFieldRef, parse_id,
 };
 use crate::jobs::{JobEvent, JobKind, JobRunner};
 use crate::meeting::{MeetingDriver, StartRequest};
@@ -1041,7 +1040,7 @@ async fn rename_person(
 /// Every live person, by name.
 #[tauri::command]
 #[specta::specta]
-async fn list_persons(state: State<'_, AppState>) -> Result<Vec<PersonItem>, IpcError> {
+async fn list_persons(state: State<'_, AppState>) -> Result<detail::PersonListView, IpcError> {
     let services = state.services()?;
     blocking(move || detail::persons(&services)).await
 }
@@ -1113,12 +1112,17 @@ async fn not_this_person(
 /// Removes a person: their name and voice, from this computer (the Speakers page).
 #[tauri::command]
 #[specta::specta]
-async fn remove_person(state: State<'_, AppState>, person: String) -> Result<(), IpcError> {
+async fn remove_person(
+    state: State<'_, AppState>,
+    person: String,
+) -> Result<detail::PersonRemovedView, IpcError> {
     let services = state.services()?;
     let person = parse_id(&person)?;
     blocking(move || {
-        earshot_runtime::edit::remove_person(&services, person)?;
-        Ok(())
+        let removal = earshot_runtime::edit::remove_person(&services, person)?;
+        Ok(detail::PersonRemovedView {
+            damaged: removal.damaged_skipped > 0,
+        })
     })
     .await
 }
@@ -1127,12 +1131,15 @@ async fn remove_person(state: State<'_, AppState>, person: String) -> Result<(),
 /// forgotten.
 #[tauri::command]
 #[specta::specta]
-async fn forget_person_voices(state: State<'_, AppState>, person: String) -> Result<u32, IpcError> {
+async fn forget_person_voices(
+    state: State<'_, AppState>,
+    person: String,
+) -> Result<detail::VoicesForgottenView, IpcError> {
     let services = state.services()?;
     let person = parse_id(&person)?;
     blocking(move || {
         let n = earshot_runtime::edit::forget_person_voices(&services, person)?;
-        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+        Ok(detail::VoicesForgottenView::of(n))
     })
     .await
 }

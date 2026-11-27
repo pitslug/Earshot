@@ -348,7 +348,7 @@ function Status({ view, state }: { view: SyncView; state: SyncPageState }) {
         ))}
       </dl>
       {view.on && view.set_up && !view.running && <Body1 className={styles.text}>{NOT_RUNNING}</Body1>}
-      {view.unsendable_note !== null && <Body1 className={styles.text}>{view.unsendable_note}</Body1>}
+      {view.damaged_note !== null && <Body1 className={styles.text}>{view.damaged_note}</Body1>}
       {view.refused_note !== null && <Body1 className={styles.text}>{view.refused_note}</Body1>}
       {view.address_problem !== null && (
         <MessageBar intent="warning">

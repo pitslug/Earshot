@@ -17,13 +17,14 @@
 
 use earshot_core::identity::{Clock, EntityId, Hlc, HlcTimestamp, SyncMeta, SyncSerialize};
 use earshot_core::model::{
-    DictionaryWord, Folder, Meeting, Note, RepoError, RequestState, SegmentRow, Speaker, Summary,
+    DictionaryWord, Folder, Meeting, Note, RequestState, SegmentRow, Speaker, Summary,
     SummaryRequest, Track,
 };
 use earshot_core::voiceprint::{Person, Voiceprint, VoiceprintSample};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{Store, StoreError, StoreTx};
+use crate::guarded::{ChainEnd, Col, Deleted, GuardedTx, chain_end};
 use crate::schema::SYNCED_TABLES;
 
 /// How far past this device's clock a pulled row's stamp may be before it is held
@@ -291,7 +292,7 @@ impl SyncKinds {
 /// Work the caller does inside [`Store::apply_remote`]'s transaction after the page's writes
 /// and the convergence rules (the runtime rebuilds `settings/vocabulary` from the live
 /// Dictionary rows there, so the list never differs from the rows it was built from).
-pub type AfterApply<'a> = &'a dyn Fn(&mut StoreTx<'_>) -> Result<(), StoreError>;
+pub type AfterApply<'a> = &'a dyn Fn(&mut crate::GuardedTx<'_, '_>) -> Result<(), StoreError>;
 
 /// What may be applied now.
 pub struct ApplyRules<'a> {
@@ -360,10 +361,16 @@ pub struct Applied {
     /// Whether a person row was written here or "Me" people merged: names shown in any meeting
     /// resolve through persons, so the window reads the open meeting again (T12.81).
     pub people: bool,
+    /// Rows here that did not read and that the page and its rules skipped, each
+    /// `(table, rowid)` once (docs/sync-spec.md 16.7). Counts only.
+    pub damaged_skipped: usize,
+    /// The `(table, rowid)` of each row behind [`Applied::damaged_skipped`], so a caller can
+    /// count the rows of several pages once (SQLite rowids only: never logged, shown or stored).
+    pub damaged_rows: std::collections::BTreeSet<(&'static str, i64)>,
 }
 
 impl Applied {
-    fn hold(&mut self, reason: HoldReason) {
+    pub(crate) fn hold(&mut self, reason: HoldReason) {
         self.held[HoldReason::ALL
             .iter()
             .position(|r| *r == reason)
@@ -375,27 +382,27 @@ impl Applied {
 /// repair runs only for a page that wrote one of its kinds (T14.50). Marked for every write
 /// the page makes to such a table, a kept copy stamped again included.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Wrote {
+pub(crate) struct Wrote {
     /// A person row (rule 1, and the `merged_into` chains rule 3a follows).
-    persons: bool,
+    pub(crate) persons: bool,
     /// A summary row (rule 2).
-    summaries: bool,
+    pub(crate) summaries: bool,
     /// A voiceprint row (rules 3 and 3a).
-    prints: bool,
+    pub(crate) prints: bool,
     /// A voice sample row (rules 3 and 3a).
-    samples: bool,
+    pub(crate) samples: bool,
 }
 
 impl Wrote {
     /// Every kind: every repair runs.
-    const EVERYTHING: Self = Self {
+    pub(crate) const EVERYTHING: Self = Self {
         persons: true,
         summaries: true,
         prints: true,
         samples: true,
     };
 
-    fn row(&mut self, row: &SyncedRow) {
+    pub(crate) fn row(&mut self, row: &SyncedRow) {
         match row {
             SyncedRow::Person(_) => self.persons = true,
             SyncedRow::Summary(_) => self.summaries = true,
@@ -457,33 +464,12 @@ fn held_of((key, seq, wall, logical, node, body, reason): HeldColumns) -> Result
     })
 }
 
-fn i64_of(v: u64) -> Result<i64, StoreError> {
-    i64::try_from(v).map_err(|_| StoreError::Corrupt("a stamp past i64".into()))
-}
-
-fn hold(tx: &StoreTx<'_>, inc: &Incoming, reason: HoldReason) -> Result<(), StoreError> {
-    tx.conn.execute(
-        "INSERT OR REPLACE INTO sync_pending (key, seq, wall_ms, logical, node, body, reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            &inc.key[..],
-            i64_of(inc.seq)?,
-            i64_of(inc.stamp.wall_ms)?,
-            inc.stamp.logical,
-            &inc.stamp.node.as_uuid().as_bytes()[..],
-            &inc.body,
-            reason.word()
-        ],
-    )?;
-    Ok(())
-}
-
 /// `local_state` key of the row keys held by H1 or H2 (docs/sync-spec.md 15.4): the release
 /// retries only those. A list of 16-byte row keys. The hold word stays `parent` (0.9.0 refuses
 /// a word it does not know), so which `parent` rows are the two holds' is kept here.
 pub const HELD_REPLACED_KEY: &str = "sync-held-replaced";
 
-fn held_replaced_keys(
+pub(crate) fn held_replaced_keys(
     c: &rusqlite::Connection,
 ) -> Result<std::collections::BTreeSet<[u8; 16]>, StoreError> {
     let bytes: Option<Vec<u8>> = c
@@ -503,7 +489,7 @@ fn held_replaced_keys(
 }
 
 /// Writes the set, keeping only keys still held for a parent.
-fn put_held_replaced_keys(
+pub(crate) fn put_held_replaced_keys(
     c: &rusqlite::Connection,
     keys: &std::collections::BTreeSet<[u8; 16]>,
 ) -> Result<(), StoreError> {
@@ -536,25 +522,9 @@ fn put_held_replaced_keys(
     Ok(())
 }
 
-/// Removes a held copy of `inc`'s row key that is not later than `inc` (a newer held copy
-/// stays, whatever order rows arrive in; the relay keeps one row per key and only ever a later
-/// one, so today a held copy is never newer).
-fn unhold(tx: &StoreTx<'_>, inc: &Incoming) -> Result<(), StoreError> {
-    tx.conn.execute(
-        "DELETE FROM sync_pending WHERE key = ?1 AND (wall_ms, logical, node) <= (?2, ?3, ?4)",
-        params![
-            &inc.key[..],
-            i64_of(inc.stamp.wall_ms)?,
-            inc.stamp.logical,
-            &inc.stamp.node.as_uuid().as_bytes()[..]
-        ],
-    )?;
-    Ok(())
-}
-
 /// What [`Store::apply_remote`] does with a pulled summary request over the copy here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Withdrawal {
+pub(crate) enum Withdrawal {
     /// Whole-row last writer wins, as for any row.
     Lww,
     /// Write the pulled withdrawal whatever the stamps.
@@ -574,7 +544,7 @@ enum Withdrawal {
 ///
 /// Anything else (a done or declined answer, two copies of one state) is last writer wins: a
 /// withdrawal and a stored summary may both happen, and the summary rule keeps the later.
-fn withdrawal(
+pub(crate) fn withdrawal(
     here: &SummaryRequest,
     there: &SummaryRequest,
     me: earshot_core::identity::DeviceId,
@@ -593,108 +563,44 @@ fn withdrawal(
     }
 }
 
-/// Whether the person `id`, followed through `merged_into`, ends at a tombstoned person
-/// (`Some(true)`), a live one (`Some(false)`), or at nobody known here or a loop (`None`).
-fn ends_deleted(tx: &StoreTx<'_>, id: EntityId) -> Result<Option<bool>, StoreError> {
-    let mut seen = Vec::new();
-    let mut cur = id;
-    loop {
-        if seen.contains(&cur) {
-            return Ok(None);
-        }
-        seen.push(cur);
-        let Some(SyncedRow::Person(p)) = crate::repo::synced_by_id(&tx.conn, "person", cur)? else {
-            return Ok(None);
-        };
-        if p.meta.deleted {
-            return Ok(Some(true));
-        }
-        match p.merged_into {
-            Some(next) => cur = next,
-            None => return Ok(Some(false)),
-        }
-    }
-}
-
 /// Rule 3a of [`converge`]: live prints and samples of a person tombstoned here are erased,
-/// prints zeroed and tombstoned, samples by id in SQL (a damaged row is erased too).
-fn dead_person_repair<C: Clock + ?Sized>(
-    tx: &StoreTx<'_>,
+/// prints zeroed and tombstoned by rowid, samples by id (or by rowid when their id does not
+/// read). A row whose `person_id` does not read is skipped and counted; a chain through a step
+/// that does not read is [`ChainEnd::Unknown`] and erases nothing (docs/sync-spec.md 16.5
+/// items 1 to 3).
+pub(crate) fn dead_person_repair<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
     hlc: &mut Hlc,
     clock: &C,
     out: &mut Applied,
 ) -> Result<(), StoreError> {
-    // (sample id, person id, meeting id as stored).
-    type SampleRow = ([u8; 16], [u8; 16], Option<Vec<u8>>);
-    let samples: Vec<SampleRow> = {
-        let mut st = tx.conn.prepare(
-            "SELECT id, person_id, meeting_id FROM voiceprint_sample \
-             WHERE deleted = 0 AND person_id IS NOT NULL",
-        )?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<Result<_, _>>()?
-    };
-    for (id, person, meeting) in samples {
-        if ends_deleted(tx, EntityId::from_bytes(person))? == Some(true) {
-            erase_sample_by_id(tx, hlc, clock, id)?;
-            erased_sample(out, meeting.as_deref());
-        }
-    }
-    let prints: Vec<([u8; 16], [u8; 16])> = {
-        let mut st = tx
-            .conn
-            .prepare("SELECT id, person_id FROM voiceprint WHERE deleted = 0")?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_, _>>()?
-    };
-    for (id, person) in prints {
-        if ends_deleted(tx, EntityId::from_bytes(person))? != Some(true) {
-            continue;
-        }
-        let Some(SyncedRow::Voiceprint(v)) =
-            crate::repo::synced_by_id(&tx.conn, "voiceprint", EntityId::from_bytes(id))?
-        else {
+    for (rowid, id, person, meeting) in g.dead_person_samples()? {
+        let Col::Read(Some(person)) = person else {
+            g.count_damaged("voiceprint_sample", &[rowid]);
             continue;
         };
-        let mut meta = *v.meta();
-        meta.mark_deleted(hlc, clock);
-        let gone = Voiceprint::from_stored(
-            v.id(),
-            meta,
-            v.person_id(),
-            v.model().clone(),
-            vec![0.0; v.base_sum().len()],
-            v.base_count(),
-            v.base_speech_ms(),
-        );
-        crate::repo::put_synced(&tx.conn, &SyncedRow::Voiceprint(gone))?;
+        if chain_end(g, person)? == ChainEnd::Removed {
+            let erased = match id {
+                Col::Read(id) => g.erase_sample_by_id(hlc, clock, id)?,
+                Col::Unreadable => g.erase_sample_by_rowid(hlc, clock, rowid)?,
+            };
+            if erased {
+                erased_sample(out, meeting.read().flatten());
+            }
+        }
+    }
+    for (rowid, person) in g.dead_person_prints()? {
+        let Col::Read(person) = person else {
+            g.count_damaged("voiceprint", &[rowid]);
+            continue;
+        };
+        if chain_end(g, person)? != ChainEnd::Removed {
+            continue;
+        }
+        g.erase_print_by_rowid(hlc, clock, rowid)?;
         out.biometrics_forgotten += 1;
         out.people = true;
     }
-    Ok(())
-}
-
-/// Erases the voice sample `id` in place by SQL (body cleared, vector empty, a new stamp), so a
-/// row this build cannot read is erased too.
-fn erase_sample_by_id<C: Clock + ?Sized>(
-    tx: &StoreTx<'_>,
-    hlc: &mut Hlc,
-    clock: &C,
-    id: [u8; 16],
-) -> Result<(), StoreError> {
-    let at = hlc.now(clock);
-    tx.conn.execute(
-        "UPDATE voiceprint_sample SET deleted = 1, voiceprint_id = NULL, person_id = NULL, \
-         model = NULL, vector = x'', speech_ms = NULL, meeting_id = NULL, speaker_id = NULL, \
-         updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
-         WHERE id = ?4 AND deleted = 0",
-        params![
-            i64_of(at.wall_ms)?,
-            at.logical,
-            &at.node.as_uuid().as_bytes()[..],
-            &id[..],
-        ],
-    )?;
     Ok(())
 }
 
@@ -717,7 +623,8 @@ fn erase_sample_by_id<C: Clock + ?Sized>(
 ///    and the other stays reachable as the newest tombstone.
 ///
 /// Two live folders with one name both stay (the user decides). Run after every page, so a
-/// repair also covers rows that arrived in earlier pages.
+/// repair also covers rows that arrived in earlier pages. A row that does not read takes no
+/// part in the decision it would have fed and is counted (docs/sync-spec.md 16.2 R3).
 ///
 /// Each repair runs only when the page wrote a row of a kind it reads (`wrote`, T14.50): a
 /// repair's answer depends only on the rows of those kinds, every earlier page left them
@@ -727,8 +634,8 @@ fn erase_sample_by_id<C: Clock + ?Sized>(
 /// So a page that wrote none of a repair's kinds would find nothing for it to do. With
 /// [`Wrote::EVERYTHING`] every repair runs, as before T14.50
 /// ([`Store::apply_remote_every_repair`]).
-fn converge<C: Clock + ?Sized>(
-    tx: &StoreTx<'_>,
+pub(crate) fn converge<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
     hlc: &mut Hlc,
     clock: &C,
     out: &mut Applied,
@@ -736,7 +643,7 @@ fn converge<C: Clock + ?Sized>(
 ) -> Result<(), StoreError> {
     // Rule 1 reads persons.
     let mut mes: Vec<Person> = if wrote.persons {
-        crate::repo::all_persons(&tx.conn)?
+        g.persons_or_damaged()?
             .into_iter()
             .filter(|p| p.is_me && p.is_live())
             .collect()
@@ -755,41 +662,38 @@ fn converge<C: Clock + ?Sized>(
             let mut kept = keep.clone();
             kept.display_name.clone_from(&named.display_name);
             kept.meta.touch(hlc, clock);
-            crate::repo::put_person(&tx.conn, &kept)?;
+            g.put_person(kept)?;
         }
         for p in rest {
             let mut merged = p.clone();
             merged.merged_into = Some(keep.id);
             merged.meta.touch(hlc, clock);
-            crate::repo::put_person(&tx.conn, &merged)?;
+            g.put_person(merged)?;
             out.mes_merged += 1;
             out.people = true;
         }
     }
     // Rule 2 reads summaries.
-    let crowded: Vec<[u8; 16]> = if wrote.summaries {
-        let mut st = tx.conn.prepare(
-            "SELECT meeting_id FROM summary WHERE deleted = 0 GROUP BY meeting_id HAVING count(*) > 1",
-        )?;
-        st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+    let crowded: Vec<EntityId> = if wrote.summaries {
+        g.crowded_meetings()?
     } else {
         Vec::new()
     };
     for meeting in crowded {
-        let mut live: Vec<Summary> =
-            crate::repo::summaries_of(&tx.conn, EntityId::from_bytes(meeting))?
-                .into_iter()
-                .filter(|s| !s.meta.deleted)
-                .collect();
+        let mut live: Vec<Summary> = g
+            .summaries_or_damaged(meeting)?
+            .into_iter()
+            .filter(|s| !s.meta.deleted)
+            .collect();
         live.sort_by_key(|s| (s.meta.created_at, s.id));
         live.pop();
         for s in live {
             let mut replaced = s;
             replaced.meta.deleted = true;
             replaced.meta.touch(hlc, clock);
-            crate::repo::put_summary(&tx.conn, &replaced)?;
-            out.summaries_replaced += 1;
             out.meetings.insert(replaced.meeting_id);
+            g.put_summary(replaced)?;
+            out.summaries_replaced += 1;
         }
     }
     // Rule 3a: no live voiceprint or voice sample of a person tombstoned here, directly or at
@@ -798,26 +702,25 @@ fn converge<C: Clock + ?Sized>(
     // person rows too, and run only when the page wrote one), prints and samples.
     let forgotten_before = out.biometrics_forgotten;
     if wrote.persons || wrote.prints || wrote.samples {
-        dead_person_repair(tx, hlc, clock, out)?;
+        dead_person_repair(g, hlc, clock, out)?;
     }
     // Rule 3: no live voice sample of a print tombstoned here (docs/voice-samples.md 7.4). It
     // reads prints and samples, and rule 3a may just have tombstoned a print.
-    let dead: Vec<([u8; 16], Option<Vec<u8>>)> =
-        if wrote.prints || wrote.samples || out.biometrics_forgotten != forgotten_before {
-            let mut st = tx.conn.prepare(
-                "SELECT s.id, s.meeting_id FROM voiceprint_sample s \
-             JOIN voiceprint v ON v.id = s.voiceprint_id WHERE s.deleted = 0 AND v.deleted = 1",
-            )?;
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<Result<_, _>>()?
-        } else {
-            Vec::new()
-        };
+    let dead = if wrote.prints || wrote.samples || out.biometrics_forgotten != forgotten_before {
+        g.dead_print_samples()?
+    } else {
+        Vec::new()
+    };
     // Erased by id in SQL, never read back first: a damaged live row (one `from_stored`
-    // refuses) is erased too and cannot abort the page.
-    for (id, meeting) in dead {
-        erase_sample_by_id(tx, hlc, clock, id)?;
-        erased_sample(out, meeting.as_deref());
+    // refuses) is erased too and cannot abort the page; one whose id does not read, by rowid.
+    for (rowid, id, meeting) in dead {
+        let erased = match id {
+            Col::Read(id) => g.erase_sample_by_id(hlc, clock, id)?,
+            Col::Unreadable => g.erase_sample_by_rowid(hlc, clock, rowid)?,
+        };
+        if erased {
+            erased_sample(out, meeting.read().flatten());
+        }
     }
     Ok(())
 }
@@ -836,9 +739,12 @@ fn converge<C: Clock + ?Sized>(
 ///   its stored name and person, with this device's stamp; a "Me" row comes back as a room
 ///   voice when the meeting already has a live "Me" (one "Me" per meeting), in id order.
 ///
-/// Every device writes the same content, so the copies converge whichever stamp wins.
-fn edits_win<C: Clock + ?Sized>(
-    tx: &StoreTx<'_>,
+/// Every device writes the same content, so the copies converge whichever stamp wins. A row
+/// that does not read takes no part and is counted (docs/sync-spec.md 16.5 items 7 to 9): a
+/// meeting whose `deleted` does not read is skipped, and a damaged speaker row that may be a
+/// live "Me" counts as one, so a revival never makes a second.
+pub(crate) fn edits_win<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
     hlc: &mut Hlc,
     clock: &C,
     leased: &dyn Fn(EntityId) -> bool,
@@ -850,15 +756,10 @@ fn edits_win<C: Clock + ?Sized>(
     use std::collections::{BTreeMap, BTreeSet};
     let meetings: Vec<EntityId> = out.meetings.iter().copied().collect();
     for m in meetings {
-        if leased(m)
-            || !crate::repo::synced_by_id(&tx.conn, "meeting", m)?
-                .is_some_and(|r| !r.meta().deleted)
-        {
+        if leased(m) || meeting_live(g, m)? != Some(true) {
             continue;
         }
-        // A row that does not read takes no part (T14.26): it is never shown, and one damaged
-        // row must not fail the page.
-        let rows = crate::repo::segments_or_damaged(&tx.conn, m)?.0;
+        let rows = g.segments_or_damaged(m)?;
         let finals: Vec<&SegmentRow> = rows
             .iter()
             .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
@@ -896,16 +797,16 @@ fn edits_win<C: Clock + ?Sized>(
                 Some(segment) => {
                     new.segment = segment;
                     new.meta.touch(hlc, clock);
-                    crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(new.clone()))?;
+                    g.put_synced(&SyncedRow::Segment(new.clone()))?;
                     // A line this device stamped: lines go out before what they replace
                     // (docs/sync-spec.md 15.2).
-                    tx.note_line(&new);
+                    g.note_line(&new);
                 }
                 // A line that lost all its words is taken out in the cleared form, through the
                 // one statement (docs/sync-spec.md 15.2), so its words leave this device too.
                 None => {
-                    if let Some(rowid) = crate::replaced::rowid_of(&tx.conn, r.segment.id)? {
-                        crate::replaced::clear_rowid(&tx.conn, rowid, hlc.now(clock))?;
+                    if let Some(rowid) = g.segment_rowid(r.segment.id)? {
+                        g.clear_segment(rowid, hlc.now(clock))?;
                         out.text_emptied += 1;
                     }
                 }
@@ -915,11 +816,18 @@ fn edits_win<C: Clock + ?Sized>(
         }
         let named: BTreeSet<EntityId> =
             edited.iter().filter_map(|e| e.segment.speaker_id).collect();
-        let mut speakers = crate::repo::speakers_of(&tx.conn, m)?;
+        let (mut speakers, damaged) = g.speakers_or_damaged(m)?;
         speakers.sort_by_key(|s| s.id);
-        let mut me_live = speakers
-            .iter()
-            .any(|s| !s.meta.deleted && s.role == SpeakerRole::Me);
+        // A damaged row whose role may be "Me" and that may be live counts as a live "Me".
+        let maybe_me = g.speaker_links(Some(m))?.into_iter().any(|l| {
+            damaged.contains(&l.rowid)
+                && matches!(l.role, Col::Read(SpeakerRole::Me) | Col::Unreadable)
+                && l.deleted != Deleted::Yes
+        });
+        let mut me_live = maybe_me
+            || speakers
+                .iter()
+                .any(|s| !s.meta.deleted && s.role == SpeakerRole::Me);
         for s in speakers {
             if s.meta.deleted && named.contains(&s.id) {
                 let mut back = s;
@@ -931,7 +839,7 @@ fn edits_win<C: Clock + ?Sized>(
                     me_live = true;
                 }
                 back.meta.touch(hlc, clock);
-                crate::repo::put_synced(&tx.conn, &SyncedRow::Speaker(back))?;
+                g.put_synced(&SyncedRow::Speaker(back))?;
                 out.speakers_revived += 1;
             }
         }
@@ -939,10 +847,27 @@ fn edits_win<C: Clock + ?Sized>(
     Ok(())
 }
 
+/// Whether `meeting` is live here (docs/sync-spec.md 16.5 items 7 and 10): `Some(true)` live,
+/// `Some(false)` a tombstone or absent, `None` when its `deleted` does not read (counted).
+pub(crate) fn meeting_live(
+    g: &GuardedTx<'_, '_>,
+    meeting: EntityId,
+) -> Result<Option<bool>, StoreError> {
+    Ok(match g.meeting_or_damaged(meeting)? {
+        None => Some(false),
+        Some(Ok(m)) => Some(!m.meta.deleted),
+        Some(Err(())) => match g.meeting_deleted(meeting)? {
+            Some(Deleted::No) => Some(true),
+            Some(Deleted::Yes) | None => Some(false),
+            Some(Deleted::Unreadable) => None,
+        },
+    })
+}
+
 /// What [`Store::apply_remote`] does with a pulled segment row once it is written
 /// (docs/sync-spec.md 15.4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum AfterWrite {
+pub(crate) enum AfterWrite {
     /// Nothing more.
     #[default]
     Nothing,
@@ -954,30 +879,29 @@ enum AfterWrite {
 
 /// The pulled segment row's part of the apply ([`segment_plan`]).
 #[derive(Debug, Clone, Copy, Default)]
-struct SegmentPlan {
+pub(crate) struct SegmentPlan {
     /// H1 or H2 holds it as `parent`.
-    hold: bool,
+    pub(crate) hold: bool,
     /// What follows the write.
-    after: AfterWrite,
+    pub(crate) after: AfterWrite,
     /// It holds no text over a copy here that did ([`Applied::text_emptied`]).
-    emptied: bool,
+    pub(crate) emptied: bool,
     /// It is a live final row and its track had no live final row here: rows held for it may
     /// apply now ([`Applied::parents_written`]).
-    first_final: bool,
+    pub(crate) first_final: bool,
 }
 
 /// The holds and the clearing of docs/sync-spec.md 15.4 for the pulled segment row `there`,
 /// which is the copy to write over `local` (a local row that does not read is `None`, as an
 /// absent one). `release` is the release's `blocked`: in the release, a row is held only when
 /// its track is blocked. Reads no local row whole but `local`, which the page read already.
-fn segment_plan(
-    tx: &StoreTx<'_>,
+pub(crate) fn segment_plan(
+    c: &rusqlite::Connection,
     there: &SegmentRow,
     local: Option<&SyncedRow>,
     release: Option<&dyn Fn(EntityId, EntityId) -> bool>,
 ) -> Result<SegmentPlan, StoreError> {
     use earshot_core::model::TranscriptPass;
-    let c = &tx.conn;
     let (meeting, track) = (there.meeting_id, there.segment.track);
     let here = match local {
         Some(SyncedRow::Segment(l)) => Some(l),
@@ -1028,13 +952,33 @@ fn segment_plan(
     Ok(plan)
 }
 
+/// [`Store::outbox_sent`]'s transaction (docs/sync-spec.md 16.5 item 16): each row's stamp is
+/// read from its three `updated_*` columns alone, so a row damaged after its send leaves its
+/// entry queued (it is unsendable anyway) instead of failing the tick.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn outbox_sent_in(
+    g: &mut GuardedTx<'_, '_>,
+    sent: &[(&str, EntityId, HlcTimestamp)],
+) -> Result<usize, StoreError> {
+    let mut gone = 0;
+    for (table, id, stamp) in sent {
+        if SYNCED_TABLES.contains(table) && g.updated_at_lenient(table, *id)? == Some(Some(*stamp))
+        {
+            gone += g.outbox_forget(table, *id)?;
+        }
+    }
+    Ok(gone)
+}
+
 /// Counts a sample a repair erased and names its meeting (read in the repair's own query), so
 /// a window showing that meeting reloads.
-fn erased_sample(out: &mut Applied, meeting: Option<&[u8]>) {
+pub(crate) fn erased_sample(out: &mut Applied, meeting: Option<EntityId>) {
     out.biometrics_forgotten += 1;
     out.people = true;
-    if let Some(m) = meeting.and_then(|b| <[u8; 16]>::try_from(b).ok()) {
-        out.meetings.insert(EntityId::from_bytes(m));
+    if let Some(m) = meeting {
+        out.meetings.insert(m);
     }
 }
 
@@ -1250,20 +1194,7 @@ impl Store {
         &mut self,
         sent: &[(&str, EntityId, HlcTimestamp)],
     ) -> Result<usize, StoreError> {
-        self.immediate(|tx| {
-            let mut gone = 0;
-            for (table, id, stamp) in sent {
-                let now =
-                    crate::repo::synced_by_id(&tx.conn, table, *id)?.map(|r| r.meta().updated_at);
-                if now == Some(*stamp) {
-                    gone += tx.conn.execute(
-                        "DELETE FROM sync_outbox WHERE tbl = ?1 AND id = ?2",
-                        params![table, &id.as_uuid().as_bytes()[..]],
-                    )?;
-                }
-            }
-            Ok(gone)
-        })
+        self.guarded_immediate(|g| outbox_sent_in(g, sent))
     }
 
     /// Every held row, in sequence order. Reads every sealed body: the sync client reads held
@@ -1403,424 +1334,19 @@ impl Store {
     }
 
     /// `wrote` starts as the kinds whose repairs run whatever the page writes; `release` is the
-    /// release's `blocked` ([`Store::apply_remote_releasing`]).
+    /// release's `blocked` ([`Store::apply_remote_releasing`]). One IMMEDIATE transaction whose
+    /// body is the guarded root `apply_page` (docs/sync-spec.md 16.3).
     fn apply_remote_with<C: Clock + ?Sized>(
         &mut self,
         page: &[Incoming],
         rules: &ApplyRules<'_>,
         hlc: &mut Hlc,
         clock: &C,
-        mut wrote: Wrote,
+        wrote: Wrote,
         release: Option<&dyn Fn(EntityId, EntityId) -> bool>,
     ) -> Result<Applied, StoreError> {
-        self.immediate(|tx| {
-            let mut out = Applied::default();
-            // A row H1 or H2 would hold is tried once more after the rest of the page
-            // (docs/sync-spec.md 15.4): a page that brings a track's new lines after the rows
-            // they replace applies both, as the end-of-tick retry would.
-            let mut rows: std::collections::VecDeque<(&Incoming, bool)> =
-                page.iter().map(|inc| (inc, false)).collect();
-            // The row keys H1 and H2 hold (`HELD_REPLACED_KEY`).
-            let mut h_held = held_replaced_keys(&tx.conn)?;
-            let h_held_before = !h_held.is_empty();
-            while let Some((inc, deferred)) = rows.pop_front() {
-                let Some(row) = &inc.row else {
-                    // A kind switched off is skipped before anything is held, whether or not
-                    // its record decodes: a device that never syncs it keeps nothing of it.
-                    if inc.entity.as_deref().is_some_and(|e| !rules.kinds.syncs(e)) {
-                        unhold(tx, inc)?;
-                        out.skipped += 1;
-                        continue;
-                    }
-                    hold(tx, inc, HoldReason::Format)?;
-                    out.hold(HoldReason::Format);
-                    continue;
-                };
-                if !rules.kinds.syncs(row.table()) {
-                    unhold(tx, inc)?;
-                    out.skipped += 1;
-                    continue;
-                }
-                if inc.stamp.wall_ms > rules.now_ms.saturating_add(MAX_CLOCK_AHEAD_MS) {
-                    hold(tx, inc, HoldReason::Clock)?;
-                    out.hold(HoldReason::Clock);
-                    continue;
-                }
-                if row.waits_while_busy() && row.meeting().is_some_and(|m| (rules.leased)(m)) {
-                    hold(tx, inc, HoldReason::Busy)?;
-                    out.hold(HoldReason::Busy);
-                    continue;
-                }
-                // A live row of a meeting deleted here (edited elsewhere before that device heard
-                // of the deletion) is not written: no transcript text of a deleted meeting is
-                // kept. The other device deletes its copy when the tombstone reaches it.
-                if !matches!(row, SyncedRow::Meeting(_))
-                    && !row.meta().deleted
-                    && let Some(m) = row.meeting()
-                    // A local meeting row that does not read is judged by its `deleted` column
-                    // (T14.26).
-                    && match crate::repo::synced_by_id_or_damaged(&tx.conn, "meeting", m)? {
-                        Ok(l) => l.is_some_and(|l| l.meta().deleted),
-                        Err(()) => crate::repo::row_reads_deleted(&tx.conn, "meeting", m)?,
-                    }
-                {
-                    unhold(tx, inc)?;
-                    out.deletions_kept += 1;
-                    continue;
-                }
-                // A local row that does not read (T14.26) is replaced by the pulled one, as an
-                // absent row is, except where the readable path below keeps the local state
-                // final against the pulled copy: a meeting or voiceprint tombstone, an erased
-                // voice sample, and this device's withdrawal of its own summary request against
-                // an open one. Those are judged from the columns that still read and the pulled
-                // row is ignored (a damaged row cannot be stamped again or sent).
-                let local = match crate::repo::synced_by_id_or_damaged(
-                    &tx.conn,
-                    row.table(),
-                    row.id(),
-                )? {
-                    Ok(local) => local,
-                    Err(()) => {
-                        let stays_final = match row {
-                            SyncedRow::Meeting(_) | SyncedRow::Voiceprint(_) => {
-                                !row.meta().deleted
-                                    && crate::repo::row_reads_deleted(
-                                        &tx.conn,
-                                        row.table(),
-                                        row.id(),
-                                    )?
-                            }
-                            SyncedRow::VoiceprintSample(there) => {
-                                !there.is_erased()
-                                    && crate::repo::row_reads_deleted(
-                                        &tx.conn,
-                                        row.table(),
-                                        row.id(),
-                                    )?
-                            }
-                            SyncedRow::SummaryRequest(there) => {
-                                there.state.is_open()
-                                    && crate::repo::request_reads_withdrawn_by(
-                                        &tx.conn,
-                                        row.id(),
-                                        hlc.node(),
-                                    )?
-                            }
-                            _ => false,
-                        };
-                        if stays_final {
-                            unhold(tx, inc)?;
-                            out.ignored += 1;
-                            continue;
-                        }
-                        None
-                    }
-                };
-                // A meeting deletion is final: a live copy edited elsewhere after it (pushed
-                // before that device heard of the deletion, so the relay kept the edit) never
-                // brings the meeting back. The tombstone here is stamped again, after the edit,
-                // and goes out to win at the relay; the other device then deletes its copy.
-                if let (Some(SyncedRow::Meeting(here)), SyncedRow::Meeting(there)) = (&local, row)
-                    && here.meta.deleted
-                    && !there.meta.deleted
-                {
-                    let _ = hlc.observe(inc.stamp, clock);
-                    if here.meta.updated_at < row.meta().updated_at {
-                        let mut again = here.clone();
-                        again.meta.touch(hlc, clock);
-                        crate::repo::put_synced(&tx.conn, &SyncedRow::Meeting(again))?;
-                        out.deletions_kept += 1;
-                    } else {
-                        out.ignored += 1;
-                    }
-                    unhold(tx, inc)?;
-                    continue;
-                }
-                // A voiceprint deletion is final, as a meeting's (docs/voice-samples.md 7.4): a
-                // live copy written elsewhere after it (an older build that still had the print)
-                // never brings the voice back. The tombstone is stamped again and goes out.
-                if let (Some(SyncedRow::Voiceprint(here)), SyncedRow::Voiceprint(there)) =
-                    (&local, row)
-                    && here.meta().deleted
-                    && !there.meta().deleted
-                {
-                    let _ = hlc.observe(inc.stamp, clock);
-                    if here.meta().updated_at < row.meta().updated_at {
-                        let mut meta = *here.meta();
-                        meta.touch(hlc, clock);
-                        let again = Voiceprint::from_stored(
-                            here.id(),
-                            meta,
-                            here.person_id(),
-                            here.model().clone(),
-                            here.base_sum().to_vec(),
-                            here.base_count(),
-                            here.base_speech_ms(),
-                        );
-                        crate::repo::put_synced(&tx.conn, &SyncedRow::Voiceprint(again))?;
-                        wrote.prints = true;
-                        out.deletions_kept += 1;
-                    } else {
-                        out.ignored += 1;
-                    }
-                    unhold(tx, inc)?;
-                    continue;
-                }
-                // A voice sample's erasure is final too: a live copy never brings an erased
-                // voice back (docs/voice-samples.md 7.4).
-                if let (
-                    Some(SyncedRow::VoiceprintSample(here)),
-                    SyncedRow::VoiceprintSample(there),
-                ) = (&local, row)
-                    && here.is_erased()
-                    && !there.is_erased()
-                {
-                    let _ = hlc.observe(inc.stamp, clock);
-                    if here.meta().updated_at < row.meta().updated_at {
-                        let mut meta = *here.meta();
-                        meta.touch(hlc, clock);
-                        let again = VoiceprintSample::erased(here.id(), meta)
-                            .map_err(|e| StoreError::Repo(RepoError::Storage(e.to_string())))?;
-                        crate::repo::put_synced(&tx.conn, &SyncedRow::VoiceprintSample(again))?;
-                        wrote.samples = true;
-                        out.deletions_kept += 1;
-                    } else {
-                        out.ignored += 1;
-                    }
-                    unhold(tx, inc)?;
-                    continue;
-                }
-                // A summary request's withdrawal is final (docs/sync-spec.md section 10.1).
-                if let (Some(SyncedRow::SummaryRequest(here)), SyncedRow::SummaryRequest(there)) =
-                    (&local, row)
-                {
-                    match withdrawal(here, there, hlc.node()) {
-                        Withdrawal::Lww => {}
-                        Withdrawal::TakeIt => {
-                            // Written as it came: only the asker writes a withdrawal, so this
-                            // device never stamps one of its own here.
-                            crate::repo::put_synced(&tx.conn, row)?;
-                            tx.conn.execute(
-                                "DELETE FROM sync_outbox WHERE tbl = ?1 AND id = ?2",
-                                params![row.table(), &row.id().as_uuid().as_bytes()[..]],
-                            )?;
-                            unhold(tx, inc)?;
-                            let _ = hlc.observe(inc.stamp, clock);
-                            out.written += 1;
-                            out.meetings.insert(there.meeting_id);
-                            continue;
-                        }
-                        Withdrawal::KeepMine => {
-                            let _ = hlc.observe(inc.stamp, clock);
-                            if here.meta.updated_at < there.meta.updated_at {
-                                let mut again = here.clone();
-                                again.meta.touch(hlc, clock);
-                                crate::repo::put_synced(
-                                    &tx.conn,
-                                    &SyncedRow::SummaryRequest(again),
-                                )?;
-                                out.withdrawals_kept += 1;
-                            } else {
-                                out.ignored += 1;
-                            }
-                            unhold(tx, inc)?;
-                            continue;
-                        }
-                    }
-                }
-                // Rule 4a (docs/sync-spec.md section 7, T12.92): two copies of one final line
-                // are compared by the user's edit first, so a re-transcription that did not see
-                // an edit never replaces it, whatever the stamps. Only while the meeting is live
-                // here. The relay keeps the later `updated_at` alone, so a copy kept here that
-                // is stamped below the losing one is stamped again and goes out.
-                let mut restamp_written = false;
-                if let (Some(SyncedRow::Segment(here)), SyncedRow::Segment(there)) = (&local, row)
-                    && let Some(order) = SegmentRow::edit_order(here, there)
-                    && crate::repo::synced_by_id(&tx.conn, "meeting", there.meeting_id)?
-                        .is_some_and(|m| !m.meta().deleted)
-                {
-                    if order != std::cmp::Ordering::Greater {
-                        let _ = hlc.observe(inc.stamp, clock);
-                        if here.meta.updated_at < there.meta.updated_at {
-                            let mut again = here.clone();
-                            again.meta.touch(hlc, clock);
-                            crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again.clone()))?;
-                            // Re-queued with a stamp of its own (docs/sync-spec.md 15.2).
-                            tx.note_line(&again);
-                            out.edited_lines_kept += 1;
-                            out.meetings.insert(here.meeting_id);
-                        } else {
-                            out.ignored += 1;
-                        }
-                        unhold(tx, inc)?;
-                        continue;
-                    }
-                    restamp_written = here.meta.updated_at > there.meta.updated_at;
-                }
-                if !restamp_written
-                    && local
-                        .as_ref()
-                        .is_some_and(|l| l.meta().updated_at >= row.meta().updated_at)
-                {
-                    unhold(tx, inc)?;
-                    out.ignored += 1;
-                    continue;
-                }
-                // Replaced transcript text (docs/sync-spec.md 15.4): the two holds, and what is
-                // done once the pulled segment row is written.
-                let segment_plan = match row {
-                    SyncedRow::Segment(there) => {
-                        let plan = segment_plan(tx, there, local.as_ref(), release)?;
-                        if plan.hold && !deferred {
-                            rows.push_back((inc, true));
-                            continue;
-                        }
-                        if plan.hold {
-                            hold(tx, inc, HoldReason::Parent)?;
-                            h_held.insert(inc.key);
-                            out.hold(HoldReason::Parent);
-                            continue;
-                        }
-                        plan
-                    }
-                    _ => SegmentPlan::default(),
-                };
-                let person_was_live = match &local {
-                    Some(SyncedRow::Person(p)) => !p.meta.deleted,
-                    None => matches!(row, SyncedRow::Person(_)),
-                    Some(_) => false,
-                };
-                let print_was_live =
-                    matches!(&local, Some(SyncedRow::Voiceprint(v)) if !v.meta().deleted);
-                let sample_was_live =
-                    matches!(&local, Some(SyncedRow::VoiceprintSample(s)) if !s.is_erased());
-                // A pulled print tombstone is stored with its vector zeroed, whatever it holds.
-                let zeroed;
-                let row = match row {
-                    SyncedRow::Voiceprint(v) if v.meta().deleted => {
-                        zeroed = SyncedRow::Voiceprint(Voiceprint::from_stored(
-                            v.id(),
-                            *v.meta(),
-                            v.person_id(),
-                            v.model().clone(),
-                            vec![0.0; v.base_sum().len()],
-                            v.base_count(),
-                            v.base_speech_ms(),
-                        ));
-                        &zeroed
-                    }
-                    other => other,
-                };
-                {
-                    let sp = tx.conn.savepoint()?;
-                    match crate::repo::put_synced(&sp, row) {
-                        Ok(()) => {
-                            // The trigger named it; it came from elsewhere, so it is not sent.
-                            sp.execute(
-                                "DELETE FROM sync_outbox WHERE tbl = ?1 AND id = ?2",
-                                params![row.table(), &row.id().as_uuid().as_bytes()[..]],
-                            )?;
-                            sp.commit()?;
-                        }
-                        Err(RepoError::MissingParent { .. }) => {
-                            drop(sp);
-                            hold(tx, inc, HoldReason::Parent)?;
-                            // Held for a missing parent, not by H1 or H2: the release leaves it.
-                            h_held.remove(&inc.key);
-                            out.hold(HoldReason::Parent);
-                            continue;
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-                unhold(tx, inc)?;
-                wrote.row(row);
-                let _ = hlc.observe(inc.stamp, clock);
-                // Rule 4a: an edit that won over a later-stamped copy here is stamped again
-                // (after the incoming stamp was observed), so it keeps its outbox entry and goes
-                // out to win at the relay.
-                if restamp_written && let SyncedRow::Segment(won) = row {
-                    let mut again = won.clone();
-                    again.meta.touch(hlc, clock);
-                    crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again.clone()))?;
-                    tx.note_line(&again);
-                }
-                // A pulled tombstone that holds text leaves this device holding none (15.4):
-                // written, then cleared (or, in a meeting deleted here, erased) through the one
-                // statement, stamped after the incoming stamp was observed, so it goes out and
-                // replaces the relay's copy.
-                match segment_plan.after {
-                    AfterWrite::Clear | AfterWrite::Erase => {
-                        if let Some(rowid) = crate::replaced::rowid_of(&tx.conn, row.id())? {
-                            let at = hlc.now(clock);
-                            if segment_plan.after == AfterWrite::Clear {
-                                crate::replaced::clear_rowid(&tx.conn, rowid, at)?;
-                            } else {
-                                crate::replaced::erase_rowid(&tx.conn, rowid, at)?;
-                            }
-                            out.text_emptied += 1;
-                        }
-                    }
-                    AfterWrite::Nothing if segment_plan.emptied => out.text_emptied += 1,
-                    AfterWrite::Nothing => {}
-                }
-                out.written += 1;
-                if (local.is_none() && row.has_children()) || segment_plan.first_final {
-                    out.parents_written += 1;
-                }
-                if let Some(m) = row.meeting() {
-                    out.meetings.insert(m);
-                }
-                // Persons, prints and samples decide names and saved voices in any meeting.
-                out.people |= matches!(
-                    row,
-                    SyncedRow::Person(_) | SyncedRow::Voiceprint(_) | SyncedRow::VoiceprintSample(_)
-                );
-                // A sample names its meeting; a tombstone (no body) the meeting of the sample it
-                // erased here.
-                for s in [Some(row), local.as_ref()].into_iter().flatten() {
-                    if let SyncedRow::VoiceprintSample(s) = s
-                        && let Some(earshot_core::voiceprint::SampleOrigin::Meeting {
-                            meeting,
-                            ..
-                        }) = s.origin()
-                    {
-                        out.meetings.insert(meeting);
-                    }
-                }
-                if matches!(row, SyncedRow::Voiceprint(v) if v.meta().deleted) && print_was_live {
-                    out.biometrics_forgotten += 1;
-                }
-                if matches!(row, SyncedRow::VoiceprintSample(s) if s.is_erased()) && sample_was_live
-                {
-                    out.biometrics_forgotten += 1;
-                }
-                if let SyncedRow::Person(p) = row
-                    && p.meta.deleted
-                    && person_was_live
-                {
-                    out.biometrics_forgotten +=
-                        crate::identities::forget_identity_biometrics(tx, p.id, hlc, clock)?
-                            .total();
-                    // It tombstones that identity's prints and erases its samples.
-                    // Belt-and-braces: `forget_identity_biometrics` already erased them.
-                    wrote.prints = true;
-                    wrote.samples = true;
-                }
-            }
-            // Kept to the rows still held for a parent: an applied or re-held row leaves it.
-            if h_held_before || !h_held.is_empty() {
-                put_held_replaced_keys(&tx.conn, &h_held)?;
-            }
-            converge(tx, hlc, clock, &mut out, wrote)?;
-            edits_win(tx, hlc, clock, rules.leased, &mut out)?;
-            // Lines this page stamped here (rule 4a's re-stamps, rule 4b's rewrites) go out
-            // before the track's queued cleared rows (docs/sync-spec.md 15.2).
-            tx.send_lines_first(hlc, clock)?;
-            if let Some(after) = rules.after {
-                after(tx)?;
-            }
-            Ok(out)
+        self.guarded_immediate(|g| {
+            crate::guarded::apply_page(g, page, rules, hlc, clock, wrote, release)
         })
     }
 

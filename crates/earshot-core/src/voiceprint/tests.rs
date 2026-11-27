@@ -272,7 +272,10 @@ fn voiceprint_forgetting_a_merge_target_forgets_every_merged_identity() {
         n,
         Forgotten {
             voiceprints: 3,
-            samples: 3
+            samples: 3,
+            entries: 0,
+            zeroed: 0,
+            skipped: 0,
         },
         "Dee's own print and both merged prints, with their samples"
     );

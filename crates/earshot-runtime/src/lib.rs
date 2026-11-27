@@ -128,6 +128,10 @@ pub mod vocabulary;
 pub mod word_choices;
 
 #[cfg(test)]
+mod sync_damaged_scan;
+#[cfg(test)]
+mod sync_damaged_tests;
+#[cfg(test)]
 mod testutil;
 
 /// The hardware facts' types (T7.4d), for hosts that show them.

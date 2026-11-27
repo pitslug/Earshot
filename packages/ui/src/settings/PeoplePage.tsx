@@ -31,7 +31,8 @@ import {
 } from "@fluentui/react-components";
 import { useEffect, useId, useRef, useState } from "react";
 
-import { type PersonItem, type SpeakerTimingChoice, type VoiceView, useIpc } from "../ipc";
+import PEOPLE_COPY from "../../../../fixtures/ui/people_copy_cases.json";
+import { IpcFailure, type PersonItem, type SpeakerTimingChoice, type VoiceView, useIpc } from "../ipc";
 import {
   BOX_WIDTH,
   FIELD_WIDTH,
@@ -385,13 +386,18 @@ function PeopleSection() {
   const [forgetting, setForgetting] = useState<PersonItem | null>(null);
   const [removing, setRemoving] = useState<PersonItem | null>(null);
   const [busy, setBusy] = useState(false);
+  // T14.57: damaged rows on this computer are said in fixed copy, never named.
+  const [listDamaged, setListDamaged] = useState(false);
+  const [doneNote, setDoneNote] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     ipc
       .listPersons()
       .then((all) => {
-        if (live) setPeople(all.filter((p) => !p.is_me));
+        if (!live) return;
+        setPeople(all.persons.filter((p) => !p.is_me));
+        setListDamaged(all.damaged);
       })
       .catch(() => {
         if (live) setProblem("The people Earshot knows could not be read.");
@@ -401,16 +407,20 @@ function PeopleSection() {
     };
   }, [ipc]);
 
-  const run = async (work: () => Promise<unknown>, failed: string) => {
+  const run = async <T,>(work: () => Promise<T>, failed: string, note?: (done: T) => string | null) => {
     setBusy(true);
     setProblem(null);
+    setDoneNote(null);
     try {
-      await work();
+      const done = await work();
+      setDoneNote(note === undefined ? null : note(done));
       const all = await ipc.listPersons();
-      setPeople(all.filter((p) => !p.is_me));
+      setPeople(all.persons.filter((p) => !p.is_me));
+      setListDamaged(all.damaged);
       return true;
-    } catch {
-      setProblem(failed);
+    } catch (e) {
+      // A refusal for a person whose details do not read is the app's fixed copy.
+      setProblem(e instanceof IpcFailure && e.error.kind === "person_unreadable" ? e.error.message : failed);
       return false;
     } finally {
       setBusy(false);
@@ -430,6 +440,8 @@ function PeopleSection() {
           <MessageBarBody>{problem}</MessageBarBody>
         </MessageBar>
       )}
+      {doneNote !== null && <Body1 className={styles.text}>{doneNote}</Body1>}
+      {listDamaged && <Body1 className={styles.text}>{PEOPLE_COPY.list_damaged_note}</Body1>}
       {people === null && problem === null && <Spinner size="tiny" label="Reading the people" />}
       {people !== null && people.length === 0 && (
         <Caption1 className={styles.muted}>Nobody yet. People appear here when you name a speaker in a meeting.</Caption1>
@@ -497,7 +509,11 @@ function PeopleSection() {
                   const person = forgetting;
                   setForgetting(null);
                   if (person !== null) {
-                    void run(() => ipc.forgetPersonVoices(person.id), "The voice was not forgotten.");
+                    void run(
+                      () => ipc.forgetPersonVoices(person.id),
+                      "The voice was not forgotten.",
+                      (done) => (done.damaged ? PEOPLE_COPY.forget_damaged_note : null),
+                    );
                   }
                 }}
               >
@@ -520,7 +536,11 @@ function PeopleSection() {
                   const person = removing;
                   setRemoving(null);
                   if (person !== null) {
-                    void run(() => ipc.removePerson(person.id), "This person was not removed.");
+                    void run(
+                      () => ipc.removePerson(person.id),
+                      "This person was not removed.",
+                      (done) => (done.damaged ? PEOPLE_COPY.remove_damaged_note : null),
+                    );
                   }
                 }}
               >

@@ -396,6 +396,53 @@ impl PersonItem {
     }
 }
 
+/// The People page's list (T14.57, docs/sync-spec.md 16.7): the persons, and whether a damaged
+/// row on this computer was left out (`list_damaged_note` in
+/// `fixtures/ui/people_copy_cases.json`). Never names a damaged row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct PersonListView {
+    /// The persons listed, by name.
+    pub persons: Vec<PersonItem>,
+    /// Some damaged row was left out.
+    pub damaged: bool,
+}
+
+/// What Remove did (T14.57): whether a damaged row was left as it is (`remove_damaged_note`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub struct PersonRemovedView {
+    /// Some damaged row was left as it is.
+    pub damaged: bool,
+}
+
+/// What Forget voice or Forget my voice did (T14.57): the count shown, and whether a damaged
+/// row was left (`forget_damaged_note`) or, for Forget my voice, not all of the user's voice
+/// may have been reached (`forget_my_voice_incomplete`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub struct VoicesForgottenView {
+    /// Voiceprints and voice samples forgotten.
+    pub forgotten: u32,
+    /// Some damaged row was left as it is.
+    pub damaged: bool,
+    /// Forget my voice only: not all of the user's voice may have been forgotten.
+    pub incomplete: bool,
+}
+
+impl VoicesForgottenView {
+    /// The view of a runtime answer.
+    #[must_use]
+    pub fn of(f: edit::Forgot) -> Self {
+        Self {
+            forgotten: u32::try_from(f.voices).unwrap_or(u32::MAX),
+            damaged: f.damaged > 0,
+            incomplete: f.incomplete,
+        }
+    }
+}
+
+/// The fixed copy for a person whose details do not read (`remove_unreadable`).
+pub const REMOVE_UNREADABLE_COPY: &str =
+    "This person can't be removed because some of their details on this computer are damaged.";
+
 /// Who a speaker is linked to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind")]
@@ -606,6 +653,7 @@ pub fn edit_error(e: &EditError) -> IpcError {
         EditError::MeIsTheUser(_) => {
             err("me_is_the_user", "Your own row can only be linked to you.")
         }
+        EditError::PersonUnreadable(_) => err("person_unreadable", REMOVE_UNREADABLE_COPY),
         EditError::PersonIsTheUser(_) => err(
             "person_is_the_user",
             "You cannot be removed. Your name and voice are set above.",
@@ -939,7 +987,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         run_view,
     ) = {
         let db = services.store();
-        let persons = edit::list_persons_in(&db)?;
+        let persons = edit::list_persons_in(&db.guarded_read())?.persons;
         let history = match edit::summary_history_in(&**db, meeting) {
             Ok(h) => h,
             Err(RuntimeError::Edit(EditError::MeetingNotFound(_))) => return Err(not_found()),
@@ -1245,11 +1293,12 @@ fn token_index(token: usize) -> u32 {
 ///
 /// # Errors
 /// Store errors.
-pub fn persons(services: &Services) -> Result<Vec<PersonItem>, IpcError> {
-    Ok(edit::list_persons(services)?
-        .iter()
-        .map(PersonItem::of)
-        .collect())
+pub fn persons(services: &Services) -> Result<PersonListView, IpcError> {
+    let list = edit::list_persons(services)?;
+    Ok(PersonListView {
+        persons: list.iter().map(PersonItem::of).collect(),
+        damaged: list.damaged_skipped > 0,
+    })
 }
 
 /// "This is me" on voice `speaker` of `meeting` (T9.12); returns the separate persons

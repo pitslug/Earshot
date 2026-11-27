@@ -35,13 +35,13 @@ use earshot_core::prompt::{
     MAX_VOCABULARY_CHARS, MAX_VOCABULARY_WORDS, Vocabulary, VocabularyError,
 };
 use earshot_core::vocabulary::suggest::{is_common, split_punctuation};
-use earshot_store::{Store, StoreError, StoreTx};
+use earshot_store::{GuardedTx, Store, StoreError, StoreTx};
 
 use crate::RuntimeError;
 use crate::edit::DynStamp;
 use crate::local::DeviceRecord;
 pub use crate::local::UnknownSetting;
-use crate::services::{Services, os_seeded_rng};
+use crate::services::{Services, ServicesWrite, os_seeded_rng};
 
 #[cfg(test)]
 #[path = "vocabulary_tests.rs"]
@@ -56,6 +56,9 @@ pub const NOT_IN_USE_REFUSAL: &str =
 /// (`messages.stale_list`).
 pub const STALE_LIST: &str =
     "the dictionary changed since this list was read: look at it again and try once more";
+
+/// Why a Dictionary edit is refused while a word row does not read (`messages.dictionary_damaged`).
+pub const DICTIONARY_DAMAGED: &str = "a word in your Dictionary on this computer is damaged, so the list can't be changed. Turning on Dictionary sync can restore it from another computer";
 
 /// `local_state` key of the user's words.
 pub const VOCABULARY_KEY: &str = "settings/vocabulary";
@@ -76,6 +79,9 @@ pub enum SetVocabularyError {
     /// The stored list is not the one the caller read ([`set_vocabulary`]'s `base`): another
     /// computer or window changed it (T11.3e).
     Stale,
+    /// A word row on this computer does not read: no Dictionary edit is made while it stays
+    /// damaged (docs/sync-spec.md 16.5 item 13b; the page shows `dictionary_damaged`).
+    Damaged,
 }
 
 impl fmt::Display for SetVocabularyError {
@@ -85,6 +91,7 @@ impl fmt::Display for SetVocabularyError {
             Self::NotAWord => write!(f, "only a word can be added to the dictionary"),
             Self::NotInUse => write!(f, "{NOT_IN_USE_REFUSAL}"),
             Self::Stale => write!(f, "{STALE_LIST}"),
+            Self::Damaged => write!(f, "{DICTIONARY_DAMAGED}"),
             Self::Store(e) => write!(f, "{e}"),
         }
     }
@@ -251,30 +258,51 @@ pub(crate) enum OverRefused {
     Replace,
 }
 
-/// Rebuilds the stored list from the live word rows ([`joined`]) inside `tx` and returns it,
-/// only while Dictionary sync is on ([`dictionary_syncs`], read inside `tx`, so a switch turned
-/// off just before an apply leaves the list alone): `None` when it did nothing (sync off, or a
-/// refused stored list kept under [`OverRefused::Keep`]). Run after every applied page and when
-/// the switch is turned on (`crate::sync`), and after every write here.
+/// What [`rebuild_tx`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Rebuild {
+    /// Nothing: Dictionary sync is off, or a refused stored list was kept under
+    /// [`OverRefused::Keep`].
+    Nothing,
+    /// The stored list is now this, rebuilt from the rows.
+    Rebuilt(Vocabulary),
+    /// A word row does not read: nothing was written, the stored list stays as it is
+    /// (docs/sync-spec.md 16.5 item 13). Counted.
+    Unread {
+        /// Rows that did not read.
+        skipped: usize,
+    },
+}
+
+/// Rebuilds the stored list from the live word rows ([`joined`]) inside `g` and returns it,
+/// only while Dictionary sync is on ([`dictionary_syncs`], read inside `g`, so a switch turned
+/// off just before an apply leaves the list alone). Run after every applied page and when the
+/// switch is turned on (`crate::sync`), and after every write here. A guarded root (T14.57):
+/// while any word row does not read it writes nothing ([`Rebuild::Unread`]), since a rebuild
+/// without that word would drop it on a guess.
 ///
 /// # Errors
 /// Store errors.
 pub(crate) fn rebuild_tx(
-    tx: &mut StoreTx<'_>,
+    g: &mut GuardedTx<'_, '_>,
     over: OverRefused,
-) -> Result<Option<Vocabulary>, StoreError> {
-    if !syncs_from(|k| tx.local_value(k)).map_err(runtime_to_store)? {
-        return Ok(None);
+) -> Result<Rebuild, StoreError> {
+    if !syncs_from(|k| g.local_value(k)).map_err(runtime_to_store)? {
+        return Ok(Rebuild::Nothing);
     }
     if over == OverRefused::Keep {
-        let (_, refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+        let (_, refused) = vocabulary_of(g.local_value(VOCABULARY_KEY)?.as_deref());
         if refused.is_some() {
-            return Ok(None);
+            return Ok(Rebuild::Nothing);
         }
     }
-    let (words, _) = joined(&tx.dictionary_words()?);
-    write_list_tx(tx, &words)?;
-    Ok(Some(words))
+    let (rows, skipped) = g.dictionary_words_or_damaged()?;
+    if skipped > 0 {
+        return Ok(Rebuild::Unread { skipped });
+    }
+    let (words, _) = joined(&rows);
+    write_list_tx(g, &words)?;
+    Ok(Rebuild::Rebuilt(words))
 }
 
 fn runtime_to_store(e: RuntimeError) -> StoreError {
@@ -284,10 +312,24 @@ fn runtime_to_store(e: RuntimeError) -> StoreError {
     }
 }
 
-fn write_list_tx(tx: &mut StoreTx<'_>, words: &Vocabulary) -> Result<(), StoreError> {
+fn write_list_tx(g: &mut GuardedTx<'_, '_>, words: &Vocabulary) -> Result<(), StoreError> {
     let bytes = serde_json::to_vec(words.words())
         .map_err(|_| StoreError::Corrupt("word list encoding".into()))?;
-    crate::local::set_tx(tx, &DeviceRecord::Vocabulary.key(), &bytes)
+    crate::local::set_guarded(g, &DeviceRecord::Vocabulary.key(), &bytes)
+}
+
+/// What [`reconcile_tx`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reconciled {
+    /// Rows made for listed words that had none.
+    Made(usize),
+    /// A word row does not read: the readable quote-only rows were tombstoned, but no row was
+    /// made, since the damaged row may be a listed word's live row (docs/sync-spec.md 16.5
+    /// item 13a). Counted.
+    Unread {
+        /// Rows that did not read.
+        skipped: usize,
+    },
 }
 
 /// Makes a row for each word of the stored list that has no live row ([`word_key`]): the words
@@ -300,39 +342,44 @@ fn write_list_tx(tx: &mut StoreTx<'_>, words: &Vocabulary) -> Result<(), StoreEr
 /// only quotes (`"`) became a row of its own, which this version never reads as a word. The
 /// tombstone is synced, so the row leaves every device. Until a device runs this version, 0.3.11
 /// still counts such a row as a word in use, so its count of words not in use near the limits
-/// may differ from this version's by those rows (left as it is).
+/// may differ from this version's by those rows (left as it is). A guarded root (T14.57).
 ///
 /// # Errors
 /// Store errors.
 pub(crate) fn reconcile_tx(
-    tx: &mut StoreTx<'_>,
+    g: &mut GuardedTx<'_, '_>,
     stamp: &mut DynStamp<'_, '_>,
-) -> Result<usize, StoreError> {
-    for mut row in tx
-        .dictionary_words()?
+) -> Result<Reconciled, StoreError> {
+    for mut row in g
+        .dictionary_words_or_damaged()?
+        .0
         .into_iter()
         .filter(|r| r.is_live() && stored_entry(&r.word).is_empty())
     {
         if row.remove(stamp.hlc, stamp.clock) {
-            tx.put_dictionary_word(row)?;
+            g.put_dictionary_word(row)?;
         }
     }
-    let (current, _) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
-    let rows = tx.dictionary_words()?;
+    let (current, _) = vocabulary_of(g.local_value(VOCABULARY_KEY)?.as_deref());
+    let (rows, skipped) = g.dictionary_words_or_damaged()?;
+    if skipped > 0 {
+        return Ok(Reconciled::Unread { skipped });
+    }
     let mut made = 0;
     for word in current.words() {
         if !has_live_row(&rows, word) {
-            tx.put_dictionary_word(DictionaryWord::new(word.clone(), stamp))?;
+            g.put_dictionary_word(DictionaryWord::new(word.clone(), stamp))?;
             made += 1;
         }
     }
-    Ok(made)
+    Ok(Reconciled::Made(made))
 }
 
 /// What turning Dictionary syncing on does inside its transaction (the Dictionary switch, sync
 /// itself, or setting up or joining a vault): rows for the words here ([`reconcile_tx`]), then
 /// the list rebuilt from the rows ([`rebuild_tx`], a refused stored list kept), so the list never
-/// lags the rows it will be checked against.
+/// lags the rows it will be checked against. A word row that does not read keeps the stored list
+/// and syncing still turns on (the next page rebuilds).
 ///
 /// # Errors
 /// Store errors.
@@ -340,8 +387,9 @@ pub(crate) fn syncing_turned_on_tx(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
 ) -> Result<(), StoreError> {
-    reconcile_tx(tx, stamp)?;
-    rebuild_tx(tx, OverRefused::Keep)?;
+    let g = &mut tx.guarded();
+    reconcile_tx(g, stamp)?;
+    rebuild_tx(g, OverRefused::Keep)?;
     Ok(())
 }
 
@@ -349,8 +397,16 @@ pub(crate) fn syncing_turned_on_tx(
 ///
 /// # Errors
 /// Store errors.
-pub(crate) fn reconcile(services: &Services) -> Result<usize, RuntimeError> {
-    with_stamp(services, |tx, stamp| Ok(reconcile_tx(tx, stamp)?))
+pub(crate) fn reconcile(services: &Services) -> Result<Reconciled, RuntimeError> {
+    services.guarded_write(reconcile_in)
+}
+
+/// [`reconcile`]'s root.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn reconcile_in(w: &mut ServicesWrite<'_>) -> Result<Reconciled, RuntimeError> {
+    w.transaction(|g, stamp| Ok(reconcile_tx(g, stamp)?))
 }
 
 fn has_live_row(rows: &[DictionaryWord], word: &str) -> bool {
@@ -360,25 +416,60 @@ fn has_live_row(rows: &[DictionaryWord], word: &str) -> bool {
 }
 
 /// Removes every live row of `word` ([`row_key`], so any spelling and a row from another build
-/// go too): each a tombstone with its word cleared. Returns how many went.
+/// go too): each a tombstone with its word cleared. Returns how many went, `None` (nothing
+/// written) when a word row does not read, since it may be one of `word`'s (docs/sync-spec.md
+/// 16.5 item 13b).
 fn remove_rows_tx(
-    tx: &mut StoreTx<'_>,
+    g: &mut GuardedTx<'_, '_>,
     stamp: &mut DynStamp<'_, '_>,
     word: &str,
-) -> Result<usize, StoreError> {
+) -> Result<Option<usize>, StoreError> {
     let wanted = row_key(word);
+    let (rows, skipped) = g.dictionary_words_or_damaged()?;
+    if skipped > 0 {
+        return Ok(None);
+    }
     let mut gone = 0;
-    for mut row in tx
-        .dictionary_words()?
+    for mut row in rows
         .into_iter()
         .filter(|r| r.is_live() && row_key(&r.word) == wanted)
     {
         if row.remove(stamp.hlc, stamp.clock) {
-            tx.put_dictionary_word(row)?;
+            g.put_dictionary_word(row)?;
             gone += 1;
         }
     }
-    Ok(gone)
+    Ok(Some(gone))
+}
+
+/// The word rows that read, or [`SetVocabularyError::Damaged`] when any does not (a page edit
+/// never decides on a list that may leave a word out, docs/sync-spec.md 16.5 item 13b).
+fn every_word_row(g: &GuardedTx<'_, '_>) -> Result<Vec<DictionaryWord>, SetVocabularyError> {
+    let (rows, skipped) = g.dictionary_words_or_damaged()?;
+    if skipped > 0 {
+        return Err(SetVocabularyError::Damaged);
+    }
+    Ok(rows)
+}
+
+/// A page edit's [`reconcile_tx`]: refused while a word row does not read.
+fn reconcile_for_edit(
+    g: &mut GuardedTx<'_, '_>,
+    stamp: &mut DynStamp<'_, '_>,
+) -> Result<(), SetVocabularyError> {
+    match reconcile_tx(g, stamp)? {
+        Reconciled::Made(_) => Ok(()),
+        Reconciled::Unread { .. } => Err(SetVocabularyError::Damaged),
+    }
+}
+
+/// A page edit's [`rebuild_tx`]: refused while a word row does not read.
+fn rebuild_for_edit(g: &mut GuardedTx<'_, '_>) -> Result<Option<Vocabulary>, SetVocabularyError> {
+    match rebuild_tx(g, OverRefused::Replace)? {
+        Rebuild::Nothing => Ok(None),
+        Rebuild::Rebuilt(v) => Ok(Some(v)),
+        Rebuild::Unread { .. } => Err(SetVocabularyError::Damaged),
+    }
 }
 
 /// Runs `f` in one store transaction under the services lock, with a stamp from the services
@@ -453,9 +544,22 @@ pub(crate) fn vocabulary_of(bytes: Option<&[u8]>) -> (Vocabulary, Option<Unknown
 /// time instead ([`add_entry`], [`remove_entry`]).
 ///
 /// # Errors
-/// [`SetVocabularyError`]: nothing is stored on a refusal.
+/// [`SetVocabularyError`]: nothing is stored on a refusal ([`SetVocabularyError::Damaged`]
+/// while a word row does not read).
 pub fn set_vocabulary<B: AsRef<str>, S: AsRef<str>>(
     services: &Services,
+    base: &[B],
+    words: &[S],
+) -> Result<Vocabulary, SetVocabularyError> {
+    services.guarded_write(|w| set_vocabulary_in(w, base, words))
+}
+
+/// [`set_vocabulary`]'s root.
+///
+/// # Errors
+/// As [`set_vocabulary`].
+pub(crate) fn set_vocabulary_in<B: AsRef<str>, S: AsRef<str>>(
+    w: &mut ServicesWrite<'_>,
     base: &[B],
     words: &[S],
 ) -> Result<Vocabulary, SetVocabularyError> {
@@ -463,37 +567,36 @@ pub fn set_vocabulary<B: AsRef<str>, S: AsRef<str>>(
         .map_err(SetVocabularyError::Refused)?;
     let base = Vocabulary::new(base.iter().map(|w| without_end_quotes(w.as_ref())))
         .map_err(|_| SetVocabularyError::Stale)?;
-    with_stamp(
-        services,
-        |tx, stamp| -> Result<Vocabulary, SetVocabularyError> {
-            let (stored, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
-            if stored.words() != base.words() {
-                return Err(SetVocabularyError::Stale);
+    w.transaction(|g, stamp| -> Result<Vocabulary, SetVocabularyError> {
+        let (stored, _refused) = vocabulary_of(g.local_value(VOCABULARY_KEY)?.as_deref());
+        if stored.words() != base.words() {
+            return Err(SetVocabularyError::Stale);
+        }
+        // Words from before rows existed get theirs first, so a removal reaches them too.
+        reconcile_for_edit(g, stamp)?;
+        for gone in base
+            .words()
+            .iter()
+            .filter(|w| !listed_in(vocabulary.words(), w))
+        {
+            if remove_rows_tx(g, stamp, gone)?.is_none() {
+                return Err(SetVocabularyError::Damaged);
             }
-            // Words from before rows existed get theirs first, so a removal reaches them too.
-            reconcile_tx(tx, stamp)?;
-            for gone in base
-                .words()
-                .iter()
-                .filter(|w| !listed_in(vocabulary.words(), w))
-            {
-                remove_rows_tx(tx, stamp, gone)?;
-            }
-            let rows = tx.dictionary_words()?;
-            for new in vocabulary
-                .words()
-                .iter()
-                .filter(|w| !listed_in(base.words(), w) && !has_live_row(&rows, w))
-            {
-                tx.put_dictionary_word(DictionaryWord::new(new.clone(), stamp))?;
-            }
-            if let Some(rebuilt) = rebuild_tx(tx, OverRefused::Replace)? {
-                return Ok(rebuilt);
-            }
-            write_list_tx(tx, &vocabulary)?;
-            Ok(vocabulary.clone())
-        },
-    )
+        }
+        let rows = every_word_row(g)?;
+        for new in vocabulary
+            .words()
+            .iter()
+            .filter(|w| !listed_in(base.words(), w) && !has_live_row(&rows, w))
+        {
+            g.put_dictionary_word(DictionaryWord::new(new.clone(), stamp))?;
+        }
+        if let Some(rebuilt) = rebuild_for_edit(g)? {
+            return Ok(rebuilt);
+        }
+        write_list_tx(g, &vocabulary)?;
+        Ok(vocabulary.clone())
+    })
 }
 
 fn store_err(e: StoreError) -> SetVocabularyError {
@@ -536,65 +639,73 @@ pub struct AddedEntry {
 ///
 /// # Errors
 /// [`SetVocabularyError::Refused`] (the list's limits, as the page reports them; an empty entry
-/// is [`SetVocabularyError::NotAWord`]), [`SetVocabularyError::NotInUse`]; store errors. Nothing
-/// is stored on an error.
+/// is [`SetVocabularyError::NotAWord`]), [`SetVocabularyError::NotInUse`],
+/// [`SetVocabularyError::Damaged`]; store errors. Nothing is stored on an error.
 pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocabularyError> {
+    services.guarded_write(|w| add_entry_in(w, text))
+}
+
+/// [`add_entry`]'s root.
+///
+/// # Errors
+/// As [`add_entry`].
+pub(crate) fn add_entry_in(
+    w: &mut ServicesWrite<'_>,
+    text: &str,
+) -> Result<AddedEntry, SetVocabularyError> {
     let entry = Vocabulary::new([without_end_quotes(text)]).map_err(SetVocabularyError::Refused)?;
     let word = entry
         .words()
         .first()
         .cloned()
         .ok_or(SetVocabularyError::NotAWord)?;
-    with_stamp(
-        services,
-        |tx, stamp| -> Result<AddedEntry, SetVocabularyError> {
-            let (current, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
-            between_read_and_write();
-            if let Some(entry) = current
-                .words()
-                .iter()
-                .find(|e| e.to_lowercase() == word.to_lowercase())
-            {
-                return Ok(AddedEntry {
-                    word: entry.clone(),
-                    added: false,
-                    words: current.clone(),
-                });
-            }
-            // A quick refusal while the joined list already leaves words out; the check that
-            // decides is on the rebuilt list below.
-            let syncs = syncs_from(|k| tx.local_value(k)).map_err(SetVocabularyError::Store)?;
-            if syncs && joined(&tx.dictionary_words()?).1 > 0 {
+    w.transaction(|g, stamp| -> Result<AddedEntry, SetVocabularyError> {
+        let (current, _refused) = vocabulary_of(g.local_value(VOCABULARY_KEY)?.as_deref());
+        between_read_and_write();
+        if let Some(entry) = current
+            .words()
+            .iter()
+            .find(|e| e.to_lowercase() == word.to_lowercase())
+        {
+            return Ok(AddedEntry {
+                word: entry.clone(),
+                added: false,
+                words: current.clone(),
+            });
+        }
+        // A quick refusal while the joined list already leaves words out; the check that
+        // decides is on the rebuilt list below.
+        let syncs = syncs_from(|k| g.local_value(k)).map_err(SetVocabularyError::Store)?;
+        if syncs && joined(&every_word_row(g)?).1 > 0 {
+            return Err(SetVocabularyError::NotInUse);
+        }
+        let mut next: Vec<String> = current.into();
+        next.push(word.clone());
+        let next = Vocabulary::new(&next).map_err(SetVocabularyError::Refused)?;
+        reconcile_for_edit(g, stamp)?;
+        let rows = every_word_row(g)?;
+        if !has_live_row(&rows, &word) {
+            g.put_dictionary_word(DictionaryWord::new(word.clone(), stamp))?;
+        }
+        let words = match rebuild_for_edit(g)? {
+            // Decided on the outcome: a word the rebuilt list leaves out would be stored and
+            // synced but not in use, so the whole add rolls back (the stored list may lag the
+            // rows, for example after a refused list was kept or sync was off).
+            Some(rebuilt) if !listed_in(rebuilt.words(), &word) => {
                 return Err(SetVocabularyError::NotInUse);
             }
-            let mut next: Vec<String> = current.into();
-            next.push(word.clone());
-            let next = Vocabulary::new(&next).map_err(SetVocabularyError::Refused)?;
-            reconcile_tx(tx, stamp)?;
-            let rows = tx.dictionary_words()?;
-            if !has_live_row(&rows, &word) {
-                tx.put_dictionary_word(DictionaryWord::new(word.clone(), stamp))?;
+            Some(rebuilt) => rebuilt,
+            None => {
+                write_list_tx(g, &next)?;
+                next
             }
-            let words = match rebuild_tx(tx, OverRefused::Replace)? {
-                // Decided on the outcome: a word the rebuilt list leaves out would be stored
-                // and synced but not in use, so the whole add rolls back (the stored list may
-                // lag the rows, for example after a refused list was kept or sync was off).
-                Some(rebuilt) if !listed_in(rebuilt.words(), &word) => {
-                    return Err(SetVocabularyError::NotInUse);
-                }
-                Some(rebuilt) => rebuilt,
-                None => {
-                    write_list_tx(tx, &next)?;
-                    next
-                }
-            };
-            Ok(AddedEntry {
-                word,
-                added: true,
-                words,
-            })
-        },
-    )
+        };
+        Ok(AddedEntry {
+            word,
+            added: true,
+            words,
+        })
+    })
 }
 
 /// Removes the Dictionary entry that is `word` (case ignored; quotes at its ends dropped as
@@ -604,8 +715,19 @@ pub fn add_entry(services: &Services, text: &str) -> Result<AddedEntry, SetVocab
 /// word not listed writes nothing. An entry that only contains `word` (a phrase) stays.
 ///
 /// # Errors
-/// Store errors.
+/// [`SetVocabularyError::Damaged`] while a word row does not read; store errors.
 pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabularyError> {
+    services.guarded_write(|w| remove_entry_in(w, word))
+}
+
+/// [`remove_entry`]'s root.
+///
+/// # Errors
+/// As [`remove_entry`].
+pub(crate) fn remove_entry_in(
+    w: &mut ServicesWrite<'_>,
+    word: &str,
+) -> Result<bool, SetVocabularyError> {
     let word = without_end_quotes(word)
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -613,15 +735,17 @@ pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabula
     if word.is_empty() {
         return Ok(false);
     }
-    with_stamp(services, |tx, stamp| -> Result<bool, SetVocabularyError> {
-        let (current, _refused) = vocabulary_of(tx.local_value(VOCABULARY_KEY)?.as_deref());
+    w.transaction(|g, stamp| -> Result<bool, SetVocabularyError> {
+        let (current, _refused) = vocabulary_of(g.local_value(VOCABULARY_KEY)?.as_deref());
         between_read_and_write();
         if !listed_in(current.words(), &word) {
             return Ok(false);
         }
-        reconcile_tx(tx, stamp)?;
-        remove_rows_tx(tx, stamp, &word)?;
-        if rebuild_tx(tx, OverRefused::Replace)?.is_none() {
+        reconcile_for_edit(g, stamp)?;
+        if remove_rows_tx(g, stamp, &word)?.is_none() {
+            return Err(SetVocabularyError::Damaged);
+        }
+        if rebuild_for_edit(g)?.is_none() {
             let wanted = word.to_lowercase();
             let kept: Vec<&String> = current
                 .words()
@@ -629,7 +753,7 @@ pub fn remove_entry(services: &Services, word: &str) -> Result<bool, SetVocabula
                 .filter(|e| e.to_lowercase() != wanted)
                 .collect();
             let kept = Vocabulary::new(kept).unwrap_or_default();
-            write_list_tx(tx, &kept)?;
+            write_list_tx(g, &kept)?;
         }
         Ok(true)
     })

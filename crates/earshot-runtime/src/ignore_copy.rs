@@ -36,7 +36,6 @@ use std::collections::BTreeSet;
 
 use earshot_core::diar::SpeakerRole;
 use earshot_core::identity::EntityId;
-use earshot_core::model::MeetingRepo;
 use earshot_store::{Store, StoreTx};
 
 use crate::identities::{SpeakerIdentity, StoredIdentities};
@@ -77,23 +76,38 @@ pub fn legacy_of(copied: bool, entries: &[SpeakerIdentity]) -> BTreeSet<EntityId
 /// many rows it flagged; 0 when it ran before. The caller decides when (module docs): at app
 /// start with no vault, or after the sync thread's first completed pull.
 ///
+/// A row or meeting that does not read is skipped and counted, and the copy still writes
+/// `ignore-copied` (the owner, docs/sync-spec.md 16.12 c): its legacy flag is lost for good
+/// on this device, since a later run could overwrite an un-ignore pulled meanwhile.
+///
 /// # Errors
 /// Store errors (nothing is written then, and the next call tries again).
 pub fn copy_once(services: &Services) -> Result<usize, RuntimeError> {
-    if copied(&services.store())? {
+    services.guarded_write(copy_once_in)
+}
+
+/// [`copy_once`]'s root (T14.57).
+///
+/// # Errors
+/// As [`copy_once`].
+pub(crate) fn copy_once_in(
+    w: &mut crate::services::ServicesWrite<'_>,
+) -> Result<usize, RuntimeError> {
+    use earshot_store::{Col, Deleted};
+    if w.read().local_value(COPIED_KEY)?.is_some() {
         return Ok(0);
     }
-    crate::edit::write(services, |tx, stamp| {
-        if copied_tx(tx)? {
-            return Ok(0);
+    let (flagged, skipped) = w.transaction(|g, stamp| -> Result<(usize, usize), RuntimeError> {
+        if g.local_value(COPIED_KEY)?.is_some() {
+            return Ok((0, 0));
         }
         let mut flagged = 0;
-        for meeting in tx.meetings()? {
-            if meeting.meta.deleted {
+        for meeting in g.meetings_lenient()? {
+            let (Col::Read(id), Deleted::No) = (meeting.id, meeting.deleted) else {
                 continue;
-            }
-            let key = crate::identities::record_key(meeting.id);
-            let Some(StoredIdentities::Record(record)) = tx
+            };
+            let key = crate::identities::record_key(id);
+            let Some(StoredIdentities::Record(record)) = g
                 .local_value(key.as_str())?
                 .map(|b| crate::identities::decode(&b))
             else {
@@ -103,7 +117,7 @@ pub fn copy_once(services: &Services) -> Result<usize, RuntimeError> {
             if ignored.is_empty() {
                 continue;
             }
-            for mut row in tx.speakers(meeting.id)? {
+            for mut row in g.speakers_or_damaged(id)?.0 {
                 if !ignored.contains(&row.id)
                     || row.meta.deleted
                     || row.role == SpeakerRole::Me
@@ -114,13 +128,18 @@ pub fn copy_once(services: &Services) -> Result<usize, RuntimeError> {
                 }
                 row.ignored = true;
                 row.meta.touch(stamp.hlc, stamp.clock);
-                tx.put_speaker(row)?;
+                g.put_speaker(row)?;
                 flagged += 1;
             }
         }
-        crate::local::set_tx(tx, &DeviceRecord::IgnoreCopied.key(), b"done")?;
-        Ok(flagged)
-    })
+        crate::local::set_guarded(g, &DeviceRecord::IgnoreCopied.key(), b"done")?;
+        Ok((flagged, g.damaged_skipped()))
+    })?;
+    if skipped > 0 {
+        // A fixed word and the count only (docs/sync-spec.md 16.7).
+        eprintln!("ignore copy: damaged rows skipped {skipped}");
+    }
+    Ok(flagged)
 }
 
 #[cfg(test)]

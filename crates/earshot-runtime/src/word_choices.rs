@@ -132,8 +132,19 @@ pub(crate) fn drop_stale_tx(
     tx: &mut earshot_store::StoreTx<'_>,
     meeting: EntityId,
 ) -> Result<(), RuntimeError> {
+    drop_stale_in(&mut tx.guarded(), meeting)
+}
+
+/// [`drop_stale_tx`] on a guarded transaction (a pulled page's, T14.57): a guarded root.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn drop_stale_in(
+    g: &mut earshot_store::GuardedTx<'_, '_>,
+    meeting: EntityId,
+) -> Result<(), RuntimeError> {
     let key = record_key(meeting);
-    let Some(bytes) = tx.local_value(key.as_str())? else {
+    let Some(bytes) = g.local_value(key.as_str())? else {
         return Ok(());
     };
     let choices = decode(&bytes);
@@ -142,7 +153,7 @@ pub(crate) fn drop_stale_tx(
     }
     // Run in a pulled page's transaction too (docs/sync-spec.md 15.3): a row that does not read
     // is left out, never a failed page. A choice on such a row stops holding and is dropped.
-    let (rows, _damaged) = tx.segments_that_read(meeting)?;
+    let rows = g.segments_or_damaged(meeting)?;
     let lines: BTreeMap<EntityId, &str> = rows
         .iter()
         .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
@@ -157,9 +168,9 @@ pub(crate) fn drop_stale_tx(
         return Ok(());
     }
     if holding.is_empty() {
-        tx.delete_local_value(key.as_str())?;
+        g.delete_local_value(key.as_str())?;
     } else {
-        crate::local::set_tx(tx, &key, &encode(&holding)?)?;
+        crate::local::set_guarded(g, &key, &encode(&holding)?)?;
     }
     Ok(())
 }

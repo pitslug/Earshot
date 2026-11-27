@@ -467,6 +467,179 @@ fn split_rows<T>(
     Ok((readable, damaged))
 }
 
+/// [`split_rows`] keeping the order: every row's rowid with the row, `None` for a row whose
+/// stored values do not convert (T14.57, docs/sync-spec.md 16.3).
+fn rows_in_order<T>(
+    c: &Connection,
+    table: &str,
+    mut cols: Vec<&'static str>,
+    tail: &str,
+    params: &[Value],
+    decode: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<(i64, Option<T>)>, RepoError> {
+    let rowid_at = cols.len();
+    cols.push("rowid");
+    let sql = select_sql(table, &cols, tail);
+    let rows = query(c, &sql, params, |r| {
+        Ok((decode(r), r.get::<_, i64>(rowid_at)?))
+    })?;
+    rows.into_iter()
+        .map(|(row, rowid)| match row {
+            Ok(row) => Ok((rowid, Some(row))),
+            Err(e) if is_unreadable(&e) => Ok((rowid, None)),
+            Err(e) => Err(storage(e)),
+        })
+        .collect()
+}
+
+/// The readers the guarded paths use (T14.57, `crate::guarded`): each through [`split_rows`]
+/// or [`rows_in_order`], so a row that does not read is returned by its rowid, never an error.
+pub(crate) mod lenient {
+    use super::*;
+
+    /// Every person row in [`all_persons`]' order (by id).
+    pub(crate) fn persons(c: &Connection) -> Result<(Vec<Person>, Vec<i64>), RepoError> {
+        split_rows(
+            c,
+            "person",
+            synced_cols(&PERSON),
+            "ORDER BY id",
+            &[],
+            person_row,
+        )
+    }
+
+    /// The person row `id`: `None` when absent, else the row or the rowid of a damaged one.
+    pub(crate) fn person(
+        c: &Connection,
+        id: EntityId,
+    ) -> Result<Option<Result<Person, i64>>, RepoError> {
+        let (mut ok, mut bad) = split_rows(
+            c,
+            "person",
+            synced_cols(&PERSON),
+            "WHERE id = ?1",
+            &[id_value(id)],
+            person_row,
+        )?;
+        Ok(ok.pop().map(Ok).or_else(|| bad.pop().map(Err)))
+    }
+
+    /// `meeting`'s speaker rows in [`speakers_of`]'s order, each with its rowid.
+    pub(crate) fn speakers_in_order(
+        c: &Connection,
+        meeting: EntityId,
+    ) -> Result<Vec<(i64, Option<Speaker>)>, RepoError> {
+        rows_in_order(
+            c,
+            "speaker",
+            synced_cols(&SPEAKER),
+            "WHERE meeting_id = ?1 ORDER BY created_wall, created_logical, created_node, id",
+            &[id_value(meeting)],
+            speaker_row,
+        )
+    }
+
+    /// Every Dictionary word row in creation order.
+    pub(crate) fn dictionary_words(
+        c: &Connection,
+    ) -> Result<(Vec<DictionaryWord>, Vec<i64>), RepoError> {
+        split_rows(
+            c,
+            "dictionary_word",
+            synced_cols(&DICTIONARY_WORD),
+            "ORDER BY created_wall, created_logical, created_node, id",
+            &[],
+            dictionary_word_row,
+        )
+    }
+
+    /// `meeting`'s current summary, the row [`CURRENT_SUMMARY_ROWID_SQL`] chooses: `None` when
+    /// there is none, `Some(Err(rowid))` when that row does not read (never an older one).
+    pub(crate) fn current_summary(
+        c: &Connection,
+        meeting: EntityId,
+    ) -> Result<Option<Result<Summary, i64>>, RepoError> {
+        let Some(rowid) = query(c, CURRENT_SUMMARY_ROWID_SQL, &[id_value(meeting)], |r| {
+            r.get::<_, i64>(0)
+        })?
+        .pop() else {
+            return Ok(None);
+        };
+        let (mut ok, _) = split_rows(
+            c,
+            "summary",
+            synced_cols(&SUMMARY),
+            "WHERE rowid = ?1",
+            &[Value::Integer(rowid)],
+            summary_row,
+        )?;
+        Ok(Some(ok.pop().ok_or(rowid)))
+    }
+
+    /// `person`'s prints, tombstones included, by id ([`voiceprints_where`]'s order).
+    pub(crate) fn voiceprints_of(
+        c: &Connection,
+        person: EntityId,
+    ) -> Result<(Vec<Voiceprint>, Vec<i64>), RepoError> {
+        split_rows(
+            c,
+            "voiceprint",
+            synced_cols(&VOICEPRINT),
+            "WHERE person_id = ?1 ORDER BY id",
+            &[id_value(person)],
+            voiceprint_row,
+        )
+    }
+
+    /// The live samples of `print` in creation order ([`samples_where`]'s order).
+    pub(crate) fn samples_of(
+        c: &Connection,
+        print: EntityId,
+    ) -> Result<(Vec<VoiceprintSample>, Vec<i64>), RepoError> {
+        split_rows(
+            c,
+            "voiceprint_sample",
+            synced_cols(&VOICEPRINT_SAMPLE),
+            "WHERE deleted = 0 AND voiceprint_id = ?1 \
+             ORDER BY created_wall, created_logical, created_node, id",
+            &[id_value(print)],
+            voiceprint_sample_row,
+        )
+    }
+
+    /// The `updated_at` of row `id` of the synced `table`, from its three columns alone:
+    /// `None` when absent, `Some(None)` when a column does not read.
+    pub(crate) fn updated_at(
+        c: &Connection,
+        table: &str,
+        id: EntityId,
+    ) -> Result<Option<Option<HlcTimestamp>>, RepoError> {
+        let rows = query(
+            c,
+            &format!(
+                "SELECT updated_wall, updated_logical, updated_node FROM {table} WHERE id = ?1"
+            ),
+            &[id_value(id)],
+            |r| {
+                let stamp = (|| -> rusqlite::Result<HlcTimestamp> {
+                    Ok(HlcTimestamp {
+                        wall_ms: get_u64(r, 0)?,
+                        logical: r.get(1)?,
+                        node: get_device(r, 2)?,
+                    })
+                })();
+                match stamp {
+                    Ok(s) => Ok(Some(s)),
+                    Err(e) if is_unreadable(&e) => Ok(None),
+                    Err(e) => Err(e),
+                }
+            },
+        )?;
+        Ok(rows.into_iter().next())
+    }
+}
+
 /// What one meeting's deletion reads of each table (T14.26): the rows that read, and the
 /// rowids of the damaged ones. Same orders as the plain readers.
 pub(crate) mod for_deletion {
@@ -1491,17 +1664,8 @@ mod sample_reads {
 
 // ---- sync (T11.1b) ----
 
-/// The row `id` of the synced `table`, tombstones included; `None` when absent or for a
-/// table that is not synced.
-pub(crate) fn synced_by_id(
-    c: &Connection,
-    table: &str,
-    id: EntityId,
-) -> Result<Option<crate::sync::SyncedRow>, RepoError> {
-    synced_by_id_raw(c, table, id).map_err(storage)
-}
-
-/// [`synced_by_id`] that tells a row whose stored values do not convert (a damaged row: its
+/// The row `id` of the synced `table` (tombstones included; `None` when absent or for a table
+/// that is not synced), telling a row whose stored values do not convert (a damaged row: its
 /// check or a column's value refused, or text that is not UTF-8, as [`is_unreadable`] judges
 /// it for the store's own readers) apart from any other store error: `Ok(Err(()))` for the
 /// damaged row, `Err` for everything else.

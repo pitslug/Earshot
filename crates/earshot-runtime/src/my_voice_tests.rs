@@ -310,7 +310,11 @@ fn my_voice_a_main_voice_with_a_little_of_another_is_enrolled() {
 fn my_voice_forget_zeroes_and_tombstones_every_voiceprint_of_the_user() {
     let dir = TempDir::new("my-voice-forget");
     let (svc, _) = services(&dir);
-    assert_eq!(forget_my_voice(&svc).unwrap(), 0, "nothing to forget");
+    assert_eq!(
+        forget_my_voice(&svc).unwrap().voices,
+        0,
+        "nothing to forget"
+    );
     let MyVoiceOutcome::Enrolled {
         person, voiceprint, ..
     } = enrol(&svc, &alone(1, 26_000))
@@ -318,7 +322,7 @@ fn my_voice_forget_zeroes_and_tombstones_every_voiceprint_of_the_user() {
         panic!("not enrolled")
     };
     assert_eq!(
-        forget_my_voice(&svc).unwrap(),
+        forget_my_voice(&svc).unwrap().voices,
         2,
         "the print and its one sample"
     );
@@ -417,7 +421,7 @@ fn my_voice_forget_forgets_every_person_marked_as_the_user_at_once() {
     .unwrap();
     assert_eq!(my_voice(&svc).unwrap().voiceprints, 2);
     assert_eq!(
-        forget_my_voice(&svc).unwrap(),
+        forget_my_voice(&svc).unwrap().voices,
         4,
         "two prints and their samples"
     );
@@ -596,7 +600,7 @@ fn my_voice_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
     assert!(has_voice(&svc).unwrap());
     assert!(listed(&svc));
     // T12.77b3: forgetting counts the sample with the print, and leaves no voice.
-    assert_eq!(forget_my_voice(&svc).unwrap(), 2);
+    assert_eq!(forget_my_voice(&svc).unwrap().voices, 2);
     assert_eq!(my_voice(&svc).unwrap().voiceprints, 0);
     assert!(svc.store().samples_of(print.id()).unwrap().is_empty());
 }
@@ -667,7 +671,8 @@ fn damaged_baseline_store(svc: &Services) {
             stored.push(v);
         }
         // (sample n, print, person, model, vector, origin own)
-        let records: [(u8, u8, u8, &str, Vec<f32>, bool); 8] = [
+        type Row<'a> = (u8, u8, u8, &'a str, Vec<f32>, bool);
+        let records: [Row<'_>; 8] = [
             (41, 31, 1, MODEL, unit(4), true),
             (42, 32, 2, MODEL, unit(5), false),
             // The fold leaves these out: another model, another length.
@@ -730,7 +735,7 @@ fn my_voice_damaged_same_answers_without_damage_as_before() {
         ],
         "the People list"
     );
-    assert_eq!(forget_my_voice(&svc).unwrap(), 9, "Forget my voice");
+    assert_eq!(forget_my_voice(&svc).unwrap().voices, 9, "Forget my voice");
 
     // The same store, with a reader holding the file so the checkpoint is refused: the answer
     // is the live count read before the erasure.
@@ -743,7 +748,7 @@ fn my_voice_damaged_same_answers_without_damage_as_before() {
         .execute_batch("BEGIN; SELECT count(*) FROM person;")
         .unwrap();
     assert_eq!(
-        forget_my_voice(&svc).unwrap(),
+        forget_my_voice(&svc).unwrap().voices,
         9,
         "the live count when Busy"
     );

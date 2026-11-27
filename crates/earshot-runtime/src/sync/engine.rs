@@ -13,8 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use earshot_core::identity::{DeviceId, EntityId, HlcTimestamp};
 use earshot_net::{AuditLog, Url};
 use earshot_store::{
-    ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, Store, StoreError, StoreTx, SyncKinds,
-    SyncedRow,
+    ApplyRules, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, StoreError, SyncKinds, SyncedRow,
 };
 use earshot_sync::wire::{B64, PullResponse, PulledRow, PushRequest, WireRow};
 use earshot_sync::{
@@ -108,6 +107,11 @@ pub struct TickReport {
     /// ([`earshot_store::Applied::text_emptied`], docs/sync-spec.md 15.4): a tick with any runs
     /// one `flush_erasures` at its end, however it ends (15.8). Rows, never content.
     pub text_emptied: usize,
+    /// Rows here that did not read and that the tick's pages skipped, each once however many
+    /// pages skipped it (docs/sync-spec.md 16.7). Counts only.
+    pub damaged_skipped: usize,
+    /// The rows behind [`Self::damaged_skipped`] (SQLite rowids, never logged or stored).
+    pub(crate) damaged_rows: BTreeSet<(&'static str, i64)>,
 }
 
 /// What the sweep of replaced text ([`crate::replaced_text`]) reads of a store's sync: whether
@@ -951,6 +955,8 @@ impl SyncClient {
                     status.last_success_unix_ms = Some(self.services.clock.now_unix_ms());
                     status.unsendable = u64::try_from(report.unsendable).unwrap_or(u64::MAX);
                     status.refused = u64::try_from(report.refused).unwrap_or(u64::MAX);
+                    status.damaged_skipped =
+                        u64::try_from(report.damaged_skipped).unwrap_or(u64::MAX);
                 }
                 Err(p) => status.problem = Some(*p),
             }
@@ -1442,8 +1448,7 @@ impl SyncClient {
         }
         let leased: BTreeSet<EntityId> = self.services.leased_meetings();
         let is_leased = |m: EntityId| leased.contains(&m);
-        let clock = std::sync::Arc::clone(&self.services.clock);
-        let mut db = self.services.store();
+        let now_ms = self.services.clock.now_unix_ms();
         // Speaker rows' names and each meeting's current summary before the page, so a name
         // the summary used is judged here as on the computer that changed it, and a summary
         // the page brings in is never judged (T12.82, `crate::summary_names`).
@@ -1454,7 +1459,6 @@ impl SyncClient {
                 speakers.entry(s.meeting_id).or_default().insert(s.id);
             }
         }
-        let names_before = crate::summary_names::names_before(&**db, &speakers)?;
         // Word choices of lines a page replaced go with them (docs/sync-spec.md 15.3): dropped
         // in the page's transaction for every meeting the page carries a segment row of.
         let segment_meetings: BTreeSet<EntityId> = page
@@ -1464,45 +1468,26 @@ impl SyncClient {
                 _ => None,
             })
             .collect();
-        // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in
-        // the page's own transaction, so the list never differs from the rows it came from.
-        let after = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {
-            for meeting in &segment_meetings {
-                crate::word_choices::drop_stale_tx(tx, *meeting).map_err(|e| match e {
-                    crate::RuntimeError::Store(e) => e,
-                    other => StoreError::Corrupt(other.to_string()),
-                })?;
-            }
-            crate::summary_names::names_changed_tx(tx, &names_before)?;
-            if kinds.dictionary {
-                crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep)?;
-            }
-            Ok(())
-        };
-        let rules = ApplyRules {
-            kinds,
-            leased: &is_leased,
-            now_ms: self.services.clock.now_unix_ms(),
-            after: Some(&after),
-        };
-        let (store, hlc) = db.parts();
         // The first page this client applies runs every convergence repair, whatever it holds
         // (rows left unrepaired by an earlier build are mended once per start); every later one
         // runs the repairs its own rows call for (T14.50). One tick at a time on a store, so the
         // flag has one writer.
-        let applied = if let Some(blocked) = release {
-            let blocked = |m: EntityId, t: EntityId| blocked.contains(&(m, t));
-            store.apply_remote_releasing(page, &rules, &blocked, hlc, &*clock)?
-        } else if self.repaired_all.load(Ordering::Relaxed) {
-            store.apply_remote(page, &rules, hlc, &*clock)?
-        } else {
-            let applied = store.apply_remote_every_repair(page, &rules, hlc, &*clock)?;
+        let every = release.is_none() && !self.repaired_all.load(Ordering::Relaxed);
+        let applied = self.services.guarded_write(|w| {
+            apply_page_in(
+                w,
+                page,
+                kinds,
+                &is_leased,
+                now_ms,
+                &speakers,
+                &segment_meetings,
+                release,
+                every,
+            )
+        })?;
+        if every {
             self.repaired_all.store(true, Ordering::Relaxed);
-            applied
-        };
-        if applied.biometrics_forgotten > 0 {
-            // A Busy here means the forgetting is committed; the next checkpoint erases it.
-            let _ = store.flush_erasures();
         }
         report.written += applied.written;
         report.text_emptied += applied.text_emptied;
@@ -1521,6 +1506,10 @@ impl SyncClient {
             + applied.edited_lines_kept
             + applied.lines_rewritten_under_edits
             + applied.speakers_revived;
+        report
+            .damaged_rows
+            .extend(applied.damaged_rows.iter().copied());
+        report.damaged_skipped = report.damaged_rows.len();
         report.meetings.extend(applied.meetings);
         report.people |= applied.people;
         Ok(applied.parents_written)
@@ -1530,22 +1519,103 @@ impl SyncClient {
     /// edited here after the deletion would otherwise stay live over children the deletion
     /// cleared. The deletion here is stamped now, so it wins everywhere. A tombstone stamped
     /// further ahead than [`MAX_CLOCK_AHEAD_MS`] deletes nothing (its row is held, as any).
+    /// A local row that does not read is deleted too unless its `deleted` reads `Yes`: the
+    /// pulled tombstone decides, through T14.26's deletion, which handles a damaged meeting
+    /// (docs/sync-spec.md 16.5 item 15).
     fn meetings_deleted_elsewhere(&self, page: &[Incoming]) -> Result<Vec<EntityId>, SyncProblem> {
-        use earshot_core::model::MeetingRepo;
         let now = self.services.clock.now_unix_ms();
-        let db = self.services.store();
-        let store: &Store = &db;
-        let mut out = Vec::new();
-        for inc in page {
-            if let Some(SyncedRow::Meeting(m)) = &inc.row
-                && m.meta.deleted
-                && let Some(local) = store.meeting(m.id)?
-                && !local.meta.deleted
-                && m.meta.updated_at.wall_ms <= now.saturating_add(MAX_CLOCK_AHEAD_MS)
-            {
+        meetings_deleted_elsewhere_in(&self.services.guarded_read(), page, now)
+    }
+}
+
+/// The root of [`SyncClient::meetings_deleted_elsewhere`] (T14.57).
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn meetings_deleted_elsewhere_in(
+    r: &crate::services::ServicesRead<'_>,
+    page: &[Incoming],
+    now: u64,
+) -> Result<Vec<EntityId>, SyncProblem> {
+    let g = r.read();
+    let mut out = Vec::new();
+    for inc in page {
+        if let Some(SyncedRow::Meeting(m)) = &inc.row
+            && m.meta.deleted
+            && m.meta.updated_at.wall_ms <= now.saturating_add(MAX_CLOCK_AHEAD_MS)
+        {
+            let live_here = match g.meeting_or_damaged(m.id)? {
+                None => false,
+                Some(Ok(local)) => !local.meta.deleted,
+                Some(Err(())) => g.meeting_deleted(m.id)? != Some(earshot_store::Deleted::Yes),
+            };
+            if live_here {
                 out.push(m.id);
             }
         }
-        Ok(out)
     }
+    Ok(out)
+}
+
+use crate::services::ApplyHow;
+
+/// The root of a pulled page's apply (T14.57, docs/sync-spec.md 16.3): `names_before`, the
+/// page with its `after` closure ([`after_page`]) and the checkpoint, under one lock.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_page_in(
+    w: &mut crate::services::ServicesWrite<'_>,
+    page: &[Incoming],
+    kinds: SyncKinds,
+    leased: &dyn Fn(EntityId) -> bool,
+    now_ms: u64,
+    speakers: &std::collections::BTreeMap<EntityId, BTreeSet<EntityId>>,
+    segment_meetings: &BTreeSet<EntityId>,
+    release: Option<&BTreeSet<(EntityId, EntityId)>>,
+    every: bool,
+) -> Result<earshot_store::Applied, SyncProblem> {
+    let names_before = crate::summary_names::names_before(&w.read(), speakers)?;
+    let after = |g: &mut earshot_store::GuardedTx<'_, '_>| -> Result<(), StoreError> {
+        after_page(g, kinds, segment_meetings, &names_before)
+    };
+    let rules = ApplyRules {
+        kinds,
+        leased,
+        now_ms,
+        after: Some(&after),
+    };
+    let blocked = |m: EntityId, t: EntityId| release.is_some_and(|b| b.contains(&(m, t)));
+    let how = if release.is_some() {
+        ApplyHow::Releasing(&blocked)
+    } else if every {
+        ApplyHow::EveryRepair
+    } else {
+        ApplyHow::Plain
+    };
+    Ok(w.apply_remote(page, &rules, how)?)
+}
+
+/// The `after` closure's function: run last inside a pulled page's transaction (T14.57).
+///
+/// # Errors
+/// Store errors; the page is rolled back then.
+pub(crate) fn after_page(
+    g: &mut earshot_store::GuardedTx<'_, '_>,
+    kinds: SyncKinds,
+    segment_meetings: &BTreeSet<EntityId>,
+    names_before: &[crate::summary_names::NamesBefore],
+) -> Result<(), StoreError> {
+    for meeting in segment_meetings {
+        crate::word_choices::drop_stale_in(g, *meeting).map_err(|e| match e {
+            crate::RuntimeError::Store(e) => e,
+            other => StoreError::Corrupt(other.to_string()),
+        })?;
+    }
+    crate::summary_names::names_changed_tx(g, names_before)?;
+    // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in the
+    // page's own transaction, so the list never differs from the rows it came from; while a
+    // word row does not read the list stays as it is (`Rebuild::Unread`, counted).
+    if kinds.dictionary {
+        crate::vocabulary::rebuild_tx(g, crate::vocabulary::OverRefused::Keep)?;
+    }
+    Ok(())
 }

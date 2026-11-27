@@ -242,6 +242,9 @@ export interface MockIpcData {
   unknownLine?: number;
   /** The persons (default: `samplePersons()`). */
   persons?: PersonItem[];
+  /** A damaged row on this computer that the People list, Remove and Forget voice leave as it
+   * is (T14.57): their answers say so (default false). */
+  personsDamaged?: boolean;
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
    * rejects with `no_vault`. */
   vault?: string;
@@ -1525,7 +1528,10 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       }
       return changed;
     },
-    listPersons: async () => persons.map((p) => ({ ...p })),
+    listPersons: async () => ({
+      persons: persons.map((p) => ({ ...p })),
+      damaged: data.personsDamaged === true,
+    }),
     forgetPersonVoices: async (person) => {
       call("forgetPersonVoices", person);
       const p =
@@ -1541,7 +1547,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           ),
         });
       }
-      return had;
+      return { forgotten: had, damaged: data.personsDamaged === true, incomplete: false };
     },
     removePerson: async (person) => {
       call("removePerson", person);
@@ -1568,6 +1574,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           }),
         });
       }
+      return { damaged: data.personsDamaged === true };
     },
     speakerSample: async (meeting, speaker) => {
       speakerOf(detailOf(meeting), speaker);

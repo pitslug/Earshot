@@ -32,7 +32,7 @@ use earshot_core::identity::EntityId;
 use earshot_core::model::{MeetingRepo, Speaker, Summary, current_summary};
 use earshot_core::summary::SummaryV1;
 use earshot_core::voiceprint::DEFAULT_ME_NAME;
-use earshot_store::{Store, StoreError, StoreTx};
+use earshot_store::{GuardedRead, GuardedTx, Store, StoreError, StoreTx};
 
 use crate::RuntimeError;
 use crate::local::{LocalKey, MeetingRecord};
@@ -114,9 +114,10 @@ pub fn out_of_date_by_names(summary: &SummaryV1, earlier: &[String], speakers: &
 }
 
 /// Records `old` against `summary` when a speaker row of `meeting` went from `old` to `new`
-/// and the summary uses `old` (module docs). Returns whether a name was recorded.
-fn record_tx(
-    tx: &mut StoreTx<'_>,
+/// and the summary uses `old` (module docs). Returns whether a name was recorded. A guarded
+/// root (T14.57): it reads and writes only the record.
+pub(crate) fn record_tx(
+    g: &mut GuardedTx<'_, '_>,
     meeting: EntityId,
     summary: &Summary,
     old: &str,
@@ -126,7 +127,7 @@ fn record_tx(
         return Ok(false);
     }
     let key = record_key(meeting);
-    let mut names = tx
+    let mut names = g
         .local_value(key.as_str())?
         .map(|b| decode(&b))
         .unwrap_or_default();
@@ -135,13 +136,14 @@ fn record_tx(
         return Ok(false);
     }
     list.push(old.trim().to_owned());
-    crate::local::set_tx(tx, &key, &encode(&names)?)?;
+    crate::local::set_guarded(g, &key, &encode(&names)?)?;
     Ok(true)
 }
 
 /// Records, inside a naming edit's transaction, that a speaker row of `meeting` went from
 /// `old` to `new`, against the meeting's current summary (module docs). Returns whether a name
-/// was recorded.
+/// was recorded. A user's naming edit is not a guarded path (docs/sync-spec.md 16.5, "left
+/// out of scope"): a summary that does not read refuses the edit.
 ///
 /// # Errors
 /// Store errors.
@@ -154,7 +156,7 @@ pub(crate) fn name_changed_tx(
     let Some(current) = current_summary(tx.summaries(meeting)?) else {
         return Ok(false);
     };
-    record_tx(tx, meeting, &current, old, new)
+    record_tx(&mut tx.guarded(), meeting, &current, old, new)
 }
 
 /// One meeting's current summary and the names of some of its live speaker rows, read before
@@ -167,21 +169,24 @@ pub(crate) struct NamesBefore {
 }
 
 /// The names the live rows `rows` (meeting to speaker ids) have now, with each meeting's
-/// current summary: one read of each per meeting. A meeting without a summary is left out.
+/// current summary: one read of each per meeting. A meeting without a summary is left out; so
+/// is one whose current summary does not read, and a speaker row that does not read loses only
+/// its own mark (docs/sync-spec.md 16.5 item 14).
 ///
 /// # Errors
 /// Store errors.
-pub(crate) fn names_before<R: MeetingRepo + ?Sized>(
-    repo: &R,
+pub(crate) fn names_before(
+    g: &GuardedRead<'_>,
     rows: &BTreeMap<EntityId, BTreeSet<EntityId>>,
 ) -> Result<Vec<NamesBefore>, StoreError> {
     let mut out = Vec::new();
     for (meeting, speakers) in rows {
-        let Some(summary) = current_summary(repo.summaries(*meeting)?) else {
+        let Some(Ok(summary)) = g.current_summary_or_damaged(*meeting)? else {
             continue;
         };
-        let names: Vec<(EntityId, String)> = repo
-            .speakers(*meeting)?
+        let names: Vec<(EntityId, String)> = g
+            .speakers_or_damaged(*meeting)?
+            .0
             .into_iter()
             .filter(|s| !s.meta.deleted && speakers.contains(&s.id))
             .map(|s| (s.id, s.display_name))
@@ -200,28 +205,29 @@ pub(crate) fn names_before<R: MeetingRepo + ?Sized>(
 /// Records every name of `before` that has changed since, against the summary that was current
 /// then and only while it still is (a summary the change brought in is new and records
 /// nothing). Run in the change's transaction after its writes. Returns how many names were
-/// recorded.
+/// recorded. A current summary that does not read skips that meeting's marks, a speaker row
+/// that does not read its own (docs/sync-spec.md 16.5 item 12).
 ///
 /// # Errors
 /// Store errors.
 pub(crate) fn names_changed_tx(
-    tx: &mut StoreTx<'_>,
+    g: &mut GuardedTx<'_, '_>,
     before: &[NamesBefore],
 ) -> Result<usize, StoreError> {
     let mut recorded = 0;
     for b in before {
-        let Some(current) = current_summary(tx.summaries(b.meeting)?) else {
+        let Some(Ok(current)) = g.current_summary_or_damaged(b.meeting)? else {
             continue;
         };
         if current.id != b.summary {
             continue;
         }
-        let now = tx.speakers(b.meeting)?;
+        let now = g.speakers_or_damaged(b.meeting)?.0;
         for (speaker, old) in &b.names {
             let Some(row) = now.iter().find(|s| s.id == *speaker && !s.meta.deleted) else {
                 continue;
             };
-            if record_tx(tx, b.meeting, &current, old, &row.display_name)? {
+            if record_tx(g, b.meeting, &current, old, &row.display_name)? {
                 recorded += 1;
             }
         }

@@ -20,6 +20,7 @@ mod delete;
 mod export;
 mod flac;
 mod fsutil;
+mod guarded;
 pub mod identities;
 mod layout;
 mod replaced;
@@ -47,6 +48,11 @@ pub use flac::{
     read_flac_span, recover_part,
 };
 pub use fsutil::total_memory;
+pub use guarded::{
+    ChainEnd, Col, Deleted, GuardedRead, GuardedTx, Identity, MeetingLink, PersonLink, PrintLink,
+    SQL_OWNERS, SampleLink, SpeakerLink, VoiceRows, Written, chain_end, identity_in,
+    identity_of_links, identity_tx,
+};
 pub use layout::DataDir;
 pub use replaced::{Cleared, PushGuard};
 pub use sync::{

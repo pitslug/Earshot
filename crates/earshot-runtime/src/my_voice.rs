@@ -367,51 +367,90 @@ pub fn my_voice(services: &Services) -> Result<MyVoice, RuntimeError> {
 /// merged into them) in one store transaction (`Store::forget_voiceprints_of`: zeroed,
 /// tombstoned, then one truncating checkpoint), so either all of them are forgotten or none.
 /// Returns how many voiceprints and voice samples were forgotten. A checkpoint blocked by
-/// another connection after the
-/// commit (`StoreError::Busy`) still counts as forgotten: the deletion is committed.
+/// another connection after the commit (`StoreError::Busy`) still counts as forgotten: the
+/// deletion is committed.
+///
+/// A damaged row anywhere no longer stops it (T14.57, docs/sync-spec.md 16.5 item 23a). When
+/// any person row's `is_me` or `id` does not read, the user may be that person, so it also
+/// starts from the persons the user's own "Your voice" samples name (each only when its own
+/// `is_me` does not read `false`); a person it still cannot reach makes the answer
+/// [`crate::edit::Forgot::incomplete`].
 ///
 /// # Errors
 /// Store errors (nothing was forgotten then).
-pub fn forget_my_voice(services: &Services) -> Result<usize, RuntimeError> {
-    let clock = std::sync::Arc::clone(&services.clock);
-    let mut db = services.store();
-    let (mine, live) = {
-        let store: &earshot_store::Store = &db;
-        let mine: Vec<EntityId> = store
-            .persons()
-            .map_err(RuntimeError::Voiceprint)?
-            .into_iter()
-            .filter(|p| p.is_me)
-            .map(|p| p.id)
+pub fn forget_my_voice(services: &Services) -> Result<crate::edit::Forgot, RuntimeError> {
+    services.guarded_write(forget_my_voice_in)
+}
+
+/// [`forget_my_voice`]'s root.
+///
+/// # Errors
+/// As [`forget_my_voice`].
+pub(crate) fn forget_my_voice_in(
+    w: &mut crate::services::ServicesWrite<'_>,
+) -> Result<crate::edit::Forgot, RuntimeError> {
+    use earshot_store::{Col, Deleted};
+    let (mine, live, incomplete, damaged) = {
+        let r = w.read();
+        let links = r.person_links()?;
+        let unplaced = |l: &earshot_store::PersonLink| !l.is_me.reads() || !l.id.reads();
+        let mut mine: Vec<EntityId> = links
+            .iter()
+            .filter(|l| l.is_me == Col::Read(true))
+            .filter_map(|l| l.id.read())
             .collect();
-        let mut live = std::collections::BTreeSet::new();
-        for &person in &mine {
-            for id in identity_of(store, person).map_err(RuntimeError::Voiceprint)? {
-                for v in store.voiceprints_of(id).map_err(RuntimeError::Voiceprint)? {
-                    if !v.meta().deleted {
-                        live.insert(v.id());
-                    }
-                    for s in store.samples_of(v.id()).map_err(RuntimeError::Voiceprint)? {
-                        live.insert(s.id());
-                    }
-                }
-                for s in store
-                    .samples_of_person(id)
-                    .map_err(RuntimeError::Voiceprint)?
-                {
-                    live.insert(s.id());
+        let trigger = links.iter().any(unplaced);
+        if trigger {
+            // The persons the user's own samples name, unless they read as someone else.
+            for s in r.live_sample_links()? {
+                let Col::Read(Some(p)) = s.person_id else {
+                    continue;
+                };
+                let someone_else = links
+                    .iter()
+                    .any(|l| l.id == Col::Read(p) && l.is_me == Col::Read(false));
+                if s.is_own() && !someone_else && !mine.contains(&p) {
+                    mine.push(p);
                 }
             }
         }
-        (mine, live.len())
+        let mut reached = std::collections::BTreeSet::new();
+        let mut live = std::collections::BTreeSet::new();
+        for &person in &mine {
+            let members = earshot_store::identity_of_links(&links, person).members;
+            let rows = r.voice_rows_of(&members)?;
+            for p in rows.prints.iter().filter(|p| p.deleted == Deleted::No) {
+                live.insert(("voiceprint", p.rowid));
+            }
+            for s in &rows.samples {
+                live.insert(("voiceprint_sample", s.rowid));
+            }
+            reached.extend(members);
+        }
+        let incomplete = trigger
+            && links
+                .iter()
+                .any(|l| unplaced(l) && !l.id.read().is_some_and(|id| reached.contains(&id)));
+        (mine, live.len(), incomplete, r.damaged_skipped())
     };
     if mine.is_empty() {
-        return Ok(0);
+        return Ok(crate::edit::Forgot {
+            voices: 0,
+            damaged,
+            incomplete,
+        });
     }
-    let (store, hlc) = db.parts();
-    match store.forget_voiceprints_of(&mine, hlc, &*clock) {
-        Ok(n) => Ok(n.total()),
-        Err(earshot_store::StoreError::Busy(_)) => Ok(live),
+    match w.forget_voiceprints_of(&mine) {
+        Ok(n) => Ok(crate::edit::Forgot {
+            voices: n.total(),
+            damaged: damaged.max(n.skipped),
+            incomplete,
+        }),
+        Err(earshot_store::StoreError::Busy(_)) => Ok(crate::edit::Forgot {
+            voices: live,
+            damaged,
+            incomplete,
+        }),
         Err(e) => Err(e.into()),
     }
 }

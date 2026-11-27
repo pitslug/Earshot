@@ -715,7 +715,7 @@ fn edit_merge_into_me_merges_the_person_and_keeps_their_voiceprints_as_the_users
     crate::my_voice::set_my_name(&svc, "Casey Lane").unwrap();
     assert_eq!(row_of(&svc, m, other).display_name, "Casey Lane");
     // Forgetting the user's voice forgets the merged person's print (and its sample) too.
-    assert_eq!(crate::my_voice::forget_my_voice(&svc).unwrap(), 2);
+    assert_eq!(crate::my_voice::forget_my_voice(&svc).unwrap().voices, 2);
     assert_eq!(print_count(&svc, twin), None);
 }
 
