@@ -806,3 +806,78 @@ fn edit_not_this_person_refuses_a_row_linked_to_a_person_merged_into_the_user() 
     assert_eq!(row(&svc, m, s), before, "nothing written");
     assert_eq!(entry(&svc, m, s), entry_before, "nothing written");
 }
+
+/// Opens `dir`'s store again as an earlier build left it (no `identity-sweep`), so the open
+/// sweeps (T14.49c, docs/sync-spec.md 7A.2 P5).
+fn reopened_for_the_sweep(dir: &TempDir, svc: Services) -> Services {
+    let key = earshot_store::identities::SWEEP_KEY;
+    assert!(svc.store().local_value(key).unwrap().is_some());
+    svc.store().delete_local_value(key).unwrap();
+    drop(svc);
+    let (svc, _) = services(dir);
+    assert!(svc.store().local_value(key).unwrap().is_some(), "swept");
+    svc
+}
+
+/// T14.49c (docs/sync-spec.md 7A.11 "Save after the sweep"): an older meeting's unnamed voice
+/// keeps its entry through the open's sweep, so naming and saving it enrols the voice (not
+/// `NoStoredVoice`) and a re-transcription keeps the name. Positive control: the same with the
+/// entry removed by hand gives `NoStoredVoice` and the name is not carried.
+#[test]
+fn edit_save_after_the_identity_sweep_enrols_and_a_retranscribe_keeps_the_name() {
+    for by_hand in [false, true] {
+        let dir = TempDir::new("edit-sweep");
+        let (svc, _) = services(&dir);
+        let m = processed(&svc, 570 + u64::from(by_hand));
+        let s = remote_speakers(&svc, m)[0].clone();
+        // Beside it, an entry of a row that is gone: the sweep's drop shows that it ran.
+        let mut kept = identities_in(&svc.store(), m).unwrap();
+        let mut gone = kept[0].clone();
+        gone.speaker =
+            EntityId::from_bytes([1, 0x93, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 9, 9]);
+        if by_hand {
+            kept.retain(|i| i.speaker != s.id);
+        }
+        kept.push(gone.clone());
+        crate::local::set(
+            &mut svc.store(),
+            &record_key(m),
+            &crate::identities::encode(&crate::identities::IdentityRecord { speakers: kept }),
+        )
+        .unwrap();
+        let svc = reopened_for_the_sweep(&dir, svc);
+        let after = identities_in(&svc.store(), m).unwrap();
+        assert!(
+            !after.iter().any(|i| i.speaker == gone.speaker),
+            "the gone row's entry"
+        );
+        assert_eq!(after.iter().any(|i| i.speaker == s.id), !by_hand);
+
+        let saved = save_voice_with(
+            &svc,
+            m,
+            s.id,
+            &PersonChoice::New {
+                name: "Morgan Invented".into(),
+            },
+            &calibrated(true),
+        )
+        .unwrap();
+        assert_eq!(row(&svc, m, s.id).person_id, Some(saved.person));
+        if by_hand {
+            assert_eq!(saved.remembered, Remembered::NoStoredVoice, "{saved:?}");
+        } else {
+            assert!(
+                matches!(saved.remembered, Remembered::Enrolled { .. }),
+                "{saved:?}"
+            );
+        }
+        let cancel = CancelToken::new();
+        retranscribe_with(&svc, m, &cancel, fake_post, &mut |_| {}).unwrap();
+        let named = view(&svc, m)
+            .speakers
+            .into_iter()
+            .any(|r| r.display_name == "Morgan Invented" && r.person_id == Some(saved.person));
+        assert_eq!(named, !by_hand, "by hand: {by_hand}");
+    }
+}

@@ -337,6 +337,12 @@ impl Device {
                     .unwrap()
                     .collect::<Result<_, _>>()
                     .unwrap();
+                // The one-off identity sweep's device record (T14.49c), written by every first
+                // open since, is left out so the digest still pins exactly the rows it pinned
+                // before; the sweep has tests of its own (`tests/sync_sweep.rs`).
+                let sweep =
+                    rusqlite::types::Value::Text(earshot_store::identities::SWEEP_KEY.to_owned());
+                rows.retain(|r| !(t == "local_state" && r.first() == Some(&sweep)));
                 rows.sort_by_key(|r| format!("{r:?}"));
                 (t, rows)
             })

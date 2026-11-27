@@ -565,6 +565,14 @@ Every convergence case runs both through `LocalRelay` (the real relay code, whic
 
 The second review's fixes (7A.13) change no decision above: P5 erases more, never less; P5's sweep erases only entries of rows that are gone; A1 keeps more of the user's own data, as point 3 already said.
 
+### 7A.12a As built: the one-off sweep (T14.49c, 2026-11-27)
+
+- Cost, measured on a generated store of 2,000 meetings (four speaker rows each, one tombstoned; a record of four entries with 512-float centroids, the CAM++ size; a 54 MB database): the open that sweeps takes about 0.34 s in a release build (three runs: 331, 339 and 341 ms, its checkpoint and close included) and 2.0 s in a debug build; an open after it about 3 ms. Under the 2 s line for shipped builds, so the sweep is one transaction and the batched variant is not built. Reproduce with `cargo test --release -p earshot-store --test sync_sweep cost -- --ignored --nocapture`.
+- `SWEEP_SPEAKERS_SQL` is owned in `SQL_OWNERS` by `sweep_speakers`, the sweep's private reader, not by `sweep_identities` itself: section 16.8 forbids SQL calls in a root's body, so the constant cannot be both. The scan holds the intent instead: `.sweep_speakers(` may be called only inside `sweep_identities`, and the constant's columns must be exactly `rowid, id, deleted`.
+- The tables are STRICT (16.10a), so a speaker row's `deleted` that does not read cannot be stored; the sweep still reads it three ways, and the test pins that SQLite refuses such a value.
+- The best-effort test injects its error with a trigger in the test's store that refuses the record's write, after every drop; shipped code has no seam for it.
+- The revived row of the accepted ignore-copy case is made live by a later live copy over the tombstone (the case *Trust boundary* names beside rule 4c).
+
 ### 7A.13 Revisions
 
 - **After the first spec review (2026-11-26).** Blocking: finality held in one direction only, and the relay could drop a tombstone whose writer then went silent. Added R1 (a relay rule) and the second case of P1 and F1 (7A.2), the blocking walk and both arrival orders (7A.6), and a format bump to 5. Advisories: writers that refuse a removed person (7A.3, with `set_row_person` and the final pass tightened); the user under an `is_me` tombstone (P4, replacing the first draft's "applied like any other"); the erasure flush for removals with no voice (7A.4); the names pin (7A.5); the owner's questions with recommendations and what the other computer shows (7A.12); the tests (7A.11).

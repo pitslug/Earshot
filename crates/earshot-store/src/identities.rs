@@ -57,6 +57,41 @@ pub const READABLE_VERSIONS: [u32; 2] = [1, IDENTITY_RECORD_VERSION];
 /// The local_state key prefix of every record.
 pub const RECORD_PREFIX: &str = "speaker-identities/";
 
+/// The local_state key of the device record of the one-off sweep (docs/sync-spec.md 7A.2 P5,
+/// [`crate::sweep_identities`]): its presence means the sweep ran on this store. Pinned to the
+/// runtime registry's `DeviceRecord::IdentitySweep` by a runtime test.
+pub const SWEEP_KEY: &str = "identity-sweep";
+
+/// The format of [`SWEEP_KEY`]'s value: `version (u32 LE) | JSON` ([`IdentitySweep`]).
+pub const SWEEP_RECORD_VERSION: u32 = 1;
+
+/// What the one-off sweep wrote ([`SWEEP_KEY`]): a count, never content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentitySweep {
+    /// Entries dropped, an undecodable record counting as one.
+    pub dropped: u64,
+}
+
+/// The stored form of `sweep` (`version u32 LE | JSON`).
+#[must_use]
+pub fn encode_sweep(sweep: &IdentitySweep) -> Vec<u8> {
+    // A struct of one integer: serialising cannot fail; if it did, the version alone is
+    // stored, which still means done.
+    crate::encode_versioned(SWEEP_RECORD_VERSION, sweep)
+        .unwrap_or_else(|_| SWEEP_RECORD_VERSION.to_le_bytes().to_vec())
+}
+
+/// Reads [`encode_sweep`]; `None` for another version or a payload that does not parse (the
+/// record still means done: only its presence is read by the sweep).
+#[must_use]
+pub fn decode_sweep(bytes: &[u8]) -> Option<IdentitySweep> {
+    let (version, payload) = crate::split_version(bytes)?;
+    if version != SWEEP_RECORD_VERSION {
+        return None;
+    }
+    serde_json::from_slice(payload).ok()
+}
+
 /// One speaker row of an earlier final pass.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpeakerIdentity {

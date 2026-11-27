@@ -78,6 +78,9 @@ const DEAD_PRINT_SAMPLES_SQL: &str = "SELECT s.rowid, s.id, s.meeting_id \
      WHERE s.deleted = 0 AND v.deleted = 1";
 /// The keys of every meeting's speaker identity record.
 const IDENTITY_RECORD_KEYS_SQL: &str = "SELECT key FROM local_state WHERE substr(key, 1, ?1) = ?2";
+/// The one-off sweep's read of one meeting's speaker rows (docs/sync-spec.md 7A.2 D1): `rowid`,
+/// `id` and `deleted` only, so nothing another writer has written can make it skip an entry.
+const SWEEP_SPEAKERS_SQL: &str = "SELECT rowid, id, deleted FROM speaker WHERE meeting_id = ?1";
 /// Erases a live sample whose id reads (every column a constant of the erased form).
 const ERASE_SAMPLE_BY_ID_SQL: &str = "UPDATE voiceprint_sample SET deleted = 1, \
      voiceprint_id = NULL, person_id = NULL, model = NULL, vector = x'', speech_ms = NULL, \
@@ -130,6 +133,7 @@ pub const SQL_OWNERS: &[(&str, &str)] = &[
     ("DEAD_PERSON_SAMPLES_SQL", "dead_person_samples"),
     ("DEAD_PERSON_PRINTS_SQL", "dead_person_prints"),
     ("IDENTITY_RECORD_KEYS_SQL", "identity_record_keys"),
+    ("SWEEP_SPEAKERS_SQL", "sweep_speakers"),
     ("ERASE_SAMPLE_BY_ID_SQL", "erase_sample_by_id"),
     ("ERASE_SAMPLE_BY_ROWID_SQL", "erase_sample_by_rowid"),
     ("ERASE_PRINT_BY_ROWID_SQL", "erase_print_by_rowid"),
@@ -732,6 +736,26 @@ fn identity_record_keys(c: &Connection) -> Result<Vec<String>, StoreError> {
     Ok(keys.into_iter().filter_map(Col::read).collect())
 }
 
+/// A speaker row as the one-off sweep reads it: its rowid, `id` and `deleted`, nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SweptRow {
+    rowid: i64,
+    id: Col<EntityId>,
+    deleted: Deleted,
+}
+
+fn sweep_speakers(c: &Connection, meeting: EntityId) -> Result<Vec<SweptRow>, StoreError> {
+    let mut st = c.prepare_cached(SWEEP_SPEAKERS_SQL)?;
+    let rows = st.query_map(params![&meeting.as_uuid().as_bytes()[..]], |r| {
+        Ok(SweptRow {
+            rowid: col_rowid(r.get_ref(0)?),
+            id: col_id(r.get_ref(1)?),
+            deleted: col_deleted(r.get_ref(2)?),
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 fn erase_sample_by_id(c: &Connection, at: HlcTimestamp, id: EntityId) -> Result<usize, StoreError> {
     let (wall, logical, node) = stamp_params(at)?;
     Ok(c.prepare_cached(ERASE_SAMPLE_BY_ID_SQL)?.execute(params![
@@ -1231,6 +1255,11 @@ impl GuardedTx<'_, '_> {
     /// Store errors.
     pub fn identity_record_keys(&self) -> Result<Vec<String>, StoreError> {
         identity_record_keys(self.c())
+    }
+
+    /// The one-off sweep's read of `meeting`'s speaker rows ([`sweep_identities`] only).
+    fn sweep_speakers(&self, meeting: EntityId) -> Result<Vec<SweptRow>, StoreError> {
+        sweep_speakers(self.c(), meeting)
     }
 
     /// Writes a whole readable person row.
@@ -2195,6 +2224,66 @@ pub fn chain_end(g: &GuardedTx<'_, '_>, person: EntityId) -> Result<ChainEnd, St
             (Deleted::No, Col::Read(Some(next)), _) => cur = next,
         }
     }
+}
+
+/// The one-off sweep of speaker identity entries (docs/sync-spec.md 7A.2 P5 and D1), run once
+/// per store inside `Store::open`, opened only by [`Store::guarded_immediate`] so the write lock
+/// is held before its first read. It re-reads the device record
+/// [`crate::identities::SWEEP_KEY`] and does nothing when it is there (another open swept
+/// already). Otherwise, in every `speaker-identities/<meeting>` record, it drops every entry whose
+/// speaker row is missing, tombstoned, or has a `deleted` that does not read; an entry that
+/// matches no readable row is missing, so a row whose `id` does not read keeps no entry (it is not
+/// shown). A record that does not decode is deleted whole, counting as one; a record left empty
+/// (or empty already) is deleted. A live row's entry is never touched, linked or not. It reads each
+/// meeting's speaker `id` and `deleted` only, and of an entry only its speaker id, so nothing
+/// another writer has written decides a drop. Then it writes the record with the count, in the
+/// same transaction. Returns the count, `None` when the sweep had run before.
+///
+/// # Errors
+/// Store errors (the caller rolls back and the next open tries again).
+pub fn sweep_identities(g: &mut GuardedTx<'_, '_>) -> Result<Option<u64>, StoreError> {
+    use crate::identities::{
+        IdentitySweep, RECORD_PREFIX, SWEEP_KEY, StoredIdentities, decode, encode, encode_sweep,
+    };
+    use std::str::FromStr;
+    if g.local_value(SWEEP_KEY)?.is_some() {
+        return Ok(None);
+    }
+    let mut dropped: u64 = 0;
+    for key in g.identity_record_keys()? {
+        let Some(bytes) = g.local_value(&key)? else {
+            continue;
+        };
+        let StoredIdentities::Record(mut record) = decode(&bytes) else {
+            g.delete_local_value(&key)?;
+            dropped += 1;
+            continue;
+        };
+        let rows = match EntityId::from_str(&key[RECORD_PREFIX.len()..]) {
+            Ok(meeting) => g.sweep_speakers(meeting)?,
+            Err(_) => Vec::new(),
+        };
+        for r in rows
+            .iter()
+            .filter(|r| !r.id.reads() || r.deleted == Deleted::Unreadable)
+        {
+            g.count_damaged("speaker", &[r.rowid]);
+        }
+        let before = record.speakers.len();
+        record.speakers.retain(|e| {
+            rows.iter()
+                .any(|r| r.id == Col::Read(e.speaker) && r.deleted == Deleted::No)
+        });
+        let n = before - record.speakers.len();
+        dropped += u64::try_from(n).unwrap_or(u64::MAX);
+        if record.speakers.is_empty() {
+            g.delete_local_value(&key)?;
+        } else if n > 0 {
+            g.set_local_value(&key, &encode(&record))?;
+        }
+    }
+    g.set_local_value(SWEEP_KEY, &encode_sweep(&IdentitySweep { dropped }))?;
+    Ok(Some(dropped))
 }
 
 impl GuardedTx<'_, '_> {
