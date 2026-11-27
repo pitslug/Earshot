@@ -138,6 +138,51 @@ pub const SQL_OWNERS: &[(&str, &str)] = &[
     ("OUTBOX_FORGET_SQL", "outbox_forget"),
 ];
 
+/// The statements a guarded path runs that stay in their own module (T14.47's in
+/// `replaced.rs`, the held-replaced keys in `sync.rs`; the coordinator, 2026-11-27): (file,
+/// constant, the one function allowed to use it). The scan holds them to the same rules.
+pub const EXTERNAL_SQL_OWNERS: &[(&str, &str, &str)] = &[
+    ("replaced.rs", "CLEAR_BY_ROWID", "clear_rowid"),
+    ("replaced.rs", "ERASE_BY_ROWID", "erase_rowid"),
+    ("replaced.rs", "ROWID_OF_SQL", "rowid_of"),
+    ("replaced.rs", "TRACK_OF_MEETING_SQL", "track_of_meeting"),
+    (
+        "replaced.rs",
+        "LIVE_FINAL_ROWIDS_SQL",
+        "has_readable_live_final",
+    ),
+    (
+        "replaced.rs",
+        "CLEARED_TRACKS_SQL",
+        "note_every_cleared_track",
+    ),
+    (
+        "replaced.rs",
+        "LOWEST_QUEUED_CLEARED_SQL",
+        "lowest_queued_cleared",
+    ),
+    ("replaced.rs", "UNQUEUED_LIVE_FINAL_SQL", "lines_go_first"),
+    (
+        "replaced.rs",
+        "QUEUED_LIVE_FINALS_BELOW_SQL",
+        "lines_go_first",
+    ),
+    (
+        "replaced.rs",
+        "QUEUED_CLEARED_ROWIDS_SQL",
+        "restamp_cleared",
+    ),
+    ("replaced.rs", "RESTAMP_BY_ROWID_SQL", "restamp_cleared"),
+    ("sync.rs", "HELD_REPLACED_KEYS_SQL", "held_replaced_keys"),
+    ("sync.rs", "HELD_FOR_PARENT_SQL", "held_for_parent"),
+    (
+        "sync.rs",
+        "DELETE_HELD_REPLACED_SQL",
+        "put_held_replaced_keys",
+    ),
+    ("sync.rs", "PUT_HELD_REPLACED_SQL", "put_held_replaced_keys"),
+];
+
 // ---- lenient values ----
 
 /// A column read without failing: its value, or `Unreadable` when the stored value does not
@@ -760,6 +805,12 @@ macro_rules! guarded_readers {
             self.skipped.borrow().len()
         }
 
+        /// The `(table, rowid)` of each damaged row skipped so far (rowids only).
+        #[must_use]
+        pub fn damaged_rows(&self) -> BTreeSet<(&'static str, i64)> {
+            self.skipped.borrow().clone()
+        }
+
         /// Counts the damaged rows `rowids` of `table` (a caller that found them through a
         /// reader of its own kind).
         pub fn count_damaged(&self, table: &'static str, rowids: &[i64]) {
@@ -1098,6 +1149,14 @@ impl GuardedRead<'_> {
         self.store.held_page(reasons, after, limit)
     }
 
+    /// [`Store::held_by_replaced_text`].
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn held_by_replaced_text(&self) -> Result<BTreeSet<[u8; 16]>, StoreError> {
+        self.store.held_by_replaced_text()
+    }
+
     /// [`Store::held_count`].
     ///
     /// # Errors
@@ -1132,6 +1191,14 @@ impl GuardedTx<'_, '_> {
     /// As `StoreTx::delete_local_value`.
     pub fn delete_local_value(&mut self, key: &str) -> Result<bool, StoreError> {
         self.tx.delete_local_value(key)
+    }
+
+    /// Queues every synced row to be sent (a vault reset, `StoreTx::queue_every_row`).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn queue_every_row(&mut self) -> Result<u64, StoreError> {
+        self.tx.queue_every_row()
     }
 
     /// The keys of every meeting's speaker identity record.

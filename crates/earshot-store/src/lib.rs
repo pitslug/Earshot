@@ -49,9 +49,9 @@ pub use flac::{
 };
 pub use fsutil::total_memory;
 pub use guarded::{
-    ChainEnd, Col, Deleted, GuardedRead, GuardedTx, Identity, MeetingLink, PersonLink, PrintLink,
-    SQL_OWNERS, SampleLink, SpeakerLink, VoiceRows, Written, chain_end, identity_in,
-    identity_of_links, identity_tx,
+    ChainEnd, Col, Deleted, EXTERNAL_SQL_OWNERS, GuardedRead, GuardedTx, Identity, MeetingLink,
+    PersonLink, PrintLink, SQL_OWNERS, SampleLink, SpeakerLink, VoiceRows, Written, chain_end,
+    identity_in, identity_of_links, identity_tx,
 };
 pub use layout::DataDir;
 pub use replaced::{Cleared, PushGuard};

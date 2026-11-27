@@ -469,15 +469,23 @@ fn held_of((key, seq, wall, logical, node, body, reason): HeldColumns) -> Result
 /// a word it does not know), so which `parent` rows are the two holds' is kept here.
 pub const HELD_REPLACED_KEY: &str = "sync-held-replaced";
 
+/// The H1 and H2 row keys as stored (`held_replaced_keys`).
+const HELD_REPLACED_KEYS_SQL: &str = "SELECT value FROM local_state WHERE key = ?1";
+/// Whether a row is held for a parent (`held_for_parent`).
+const HELD_FOR_PARENT_SQL: &str = "SELECT 1 FROM sync_pending WHERE key = ?1 AND reason = ?2";
+/// The H1 and H2 row keys removed (`put_held_replaced_keys`).
+const DELETE_HELD_REPLACED_SQL: &str = "DELETE FROM local_state WHERE key = ?1";
+/// The H1 and H2 row keys stored (`put_held_replaced_keys`).
+const PUT_HELD_REPLACED_SQL: &str = "INSERT INTO local_state (key, value) VALUES (?1, ?2) \
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+
 pub(crate) fn held_replaced_keys(
     c: &rusqlite::Connection,
 ) -> Result<std::collections::BTreeSet<[u8; 16]>, StoreError> {
     let bytes: Option<Vec<u8>> = c
-        .query_row(
-            "SELECT value FROM local_state WHERE key = ?1",
-            params![HELD_REPLACED_KEY],
-            |r| r.get(0),
-        )
+        .query_row(HELD_REPLACED_KEYS_SQL, params![HELD_REPLACED_KEY], |r| {
+            r.get(0)
+        })
         .optional()?;
     Ok(bytes
         .unwrap_or_default()
@@ -495,31 +503,30 @@ pub(crate) fn put_held_replaced_keys(
 ) -> Result<(), StoreError> {
     let mut value = Vec::with_capacity(keys.len() * 16);
     for k in keys {
-        let held: bool = c
-            .query_row(
-                "SELECT 1 FROM sync_pending WHERE key = ?1 AND reason = ?2",
-                params![&k[..], HoldReason::Parent.word()],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if held {
+        if held_for_parent(c, k)? {
             value.extend_from_slice(k);
         }
     }
     if value.is_empty() {
-        c.execute(
-            "DELETE FROM local_state WHERE key = ?1",
-            params![HELD_REPLACED_KEY],
-        )?;
+        c.execute(DELETE_HELD_REPLACED_SQL, params![HELD_REPLACED_KEY])?;
     } else {
-        c.execute(
-            "INSERT INTO local_state (key, value) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![HELD_REPLACED_KEY, value],
-        )?;
+        c.execute(PUT_HELD_REPLACED_SQL, params![HELD_REPLACED_KEY, value])?;
     }
     Ok(())
+}
+
+/// Whether the row `key` is held for a parent.
+pub(crate) fn held_for_parent(
+    c: &rusqlite::Connection,
+    key: &[u8; 16],
+) -> Result<bool, StoreError> {
+    Ok(c.query_row(
+        HELD_FOR_PARENT_SQL,
+        params![&key[..], HoldReason::Parent.word()],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
 }
 
 /// What [`Store::apply_remote`] does with a pulled summary request over the copy here.
@@ -1399,16 +1406,7 @@ impl Store {
         let keys = held_replaced_keys(&self.conn)?;
         let mut out = std::collections::BTreeSet::new();
         for k in keys {
-            if self
-                .conn
-                .query_row(
-                    "SELECT 1 FROM sync_pending WHERE key = ?1 AND reason = ?2",
-                    params![&k[..], HoldReason::Parent.word()],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some()
-            {
+            if held_for_parent(&self.conn, &k)? {
                 out.insert(k);
             }
         }

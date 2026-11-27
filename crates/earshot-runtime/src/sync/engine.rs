@@ -22,8 +22,8 @@ use earshot_sync::{
 
 use super::client::Relay;
 use super::{
-    SyncProblem, SyncVault, VaultSeen, advance_cursor, check_address, cursor_record, observe_vault,
-    set_sync_status, sync_settings, sync_status,
+    SyncProblem, SyncVault, VaultSeen, advance_cursor, check_address, cursor_of, observe_vault,
+    set_sync_status_in, sync_settings, sync_settings_of, sync_status_of,
 };
 use crate::services::Services;
 
@@ -641,7 +641,8 @@ impl SyncClient {
     pub fn holds_rows_for_retry(&self) -> Result<bool, SyncProblem> {
         Ok(self
             .services
-            .store()
+            .guarded_read()
+            .read()
             .held_count(&[HoldReason::Busy, HoldReason::Parent])?
             > 0)
     }
@@ -928,21 +929,24 @@ impl SyncClient {
         let mut report = TickReport::default();
         let outcome = self.tick_into(&mut report);
         record_tick(self.device, outcome.is_ok(), &report);
-        {
-            let mut db = self.services.store();
+        self.services.guarded_write(|w| {
             // Text a page took out leaves the write-ahead log too, however the tick ended
             // (docs/sync-spec.md 15.8). Best effort: a Busy leaves it to the next checkpoint.
             if report.text_emptied > 0 {
-                let _ = db.flush_erasures();
+                let _ = w.flush_erasures();
             }
             // Rows still waiting for a parent when the tick ends, whenever they were pulled.
             report.held = report.held.saturating_add(
-                db.held_count(&[HoldReason::Parent])
+                w.read()
+                    .held_count(&[HoldReason::Parent])
                     .ok()
                     .and_then(|n| usize::try_from(n).ok())
                     .unwrap_or(0),
             );
-            let mut status = sync_status(&db).unwrap_or_default();
+            let mut status = {
+                let g = w.read();
+                sync_status_of(&|k| g.local_value(k)).unwrap_or_default()
+            };
             status.unreadable = status
                 .unreadable
                 .saturating_add(u64::try_from(report.unreadable).unwrap_or(u64::MAX));
@@ -960,15 +964,19 @@ impl SyncClient {
                 }
                 Err(p) => status.problem = Some(*p),
             }
-            let _ = set_sync_status(&mut db, &status);
-        }
+            let _ = set_sync_status_in(w, &status);
+        });
         Some((report, outcome))
     }
 
     fn tick_into(&self, report: &mut TickReport) -> Result<(), SyncProblem> {
         let secrets = self.vault.load()?.ok_or(SyncProblem::Vault)?;
         let keys = secrets.key.keys();
-        let kinds = sync_settings(&self.services.store())?.kinds();
+        let kinds = {
+            let r = self.services.guarded_read();
+            let g = r.read();
+            sync_settings_of(&|k| g.local_value(k))?.kinds()
+        };
         if kinds.dictionary {
             // Words this device had before its rows existed (an older Earshot) get rows before
             // anything is pulled, so the list rebuilt after a page never loses them.
@@ -1023,7 +1031,11 @@ impl SyncClient {
         let mut candidates: Vec<Incoming> = Vec::new();
         // Only the rows H1 and H2 hold are released; any other row held for a parent waits for
         // its parent as before.
-        let theirs = self.services.store().held_by_replaced_text()?;
+        let theirs = self
+            .services
+            .guarded_read()
+            .read()
+            .held_by_replaced_text()?;
         if theirs.is_empty() {
             return Ok(());
         }
@@ -1032,7 +1044,7 @@ impl SyncClient {
             if self.stopping() {
                 return Ok(());
             }
-            let held = self.services.store().held_page(
+            let held = self.services.guarded_read().read().held_page(
                 &[HoldReason::Busy, HoldReason::Parent, HoldReason::Clock],
                 after.as_ref(),
                 MAX_RETRY,
@@ -1102,7 +1114,8 @@ impl SyncClient {
                 let recording = self.services.recording_meetings();
                 let page = self
                     .services
-                    .store()
+                    .guarded_read()
+                    .read()
                     .outbox_page(PUSH_PAGE, &recording, kinds)?;
                 unreadable = unreadable.max(page.unreadable);
                 let mut rows = page.rows;
@@ -1191,7 +1204,11 @@ impl SyncClient {
         let keys: BTreeSet<Vec<u8>> = rows.iter().map(|r| r.key.0.clone()).collect();
         // What this device has seen of the vault goes with the push (T14.45): a relay that
         // holds less was restored from an older copy, and says so in its answer.
-        let seen = cursor_record(&self.services.store())?;
+        let seen = {
+            let r = self.services.guarded_read();
+            let g = r.read();
+            cursor_of(&|k| g.local_value(k))?
+        };
         let resp = self.relay.push(
             token,
             &PushRequest {
@@ -1211,7 +1228,7 @@ impl SyncClient {
         }
         report.superseded += resp.superseded.len();
         report.pushed += accepted;
-        self.services.store().outbox_sent(&marks)?;
+        self.services.guarded_write(|w| w.outbox_sent(&marks))?;
         sent.extend(marks);
         // The relay's history, as this answer shows it. A relay from before T14.45 names no
         // epoch and no number from before the request; its highest number after storing the
@@ -1219,14 +1236,16 @@ impl SyncClient {
         let before = resp
             .max_seq
             .unwrap_or_else(|| resp.seq.saturating_sub(u64::from(resp.accepted)));
-        if observe_vault(
-            &self.services,
-            VaultSeen {
-                epoch: resp.epoch.as_ref().map(|e| e.0.as_slice()),
-                before: Some(before),
-                now: Some(resp.seq),
-            },
-        )? {
+        let now_ms = self.services.clock.now_unix_ms();
+        let seen = VaultSeen {
+            epoch: resp.epoch.as_ref().map(|e| e.0.as_slice()),
+            before: Some(before),
+            now: Some(resp.seq),
+        };
+        if self
+            .services
+            .guarded_write(|w| observe_vault(w, seen, now_ms))?
+        {
             report.vault_reset = true;
         }
         Ok(())
@@ -1250,10 +1269,11 @@ impl SyncClient {
     ) -> Result<usize, SyncProblem> {
         let now_ms = self.services.clock.now_unix_ms();
         let (reasons, after) = self.retry_state().begin(now_ms);
-        let held = self
-            .services
-            .store()
-            .held_page(reasons, after.as_ref(), MAX_RETRY)?;
+        let held =
+            self.services
+                .guarded_read()
+                .read()
+                .held_page(reasons, after.as_ref(), MAX_RETRY)?;
         self.retry_state()
             .read(held.len(), MAX_RETRY, held.last().map(|h| h.key));
         self.apply_held(keys, held, kinds, report)
@@ -1308,7 +1328,7 @@ impl SyncClient {
                 if self.stopping() {
                     return Ok(());
                 }
-                let held = self.services.store().held_page(
+                let held = self.services.guarded_read().read().held_page(
                     &[HoldReason::Parent],
                     after.as_ref(),
                     MAX_RETRY,
@@ -1343,8 +1363,10 @@ impl SyncClient {
             // The cursor and the kind switches are read together: turning a switch on resets
             // the cursor, and the page is applied under the switches it was pulled for.
             let (cursor, kinds) = {
-                let db = self.services.store();
-                (cursor_record(&db)?, sync_settings(&db)?.kinds())
+                let r = self.services.guarded_read();
+                let g = r.read();
+                let read = |k: &str| g.local_value(k);
+                (cursor_of(&read)?, sync_settings_of(&read)?.kinds())
             };
             let after = cursor.pull_seq;
             let PullResponse {
@@ -1361,14 +1383,16 @@ impl SyncClient {
             // The relay's history, as this answer shows it (T14.45). If it changed, this
             // page was read from a cursor that means nothing in it: nothing of the page is
             // applied, and the next tick reads the vault from the start.
-            if observe_vault(
-                &self.services,
-                VaultSeen {
-                    epoch: epoch.as_ref().map(|e| e.0.as_slice()),
-                    before: max_seq,
-                    now: max_seq.max(last),
-                },
-            )? {
+            let now_ms = self.services.clock.now_unix_ms();
+            let seen = VaultSeen {
+                epoch: epoch.as_ref().map(|e| e.0.as_slice()),
+                before: max_seq,
+                now: max_seq.max(last),
+            };
+            if self
+                .services
+                .guarded_write(|w| observe_vault(w, seen, now_ms))?
+            {
                 report.vault_reset = true;
                 return Ok(());
             }
@@ -1386,7 +1410,9 @@ impl SyncClient {
             *parents += self.apply(&page, kinds, report)?;
             if let Some(last) = last
                 && last > after
-                && !advance_cursor(&mut self.services.store(), after, last)?
+                && !self
+                    .services
+                    .guarded_write(|w| advance_cursor(w, after, last))?
             {
                 // The cursor was reset meanwhile (a switch turned on): read from there next tick.
                 return Ok(());
@@ -1573,7 +1599,14 @@ pub(crate) fn apply_page_in(
     release: Option<&BTreeSet<(EntityId, EntityId)>>,
     every: bool,
 ) -> Result<earshot_store::Applied, SyncProblem> {
-    let names_before = crate::summary_names::names_before(&w.read(), speakers)?;
+    // Rows `names_before` skipped count with the page's (docs/sync-spec.md 16.5 item 14).
+    let (names_before, skipped_before) = {
+        let r = w.read();
+        (
+            crate::summary_names::names_before(&r, speakers)?,
+            r.damaged_rows(),
+        )
+    };
     let after = |g: &mut earshot_store::GuardedTx<'_, '_>| -> Result<(), StoreError> {
         after_page(g, kinds, segment_meetings, &names_before)
     };
@@ -1591,7 +1624,10 @@ pub(crate) fn apply_page_in(
     } else {
         ApplyHow::Plain
     };
-    Ok(w.apply_remote(page, &rules, how)?)
+    let mut applied = w.apply_remote(page, &rules, how)?;
+    applied.damaged_rows.extend(skipped_before);
+    applied.damaged_skipped = applied.damaged_rows.len();
+    Ok(applied)
 }
 
 /// The `after` closure's function: run last inside a pulled page's transaction (T14.57).

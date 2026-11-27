@@ -213,6 +213,17 @@ impl ServicesWrite<'_> {
         Ok(applied)
     }
 
+    /// [`earshot_store::Store::outbox_sent`] (its own guarded transaction) under this lock.
+    ///
+    /// # Errors
+    /// As the store's.
+    pub fn outbox_sent(
+        &mut self,
+        sent: &[(&str, EntityId, earshot_core::identity::HlcTimestamp)],
+    ) -> Result<usize, earshot_store::StoreError> {
+        self.db.store.outbox_sent(sent)
+    }
+
     /// [`earshot_store::Store::flush_erasures`] under this lock.
     ///
     /// # Errors

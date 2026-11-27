@@ -78,6 +78,12 @@ const ROOTS: &[(&str, &str)] = &[
         "crates/earshot-runtime/src/summary_seen.rs",
         "mark_existing_once_in",
     ),
+    ("crates/earshot-runtime/src/sync/mod.rs", "observe_vault"),
+    ("crates/earshot-runtime/src/sync/mod.rs", "advance_cursor"),
+    (
+        "crates/earshot-runtime/src/sync/mod.rs",
+        "set_sync_status_in",
+    ),
 ];
 
 /// (file, public wrapper, its root).
@@ -141,7 +147,39 @@ const WRAPPERS: &[(&str, &str, &str)] = &[
 
 /// Engine glue whose store access must be guarded (`apply`'s `self.services.delete_meeting` is
 /// the named exception, T14.26's deletion path).
-const GLUE: &[&str] = &["apply_with", "meetings_deleted_elsewhere"];
+const GLUE: &[&str] = &[
+    "tick_into",
+    "try_tick",
+    "push",
+    "send",
+    "pull",
+    "retry_held",
+    "retry_parents",
+    "release_holds",
+    "holds_rows_for_retry",
+    "apply_with",
+    "meetings_deleted_elsewhere",
+];
+
+/// The runtime functions that hold a `StoreTx` and may call `StoreTx::guarded` (the
+/// coordinator, 2026-11-27): (file, function, reason). Nothing else in runtime code may.
+const GUARDED_FROM_STORE_TX: &[(&str, &str, &str)] = &[
+    (
+        "crates/earshot-runtime/src/summary_names.rs",
+        "name_changed_tx",
+        "a user's naming edit holds its own transaction; only the record write is guarded",
+    ),
+    (
+        "crates/earshot-runtime/src/word_choices.rs",
+        "drop_stale_tx",
+        "the final pass's write transaction calls the guarded root through it",
+    ),
+    (
+        "crates/earshot-runtime/src/vocabulary.rs",
+        "syncing_turned_on_tx",
+        "turning syncing on, setting up and joining hold their own transaction",
+    ),
+];
 
 /// The named by-rowid writers of 16.4.
 const ROWID_WRITERS: &[&str] = &[
@@ -163,6 +201,24 @@ fn files() -> BTreeMap<String, String> {
     let mut paths: Vec<String> = ROOTS.iter().map(|(f, _)| (*f).to_owned()).collect();
     paths.extend(WRAPPERS.iter().map(|(f, _, _)| (*f).to_owned()));
     paths.push(format!("{STORE}delete.rs"));
+    paths.push(format!("{STORE}replaced.rs"));
+    // Every runtime source, for the `StoreTx::guarded` rule.
+    let mut dirs = vec![workspace().join(RUNTIME)];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the runtime sources") {
+            let p = entry.expect("an entry").path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                let rel = p
+                    .strip_prefix(workspace())
+                    .expect("inside the workspace")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                paths.push(rel);
+            }
+        }
+    }
     paths.sort();
     paths.dedup();
     let root = workspace();
@@ -230,7 +286,16 @@ fn function(src: &str, name: &str) -> Option<(String, String, usize, usize)> {
             let open = after + src[after..].find('(')?;
             let close = matching(src, open, '(', ')')?;
             let brace = close + src[close..].find('{')?;
-            if src[close..brace].contains(';') {
+            let mut depth = 0i32;
+            let declaration = src[close..brace].chars().any(|ch| {
+                match ch {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    _ => {}
+                }
+                ch == ';' && depth == 0
+            });
+            if declaration {
                 from = after;
                 continue;
             }
@@ -326,6 +391,25 @@ fn owners(src: &str) -> Option<Vec<(String, String)>> {
         let parts: Vec<&str> = pair.split('"').collect();
         if parts.len() >= 4 {
             out.push((parts[1].to_owned(), parts[3].to_owned()));
+        }
+    }
+    Some(out)
+}
+
+/// The `EXTERNAL_SQL_OWNERS` table of `guarded.rs`: (file, constant, owner).
+fn external_owners(src: &str) -> Option<Vec<(String, String, String)>> {
+    let at = src.find("pub const EXTERNAL_SQL_OWNERS")?;
+    let open = at + src[at..].find("= &[")? + 3;
+    let close = matching(src, open, '[', ']')?;
+    let mut out = Vec::new();
+    for entry in src[open + 1..close].split("),") {
+        let parts: Vec<&str> = entry.split('"').collect();
+        if parts.len() >= 6 {
+            out.push((
+                parts[1].to_owned(),
+                parts[3].to_owned(),
+                parts[5].to_owned(),
+            ));
         }
     }
     Some(out)
@@ -444,7 +528,10 @@ fn check(files: &BTreeMap<String, String>) -> Vec<String> {
             bad.push(format!("owner {owner} of {c} not found"));
             continue;
         };
-        for (path, src) in &stripped {
+        for (path, src) in stripped
+            .iter()
+            .filter(|(p, _)| !p.ends_with("sync_damaged_scan.rs"))
+        {
             for (i, _) in src.match_indices(c.as_str()) {
                 if !has_word(
                     &src[i.saturating_sub(1)..(i + c.len() + 1).min(src.len())],
@@ -515,6 +602,62 @@ fn check(files: &BTreeMap<String, String>) -> Vec<String> {
         let rest = guarded[i + 9..].trim_start();
         if !(rest.starts_with("params!") || rest.starts_with("[]")) {
             bad.push("guarded.rs: execute takes inline SQL".into());
+        }
+    }
+    // The statements kept in their own module: registered, used only by their owners, and no
+    // inline SQL in those owners.
+    match external_owners(guarded) {
+        None => bad.push("EXTERNAL_SQL_OWNERS not found".into()),
+        Some(list) => {
+            for (file, c, owner) in list {
+                let path = format!("{STORE}{file}");
+                let Some(src) = stripped.get(&path[..]) else {
+                    bad.push(format!("{path} not found"));
+                    continue;
+                };
+                if !src.contains(&format!("const {c}: &str")) {
+                    bad.push(format!("owner entry {c} matches no constant in {file}"));
+                }
+                let Some((_, body, start, end)) = function(src, &owner) else {
+                    bad.push(format!("owner {owner} of {c} not found"));
+                    continue;
+                };
+                // A private constant: its own file is the only place it can be named.
+                for (p, s) in stripped.iter().filter(|(p, _)| **p == path) {
+                    for (i, _) in s.match_indices(c.as_str()) {
+                        let word = !s[..i].ends_with(|ch: char| ch.is_alphanumeric() || ch == '_')
+                            && !s[i + c.len()..]
+                                .starts_with(|ch: char| ch.is_alphanumeric() || ch == '_');
+                        if !word || s[..i].ends_with("const ") || s[..i].ends_with('"') {
+                            continue;
+                        }
+                        if !(*p == path && i > start && i < end) {
+                            bad.push(format!("{c} used outside its owner {owner} ({p})"));
+                        }
+                    }
+                }
+                for kw in ["\"SELECT", "\"UPDATE", "\"INSERT", "\"DELETE"] {
+                    if body.contains(kw) {
+                        bad.push(format!("owner {owner} runs inline SQL"));
+                    }
+                }
+            }
+        }
+    }
+    // `StoreTx::guarded` from runtime code only in its named exceptions.
+    for (path, src) in &stripped {
+        if !path.starts_with(RUNTIME) || path.ends_with("sync_damaged_scan.rs") {
+            continue;
+        }
+        for (i, _) in src.match_indices(".guarded()") {
+            let allowed = GUARDED_FROM_STORE_TX.iter().any(|(f, name, _)| {
+                *path == *f && function(src, name).is_some_and(|(_, _, s, e)| i > s && i < e)
+            });
+            if !allowed {
+                bad.push(format!(
+                    "{path}: StoreTx::guarded outside its named exceptions"
+                ));
+            }
         }
     }
     // T14.26's one exception outside guarded.rs, used only by its writer.
@@ -657,6 +800,48 @@ fn sync_damaged_rows_never_stop_the_guarded_paths() {
             )
         }),
         "wrapper copy_once is more than one",
+    );
+    // (9) `StoreTx::guarded` from runtime code outside its named exceptions.
+    let words = format!("{RUNTIME}word_choices.rs");
+    fails(
+        mutate(&edit, &|s| {
+            insert_in(s, "rename_speaker", "let _ = tx.guarded();")
+        }),
+        "StoreTx::guarded outside its named exceptions",
+    );
+    assert!(
+        mutate(&words, &|s| insert_in(
+            s,
+            "drop_stale_tx",
+            "let _ = tx.guarded();"
+        ))
+        .is_empty(),
+        "a named exception passes"
+    );
+    // (10) a kept-in-place statement used from another function, and inline SQL in its owner.
+    let replaced = format!("{STORE}replaced.rs");
+    fails(
+        mutate(&replaced, &|s| {
+            insert_in(s, "rowid_of", "let _ = RESTAMP_BY_ROWID_SQL;")
+        }),
+        "RESTAMP_BY_ROWID_SQL used outside its owner",
+    );
+    fails(
+        mutate(&replaced, &|s| {
+            insert_in(
+                s,
+                "restamp_cleared",
+                "let _ = c.execute(\"UPDATE segment SET deleted = 1\", []);",
+            )
+        }),
+        "owner restamp_cleared runs inline SQL",
+    );
+    // (11) the tick's glue reading the store directly.
+    fails(
+        mutate(&engine, &|s| {
+            insert_in(s, "pull", "let _ = self.services.store().outbox_len();")
+        }),
+        "glue pull holds .store()",
     );
     // (8) a root that calls a helper taking `&Services`.
     fails(

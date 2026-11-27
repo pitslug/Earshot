@@ -714,15 +714,19 @@ fn store_sync_damaged_a_summary_meeting_id_that_does_not_read() {
         d.store.put_summary(summary(20, T0 + 1)).unwrap();
         d.store.put_summary(summary(22, T0 + 2)).unwrap();
         if damaged {
-            d.sql(
-                "UPDATE summary SET meeting_id = X'0102030405060708090A0B0C0D0E0F' WHERE id = ?1",
-                22,
-            );
+            // Two live summaries share a meeting id that does not read, so rule 2's crowded
+            // query returns it.
+            for n in [20, 22] {
+                d.sql(
+                    "UPDATE summary SET meeting_id = X'0102030405060708090A0B0C0D0E0F' WHERE id = ?1",
+                    n,
+                );
+            }
         }
         let out = d
             .apply(&[incoming(1, SyncedRow::Summary(summary(21, T0 + 3)))])
             .unwrap();
-        assert_eq!(out.damaged_skipped, usize::from(damaged), "{out:?}");
+        assert_eq!(out.damaged_skipped, if damaged { 2 } else { 0 }, "{out:?}");
         let live = d
             .store
             .summaries(id(1))
@@ -770,8 +774,47 @@ fn store_sync_damaged_outbox_sent_keeps_a_row_damaged_after_its_send() {
 fn store_sync_damaged_rule_4_rows_do_not_stop_the_page() {
     for damaged in [true, false] {
         let mut d = world("damaged-rule-4");
+        // An edited final line naming a speaker, so rules 4b and 4c read the meeting's lines and
+        // speakers.
+        d.store
+            .put_track(earshot_core::model::Track {
+                id: id(60),
+                meta: meta(T0, HERE, false),
+                meeting_id: id(1),
+                kind: TrackId::Reference,
+                device_name: None,
+                clock_domain: earshot_core::model::ClockDomain::Replay,
+            })
+            .unwrap();
+        let edited = earshot_core::model::SegmentRow {
+            meta: meta(T0 + 5, HERE, false),
+            meeting_id: id(1),
+            pass: earshot_core::model::TranscriptPass::Final,
+            segment: earshot_core::asr::Segment {
+                id: id(70),
+                track: id(60),
+                start: earshot_core::asr::MeetingTime::from_millis(0),
+                end: earshot_core::asr::MeetingTime::from_millis(2_000),
+                text: "An invented line".into(),
+                words: Vec::new(),
+                confidence: 0.9,
+                speaker_id: Some(id(81)),
+            },
+            text_edited_at: Some(meta(T0 + 5, HERE, false).updated_at),
+            pass_run: Some(id(90)),
+        };
+        let mut other = edited.clone();
+        other.segment.id = id(71);
+        other.text_edited_at = None;
+        d.store.put_segment(edited).unwrap();
+        d.store.put_segment(other).unwrap();
+        let mut hlc = d.store.hlc(HERE).unwrap();
+        d.store
+            .transaction(|tx| tx.send_lines_first(&mut hlc, &d.clock).map(|_| ()))
+            .unwrap();
         if damaged {
-            d.sql("UPDATE speaker SET role = 'bogus' WHERE id = ?1", 81);
+            d.sql("UPDATE speaker SET role = 'bogus' WHERE id = ?1", 80);
+            d.sql("UPDATE segment SET start_ms = -1 WHERE id = ?1", 71);
         }
         let mut m = meeting(1);
         m.meta = meta(T0 + 60_000, THERE, false);
