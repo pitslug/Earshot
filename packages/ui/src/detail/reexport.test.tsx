@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import table from "../../../../fixtures/ui/reexport_copy_cases.json";
 import { sampleDetail } from "../ipc";
 import { ITEM, TABSTER_HIDE_PASS_MS, accessibleDialog, setup } from "../test/meetingDetail";
-import { REEXPORT_COPY, reexportBatchQuestion } from "./reexportCopy";
+import { REEXPORT_COPY } from "./reexportCopy";
 
 const exportButton = () => screen.getByRole("button", { name: "Export to Obsidian" });
 const exportCalls = (calls: unknown[][]) => calls.filter((c) => c[0] === "exportMeeting").length;
@@ -22,13 +22,6 @@ describe("re-export question", () => {
     );
     expect(REEXPORT_COPY.confirm).toBe("Export again");
     expect(REEXPORT_COPY.cancel).toBe("Cancel");
-  });
-
-  it("names how many of a batch were exported before, once", () => {
-    expect(reexportBatchQuestion(0)).toBeNull();
-    expect(reexportBatchQuestion(1)).toBe(table.batch_one);
-    expect(reexportBatchQuestion(2)).toBe(table.batch_many.replace("{count}", "2"));
-    expect(reexportBatchQuestion(37)).toMatch(/^37 of these meetings have already been exported\./);
   });
 
   it("exports a meeting never exported without asking", async () => {

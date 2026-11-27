@@ -17,13 +17,10 @@ import { REEXPORT_COPY } from "./reexportCopy";
 /** Open while `open`; "Export again" calls `onExport`, "Cancel" (or Esc) only `onClose`. */
 export function ReexportQuestion({
   open,
-  text = REEXPORT_COPY.single,
   onExport,
   onClose,
 }: {
   open: boolean;
-  /** The sentence; the single meeting's by default (a batch passes `reexportBatchQuestion`). */
-  text?: string;
   onExport(): void;
   onClose(): void;
 }) {
@@ -38,7 +35,7 @@ export function ReexportQuestion({
     >
       <DialogSurface aria-labelledby={textId}>
         <DialogBody>
-          <DialogContent id={textId}>{text}</DialogContent>
+          <DialogContent id={textId}>{REEXPORT_COPY.single}</DialogContent>
           <DialogActions>
             <Button
               appearance="primary"

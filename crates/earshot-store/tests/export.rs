@@ -507,3 +507,69 @@ fn export_replaces_a_crlf_note_with_the_render() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), r.to_file());
     assert_eq!(w.export(&r).unwrap().action, ExportAction::Unchanged);
 }
+
+/// Exports `r`, moves the note away, puts `other` at its recorded path, exports again and
+/// checks that `other` is untouched and this meeting's note went to the next free name,
+/// which the record now names.
+fn recorded_path_taken_by(tag: &str, other: impl Fn(&World, &RenderedExport) -> String) {
+    let mut w = World::new(tag);
+    let r = w.render("Ours.");
+    w.export(&r).unwrap();
+    let recorded = w.file(r.path.as_str());
+    std::fs::create_dir_all(w.vault().join("Kept")).unwrap();
+    std::fs::rename(&recorded, w.vault().join("Kept").join("ours.md")).unwrap();
+    let theirs = other(&w, &r);
+    std::fs::write(&recorded, &theirs).unwrap();
+
+    let r2 = w.render("Ours again.");
+    let rep = w.export(&r2).unwrap();
+    assert_eq!(rep.action, ExportAction::Created);
+    assert!(rep.path.as_str().ends_with(" (2).md"), "{}", rep.path);
+    assert_eq!(
+        std::fs::read_to_string(&recorded).unwrap(),
+        theirs,
+        "left untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.file(rep.path.as_str())).unwrap(),
+        r2.to_file()
+    );
+    assert_eq!(
+        w.store
+            .export_record(w.meeting.id, DEVICE)
+            .unwrap()
+            .unwrap()
+            .path,
+        rep.path,
+        "the record moves to the new note"
+    );
+    // The next export writes the new note, never the other file.
+    let rep3 = w.export(&w.render("Third.")).unwrap();
+    assert_eq!(
+        (rep3.action, &rep3.path),
+        (ExportAction::Updated, &rep.path)
+    );
+    assert_eq!(std::fs::read_to_string(&recorded).unwrap(), theirs);
+    assert_eq!(files(&w.vault()).len(), 3, "{:?}", files(&w.vault()));
+}
+
+#[test]
+fn export_never_replaces_another_meetings_note_at_the_recorded_path() {
+    // After the user moved this meeting's note, another meeting's note took its name.
+    recorded_path_taken_by("recorded-other", |w, r| {
+        let theirs = r.to_file().replace(
+            &w.meeting.id.to_string(),
+            "01920000-0000-7000-8000-00000000beef",
+        );
+        assert_ne!(theirs, r.to_file());
+        theirs
+    });
+}
+
+#[test]
+fn export_never_replaces_a_users_file_at_the_recorded_path() {
+    // A file of the user's own, with no earshot_id, took the recorded name.
+    recorded_path_taken_by("recorded-user", |_, _| {
+        "---\ntitle: my own page\n---\nNothing to do with Earshot.\n".to_owned()
+    });
+}

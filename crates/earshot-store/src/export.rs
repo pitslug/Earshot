@@ -6,14 +6,19 @@
 //! cannot search, such as OneNote or Notion):
 //!
 //! 1. The vault is validated ([`validate_vault`]) and the meeting must exist in the store.
-//! 2. Where the note goes: a meeting with an export record (this device's `ExportRecord`)
-//!    writes to its recorded path, replacing whatever file is there, or creating it again
-//!    when the user moved or deleted it (a moved note is the user's from then on and is
-//!    left alone). A meeting without a record writes to the render's path when that is free
-//!    or holds this meeting's note (its `earshot_id`; a record lost with the database), else
-//!    to the first free `<stem> (n).md`, so another meeting's note, or any other file, is
-//!    never replaced. Only the one file at the render's path is read for its id. The record
-//!    is written before a new note is renamed into place (step 4).
+//! 2. Where the note goes: an export reads exactly one existing file, the target's
+//!    `earshot_id`, and never replaces a file that names another meeting or no meeting. A
+//!    meeting with an export record (this device's `ExportRecord`) writes to its recorded
+//!    path when the file there is this meeting's note, or creates it again there when the
+//!    user moved or deleted it (a moved note is the user's from then on and is left alone).
+//!    When another meeting's note or a file with no `earshot_id` has taken the recorded
+//!    name, and for a meeting without a record, the note goes to the render's path when that
+//!    is free or holds this meeting's note (a record lost with the database), else to the
+//!    first free `<stem> (n).md`, through a new claim that moves the record to the path used.
+//!    The record is written before a new note is renamed into place (step 4). Accepted
+//!    within the owner's rule: with the record lost and this meeting's note no longer at the
+//!    render's path (moved, or a "(n)" name), a re-export writes a second note with the same
+//!    `earshot_id` at a new free name; nothing searches for the old one.
 //! 3. Content is the whole rendered note ([`RenderedExport::to_file`]): a re-export
 //!    replaces the note, ticks, edits and the user's additions included (the app warns
 //!    before re-exporting). If it equals the current bytes nothing is written, so two
@@ -59,8 +64,9 @@
 //! or write (meeting check and record read, each create's claim and its last look before
 //! the rename, the final record write); the file reads and writes run between those
 //! calls. A caller that shares the store behind a lock (the runtime) takes the lock inside
-//! `with_store` only, so other writers are not held up by a note's write. Every record write re-reads the record inside the same `with_store` call
-//! and keeps its id, so a concurrent export of the same meeting never changes it.
+//! `with_store` only, so other writers are not held up by a note's write. Every record
+//! write re-reads the record inside the same `with_store` call and keeps its id, so a
+//! concurrent export of the same meeting never changes it.
 //!
 //! # Serialisation
 //!
@@ -859,15 +865,19 @@ fn export_leased<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     let new_id = record
         .as_ref()
         .map_or_else(|| EntityId::generate(clock, rng), |r| r.id);
-    // Where the note goes (module docs, step 2): the recorded path; without a record, the
-    // render's path when the file there is this meeting's note (a record lost with the
-    // database), else a new note at the first free name. No other file is read.
+    // Where the note goes (module docs, step 2): the recorded path while it is free or holds
+    // this meeting's note; without a record, the render's path when the file there is this
+    // meeting's note (a record lost with the database); else a new note at the first free
+    // name. Exactly one existing file is read (the target's `earshot_id`), and a file that
+    // names another meeting or no meeting is never replaced.
     store.vault_work_starts();
+    let ours = |rel: &VaultPath| note_id(&join(vault, rel)) == Some(meeting);
     let found = match &record {
-        Some(r) => Some(r.path.clone()),
-        None if note_id(&join(vault, &rendered.path)) == Some(meeting) => {
-            Some(rendered.path.clone())
-        }
+        Some(r) if !join(vault, &r.path).exists() || ours(&r.path) => Some(r.path.clone()),
+        // Another meeting's note or the user's own file sits at the recorded path (the
+        // note was moved and something else took its name): a new note and a new claim.
+        Some(_) => None,
+        None if ours(&rendered.path) => Some(rendered.path.clone()),
         None => None,
     };
     let content = rendered.to_file();

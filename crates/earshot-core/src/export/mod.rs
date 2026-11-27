@@ -11,8 +11,9 @@
 //!   T14.61), enhanced notes, open questions, the user's raw notes, and the transcript in
 //!   a collapsed `> [!note]- Transcript` callout. Rendering is deterministic, so two
 //!   exports in a row write identical bytes.
-//! - [`earshot_id_of`]: the `earshot_id` in a note's frontmatter (finding a renamed or
-//!   moved note, which is replaced where it is, never duplicated).
+//! - [`earshot_id_of`]: the `earshot_id` in a note's frontmatter: the writer reads it from
+//!   the one file at the path it is about to write, so it never replaces a file that names
+//!   another meeting or no meeting (the vault is never searched; T14.63).
 //!
 //! With [`ExportOptions::replace_em_dash`] (default on, D12) em dashes in generated text
 //! (summary, transcript) become `" - "`; the user's own notes are written as typed.

@@ -578,17 +578,8 @@ fn export_reexport_copy_is_the_shared_table() {
     let text = |k: &str| table[k].as_str().unwrap().to_owned();
     assert_eq!(REEXPORT_WARNING, text("single"));
     assert_eq!(REEXPORT_CONFIRM, text("confirm"));
-    assert_eq!(reexport_batch_warning(0), None);
-    assert_eq!(reexport_batch_warning(1), Some(text("batch_one")));
-    for n in [2, 7, 120] {
-        assert_eq!(
-            reexport_batch_warning(n),
-            Some(text("batch_many").replace("{count}", &n.to_string())),
-            "{n}"
-        );
-    }
     // Fixed copy: no em dash, no run of spaces.
-    for k in ["single", "batch_one", "batch_many", "confirm", "cancel"] {
+    for k in ["single", "confirm", "cancel"] {
         assert!(
             !text(k).contains('\u{2014}') && !text(k).contains("  "),
             "{k}"

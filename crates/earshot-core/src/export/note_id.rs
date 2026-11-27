@@ -1,6 +1,6 @@
-//! Reading a note's `earshot_id`, so a note the user renamed or moved is found again and
-//! replaced, never duplicated (T14.63: a re-export writes the whole note, so this is all
-//! an export reads from an existing note).
+//! Reading a note's `earshot_id` (T14.63): the export writer reads it from the one file at
+//! the path it is about to write, and replaces that file only when it names this meeting.
+//! It is all an export reads from an existing note; nothing searches the vault.
 
 use crate::identity::EntityId;
 

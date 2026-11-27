@@ -91,22 +91,6 @@ pub const REEXPORT_WARNING: &str = "This meeting has already been exported. Expo
 /// The button that goes ahead after [`REEXPORT_WARNING`].
 pub const REEXPORT_CONFIRM: &str = "Export again";
 
-/// What to say once before exporting several meetings when `exported_before` of them were
-/// exported before (T14.63), `None` when none were. Fixed copy (the shared table).
-#[must_use]
-pub fn reexport_batch_warning(exported_before: usize) -> Option<String> {
-    const TAIL: &str = "including anything you ticked, changed or added there.";
-    match exported_before {
-        0 => None,
-        1 => Some(format!(
-            "1 of these meetings has already been exported. Exporting again replaces its whole note, {TAIL}"
-        )),
-        n => Some(format!(
-            "{n} of these meetings have already been exported. Exporting again replaces their whole notes, {TAIL}"
-        )),
-    }
-}
-
 /// Whether `meeting` was exported from this device: it has this device's export record
 /// (written with every export, removed by the meeting's deletion). What the re-export
 /// question is asked on.
