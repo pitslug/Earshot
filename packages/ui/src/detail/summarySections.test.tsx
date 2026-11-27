@@ -51,6 +51,22 @@ describe("the Summary tab's sections", () => {
     expect(screen.getByText("Gate two opens at seven")).toBeInTheDocument();
   });
 
+  it("draws the main headings larger than the sub-headings", async () => {
+    await setup(withNotes([topic("Crane booking", "The crane is free on Thursday")]));
+    await screen.findByText(/TL;DR/);
+    // The owner's mock-up (2026-11-28): the main headings at 20px (Fluent's Subtitle1), the
+    // sub-headings smaller.
+    for (const name of ["TL;DR", "Decisions", "Actions", "Notes"]) {
+      const h = screen.getByRole("heading", { level: 2, name });
+      expect(h).toHaveClass("fui-Subtitle1");
+    }
+    for (const name of ["My actions", "Other actions", "Crane booking"]) {
+      const h = screen.getByRole("heading", { level: 3, name });
+      expect(h).not.toHaveClass("fui-Subtitle1");
+      expect(h).toHaveClass("fui-Body1Strong");
+    }
+  });
+
   it("shows no Notes heading and no divider when the summary has no topic section", async () => {
     await setup(withNotes([]));
     await screen.findByText(/TL;DR/);

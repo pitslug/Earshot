@@ -25,7 +25,7 @@ import {
   MessageBarBody,
   MessageBarTitle,
   Spinner,
-  Subtitle2,
+  Subtitle1,
   Tab,
   TabList,
   Textarea,
@@ -1950,18 +1950,18 @@ function SummaryBody({
   return (
     <>
       <div className={styles.section}>
-        <Subtitle2 as="h2" className={styles.sectionHeading}>
+        <Subtitle1 as="h2" className={styles.sectionHeading}>
           TL;DR
-        </Subtitle2>
+        </Subtitle1>
         <Body1>
           <Editable fields={edit({ kind: "Tldr" }, "TL;DR", summary.tldr)}>{summary.tldr}</Editable>
         </Body1>
       </div>
       {summary.decisions.length > 0 && (
         <div className={styles.section}>
-          <Subtitle2 as="h2" className={styles.sectionHeading}>
+          <Subtitle1 as="h2" className={styles.sectionHeading}>
             Decisions
-          </Subtitle2>
+          </Subtitle1>
           <ul className={styles.list} aria-label="Decisions">
             {summary.decisions.map((d, i) => (
               <li key={i}>
@@ -1976,9 +1976,9 @@ function SummaryBody({
       )}
       {summary.actions.length > 0 && (
         <div className={styles.section}>
-          <Subtitle2 as="h2" className={styles.sectionHeading}>
+          <Subtitle1 as="h2" className={styles.sectionHeading}>
             Actions
-          </Subtitle2>
+          </Subtitle1>
           {groups.kind === "split" ? (
             <>
               {groups.mine.length > 0 && actionList("My actions", groups.mine, "with", true)}
@@ -1996,9 +1996,9 @@ function SummaryBody({
         <>
           <Divider className={styles.notesDivider} />
           <div className={styles.notes}>
-            <Subtitle2 as="h2" className={styles.sectionHeading}>
+            <Subtitle1 as="h2" className={styles.sectionHeading}>
               Notes
-            </Subtitle2>
+            </Subtitle1>
             {summary.notes.map((n, i) => (
               <div className={styles.actionGroup} key={`notes-${i}`}>
                 <Body1Strong as="h3" className={styles.sectionHeading}>
@@ -2031,9 +2031,9 @@ function SummaryBody({
       )}
       {summary.open_questions.length > 0 && (
         <div className={styles.section}>
-          <Subtitle2 as="h2" className={styles.sectionHeading}>
+          <Subtitle1 as="h2" className={styles.sectionHeading}>
             Open questions
-          </Subtitle2>
+          </Subtitle1>
           <ul className={styles.list}>
             {summary.open_questions.map((q, i) => (
               <li key={i}>
