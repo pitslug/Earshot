@@ -777,7 +777,7 @@ describe("meeting screen", () => {
           duration_ms: 1_800_000,
           state: "Ready",
           folder_id: null,
-          new_summary: false,
+          new_summary: false, summary_elsewhere: false,
         },
       ],
     });

@@ -203,6 +203,14 @@ pub fn waiting_copy(name: Option<&str>) -> String {
     WAITING_TEMPLATE.replace("{device}", &named(name, UNNAMED_INLINE))
 }
 
+/// The name of the computer a meeting waits for, as the waiting banner names it, for the header
+/// line (T14.66): its name as this process heard it, or "your other computer".
+#[must_use]
+pub fn waiting_device_name(device: DeviceId) -> String {
+    let name = known_computers().get(&device).and_then(|n| n.name.clone());
+    named(name.as_deref(), UNNAMED_INLINE)
+}
+
 /// What happens to a meeting's summary if the computer it waits for does not answer (T12.81).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IfNoAnswer {
@@ -724,6 +732,47 @@ pub async fn ask_summary_helper(
     let services = state.services()?;
     let host = Arc::clone(&sync);
     blocking(move || ask_helper(&services, &host, &meeting, &device)).await
+}
+
+/// The waiting banner's Stop (T14.66, docs/summary-order.md 11.2): withdraws this computer's
+/// request and ends the run waiting on it (`summary_order::run::stop_waiting`), then asks the
+/// sync thread for a tick now, even while it backs off, so the withdrawal goes out at once.
+/// `None` when it stopped (the page reads the meeting again); else fixed copy to show.
+///
+/// # Errors
+/// [`IpcError::invalid`] for an unknown id; a deleted meeting; store errors.
+pub fn stop_waiting(
+    services: &Services,
+    host: &SyncHost,
+    meeting: &str,
+) -> Result<Option<String>, IpcError> {
+    use earshot_runtime::summary_order::run::StopAnswer;
+    let meeting = crate::detail::parse_id(meeting)?;
+    let answer = earshot_runtime::summary_order::run::stop_waiting(services, meeting)?;
+    if matches!(
+        answer,
+        StopAnswer::Stopped { .. } | StopAnswer::AlreadyWritten { .. }
+    ) {
+        host.tick_now();
+    }
+    Ok(crate::summary_order::stop_copy(
+        answer,
+        &crate::summary_order::StepContext::read(services),
+    ))
+}
+
+/// Stops a meeting's summary waiting on another computer (T14.66): `None` when it stopped, else
+/// fixed copy saying why nothing was stopped.
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_waiting_summary(
+    state: tauri::State<'_, AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    meeting: String,
+) -> Result<Option<String>, IpcError> {
+    let services = state.services()?;
+    let host = Arc::clone(&sync);
+    blocking(move || stop_waiting(&services, &host, &meeting)).await
 }
 
 /// How a request from another computer gets its writer (production: [`HostHelperWork`]).

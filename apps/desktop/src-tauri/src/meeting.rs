@@ -244,6 +244,7 @@ impl Inner {
                 event,
                 MeetingEvent::Ended { .. }
                     | MeetingEvent::PostProgress { .. }
+                    | MeetingEvent::SummaryRunChanged { .. }
                     | MeetingEvent::Summary { .. }
             )
         {
@@ -807,7 +808,9 @@ impl AfterPhase {
         match step {
             HostStep::PostLoaded { .. } => Self::Loading,
             HostStep::PostStarting { .. } | HostStep::Post(_) => Self::Steps,
-            HostStep::PostFinished(_) | HostStep::SummaryStarting => Self::Summary,
+            HostStep::PostFinished(_) | HostStep::SummaryStarting | HostStep::SummaryRunChanged => {
+                Self::Summary
+            }
         }
     }
 }

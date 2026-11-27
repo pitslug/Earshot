@@ -679,6 +679,47 @@ pub fn meetings_waiting_on(
         .collect())
 }
 
+/// The meetings whose summary this device waits for on another computer, as
+/// [`waiting_shown`] says it meeting by meeting, for the meeting list (T14.66): one read of every
+/// request, then one read of the summaries of each meeting found (usually none or one), through
+/// guarded readers, so a damaged row never fails the list. A meeting whose request or summary rows
+/// include one that does not read is left out ("no meeting waits"), and a store error gives an
+/// empty set. Returns the set and how many damaged rows were skipped (for the damage scans).
+#[must_use]
+pub fn meetings_waiting_shown(
+    read: &earshot_store::GuardedRead<'_>,
+    me: DeviceId,
+) -> (BTreeSet<EntityId>, usize) {
+    let Ok(requests) = read.summary_requests_or_damaged() else {
+        return (BTreeSet::new(), read.damaged_skipped());
+    };
+    // Each meeting's newest open request this device asked, as `open_request` picks it.
+    let mut newest: std::collections::BTreeMap<EntityId, SummaryRequest> =
+        std::collections::BTreeMap::new();
+    for r in requests {
+        if r.asking_device == me && !r.meta.deleted && r.state.is_open() && authored(&r) {
+            newest.insert(r.meeting_id, r);
+        }
+    }
+    let mut shown = BTreeSet::new();
+    for (meeting, request) in newest {
+        let before = read.damaged_skipped();
+        let Ok(summaries) = read.summaries_or_damaged(meeting) else {
+            continue;
+        };
+        if read.damaged_skipped() > before {
+            continue;
+        }
+        if !summaries
+            .iter()
+            .any(|s| s.meta.created_at > request.meta.created_at)
+        {
+            shown.insert(meeting);
+        }
+    }
+    (shown, read.damaged_skipped())
+}
+
 /// [`waiting_for`] as the meeting's page shows it (T12.81): `None` also once the meeting holds a
 /// summary created after the open request ([`summarised_since`]), which can arrive before the
 /// request's own row does

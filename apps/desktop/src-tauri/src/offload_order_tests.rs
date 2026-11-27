@@ -228,6 +228,7 @@ fn offload_continuation_tries_the_copied_steps_not_the_order_now() {
         (&vault, &NeverClaude, &NeverCodex),
         None,
         &mut |_| {},
+        &mut || {},
     )
     .unwrap();
     // The copied local step was tried (not installed here); Claude Code never was.
@@ -352,6 +353,7 @@ fn offload_continuation_that_finds_nothing_to_go_on_with_ends_quietly() {
         (&vault, &NeverClaude, &NeverCodex),
         None,
         &mut |w| panic!("nothing to tell: {w}"),
+        &mut || {},
     )
     .unwrap();
     assert!(done.settled);

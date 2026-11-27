@@ -21,8 +21,8 @@ import { createManualTimer } from "../time";
 const at = (hour: number) => new Date(2026, 10, 2, hour, 0).getTime();
 const NOW = at(16);
 
-const OLDER: MeetingListItem = { id: "m-older", title: "Paving quote", started_at_ms: at(14), duration_ms: 30 * 60_000, state: "Ready", folder_id: null, new_summary: false };
-const OTHER: MeetingListItem = { id: "m-other", title: "Irrigation plan", started_at_ms: at(11), duration_ms: 20 * 60_000, state: "Ready", folder_id: null, new_summary: false };
+const OLDER: MeetingListItem = { id: "m-older", title: "Paving quote", started_at_ms: at(14), duration_ms: 30 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false };
+const OTHER: MeetingListItem = { id: "m-other", title: "Irrigation plan", started_at_ms: at(11), duration_ms: 20 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false };
 
 /** A promise settled by the test, for an answer that arrives when the test says. */
 function deferred<T>() {

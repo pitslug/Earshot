@@ -34,7 +34,8 @@ describe("MeetingDetailView", () => {
     expect(screen.getByText(/Final transcript · Summary by Qwen 3.5 9B/)).toBeInTheDocument();
     const toggle = screen.getByRole("button", { name: "Speakers, 2 need names" });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(toggle).toHaveTextContent("2 need names");
+    // An icon with its count at every width (the owner, 2026-11-28): the name says what it counts.
+    expect(toggle).toHaveTextContent(/^2$/);
     expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
     expect(within(panel()).getByText(/Names flow into the summary and export/)).toBeInTheDocument();
     expect(screen.getByText("Tick actions in the Obsidian note.")).toBeInTheDocument();

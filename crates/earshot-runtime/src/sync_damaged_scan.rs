@@ -25,6 +25,11 @@ const ROOTS: &[(&str, &str)] = &[
     ("crates/earshot-store/src/guarded.rs", "sweep_identities"),
     // T14.65 (docs/sync-spec.md 17.2): the damage scan, the only authority on what is damaged.
     ("crates/earshot-store/src/guarded.rs", "damage_scan"),
+    // T14.66 (docs/summary-order.md 11.4): the meeting list's "written elsewhere".
+    (
+        "crates/earshot-runtime/src/offload.rs",
+        "meetings_waiting_shown",
+    ),
     ("crates/earshot-store/src/sync.rs", "converge"),
     ("crates/earshot-store/src/sync.rs", "dead_person_repair"),
     (

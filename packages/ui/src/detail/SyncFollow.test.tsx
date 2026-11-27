@@ -60,7 +60,7 @@ async function waitingSetup(data: MockIpcData = {}, waiting = true) {
         throw new IpcFailure({ kind: "meeting_not_found", message: "This meeting no longer exists.", retryable: false });
       }
       const d: MeetingDetail = await base.getMeeting(id);
-      return arrived && id === ITEM.id ? { ...d, waiting_for: null } : d;
+      return arrived && id === ITEM.id ? { ...d, waiting_for: null, waiting_device: null } : d;
     },
   };
   const user = userEvent.setup();

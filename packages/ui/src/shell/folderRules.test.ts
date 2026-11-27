@@ -10,7 +10,7 @@ const row = (id: string, folder: string | null): MeetingListItem => ({
   duration_ms: 60_000,
   state: "Ready",
   folder_id: folder,
-  new_summary: false,
+  new_summary: false, summary_elsewhere: false,
 });
 
 describe("folders", () => {

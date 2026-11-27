@@ -1076,6 +1076,21 @@ pub(crate) mod for_deletion {
         )
     }
 
+    /// Every summary request row that reads, in creation order, and the rowids of those that
+    /// do not (T14.66: the meeting list's "written elsewhere").
+    pub(crate) fn summary_requests(
+        c: &Connection,
+    ) -> Result<(Vec<SummaryRequest>, Vec<i64>), RepoError> {
+        split_rows(
+            c,
+            "summary_request",
+            synced_cols(&SUMMARY_REQUEST),
+            "ORDER BY created_wall, created_logical, created_node, id",
+            &[],
+            summary_request_row,
+        )
+    }
+
     pub(crate) fn audio(
         c: &Connection,
         m: EntityId,

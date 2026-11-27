@@ -666,7 +666,10 @@ pub fn runtime_text(e: &RuntimeError) -> String {
         }
         RuntimeError::Llm(l) => summary_copy(l),
         RuntimeError::LocalSummary(l) if l.is_cancelled() => SUMMARY_CANCELLED.to_owned(),
-        RuntimeError::LocalSummary(_) => LOCAL_SUMMARY_FAILED.to_owned(),
+        // Which kind of failure, in fixed words (T14.66), never the error's text.
+        RuntimeError::LocalSummary(l) => crate::summary_order::local_failure_copy(l.kind())
+            .unwrap_or(LOCAL_SUMMARY_FAILED)
+            .to_owned(),
         RuntimeError::Net(_) => NETWORK_SETUP_FAILED.to_owned(),
         RuntimeError::Endpoint(_) => ENDPOINT_UNUSABLE.to_owned(),
         RuntimeError::EndpointDenied(_) => ENDPOINT_NOT_HTTPS.to_owned(),
@@ -1683,7 +1686,10 @@ mod every_variant_tests {
                 status: 500,
                 message: words.into(),
             }),
-            RuntimeError::LocalSummary(LocalSummaryError::ChildRun(words.into())),
+            RuntimeError::LocalSummary(LocalSummaryError::ChildRun {
+                message: words.into(),
+                kind: None,
+            }),
             RuntimeError::Net(NetError::Build(words.into())),
             RuntimeError::Endpoint(UrlError::Parse(words.into())),
             RuntimeError::EndpointDenied(DenyReason::InsecureScheme),

@@ -340,6 +340,12 @@ pub enum MeetingEvent {
         /// Final-pass steps in all, once known.
         total: Option<u32>,
     },
+    /// A summary step was left for the next one and recorded in the meeting's run record
+    /// (T14.66): the meeting's page reads it again. Ids only; it sets no screen state.
+    SummaryRunChanged {
+        /// The meeting.
+        meeting: String,
+    },
     /// The summary step's result. Always the last event of a meeting.
     Summary {
         /// The meeting.
@@ -1154,6 +1160,11 @@ impl PostProgressMapper {
             }
             HostStep::PostFinished(_) => return None,
             HostStep::SummaryStarting => PostStep::Summarising,
+            HostStep::SummaryRunChanged => {
+                return Some(MeetingEvent::SummaryRunChanged {
+                    meeting: self.meeting.clone(),
+                });
+            }
         };
         Some(MeetingEvent::PostProgress {
             meeting: self.meeting.clone(),

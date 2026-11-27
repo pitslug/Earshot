@@ -431,7 +431,7 @@ export function sampleDetail(item: MeetingListItem): MeetingDetail {
     summary_stale_names: false,
     audio_kept: true,
     exported: false,
-    waiting_for: null,
+    waiting_for: null, waiting_device: null,
     summary_run: null,
     handovers: [],
     kept_local: null,

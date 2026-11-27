@@ -1,6 +1,7 @@
 // Pure helpers of the meeting list: day groups and the secondary line.
 
 import type { MeetingListItem, PostStep } from "../ipc";
+import { ORDER_COPY } from "../ipc/summaryOrder";
 
 /** A group of the meeting list (T12.103). `key` stays the same whatever day it is ("today",
  * "yesterday", "this-week", "last-week", or "YYYY-MM" for a month), so a group the user closed
@@ -124,10 +125,11 @@ export function workOfStep(step: PostStep): MeetingWork {
  * not opened (blue). */
 export type RowDot = "recording" | "working" | "newSummary";
 
-/** Whether the meeting's work is running or waiting: its listed state, or work the window heard
- * of since the list was read (a job, or a waiting meeting's turn starting). */
+/** Whether the meeting's work is running or waiting: its listed state, work the window heard
+ * of since the list was read (a job, or a waiting meeting's turn starting), or its summary being
+ * written on another computer (T14.66). */
 function working(m: MeetingListItem, work: MeetingWork | undefined): boolean {
-  return work !== undefined || m.state === "Processing" || m.state === "Waiting";
+  return work !== undefined || m.state === "Processing" || m.state === "Waiting" || m.summary_elsewhere;
 }
 
 /** The row's dot, `null` for none. */
@@ -151,7 +153,10 @@ function workWord(m: MeetingListItem, work: MeetingWork | undefined): string {
     case "Summarising":
       return "Summarising...";
     case undefined:
-      return m.state === "Waiting" ? "Waiting..." : "Finishing...";
+      // Local work wins: only a meeting with none heard says its summary is elsewhere (T14.66).
+      if (m.state === "Waiting") return "Waiting...";
+      if (m.state !== "Processing" && m.summary_elsewhere) return ORDER_COPY.list_elsewhere;
+      return "Finishing...";
   }
 }
 

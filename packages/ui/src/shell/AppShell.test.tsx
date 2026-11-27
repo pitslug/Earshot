@@ -14,10 +14,10 @@ const at = (day: number, hour: number, minute = 0) =>
 const NOW = at(2, 16, 0);
 
 const MEETINGS: MeetingListItem[] = [
-  { id: "m4", title: "Design review", started_at_ms: at(2, 14, 0), duration_ms: 34 * 60_000, state: "Ready", folder_id: null, new_summary: false },
-  { id: "m3", title: "", started_at_ms: at(2, 9, 30), duration_ms: 47 * 60_000, state: "Ready", folder_id: null, new_summary: false },
-  { id: "m2", title: "Supplier call", started_at_ms: at(1, 11, 5), duration_ms: 22 * 60_000, state: "Ready", folder_id: null, new_summary: false },
-  { id: "m1", title: "Quarterly planning", started_at_ms: new Date(2026, 9, 27, 10, 0).getTime(), duration_ms: 95 * 60_000, state: "Ready", folder_id: null, new_summary: false },
+  { id: "m4", title: "Design review", started_at_ms: at(2, 14, 0), duration_ms: 34 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false },
+  { id: "m3", title: "", started_at_ms: at(2, 9, 30), duration_ms: 47 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false },
+  { id: "m2", title: "Supplier call", started_at_ms: at(1, 11, 5), duration_ms: 22 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false },
+  { id: "m1", title: "Quarterly planning", started_at_ms: new Date(2026, 9, 27, 10, 0).getTime(), duration_ms: 95 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false },
 ];
 
 function renderShell(ipc: Ipc) {
@@ -220,7 +220,7 @@ describe("AppShell status dots (T12.76)", () => {
     { ...MEETINGS[0], id: "s5", title: "Read meeting" },
     { ...MEETINGS[0], id: "s4", title: "Finishing meeting", started_at_ms: at(2, 13, 0), state: "Processing" },
     { ...MEETINGS[0], id: "s3", title: "Queued meeting", started_at_ms: at(2, 12, 0), state: "Waiting" },
-    { ...MEETINGS[0], id: "s2", title: "Unread meeting", started_at_ms: at(2, 11, 0), new_summary: true },
+    { ...MEETINGS[0], id: "s2", title: "Unread meeting", started_at_ms: at(2, 11, 0), new_summary: true, summary_elsewhere: false },
     {
       ...MEETINGS[0],
       id: "s1",

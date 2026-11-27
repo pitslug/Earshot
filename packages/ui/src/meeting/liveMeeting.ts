@@ -157,7 +157,10 @@ export function reduce(
   if (state === null) return null;
   // An older meeting finishing behind this one: only the list hears about it.
   if (
-    (event.type === "Ended" || event.type === "PostProgress" || event.type === "Summary") &&
+    (event.type === "Ended" ||
+      event.type === "PostProgress" ||
+      event.type === "SummaryRunChanged" ||
+      event.type === "Summary") &&
     event.meeting !== state.meetingId
   ) {
     return state;
@@ -230,6 +233,9 @@ export function reduce(
       return { ...state, progress: { step: event.step, done: event.done, total: event.total } };
     case "Summary":
       return { ...state, phase: "done", summary: event.result, endedAt: state.endedAt ?? now };
+    // The meeting's page reads its run record again (AppShell); no meeting state (T14.66).
+    case "SummaryRunChanged":
+      return state;
   }
 }
 

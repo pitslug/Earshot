@@ -565,6 +565,12 @@ export function AppShell({
     void ipc
       .onJobEvent((e) => {
         if (!live) return;
+        // A re-summary left a writer for the next (T14.66): the meeting's page reads its run
+        // record again. Never the job's last event, and it starts no new countdown.
+        if (e.type === "SummaryRunChanged") {
+          setDetailRefresh((all) => countedFor(all, e.meeting));
+          return;
+        }
         jobSeq.current += 1;
         const seq = jobSeq.current;
         setJobs((all) => {
@@ -708,6 +714,10 @@ export function AppShell({
     // A meeting's page reads it again when its finishing stored something, whichever meeting the
     // screen follows: an older one finishing behind a newer one has its page too (T14.15).
     if (event.type === "PostProgress" && event.step.kind === "Stored") {
+      setDetailRefresh((all) => countedFor(all, event.meeting));
+    }
+    // A meeting's summary left a writer for the next (T14.66): its page reads the run record.
+    if (event.type === "SummaryRunChanged") {
       setDetailRefresh((all) => countedFor(all, event.meeting));
     }
     if (event.type === "Summary") {

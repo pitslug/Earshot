@@ -3257,6 +3257,103 @@ mod order_steps {
             "the new run is untouched"
         );
     }
+
+    // ---- the meeting list's "written elsewhere" (T14.66, docs/summary-order.md 11.4) ----
+
+    fn shown_set(dev: &Device) -> (std::collections::BTreeSet<EntityId>, usize) {
+        let store = dev.svc.store();
+        let read = store.guarded_read();
+        meetings_waiting_shown(&read, store.device())
+    }
+
+    fn damage(dev: &Device, sql: &str, id: EntityId) {
+        let c = rusqlite::Connection::open(dev.svc.data.db_path()).unwrap();
+        let changed = c
+            .execute(sql, rusqlite::params![id.as_uuid().as_bytes().to_vec()])
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    #[test]
+    fn offload_meetings_waiting_shown_is_waiting_shown_meeting_by_meeting() {
+        let a = Device::new("offload-list-shown");
+        // An empty store: nothing.
+        assert!(shown_set(&a).0.is_empty());
+        let requested = meeting(&a.svc, "Invented one", 701);
+        asked_of_desk(&a, requested);
+        let withdrawn = meeting(&a.svc, "Invented two", 702);
+        let w = asked_of_desk(&a, withdrawn);
+        super::withdraw(&a, w);
+        let stopped = meeting(&a.svc, "Invented three", 703);
+        asked_of_desk(&a, stopped);
+        stop_waiting(&a.svc, stopped).unwrap();
+        let summarised = meeting(&a.svc, "Invented four", 704);
+        asked_of_desk(&a, summarised);
+        store_a_summary(&a, summarised, "Arrived");
+        // A request whose last write is not its asker's (a claim written here as if by the
+        // target, which is not this device): ignored by both.
+        let forged = meeting(&a.svc, "Invented five", 705);
+        let f = asked_of_desk(&a, forged);
+        let mut row = a.request(f);
+        crate::edit::write(&a.svc, |tx, stamp| {
+            row.state = RequestState::Claimed;
+            row.meta.touch(stamp.hlc, stamp.clock);
+            tx.put_summary_request(row.clone())?;
+            Ok(())
+        })
+        .unwrap();
+        let none = meeting(&a.svc, "Invented six", 706);
+        let (set, damaged) = shown_set(&a);
+        assert_eq!(damaged, 0);
+        let me = a.id();
+        for m in [requested, withdrawn, stopped, summarised, forged, none] {
+            assert_eq!(
+                set.contains(&m),
+                waiting_shown(&a.svc.store(), me, m).unwrap().is_some(),
+                "{m}"
+            );
+        }
+        assert_eq!(set.into_iter().collect::<Vec<_>>(), vec![requested]);
+    }
+
+    #[test]
+    fn offload_meetings_waiting_shown_skips_damaged_rows_and_counts_them() {
+        for damaged in [true, false] {
+            let a = Device::new("offload-list-damaged");
+            let by_request = meeting(&a.svc, "Invented one", 711);
+            let r = asked_of_desk(&a, by_request);
+            let by_summary = meeting(&a.svc, "Invented two", 712);
+            asked_of_desk(&a, by_summary);
+            // An earlier summary, before the request (the meeting still waits).
+            let earlier = meeting(&a.svc, "Invented three", 713);
+            store_a_summary(&a, earlier, "Earlier");
+            let s = a.svc.store().summaries(earlier).unwrap()[0].id;
+            a.clock.advance_ms(1000);
+            asked_of_desk(&a, earlier);
+            if damaged {
+                damage(
+                    &a,
+                    "UPDATE summary_request SET state = 'not-a-state' WHERE id = ?1",
+                    r,
+                );
+                damage(
+                    &a,
+                    "UPDATE summary SET template = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    s,
+                );
+            }
+            let (set, count) = shown_set(&a);
+            if damaged {
+                // Neither meeting with a damaged row is marked; both rows are counted.
+                assert_eq!(count, 2);
+                assert_eq!(set.into_iter().collect::<Vec<_>>(), vec![by_summary]);
+            } else {
+                // Control: undamaged, all three wait.
+                assert_eq!(count, 0);
+                assert_eq!(set.len(), 3);
+            }
+        }
+    }
 }
 
 // ---- T14.66: a withdrawal stops the helper's write (docs/summary-order.md 11.3) ----

@@ -426,6 +426,11 @@ export const commands = {
 	setSummaryHelper: (device: string | null) => typedError<SummaryHelpersView, IpcError>(__TAURI_INVOKE("set_summary_helper", { device })),
 	/**  Asks another computer to write a meeting's summary now; returns the meeting's waiting line. */
 	askSummaryHelper: (meeting: string, device: string) => typedError<string, IpcError>(__TAURI_INVOKE("ask_summary_helper", { meeting, device })),
+	/**
+	 *  Stops a meeting's summary waiting on another computer (T14.66): `None` when it stopped, else
+	 *  fixed copy saying why nothing was stopped.
+	 */
+	stopWaitingSummary: (meeting: string) => typedError<string | null, IpcError>(__TAURI_INVOKE("stop_waiting_summary", { meeting })),
 	/**  The Summaries page's order (asks the server for the computers). */
 	summaryOrder: () => typedError<SummaryOrderView, IpcError>(__TAURI_INVOKE("summary_order")),
 	/**
@@ -1390,6 +1395,14 @@ meeting: string } |
 meeting: string; 
 /**  The meeting's waiting line (fixed copy, `offload::waiting_copy`). */
 message: string } | 
+/**
+ *  A re-summary's step was left for the next one and recorded in the meeting's run record
+ *  (T14.66): the page reads the meeting again. Never a job's `last` event in the window, and
+ *  it holds the meeting id only.
+ */
+{ type: "SummaryRunChanged"; 
+/**  Meeting id. */
+meeting: string } | 
 /**  Something the user may need to know while the job runs (a backend fallback). */
 { type: "Warning"; 
 /**  Meeting id. */
@@ -1556,6 +1569,11 @@ export type MeetingDetail = {
 	 */
 	waiting_for: string | null,
 	/**
+	 *  The computer `waiting_for` waits on, by name (or "your other computer"; T14.66): the
+	 *  header's "being written on" line. `None` exactly when `waiting_for` is.
+	 */
+	waiting_device: string | null,
+	/**
 	 *  The last run of the order of summary writers, when it has something to say (T12.63b,
 	 *  `summary_order::run_note`): interrupted, a named computer's hand-back, or what became of
 	 *  each step. Fixed copy, computer names and the endpoint's host only.
@@ -1673,6 +1691,13 @@ step: PostStep;
 done: number; 
 /**  Final-pass steps in all, once known. */
 total: number | null } | 
+/**
+ *  A summary step was left for the next one and recorded in the meeting's run record
+ *  (T14.66): the meeting's page reads it again. Ids only; it sets no screen state.
+ */
+{ type: "SummaryRunChanged"; 
+/**  The meeting. */
+meeting: string } | 
 /**  The summary step's result. Always the last event of a meeting. */
 { type: "Summary"; 
 /**  The meeting. */
@@ -1702,6 +1727,11 @@ export type MeetingListItem = {
 	 *  `earshot_runtime::summary_seen`).
 	 */
 	new_summary: boolean,
+	/**
+	 *  Its summary is being written on another computer: this device asked and the request is
+	 *  open, with no summary since (T14.66, `offload::meetings_waiting_shown`).
+	 */
+	summary_elsewhere: boolean,
 };
 
 /**

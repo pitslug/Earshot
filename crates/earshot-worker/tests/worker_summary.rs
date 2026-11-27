@@ -614,3 +614,109 @@ fn worker_skips_voice_rows_before_any_hold() {
     assert_eq!((a.skipped, a.held), (1, [0; 4]), "{a:?}");
     assert!(store.held_rows().unwrap().is_empty());
 }
+
+/// T14.66 (docs/summary-order.md 11.3): the asker's Stop reaches a worker writing its summary: the
+/// worker's next tick hears the withdrawal and cancels the write, which ends without the endpoint
+/// answering and stores nothing. Then the worker's own stop cancels a second write and starts no
+/// new one; that request stays claimed. Every sync thread of the worker shares one host.
+#[test]
+fn worker_stops_writing_when_its_asker_stops_and_when_it_stops() {
+    let dir = TempDir::new("stop");
+    let relay = relay(&dir);
+    let asker = Asker::new(&dir.0);
+    set_up_first_device(&asker.svc, &*asker.vault, &relay.url(), SECRET).unwrap();
+    // The endpoint holds every answer until the test is done (a 60 s guard at most).
+    let (arrived_tx, arrived) = std::sync::mpsc::channel::<()>();
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    let arrived_tx = std::sync::Mutex::new(arrived_tx);
+    let release_rx = std::sync::Mutex::new(release_rx);
+    let server = MockServer::start_with(move |_| {
+        let _ = arrived_tx.lock().unwrap().send(());
+        let _ = release_rx
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(60));
+        reply("Never stored")
+    })
+    .unwrap();
+    let endpoint = server.endpoint();
+    let config = worker_config(&dir.0, &relay.url(), &endpoint);
+    let wsvc = open_services(&config.data).unwrap();
+    let offer =
+        offer_pairing_code(&asker.svc, Arc::clone(&asker.vault) as Arc<dyn SyncVault>).unwrap();
+    join(&wsvc, &config, offer.code()).unwrap();
+    drop(offer);
+    let worker = Worker::open_with(
+        wsvc.clone(),
+        config.clone(),
+        Arc::new(|url: &Url| Place::Remote { url: url.clone() }),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&worker.host(), &worker.host()), "one host");
+    let worker_id: DeviceId = wsvc.store().device();
+    let thread = worker.start(fast()).unwrap();
+    let ca = asker.client();
+    wait_until("the worker's presence", || {
+        ca.peers()
+            .unwrap()
+            .iter()
+            .any(|p| p.device == worker_id && p.online)
+    });
+
+    // The asker asks, the worker starts writing, the asker stops.
+    let m = meeting(&asker.svc, "", false, 3);
+    ca.tick().unwrap();
+    let request = earshot_runtime::offload::ask(&asker.svc, m, worker_id)
+        .unwrap()
+        .unwrap();
+    ca.tick().unwrap();
+    arrived
+        .recv_timeout(Duration::from_secs(90))
+        .expect("the worker asks its endpoint");
+    let host = worker.host();
+    use earshot_runtime::offload::OffloadHost;
+    assert_eq!(host.writing(), vec![request]);
+    let stopped = earshot_runtime::summary_order::run::stop_waiting(&asker.svc, m).unwrap();
+    assert!(matches!(
+        stopped,
+        earshot_runtime::summary_order::run::StopAnswer::Stopped { device } if device == worker_id
+    ));
+    ca.tick().unwrap();
+    // The write ends while the endpoint still holds its answer.
+    wait_until("the worker's write was cancelled", || {
+        host.writing().is_empty()
+    });
+    assert!(live_summaries(&wsvc, m).is_empty(), "nothing stored");
+    assert_eq!(
+        wsvc.store()
+            .summary_request(request)
+            .unwrap()
+            .unwrap()
+            .state,
+        RequestState::Withdrawn
+    );
+    // The mock answers one connection at a time: let the abandoned one go.
+    let _ = release.send(());
+
+    // A second request; the worker stops while it writes.
+    let second = meeting(&asker.svc, "", false, 4);
+    ca.tick().unwrap();
+    let r2 = earshot_runtime::offload::ask(&asker.svc, second, worker_id)
+        .unwrap()
+        .unwrap();
+    ca.tick().unwrap();
+    arrived.recv_timeout(Duration::from_secs(90)).unwrap();
+    assert_eq!(host.writing(), vec![r2]);
+    worker.cancel();
+    wait_until("the worker's stop cancelled the write", || {
+        host.writing().is_empty()
+    });
+    assert!(live_summaries(&wsvc, second).is_empty());
+    assert_eq!(
+        wsvc.store().summary_request(r2).unwrap().unwrap().state,
+        RequestState::Claimed,
+        "a stopping worker leaves it claimed"
+    );
+    thread.stop();
+    let _ = release.send(());
+}

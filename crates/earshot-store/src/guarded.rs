@@ -984,6 +984,16 @@ macro_rules! guarded_readers {
             Ok(ok)
         }
 
+        /// Every summary request that reads, in creation order; the others counted (T14.66).
+        ///
+        /// # Errors
+        /// Store errors.
+        pub fn summary_requests_or_damaged(&self) -> Result<Vec<earshot_core::model::SummaryRequest>, StoreError> {
+            let (ok, bad) = crate::repo::for_deletion::summary_requests(self.c()).map_err(repo)?;
+            skip_all(&self.skipped, "summary_request", &bad);
+            Ok(ok)
+        }
+
         /// `meeting`'s segment rows that read; the others counted.
         ///
         /// # Errors

@@ -142,6 +142,58 @@ pub struct ResummariseTexts {
     pub offloaded_title: String,
 }
 
+/// The waiting banner's Stop (T14.66).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StopTexts {
+    /// The button (the UI's).
+    #[allow(dead_code)]
+    pub button: String,
+    /// Its accessible name (`{device}`; the UI's).
+    #[allow(dead_code)]
+    pub label: String,
+    /// The computer had already written it (`{device}`).
+    pub already_written: String,
+    /// Nothing waits on another computer.
+    pub not_waiting: String,
+    /// The stop could not be stored (the UI's).
+    #[allow(dead_code)]
+    pub failed: String,
+}
+
+/// The header line while a new summary is written (T14.66; the UI's).
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InProgressTexts {
+    /// Written here.
+    pub here: String,
+    /// Written on another computer (`{device}`).
+    pub on: String,
+}
+
+/// One sentence per kind of local summary failure (T14.66), by `LocalFailureKind::word`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalFailureTexts {
+    /// Too long for the model.
+    pub too_long: String,
+    /// The reply could not be used.
+    pub reply_unusable: String,
+    /// The graphics card's process stopped.
+    pub card_stopped: String,
+    /// It stopped making progress.
+    pub stalled: String,
+    /// The model could not load.
+    pub load_failed: String,
+    /// An earlier load is stuck.
+    pub load_stuck: String,
+    /// It did not load where asked.
+    pub wrong_backend: String,
+    /// The CUDA files changed.
+    pub cuda_changed: String,
+}
+
 /// The copy table (`fixtures/ui/summary_order_cases.json`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -187,6 +239,89 @@ pub struct Copy {
     pub refusals: BTreeMap<String, String>,
     /// A computer whose name is not known.
     pub unnamed: String,
+    /// The steps already left, under the waiting banner (`{steps}`, T14.66).
+    pub earlier: String,
+    /// The run note while a run goes on after a step was left (`{steps}`, `{next}`).
+    pub moving: String,
+    /// The run note after Stop (`{device}`).
+    pub stopped_note: String,
+    /// The waiting banner's Stop.
+    pub stop: StopTexts,
+    /// The header line while a new summary is written (the UI's).
+    #[allow(dead_code)]
+    pub in_progress: InProgressTexts,
+    /// The meeting list's word for a summary written on another computer (the UI's).
+    #[allow(dead_code)]
+    pub list_elsewhere: String,
+    /// The sentence for each kind of local summary failure.
+    pub local_failures: LocalFailureTexts,
+}
+
+/// The fixed sentence for a local summary failure of `kind` (T14.66, docs/summary-order.md
+/// 11.13): never the error's text. `None` for a cancel and for any other failure, whose copy is
+/// the caller's.
+#[must_use]
+pub fn local_failure_copy(
+    kind: earshot_runtime::summary::LocalFailureKind,
+) -> Option<&'static str> {
+    use earshot_runtime::summary::LocalFailureKind as K;
+    let t = &COPY.local_failures;
+    Some(match kind {
+        K::TooLong => &t.too_long,
+        K::ReplyUnusable => &t.reply_unusable,
+        K::CardStopped => &t.card_stopped,
+        K::Stalled => &t.stalled,
+        K::LoadFailed => &t.load_failed,
+        K::LoadStuck => &t.load_stuck,
+        K::WrongBackend => &t.wrong_backend,
+        K::CudaChanged => &t.cuda_changed,
+        K::Other | K::Cancelled => return None,
+    })
+}
+
+/// The moved steps of `views` before `upto`, joined (`step_outcome`, `joiner`).
+fn moved_text(views: &[RunStepView], upto: usize, cx: &StepContext) -> String {
+    views[..upto.min(views.len())]
+        .iter()
+        .filter_map(|v| match v.result {
+            StepResult::Moved(w) if w != OutcomeWord::SkippedKeptLocal => Some(fill(
+                &COPY.step_outcome,
+                &[("writer", &writer_name(v.step, cx)), ("word", &word(w))],
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(&COPY.joiner)
+}
+
+/// What the waiting banner adds when the waiting run already left steps (T14.66): "Tried first:
+/// ...", or `None`.
+#[must_use]
+pub fn earlier_text(view: &RunView, cx: &StepContext) -> Option<String> {
+    let RunView::Waiting(run) = view else {
+        return None;
+    };
+    let views = earshot_runtime::summary_order::run::views(run);
+    let steps = moved_text(&views, views.len(), cx);
+    (!steps.is_empty()).then(|| fill(&COPY.earlier, &[("steps", &steps)]))
+}
+
+/// The answer to the waiting banner's Stop (T14.66): `None` when it stopped (the page reads the
+/// meeting again and its run note says so), else fixed copy to show.
+#[must_use]
+pub fn stop_copy(
+    answer: earshot_runtime::summary_order::run::StopAnswer,
+    cx: &StepContext,
+) -> Option<String> {
+    use earshot_runtime::summary_order::run::StopAnswer;
+    match answer {
+        StopAnswer::Stopped { .. } => None,
+        StopAnswer::AlreadyWritten { device } => Some(fill(
+            &COPY.stop.already_written,
+            &[("device", &cx.device(device))],
+        )),
+        StopAnswer::NotWaiting => Some(COPY.stop.not_waiting.clone()),
+    }
 }
 
 /// The copy table, parsed once.
@@ -529,11 +664,76 @@ pub fn continue_note(device: DeviceId, cx: &StepContext) -> String {
 /// The meeting detail's account of the last run (docs/summary-order.md 4.3, 4.4): interrupted
 /// (a run that did not end while nothing works on the meeting, or a record that cannot be read),
 /// a named computer's hand-back, or the steps; `None` otherwise.
+#[cfg(test)]
 #[must_use]
 pub fn run_note(view: &RunView, working: bool, cx: &StepContext) -> Option<String> {
+    run_note_stopped(view, working, true, cx)
+}
+
+/// [`run_note`], with `stop_stands`: whether a stopped run's note still holds (no summary
+/// created after the request it was stopped on, `run::stop_stands`).
+#[must_use]
+pub fn run_note_stopped(
+    view: &RunView,
+    working: bool,
+    stop_stands: bool,
+    cx: &StepContext,
+) -> Option<String> {
     match view {
         RunView::Unreadable => Some(COPY.interrupted.clone()),
         RunView::Unfinished(_) if !working => Some(COPY.interrupted.clone()),
+        // A run going on after a step was left (T14.66): what became of the steps so far, and
+        // the step it tries now.
+        RunView::Unfinished(run) => {
+            let views = earshot_runtime::summary_order::run::views(run);
+            let steps = moved_text(&views, views.len(), cx);
+            if steps.is_empty() {
+                return None;
+            }
+            let next = (run.cursor..run.steps.len())
+                .find(|i| run.outcome_of(*i).is_none())
+                .map(|i| writer_name(run.steps[i], cx));
+            Some(match next {
+                Some(next) => fill(&COPY.moving, &[("steps", &steps), ("next", &next)]),
+                None => fill(&COPY.earlier, &[("steps", &steps)]),
+            })
+        }
+        // Stopped by the user (T14.66), before the named hand-back: a stopped named computer is
+        // not a hand-back.
+        RunView::Ended(run) if run.stopped.is_some() => {
+            if !stop_stands {
+                return None;
+            }
+            let device = run
+                .outcomes
+                .iter()
+                .find(|o| o.word == OutcomeWord::Stopped)
+                .and_then(|o| match run.steps.get(o.step) {
+                    Some(OrderStep::Computer(d)) => Some(*d),
+                    _ => None,
+                });
+            let mut note = fill(
+                &COPY.stopped_note,
+                &[(
+                    "device",
+                    &device.map_or_else(|| COPY.unnamed.clone(), |d| cx.device(d)),
+                )],
+            );
+            let views = earshot_runtime::summary_order::run::views(run);
+            let before = moved_text(
+                &views
+                    .iter()
+                    .copied()
+                    .filter(|v| v.result != StepResult::Moved(OutcomeWord::Stopped))
+                    .collect::<Vec<_>>(),
+                views.len(),
+                cx,
+            );
+            if !before.is_empty() {
+                note = format!("{note} {}", fill(&COPY.earlier, &[("steps", &before)]));
+            }
+            Some(note)
+        }
         RunView::Ended(run) => {
             if run.origin == RunOrigin::Named
                 && run.writer.is_none()

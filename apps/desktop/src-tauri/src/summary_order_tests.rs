@@ -358,6 +358,7 @@ fn summary_order_detail_note_reads_the_last_run() {
         waiting_on: None,
         state,
         writer: None,
+        stopped: None,
     };
     use earshot_runtime::summary_order::run::{RunOrigin, RunState, StepOutcome};
     // An unreadable record, and a run not ended with nothing working on the meeting.
@@ -1071,4 +1072,305 @@ fn summary_order_no_app_run_overrides_the_order() {
     let cli =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crates/earshot-cli/src/session.rs");
     assert!(sets_run_order(&std::fs::read_to_string(cli).unwrap()));
+}
+
+// ---- T14.66: stopped and moving notes, Stop's copy, local failure kinds ----
+
+#[test]
+fn summary_order_detail_note_says_a_run_was_stopped_or_moves_on() {
+    use earshot_runtime::summary_order::run::{RunOrigin, RunState, StepOutcome};
+    let cx = cx();
+    let request = EntityId::from_bytes([9; 16]);
+    // A named computer the user stopped: the stopped note, not a hand-back.
+    let mut stopped = SummaryRun {
+        run: 1,
+        origin: RunOrigin::Named,
+        steps: vec![OrderStep::Computer(DESK)],
+        cursor: 1,
+        outcomes: vec![StepOutcome {
+            step: 0,
+            word: OutcomeWord::Stopped,
+        }],
+        waiting_on: None,
+        state: RunState::Ended,
+        writer: None,
+        stopped: Some(request),
+    };
+    let want = "You stopped this summary and asked Invented desk to stop writing it. Re-summarise to write it again.";
+    assert_eq!(
+        run_note_stopped(&RunView::Ended(stopped.clone()), false, true, &cx).as_deref(),
+        Some(want)
+    );
+    // A summary came after the stopped request: the note falls.
+    assert_eq!(
+        run_note_stopped(&RunView::Ended(stopped.clone()), false, false, &cx),
+        None
+    );
+    // An order run that left steps before it was stopped says them too.
+    stopped.origin = RunOrigin::Order;
+    stopped.steps = vec![LOCAL, OrderStep::Computer(DESK), CLAUDE];
+    stopped.cursor = 2;
+    stopped.outcomes = vec![
+        StepOutcome {
+            step: 0,
+            word: OutcomeWord::TooLong,
+        },
+        StepOutcome {
+            step: 1,
+            word: OutcomeWord::Stopped,
+        },
+    ];
+    assert_eq!(
+        run_note_stopped(&RunView::Ended(stopped), false, true, &cx).as_deref(),
+        Some(
+            "You stopped this summary and asked Invented desk to stop writing it. Re-summarise to write it again. Tried first: This computer: too long."
+        )
+    );
+    // A run going on after a step was left: what became of it, and what it tries now.
+    let moving = SummaryRun {
+        run: 2,
+        origin: RunOrigin::Order,
+        steps: vec![LOCAL, CLAUDE],
+        cursor: 1,
+        outcomes: vec![StepOutcome {
+            step: 0,
+            word: OutcomeWord::CardStopped,
+        }],
+        waiting_on: None,
+        state: RunState::Running,
+        writer: None,
+        stopped: None,
+    };
+    assert_eq!(
+        run_note_stopped(&RunView::Unfinished(moving.clone()), true, false, &cx).as_deref(),
+        Some("So far: This computer: graphics card process stopped. Now trying Claude Code.")
+    );
+    // Control: with nothing working on the meeting it is interrupted, as before.
+    assert_eq!(
+        run_note_stopped(&RunView::Unfinished(moving), false, false, &cx).as_deref(),
+        Some(COPY.interrupted.as_str())
+    );
+}
+
+#[test]
+fn summary_order_waiting_banner_lists_the_steps_already_left() {
+    use earshot_runtime::summary_order::run::{RunOrigin, RunState, StepOutcome};
+    let cx = cx();
+    let mut waiting = SummaryRun {
+        run: 3,
+        origin: RunOrigin::Order,
+        steps: vec![LOCAL, CLAUDE, OrderStep::Computer(DESK)],
+        cursor: 3,
+        outcomes: vec![
+            StepOutcome {
+                step: 0,
+                word: OutcomeWord::LoadFailed,
+            },
+            StepOutcome {
+                step: 1,
+                word: OutcomeWord::NotSignedIn,
+            },
+        ],
+        waiting_on: Some(EntityId::from_bytes([8; 16])),
+        state: RunState::Waiting,
+        writer: None,
+        stopped: None,
+    };
+    assert_eq!(
+        earlier_text(&RunView::Waiting(waiting.clone()), &cx).as_deref(),
+        Some("Tried first: This computer: could not load; Claude Code: not signed in.")
+    );
+    // Control: a run asked at step 1 has nothing before it.
+    waiting.outcomes.clear();
+    assert_eq!(earlier_text(&RunView::Waiting(waiting), &cx), None);
+}
+
+#[test]
+fn summary_order_stop_copy_says_why_nothing_stopped() {
+    use earshot_runtime::summary_order::run::StopAnswer;
+    let cx = cx();
+    assert_eq!(stop_copy(StopAnswer::Stopped { device: DESK }, &cx), None);
+    assert_eq!(
+        stop_copy(StopAnswer::AlreadyWritten { device: DESK }, &cx).as_deref(),
+        Some("Invented desk had already written the summary.")
+    );
+    assert_eq!(
+        stop_copy(StopAnswer::NotWaiting, &cx).as_deref(),
+        Some(COPY.stop.not_waiting.as_str())
+    );
+}
+
+#[test]
+fn summary_order_every_local_failure_kind_has_fixed_copy_and_a_word() {
+    use earshot_runtime::summary::LocalFailureKind as K;
+    for k in K::ALL {
+        match (k, local_failure_copy(k)) {
+            (K::Other | K::Cancelled, copy) => assert_eq!(copy, None, "{k:?}"),
+            (_, Some(copy)) => {
+                assert!(!copy.is_empty() && !copy.contains('\u{2014}') && !copy.contains("  "));
+            }
+            (_, None) => panic!("{k:?} has no copy"),
+        }
+    }
+    // Each kind's word in the order exists in the table.
+    for w in OutcomeWord::ALL {
+        assert!(!word(w).is_empty(), "{w:?}");
+    }
+}
+
+#[test]
+fn summary_order_a_local_failure_is_said_by_its_kind_in_the_window() {
+    use earshot_runtime::RuntimeError;
+    use earshot_runtime::summary::LocalSummaryError as L;
+    let text = |e: L| crate::plain_text::runtime_text(&RuntimeError::LocalSummary(e));
+    assert_eq!(text(L::GpuStalled), COPY.local_failures.stalled);
+    assert_eq!(text(L::GpuChildStalled), COPY.local_failures.card_stopped);
+    assert_eq!(
+        text(L::CudaFilesChanged {
+            why: "invented words".into()
+        }),
+        COPY.local_failures.cuda_changed
+    );
+    // A child's own kind is said; with none, today's copy.
+    assert_eq!(
+        text(L::ChildRun {
+            message: "invented words".into(),
+            kind: Some(earshot_runtime::summary::LocalFailureKind::TooLong),
+        }),
+        COPY.local_failures.too_long
+    );
+    assert_eq!(
+        text(L::Chunks(earshot_core::prompt::TimeChunkError::ZeroWindow)),
+        crate::plain_text::LOCAL_SUMMARY_FAILED
+    );
+}
+
+/// T14.66 (docs/summary-order.md 11.5): a meeting's own summary that leaves a writer for the next
+/// tells the host as it happens (`HostStep::SummaryRunChanged`, the window's
+/// `MeetingEvent::SummaryRunChanged` with the meeting's id only). Control: a first step that
+/// writes tells nothing. Needs `cargo xtask fetch-models --set ci` for the pre-flight's model.
+#[test]
+fn summary_order_a_meetings_summary_says_each_writer_it_leaves() {
+    use crate::meeting::{HostPrepare, MeetingSource, Prepare, StartRequest};
+    use crate::meeting_events::PostProgressMapper;
+    use earshot_runtime::model_settings::{ModelPick, ModelSettings, set_model_settings};
+
+    for codex_first in [true, false] {
+        let dir = TempDir::new("summary-order-moves");
+        let svc = services(&dir);
+        let server = earshot_llm_replay::mock::MockServer::start(vec![summary_reply()]).unwrap();
+        set_model_settings(
+            &mut svc.store(),
+            &ModelSettings {
+                transcription: ModelPick::Named("base.en".into()),
+                ..ModelSettings::default()
+            },
+        )
+        .unwrap();
+        let host = host();
+        let value = SummarySettingsValue {
+            url: server.endpoint().to_string(),
+            model: "test-model".into(),
+            ..endpoint_value()
+        };
+        let order: &[StepChoice] = if codex_first {
+            &[StepChoice::Codex, StepChoice::Endpoint]
+        } else {
+            &[StepChoice::Endpoint, StepChoice::Codex]
+        };
+        set_order(&svc, &host, order, Some(&value)).unwrap();
+        let probes = SummaryProbes {
+            keys: Arc::new(CountedKeys::default()),
+            claude: Arc::new(NeverClaude),
+            codex: Arc::new(CountedCodex::default()),
+        };
+        let prepare = HostPrepare::with_source(Box::new(|_, _| {
+            Ok(MeetingSource {
+                starter: Box::new(|_, _, _, _| unreachable!("this test starts no capture")),
+                clock_domain: ClockDomain::Replay,
+                notices: Vec::new(),
+                call_signal: None,
+            })
+        }))
+        .with_probes(probes);
+        let queue = earshot_runtime::meeting_queue::MeetingQueue::new();
+        let ticket = Arc::new(queue.enter());
+        let request = StartRequest {
+            mode: crate::meeting_events::CaptureMode::Call,
+            title: String::new(),
+            keep_local: false,
+        };
+        let prepared = prepare
+            .prepare(&svc, &request, &ticket)
+            .unwrap_or_else(|e| panic!("{e:?}: cargo xtask fetch-models --set ci"));
+        let m = meeting_with_final(&svc, 7, 2);
+        let mut mapper = PostProgressMapper::of(m.to_string());
+        let mut events = Vec::new();
+        let done = (prepared.after)(&svc, &outcome(m), &CancelToken::new(), &mut |step| {
+            if let Some(e @ MeetingEvent::SummaryRunChanged { .. }) = mapper.step(&step) {
+                events.push(e);
+            }
+        });
+        assert!(
+            matches!(done.summary, SummaryResult::Stored { .. }),
+            "{:?}",
+            done.summary
+        );
+        if codex_first {
+            assert_eq!(
+                events,
+                vec![MeetingEvent::SummaryRunChanged {
+                    meeting: m.to_string()
+                }]
+            );
+        } else {
+            assert!(events.is_empty(), "{events:?}");
+        }
+    }
+}
+
+/// T14.66: a re-summary that leaves a writer for the next tells the job as it happens (the job's
+/// `JobEvent::SummaryRunChanged`). Control: one whose first writer writes tells nothing.
+#[test]
+fn summary_order_a_resummary_says_each_writer_it_leaves() {
+    for codex_first in [true, false] {
+        let dir = TempDir::new("summary-order-job-moves");
+        let svc = services(&dir);
+        let server = earshot_llm_replay::mock::MockServer::start(vec![summary_reply()]).unwrap();
+        let host = host();
+        let value = SummarySettingsValue {
+            url: server.endpoint().to_string(),
+            model: "test-model".into(),
+            ..endpoint_value()
+        };
+        let order: &[StepChoice] = if codex_first {
+            &[StepChoice::Codex, StepChoice::Endpoint]
+        } else {
+            &[StepChoice::Endpoint, StepChoice::Codex]
+        };
+        set_order(&svc, &host, order, Some(&value)).unwrap();
+        let m = meeting_with_final(&svc, 8, 2);
+        let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
+        let keys = CountedKeys::default();
+        let codex = CountedCodex::default();
+        let mut changes = 0;
+        let done = crate::jobs::summarise_run_with(
+            &svc,
+            m,
+            &crate::jobs::SummaryStart::Order,
+            &CancelToken::new(),
+            &models,
+            (&keys, &NeverClaude, &codex),
+            None,
+            &mut |_| {},
+            &mut || changes += 1,
+        )
+        .unwrap();
+        assert!(
+            matches!(done.result, SummaryResult::Stored { .. }),
+            "{:?}",
+            done.result
+        );
+        assert_eq!(changes, usize::from(codex_first));
+    }
 }

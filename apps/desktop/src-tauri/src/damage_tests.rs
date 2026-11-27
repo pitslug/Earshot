@@ -1067,3 +1067,51 @@ fn damaged_a_stale_due_starts_nothing() {
     assert_eq!(g.request(t(5)), Start::At(t(33)));
     assert_eq!(g.due(t(33), t(33)), Start::Now);
 }
+
+/// T14.66 (docs/summary-order.md 11.4, 11.15 item 1): the meeting list's "written elsewhere"
+/// reads requests and summaries through guarded readers. A damaged request row never fails the
+/// list, its meeting is not marked, and once a scan counted it a later list read asks for no
+/// scan (it is reported against the total). Control: a gate that has not scanned asks.
+#[test]
+fn damaged_a_summary_request_row_never_fails_the_list_and_asks_once() {
+    let dir = TempDir::new("damaged-list-request");
+    let svc = services(&dir);
+    let m = a_meeting(&svc, "Invented Corvane review");
+    let desk = earshot_core::identity::DeviceId::from_bytes([4; 16]);
+    let request = earshot_runtime::offload::ask(&svc, m, desk)
+        .unwrap()
+        .expect("a meeting with a final transcript is asked");
+    // Undamaged: the meeting is marked.
+    let list = crate::ipc::meeting_list(&svc).unwrap();
+    assert!(list.meetings.iter().any(|i| i.summary_elsewhere));
+    damage(
+        &dir,
+        "UPDATE summary_request SET state = 'not-a-state' WHERE id = ?1",
+        request,
+    );
+    let w = Watch::new(&svc);
+    w.scans.scan_soon();
+    w.run();
+    let before = w.started();
+    w.advance(Duration::from_secs(60));
+    let list = crate::ipc::meeting_list(&svc).unwrap();
+    assert_eq!(list.meetings.len(), 1, "the list still reads");
+    assert!(!list.meetings[0].summary_elsewhere);
+    let _ = crate::ipc::meeting_list(&svc).unwrap();
+    assert_eq!(w.started(), before, "the counted row asks for nothing");
+    // Control: the same damage on a store no scan has counted asks.
+    let dir2 = TempDir::new("damaged-list-request-unscanned");
+    let svc2 = services(&dir2);
+    let m2 = a_meeting(&svc2, "Invented Corvane review");
+    let request2 = earshot_runtime::offload::ask(&svc2, m2, desk)
+        .unwrap()
+        .unwrap();
+    damage(
+        &dir2,
+        "UPDATE summary_request SET state = 'not-a-state' WHERE id = ?1",
+        request2,
+    );
+    let w2 = Watch::new(&svc2);
+    crate::ipc::meeting_list(&svc2).unwrap();
+    assert_eq!(w2.started(), 1, "control: damage no scan counted asks");
+}

@@ -200,6 +200,7 @@ fn offload_waiting_banner_says_what_happens_if_the_computer_does_not_answer() {
             waiting_on: None,
             state: RunState::Waiting,
             writer: None,
+            stopped: None,
         })
     };
     let order = vec![
@@ -1021,6 +1022,59 @@ fn offload_host_declines_when_its_thread_cannot_start() {
         (got.state, got.reason.as_str()),
         (RequestState::Declined, reason::FAILED)
     );
+    // T14.66: the write's entry went with the closure the failed spawn dropped.
+    assert!(host.writing().is_empty());
+}
+
+/// T14.66 (docs/summary-order.md 11.3): the host's one registry outlives a sync thread. A second
+/// hand of a request being written (a new thread's `Offload`) starts nothing. Control: the write's
+/// entry goes when it ends. (A withdrawal's cancel is the runtime's `Writing`, tested there.)
+#[test]
+fn offload_host_writes_each_request_once_while_it_runs() {
+    static HELD: std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>> =
+        std::sync::Mutex::new(Vec::new());
+    fn hold(
+        _: &'static str,
+        work: Box<dyn FnOnce() + Send>,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
+        HELD.lock().unwrap().push(work);
+        Ok(std::thread::spawn(|| {}))
+    }
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    earshot_runtime::sync::set_offer_summaries(&b.svc, true).unwrap();
+    let m = meeting_with_final(&a.svc, 15, 2);
+    let request = earshot_runtime::offload::ask(&a.svc, m, b.id())
+        .unwrap()
+        .unwrap();
+    let (ca, cb) = (a.client(), b.client());
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    cb.tick().unwrap();
+    let (runner, _events) = jobs();
+    let host: Arc<dyn OffloadHost> = Arc::new(
+        HostOffload::new(
+            b.svc.clone(),
+            runner,
+            MeetingQueue::new(),
+            crate::activity::WorkGate::new(),
+            Arc::new(NoWriter),
+        )
+        .with_spawn(hold),
+    );
+    earshot_runtime::offload::Offload::new()
+        .step(&b.svc, &mut || None, &*host)
+        .unwrap();
+    assert_eq!(host.writing(), vec![request]);
+    // A replaced thread's new Offload hands it again: nothing new starts.
+    earshot_runtime::offload::Offload::new()
+        .step(&b.svc, &mut || None, &*host)
+        .unwrap();
+    assert_eq!(HELD.lock().unwrap().len(), 1, "one write");
+    // The work ends (here with no writer): its entry goes.
+    let work = HELD.lock().unwrap().pop().unwrap();
+    work();
+    assert!(host.writing().is_empty());
 }
 
 // ---- T14.50: the names the sync thread hears reach the cache and the waiting meeting ----

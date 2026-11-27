@@ -357,7 +357,7 @@ A successful Stop re-reads it too.
   - `jobNotice` draws it as the running job's bar, as before it.
   - The page re-reads its detail when it arrives.
   - After the job ends `Offloaded`, the waiting banner still lists the steps, read from the record, so the account survives the job's end and a window reload.
-- **CLI.** `earshot-cli` prints `RunStepView` lines from the record after each change, as well as its end-of-run lines.
+- **CLI.** `earshot-cli` prints a fixed line at each change ("summary: a writer could not write it; trying the next"); its end-of-run lines say which writer and why.
 
 ### 11.6 No stale notes while a summary is written (owner addition 5)
 
@@ -380,28 +380,25 @@ While `summaryInProgress` holds, the `summary_stale` bar is not rendered. That o
   - **Ended, `stopped` set:** `stopped_note`, plus `earlier` when other steps moved first. Shown only while no summary was created after the `stopped` request (looked up by id). After that it gives `None`, and the summary speaks for itself.
   - **Unfinished, while working:** `moving` (11.5).
 
-### 11.8 The header keeps a readable title (owner addition 7)
+### 11.8 The header's buttons sit on their own row, as icons (the owner, 2026-11-28)
 
-**Choice.** Icons when they let the title keep a readable width. The rejected alternative is a permanent row of buttons, which costs a line of height on every meeting at every width and pushes the banners down.
+This replaces the width rule designed here earlier (owner addition 7), by the owner's decision.
 
-**The fault today.** T14.55's switch (`useLabelsFit`) is measured and does not flip back and forth. Its one fault is that `measureRow` compares the buttons' need with the whole header (`row.parentElement.clientWidth`) and ignores the title. The title keeps only its 240 px flex basis.
+**The layout.** The header is a column, at every width:
+1. the title, which takes the full width and wraps;
+2. the caption line;
+3. one row of buttons (`role="group"`, "Meeting actions");
+4. the Summary and Transcript tabs.
 
-**The new rule.** `headerFit.measure` reports three widths:
-- the labelled buttons' need;
-- the icon buttons' need, from the same measured row: the labels' widths are known, and so is each icon button's fixed 32 px;
-- the title's natural width: the heading's text measured with `white-space: nowrap`, capped by the header.
+**The buttons.** All five buttons show only their icons at every width: Speakers (with its count badge), Export to Obsidian, Copy summary, Re-transcribe and Re-summarise (a split button that keeps its menu).
+- Each keeps its accessible name and a tooltip with its label.
+- The greyed Re-transcribe keeps its "Recording not available" (or finishing) description.
+- Re-transcribe and Re-summarise get icons of their own (`RetranscribeIcon`, `ResummariseIcon`).
 
-Then:
-
-| Condition | Result |
-|---|---|
-| labels fit in `header - reserve - gap`, where `reserve = min(TITLE_MIN_PX, title natural width)` | labelled buttons beside the title |
-| otherwise, icons fit there | icon buttons beside the title |
-| otherwise (the buttons wrap to their own row) | labels are judged against the full header width: labelled when they fit, icons otherwise |
-
-- `TITLE_MIN_PX` is 360, a judgement of about 30 characters of `Title2`. It also becomes `headerText`'s `flexBasis`, so the measure and the layout agree.
-- A short title reserves only its own width and keeps its labels.
-- The buttons that collapse are T14.55's set: Speakers, Export to Obsidian and Copy summary. Re-transcribe and Re-summarise have no icon in that set and keep their labels.
+**Removed.** T14.55's width measuring (`headerFit.ts`: `measureRow`, `useLabelsFit`, the label and icon switching) and its tests. `headerButtons.test.tsx` now pins three things:
+- the order: title, caption, button row, tabs;
+- every button an icon with its name and tooltip;
+- a long invented title kept out of the button row.
 
 ### 11.9 Copy (drafts for the owner)
 
@@ -585,6 +582,8 @@ Today `plain_text::runtime_text` maps every `LocalSummaryError` except a cancel 
 
 So the comment is wrong, but it is not what kept the banners. Narrowing it alone fixes nothing the owner saw, and a test of it would pass before the change.
 
+**As built.** The repro was tried in the Vite preview, on the Summary tab with the window watched: "New summary ready." hid after `BANNER_HIDE_MS`, so the bug did not reproduce. The mock always reads the window as watched, so the remaining suspect is the real app's `useWindowWatched` (`shell::window_watched`), which the owner's machine must check. Built here: the comment as the owner states the rule, and a test that "New summary ready." hides on the Summary tab. No behaviour change.
+
 **Build steps.**
 1. **Reproduce first**, in the real app or the Vite preview, on the Summary tab, and find why the countdown never ran. Two causes the code allows:
    - **A hold that never lets go.** `useAutoHide` takes its hold from `el.matches(":hover")` or from focus inside the bar when `shown` changes. A pinned bar that appears under a resting pointer holds until the pointer leaves it.
@@ -612,7 +611,7 @@ These rules join, and where they differ override, the sections above.
    - `put_own` returning `Ok(false)` means the record was replaced, and stops the run as `ask_for_run`'s `Conflict` does.
    - A store error on this write, which only records the account, is ignored, as handover-record failures are: it never costs the summary.
    - Test 19 covers all three, with a kept-local run in its control.
-4. **11.8: the title's flex basis and the measuring key.**
+4. **11.8: the title's flex basis and the measuring key.** Superseded by the owner's decision in 11.8 (no measuring); kept as the record of round 2.
    - The title's `flexBasis` is the computed reserve, set as an inline style and floored at 240 px.
    - The measuring key includes the title text and whether the title editor shows.
    - Test 25 gains a short title in the icon band.

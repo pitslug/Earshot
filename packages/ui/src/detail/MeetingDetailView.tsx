@@ -5,7 +5,6 @@
 // each one.
 
 import {
-  Badge,
   Body1,
   Body1Strong,
   Button,
@@ -60,6 +59,7 @@ import {
   type JobKind,
   IpcFailure,
   ORDER_COPY,
+  fillCopy,
   SPLIT_NEEDS_WORD_TIMES_COPY,
   type StepChoice,
   type LinkChoice,
@@ -77,7 +77,6 @@ import { displayTitle } from "../shell/meetings";
 import { type Timer, realTimer } from "../time";
 import { type ActionItem, actionGroups, joinNames, shownOwners } from "./actionGroups";
 import { hidesByItself, useAutoHide } from "./autoHide";
-import { useLabelsFit } from "./headerFit";
 import { KeptLocal } from "./KeptLocal";
 import { keepUnchanged } from "./keepUnchanged";
 import { scrollLineIntoView } from "./scrollLine";
@@ -119,6 +118,7 @@ import {
   handoverLine,
   headerLine,
   RECORDING_GONE_TIP,
+  type SummaryWriting,
   recordingsGone,
   rowTime,
   summaryMarkdown,
@@ -209,16 +209,16 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1,
     borderBottom: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
   },
+  // The title and caption take the full width; the buttons sit on their own row below them,
+  // above the tabs, at every width (the owner, 2026-11-28, T14.66).
   header: {
     display: "flex",
-    flexWrap: "wrap",
-    alignItems: "flex-start",
-    gap: tokens.spacingHorizontalS,
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: tokens.spacingVerticalS,
     paddingBottom: tokens.spacingVerticalXS,
   },
   headerText: {
-    flexGrow: 1,
-    flexBasis: "240px",
     minWidth: 0,
     display: "flex",
     flexDirection: "column",
@@ -257,10 +257,6 @@ const useStyles = makeStyles({
     alignItems: "flex-start",
     gap: tokens.spacingHorizontalS,
     whiteSpace: "nowrap",
-  },
-  // Wide enough for "Copy summary", so the header's buttons stay put when it says "Copied".
-  copyButton: {
-    minWidth: "124px",
   },
   // Fluent's own icon-only Button size (medium), for a button whose only child is hidden text.
   iconOnlyButton: {
@@ -774,7 +770,6 @@ export function MeetingDetailView({
   const nameField = useRef<HTMLInputElement | null>(null);
   const view = useRef<HTMLElement | null>(null);
   const pinnedHeader = useRef<HTMLDivElement | null>(null);
-  const headerButtons = useRef<HTMLDivElement | null>(null);
   // 12px is the root's gap (spacingVerticalM): the panel sticks where its column starts.
   usePanelSpace(view, pinnedHeader, 12);
   const audio = useRef<HTMLAudioElement | null>(null);
@@ -1129,6 +1124,19 @@ export function MeetingDetailView({
   };
 
   // Re-summarise on another computer (T11.3db): the meeting shows it waits.
+  // The waiting banner's Stop (T14.66): stopped, the page reads the meeting again (its run note
+  // says so); otherwise the reason nothing was stopped.
+  const stopWaiting = async () => {
+    try {
+      const why = await ipc.stopWaitingSummary(id);
+      if (why !== null) setNotice({ key: "stop", intent: "info", text: why });
+      await reload();
+      onChanged();
+    } catch {
+      setNotice({ key: "stop", intent: "error", text: ORDER_COPY.stop.failed });
+    }
+  };
+
   const askHelper = async (device: string) => {
     try {
       await ipc.askSummaryHelper(id, device);
@@ -1155,27 +1163,20 @@ export function MeetingDetailView({
   // A new summary being written replaces the one shown, so there is nothing settled to copy.
   const writingSummary = job !== undefined && job.job === "Resummarise" && !isTerminal(job.last);
   const summaryText = detail?.summary && !writingSummary ? summaryMarkdown(detail.summary) : "";
+  // A new summary is being written, here or on another computer (T14.66): the header says so and
+  // the out-of-date notes wait for it.
+  const summaryWriting: SummaryWriting | null = writingSummary
+    ? { on: null }
+    : detail?.waiting_for != null
+      ? { on: detail.waiting_device ?? ORDER_COPY.unnamed }
+      : null;
+  const summaryInProgress = summaryWriting !== null;
   // The runtime refuses line and word edits while the meeting is busy (recording, finishing, a
   // job on it): they are off here too, and a refusal that still comes is shown as before.
   const linesLocked =
     finishing || item.state === "Recording" || (job !== undefined && !isTerminal(job.last));
   const summariseLabel = detail !== null && detail.summary === null ? "Summarise" : "Re-summarise";
   const gone = detail !== null && recordingsGone(detail);
-  // Speakers, Export and Copy show only their icons when the labelled buttons do not fit on one
-  // row (T14.55). The key names every button and label that changes the labelled row's width:
-  // ResummariseControl's width follows its label, whether it is disabled (`detail === null`)
-  // and whether the finishing button replaces it; its menu opens in a popover, off the row.
-  const labelled = useLabelsFit(
-    headerButtons,
-    [
-      detail !== null,
-      voices,
-      summaryText !== "",
-      gone,
-      finishing,
-      `resummarise:${summariseLabel}:${finishing ? "finishing" : detail === null ? "disabled" : "enabled"}`,
-    ].join("|"),
-  );
   const speakersName = voices > 0 ? `Speakers, ${voicesBadge(voices)}` : "Speakers";
   // Success and info banners with nothing but Dismiss hide by themselves (T14.59): a notice, and
   // a finished job's bar (a new job event, a new `seq`, starts the countdown again).
@@ -1227,10 +1228,12 @@ export function MeetingDetailView({
                 )}
               </div>
             )}
-            {detail !== null && <Caption1 className={styles.muted}>{headerLine(detail)}</Caption1>}
+            {detail !== null && (
+              <Caption1 className={styles.muted}>{headerLine(detail, summaryWriting)}</Caption1>
+            )}
           </div>
-          <div ref={headerButtons} className={styles.headerButtons}>
-            <IconTip content={speakersName} iconOnly={!labelled}>
+          <div className={styles.headerButtons} role="group" aria-label="Meeting actions">
+            <IconTip content={speakersName}>
               <Button
                 ref={speakersButton}
                 aria-expanded={speakersOpen === true}
@@ -1238,20 +1241,18 @@ export function MeetingDetailView({
                 aria-label={speakersName}
                 disabled={detail === null}
                 icon={
-                  labelled ? undefined : (
-                    <span className={styles.iconWithCount}>
-                      <PeopleIcon />
-                      {voices > 0 && (
-                        <CounterBadge
-                          className={styles.iconCount}
-                          count={voices}
-                          appearance="filled"
-                          color="brand"
-                          size="small"
-                        />
-                      )}
-                    </span>
-                  )
+                  <span className={styles.iconWithCount}>
+                    <PeopleIcon />
+                    {voices > 0 && (
+                      <CounterBadge
+                        className={styles.iconCount}
+                        count={voices}
+                        appearance="filled"
+                        color="brand"
+                        size="small"
+                      />
+                    )}
+                  </span>
                 }
                 onClick={() => {
                   // Opened by the user: focus goes into the panel, which follows the transcript in
@@ -1259,29 +1260,16 @@ export function MeetingDetailView({
                   if (speakersOpen !== true) setFocusPanel((n) => n + 1);
                   setSpeakersOpen((open) => open !== true);
                 }}
-              >
-                {labelled ? (
-                  <>
-                    Speakers
-                    {voices > 0 && (
-                      <Badge className={styles.badge} appearance="filled" color="brand" size="small">
-                        {voicesBadge(voices)}
-                      </Badge>
-                    )}
-                  </>
-                ) : undefined}
-              </Button>
+              />
             </IconTip>
-            <IconTip content="Export to Obsidian" iconOnly={!labelled}>
+            <IconTip content="Export to Obsidian">
               <Button
-                aria-label={labelled ? undefined : "Export to Obsidian"}
-                icon={labelled ? undefined : <ExportIcon />}
+                aria-label="Export to Obsidian"
+                icon={<ExportIcon />}
                 onClick={onExport}
                 disabled={detail === null}
                 {...restoreFocus}
-              >
-                {labelled ? "Export to Obsidian" : undefined}
-              </Button>
+              />
             </IconTip>
             <ReexportQuestion
               open={askingReexport}
@@ -1292,7 +1280,6 @@ export function MeetingDetailView({
               <CopySummaryButton
                 text={summaryText}
                 timer={timer}
-                iconOnly={!labelled}
                 onCopied={() => setNotice((n) => (n?.key === "copy" ? null : n))}
                 onFailed={() =>
                   setNotice({ key: "copy", intent: "error", text: "The summary could not be copied." })
@@ -1302,33 +1289,38 @@ export function MeetingDetailView({
             {gone ? (
               // Focusable, so a keyboard reaches the reason.
               <Tooltip content={RECORDING_GONE_TIP} relationship="description">
-                <Button disabledFocusable>Re-transcribe</Button>
+                <Button disabledFocusable aria-label="Re-transcribe" icon={<RetranscribeIcon />} />
               </Tooltip>
             ) : finishing ? (
               <Tooltip content={FINISHING_TIP} relationship="description">
-                <Button disabledFocusable>Re-transcribe</Button>
+                <Button disabledFocusable aria-label="Re-transcribe" icon={<RetranscribeIcon />} />
               </Tooltip>
             ) : (
-              <Button
-                disabled={detail === null}
-                onClick={() => void startJob("retranscribe")}
-              >
-                Re-transcribe
-              </Button>
+              <IconTip content="Re-transcribe">
+                <Button
+                  aria-label="Re-transcribe"
+                  icon={<RetranscribeIcon />}
+                  disabled={detail === null}
+                  onClick={() => void startJob("retranscribe")}
+                />
+              </IconTip>
             )}
             {finishing ? (
               <Tooltip content={FINISHING_TIP} relationship="description">
-                <Button disabledFocusable>{summariseLabel}</Button>
+                <Button disabledFocusable aria-label={summariseLabel} icon={<ResummariseIcon />} />
               </Tooltip>
             ) : (
-              <ResummariseControl
-                meeting={id}
-                label={summariseLabel}
-                disabled={detail === null}
-                onOrder={() => void startJob("resummarise")}
-                onWriter={(step) => void resummariseWith(step)}
-                onAsk={(device) => void askHelper(device)}
-              />
+              <IconTip content={summariseLabel}>
+                <ResummariseControl
+                  meeting={id}
+                  label={summariseLabel}
+                  icon={<ResummariseIcon />}
+                  disabled={detail === null}
+                  onOrder={() => void startJob("resummarise")}
+                  onWriter={(step) => void resummariseWith(step)}
+                  onAsk={(device) => void askHelper(device)}
+                />
+              </IconTip>
             )}
           </div>
         </div>
@@ -1380,6 +1372,18 @@ export function MeetingDetailView({
               <MessageBarTitle>{WAITING_TITLE}</MessageBarTitle>
               {detail.waiting_for}
             </MessageBarBody>
+            <MessageBarActions>
+              {/* T14.66: withdraws this computer's request and ends the run. */}
+              <Button
+                size="small"
+                aria-label={fillCopy(ORDER_COPY.stop.label, {
+                  device: detail.waiting_device ?? ORDER_COPY.unnamed,
+                })}
+                onClick={() => void stopWaiting()}
+              >
+                {ORDER_COPY.stop.button}
+              </Button>
+            </MessageBarActions>
           </MessageBar>
         )}
         {jobBar !== null && (
@@ -1439,6 +1443,7 @@ export function MeetingDetailView({
         {detail !== null && tab === "summary" && (
           <SummaryBanners
             detail={detail}
+            inProgress={summaryInProgress}
             onResummarise={() => void startJob("resummarise")}
             onAllowWriter={() => void run(() => ipc.allowSummaryWriter(id), "The meeting could not be changed")}
           />
@@ -1634,14 +1639,11 @@ export function MeetingDetailView({
 function CopySummaryButton({
   text,
   timer,
-  iconOnly,
   onCopied,
   onFailed,
 }: {
   text: string;
   timer: Timer;
-  /** Only the icon shows; the label stays for a screen reader and shows on hover. */
-  iconOnly: boolean;
   onCopied(): void;
   onFailed(): void;
 }) {
@@ -1668,19 +1670,15 @@ function CopySummaryButton({
   const label = copied ? "Copied" : "Copy summary";
   // One button at every width, so a change of form never moves focus off it.
   return (
-    <IconTip content={label} iconOnly={iconOnly}>
+    <IconTip content={label}>
       <Button
-        // The live text is a child even in icon form, so Button's own icon-only sizing does not
-        // apply: the same size is set here.
-        className={iconOnly ? styles.iconOnlyButton : styles.copyButton}
-        icon={iconOnly ? <CopyIcon /> : undefined}
+        // The live text is a child, so Button's own icon-only sizing does not apply: the same
+        // size is set here.
+        className={styles.iconOnlyButton}
+        icon={<CopyIcon />}
         onClick={() => void copy()}
       >
-        <span
-          aria-live="polite"
-          className={iconOnly ? styles.srOnly : undefined}
-          data-sr-only={iconOnly ? "" : undefined}
-        >
+        <span aria-live="polite" className={styles.srOnly} data-sr-only="">
           {label}
         </span>
       </Button>
@@ -1689,22 +1687,36 @@ function CopySummaryButton({
 }
 
 /**
- * A header button's tooltip: its full label, shown on hover and focus only while the button
- * shows just its icon. The button names itself (`aria-label`), so the tooltip adds nothing for a
- * screen reader. The Tooltip stays mounted at every width, so the button is never remounted
- * (and never loses focus) when the header changes form.
+ * A header button's tooltip: its full label, shown on hover and focus (every header button shows
+ * only its icon, the owner 2026-11-28). The button names itself (`aria-label`), so the tooltip
+ * adds nothing for a screen reader.
  */
-function IconTip({ content, iconOnly, children }: { content: string; iconOnly: boolean; children: ReactElement }) {
-  const [shown, setShown] = useState(false);
+function IconTip({ content, children }: { content: string; children: ReactElement }) {
   return (
-    <Tooltip
-      content={content}
-      relationship="inaccessible"
-      visible={iconOnly && shown}
-      onVisibleChange={(_, data) => setShown(data.visible)}
-    >
+    <Tooltip content={content} relationship="inaccessible">
       {children}
     </Tooltip>
+  );
+}
+
+/** Two arrows in a circle, for Re-transcribe. */
+function RetranscribeIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <path d="M15.5 8A6 6 0 0 0 4.75 6.5M4.5 12a6 6 0 0 0 10.75 1.5" strokeLinecap="round" />
+      <path d="M4.5 3.5v3h3M15.5 16.5v-3h-3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** A page with lines and a spark, for Re-summarise. */
+function ResummariseIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+      <path d="M11 3.5H5.5A1.5 1.5 0 0 0 4 5v10a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 16 15V9" strokeLinecap="round" />
+      <path d="M7 10h6M7 13h4" strokeLinecap="round" />
+      <path d="M15 2.5v4M13 4.5h4" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -2016,16 +2028,19 @@ function SummaryBody({
  * shows (T14.58). */
 function SummaryBanners({
   detail,
+  inProgress,
   onResummarise,
   onAllowWriter,
 }: {
   detail: MeetingDetail;
+  /** A new summary is being written (T14.66): the out-of-date notes wait for it. */
+  inProgress: boolean;
   onResummarise(): void;
   onAllowWriter(): void;
 }) {
   return (
     <>
-      {detail.summary_stale && (
+      {detail.summary_stale && !inProgress && (
         <MessageBar intent="warning">
           <MessageBarBody>
             {detail.summary_stale_names

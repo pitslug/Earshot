@@ -1,5 +1,5 @@
 {
-  "_comment": "Summary writers in order (T12.63b, docs/summary-order.md sections 2, 4.4, 4.5, 5 and 10). steps: each step's label on the Summaries page and the re-summarise menu ({device} a computer's name from its presence, {writer} its writer kind from offload_copy_cases.json writers, {host} the endpoint's host). destinations: the line under each step saying where the transcript goes. writers: the same steps as the subject of a banner sentence. words: the fixed outcome word of each step that was left for the next one, by the runtime's OutcomeWord. step_outcome joins a writer and its word, joiner joins those. later_writer: banner summary-steps when a later step wrote the summary; no_summary: the same banner when every step failed. start_check / start_check_last: the meeting-start banner of a step known to fail now, with and without a later step. interrupted: a run that did not end (a restart, or a record that cannot be read). named_hand_back: a computer named by a re-summarise that handed the request back. continue_note: the first warning of the re-summary that goes on with the next step after a computer handed it back. not_now: a local step skipped while a newer meeting needed this computer. page: the Summaries page section (T12.68: one list of writers, each ticked writer with its rank; list its accessible name, use, move_up and move_down a writer's controls ({writer} its label), too_many a fourth tick ({n} the most steps), not_set_up an endpoint and not_downloaded the local model that cannot be ticked yet, kept_local the line under the list). resummarise: the meeting header's split button and its job notices' titles. refusals: a refused order, as the page shows the runtime's refusal. unnamed: a computer whose name is not known, at the start of a sentence. Pinned to the desktop's copy by its tests and read by the UI and its mock. Shipped with the app: public copy only.",
+  "_comment": "Summary writers in order (T12.63b, docs/summary-order.md sections 2, 4.4, 4.5, 5 and 10). steps: each step's label on the Summaries page and the re-summarise menu ({device} a computer's name from its presence, {writer} its writer kind from offload_copy_cases.json writers, {host} the endpoint's host). destinations: the line under each step saying where the transcript goes. writers: the same steps as the subject of a banner sentence. words: the fixed outcome word of each step that was left for the next one, by the runtime's OutcomeWord. step_outcome joins a writer and its word, joiner joins those. later_writer: banner summary-steps when a later step wrote the summary; no_summary: the same banner when every step failed. start_check / start_check_last: the meeting-start banner of a step known to fail now, with and without a later step. interrupted: a run that did not end (a restart, or a record that cannot be read). named_hand_back: a computer named by a re-summarise that handed the request back. continue_note: the first warning of the re-summary that goes on with the next step after a computer handed it back. not_now: a local step skipped while a newer meeting needed this computer. page: the Summaries page section (T12.68: one list of writers, each ticked writer with its rank; list its accessible name, use, move_up and move_down a writer's controls ({writer} its label), too_many a fourth tick ({n} the most steps), not_set_up an endpoint and not_downloaded the local model that cannot be ticked yet, kept_local the line under the list). resummarise: the meeting header's split button and its job notices' titles. refusals: a refused order, as the page shows the runtime's refusal. unnamed: a computer whose name is not known, at the start of a sentence. Pinned to the desktop's copy by its tests and read by the UI and its mock. Shipped with the app: public copy only. T14.66 (docs/summary-order.md 11.9, drafts for the owner): earlier lists the steps already left under the waiting banner ({steps}); moving is the run note while a run goes on after a step was left ({steps}, {next}); stopped_note is the run note after Stop ({device}); stop holds the waiting banner's Stop button (button, label with {device}, already_written with {device}, not_waiting, failed); in_progress the header line while a new summary is written (here, or on with {device}); list_elsewhere the meeting list's word for a summary written on another computer; local_failures the sentence for each kind of local summary failure, by the runtime's LocalFailureKind word.",
   "steps": {
     "local": "On this computer",
     "endpoint_anthropic": "Anthropic API",
@@ -41,7 +41,16 @@
     "not_signed_in": "not signed in",
     "failed": "failed",
     "not_now": "not now",
-    "skipped_kept_local": "skipped (kept on this computer)"
+    "skipped_kept_local": "skipped (kept on this computer)",
+    "stopped": "stopped",
+    "too_long": "too long",
+    "reply_unusable": "reply could not be used",
+    "card_stopped": "graphics card process stopped",
+    "stalled": "stopped making progress",
+    "load_failed": "could not load",
+    "load_stuck": "an earlier load is stuck",
+    "wrong_backend": "loaded on the wrong device",
+    "cuda_changed": "CUDA files changed"
   },
   "step_outcome": "{writer}: {word}",
   "joiner": "; ",
@@ -83,5 +92,30 @@
     "twice": "A writer can appear only once in the order.",
     "this_device": "This computer cannot be one of its own steps."
   },
-  "unnamed": "Your other computer"
+  "unnamed": "Your other computer",
+  "earlier": "Tried first: {steps}.",
+  "moving": "So far: {steps}. Now trying {next}.",
+  "stopped_note": "You stopped this summary and asked {device} to stop writing it. Re-summarise to write it again.",
+  "stop": {
+    "button": "Stop",
+    "label": "Stop the summary on {device}",
+    "already_written": "{device} had already written the summary.",
+    "not_waiting": "This summary is no longer waiting for another computer.",
+    "failed": "The summary could not be stopped. Try again."
+  },
+  "in_progress": {
+    "here": "New summary being written",
+    "on": "New summary being written on {device}"
+  },
+  "list_elsewhere": "Summarising on another computer...",
+  "local_failures": {
+    "too_long": "The meeting is too long for the summary model on this computer. Choose another writer in Settings, Summaries.",
+    "reply_unusable": "The summary model on this computer wrote a reply Earshot could not use, even after asking it to correct it. Try again or choose another model.",
+    "card_stopped": "The graphics card's summary process stopped before it finished. Try again: the next summary tries the card again.",
+    "stalled": "The summary model on this computer stopped making progress. Restart Earshot and try again.",
+    "load_failed": "The summary model on this computer could not be loaded. Download it again in Settings, Summaries, or choose another model.",
+    "load_stuck": "An earlier summary model load is stuck. Restart Earshot and try again.",
+    "wrong_backend": "The summary model did not load where Earshot asked it to. Try again.",
+    "cuda_changed": "The CUDA files changed after Earshot started. Restart Earshot so it can check them."
+  }
 }

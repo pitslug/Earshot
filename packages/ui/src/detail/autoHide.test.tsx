@@ -80,6 +80,21 @@ describe("banners that hide by themselves", () => {
     expect(dismissed).toHaveBeenCalledTimes(1);
   });
 
+  it("dismisses a stored re-summary's \"New summary ready.\" on the Summary tab (T14.66)", async () => {
+    const stored: JobEvent = {
+      type: "Summary",
+      meeting: ITEM.id,
+      result: { kind: "Stored", title: "Invented title", actions: 0, decisions: 0, voices_to_name: 0 },
+      note: null,
+    };
+    const { timer, dismissed } = show({}, { job: "Resummarise", last: stored, seq: 5 });
+    await screen.findByText("New summary ready.");
+    // On the Summary tab, the page's first tab.
+    expect(await screen.findByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
+    advance(timer, BANNER_HIDE_MS);
+    expect(dismissed).toHaveBeenCalledTimes(1);
+  });
+
   it("starts again for a new banner of the same key", async () => {
     const { timer, dismissed, rerender } = show({}, { job: "Retranscribe", last: retranscribed(), seq: 3 });
     await screen.findByText("The meeting was transcribed again.");
@@ -208,7 +223,7 @@ describe("banners that never hide by themselves", () => {
 
   it("keeps the waiting-for-another-computer bar", async () => {
     const { timer } = show({
-      details: { [ITEM.id]: { ...sampleDetail(ITEM), waiting_for: "Invented waiting text." } },
+      details: { [ITEM.id]: { ...sampleDetail(ITEM), waiting_for: "Invented waiting text.", waiting_device: "Invented desk" } },
     });
     await screen.findByText("Invented waiting text.");
     advance(timer, LONG);

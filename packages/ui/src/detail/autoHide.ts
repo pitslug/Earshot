@@ -1,8 +1,10 @@
 // Banners on the meeting page that hide by themselves (T14.59). The rule: a banner hides after
 // `BANNER_HIDE_MS` only when its intent is success or info, it offers nothing but Dismiss, and
-// it is not progress of work still running. Errors, warnings, anything with an action, running
-// work, the waiting-for-another-computer banner, the meeting status and the Summary tab's
-// banners never hide by themselves.
+// it is not progress of work still running, on either tab: a confirmation on the Summary tab
+// ("New summary ready.", "Exported to ...") hides like any other (T14.66). Errors, warnings,
+// anything with an action, running work, the waiting-for-another-computer banner, the meeting
+// status and the Summary tab's notes (out of date, earlier names, the run's account, kept on
+// this computer) never hide by themselves.
 
 import { type FocusEvent, useCallback, useEffect, useRef, useState } from "react";
 
