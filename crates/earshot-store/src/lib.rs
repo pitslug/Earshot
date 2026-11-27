@@ -38,7 +38,7 @@ pub use audio::{
     run_retention, sweep_orphan_audio,
 };
 pub use db::{ReadOnlyStore, SCHEMA_VERSION, Store, StoreError, StoreTx};
-pub use delete::{MeetingDeletion, PersonRemoval, first_free_speaker_name};
+pub use delete::{MeetingDeletion, PersonRemoval, UnlinkedRow, first_free_speaker_name};
 pub use export::{
     ExportAction, ExportDb, ExportItem, ExportReport, VaultError, export_note, export_notes,
     validate_vault,
@@ -51,12 +51,12 @@ pub use fsutil::total_memory;
 pub use guarded::{
     ChainEnd, Col, Deleted, EXTERNAL_SQL_OWNERS, GuardedRead, GuardedTx, Identity, MeetingLink,
     PersonLink, PrintLink, SQL_OWNERS, SampleLink, SpeakerLink, VoiceRows, Written, chain_end,
-    identity_in, identity_of_links, identity_tx,
+    identity_in, identity_of_links, identity_tx, sweep_identities,
 };
 pub use layout::DataDir;
 pub use replaced::{Cleared, PushGuard};
 pub use sync::{
     AfterApply, Applied, ApplyRules, HELD_REPLACED_KEY, Held, HoldReason, Incoming,
-    MAX_CLOCK_AHEAD_MS, OutboxPage, RequestsMark, SyncKinds, SyncedRow,
+    MAX_CLOCK_AHEAD_MS, OutboxPage, RequestsMark, SyncKinds, SyncedRow, removal_repair_tx,
 };
 pub use versioned::{encode_versioned, split_version};

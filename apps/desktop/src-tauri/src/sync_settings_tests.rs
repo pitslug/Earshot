@@ -805,3 +805,209 @@ fn sync_sleep_says_gone_at_once_and_resume_says_online_again() {
     a.host.stop_and_wait();
     b.host.stop_and_wait();
 }
+
+/// A speaker row of a new meeting linked to a person tombstoned here, as an earlier sync left
+/// it (docs/sync-spec.md 7A.2, "The one-off removal repair"). Returns (meeting, speaker).
+fn removal_leftover(
+    svc: &Services,
+) -> (
+    earshot_core::identity::EntityId,
+    earshot_core::identity::EntityId,
+) {
+    use earshot_core::diar::SpeakerRole;
+    use earshot_core::identity::{EntityId, SyncMeta};
+    use earshot_core::model::{MeetingRepo, Speaker, Stamp};
+    use earshot_core::voiceprint::{Person, VoiceprintRepo};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+    let m = titled_meeting(svc, "An invented review");
+    let clock = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(82);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let p = EntityId::from_bytes([0x6b; 16]);
+    let mut tomb = SyncMeta::new(hlc, &*clock);
+    tomb.deleted = true;
+    store
+        .put_person(Person {
+            id: p,
+            meta: tomb,
+            display_name: String::new(),
+            is_me: false,
+            merged_into: None,
+        })
+        .unwrap();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let s = Speaker::new(m, SpeakerRole::Remote, "Wren Invented", Some(p), &mut stamp);
+    let id = s.id;
+    store.put_speaker(s).unwrap();
+    (m, id)
+}
+
+fn linked_person(
+    svc: &Services,
+    m: earshot_core::identity::EntityId,
+    s: earshot_core::identity::EntityId,
+) -> Option<earshot_core::identity::EntityId> {
+    use earshot_core::model::MeetingRepo;
+    svc.store()
+        .speakers(m)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == s)
+        .unwrap()
+        .person_id
+}
+
+/// The window's events, as JSON, heard through the host's change listener.
+fn listen(host: &SyncHost) -> Arc<std::sync::Mutex<Vec<String>>> {
+    let heard: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let sink = Arc::clone(&heard);
+    host.set_change_listener(Arc::new(move |c: &SyncChanges| {
+        sink.lock()
+            .unwrap()
+            .push(serde_json::to_string(&sync_event(c)).unwrap());
+    }));
+    heard
+}
+
+/// T14.49e (docs/sync-spec.md 7A.11, "The removal repair's placement, races, erasure and
+/// window"): the start-up runs the removal repair before the sync thread with sync off and on;
+/// the repair itself mends the row (the thread does not exist yet), and its changed ids reach the
+/// window as one `SyncEvent`, the first the window hears. A second start tells nothing.
+#[test]
+fn sync_host_start_up_runs_the_removal_repair_before_the_thread_with_sync_off_and_on() {
+    // Sync off: no vault, no thread.
+    let lone = computer("sync-repair-off");
+    let heard = listen(&lone.host);
+    let (m, s) = removal_leftover(&lone.svc);
+    let r = lone.host.start_up(&lone.svc).expect("the repair ran");
+    assert_eq!(r.speakers_unlinked, 1, "{r:?}");
+    assert!(!lone.host.running());
+    assert_eq!(linked_person(&lone.svc, m, s), None);
+    let want = serde_json::json!({ "meetings": [m.to_string()], "people": true }).to_string();
+    assert_eq!(*heard.lock().unwrap(), vec![want]);
+    let again = lone.host.start_up(&lone.svc).expect("a second start");
+    assert!(!again.ran, "{again:?}");
+    assert_eq!(
+        heard.lock().unwrap().len(),
+        1,
+        "a second start tells nothing"
+    );
+
+    // Sync on: the repair runs before the thread starts.
+    let env = relay();
+    let a = computer("sync-repair-on");
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    a.host.stop_and_wait();
+    let heard = listen(&a.host);
+    let (m, s) = removal_leftover(&a.svc);
+    let r = a.host.start_up(&a.svc).expect("the repair ran");
+    assert_eq!(
+        r.speakers_unlinked, 1,
+        "the repair, not the thread, mended it: {r:?}"
+    );
+    assert!(a.host.running(), "and the thread started after it");
+    assert_eq!(linked_person(&a.svc, m, s), None);
+    let want = serde_json::json!({ "meetings": [m.to_string()], "people": true }).to_string();
+    assert_eq!(heard.lock().unwrap().first(), Some(&want));
+    a.host.stop_and_wait();
+}
+
+/// T14.49f: a panic in the ignore copy or the removal repair never stops sync starting. Each
+/// step panicking alone, then both, still starts the thread; a repair that panicked reads as not
+/// run (`None`) and runs at the next start that lets it.
+#[test]
+fn sync_host_start_up_starts_sync_after_a_start_step_panics() {
+    use crate::sync_settings::{START_COPY_PANICS, START_REPAIR_PANICS};
+    let env = relay();
+    let a = computer("sync-start-step-panics");
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    a.host.stop_and_wait();
+    let (m, s) = removal_leftover(&a.svc);
+    for steps in [
+        START_COPY_PANICS,
+        START_REPAIR_PANICS,
+        START_COPY_PANICS | START_REPAIR_PANICS,
+    ] {
+        a.host.panic_in_start_steps_for_test(steps);
+        let repaired = a.host.start_up(&a.svc);
+        assert!(a.host.running(), "steps {steps}: the thread still started");
+        a.host.stop_and_wait();
+        if steps & START_REPAIR_PANICS != 0 {
+            assert!(repaired.is_none(), "steps {steps}: {repaired:?}");
+        } else {
+            assert!(repaired.is_some(), "steps {steps}: the repair ran");
+        }
+    }
+    // The copy-only round ran the repair and mended the row; the control: with nothing
+    // panicking a start runs and reports the repair as before.
+    assert_eq!(linked_person(&a.svc, m, s), None);
+    a.host.panic_in_start_steps_for_test(0);
+    assert!(a.host.start_up(&a.svc).is_some());
+    assert!(a.host.running());
+    a.host.stop_and_wait();
+}
+
+/// T14.49f: with sync off, a repair that panicked is tried again at the next start, which mends
+/// the row and tells the window.
+#[test]
+fn sync_host_a_repair_that_panicked_runs_at_the_next_start() {
+    use crate::sync_settings::START_REPAIR_PANICS;
+    let lone = computer("sync-repair-panics");
+    let heard = listen(&lone.host);
+    let (m, s) = removal_leftover(&lone.svc);
+    lone.host.panic_in_start_steps_for_test(START_REPAIR_PANICS);
+    assert!(lone.host.start_up(&lone.svc).is_none());
+    assert_eq!(heard.lock().unwrap().len(), 0, "nothing told");
+    lone.host.panic_in_start_steps_for_test(0);
+    let r = lone.host.start_up(&lone.svc).expect("the repair ran");
+    assert_eq!(r.speakers_unlinked, 1, "{r:?}");
+    assert_eq!(linked_person(&lone.svc, m, s), None);
+    assert_eq!(heard.lock().unwrap().len(), 1);
+}
+
+/// T14.49e: the app's `earshot-sync-start` thread runs exactly [`SyncHost::start_up`] (the
+/// ignore copy, the removal repair, then the sync thread), unconditionally; nothing else in
+/// `main.rs` starts sync or runs the repair.
+#[test]
+fn sync_host_start_up_is_what_the_sync_start_thread_runs() {
+    let main = include_str!("main.rs");
+    let at = main
+        .find("\"earshot-sync-start\"")
+        .expect("the sync start thread");
+    let body = &main[at..];
+    let body = &body[..body.find("});").expect("its closure ends")];
+    assert!(
+        body.contains("sync_for_start.start_up(&services)"),
+        "the thread runs start_up"
+    );
+    assert!(!body.contains("if "), "unconditionally");
+    for other in [
+        "start_if_on(",
+        "copy_ignores_without_vault(",
+        "removal_repair(",
+    ] {
+        assert!(!main.contains(other), "main.rs calls {other} itself");
+    }
+    // The order inside `start_up`: a thread test cannot see it, because the new thread's first
+    // tick comes after the repair either way, so its source is pinned.
+    let host = include_str!("sync_settings.rs");
+    let at = host.find("pub fn start_up(").expect("SyncHost::start_up");
+    let body = &host[at..];
+    let body = &body[..body.find("\n    }\n").expect("its body ends")];
+    let pos = |call: &str| {
+        body.find(call)
+            .unwrap_or_else(|| panic!("start_up calls {call}"))
+    };
+    assert!(
+        pos("self.copy_ignores_without_vault(services)") < pos("self.repair_removals(services)")
+            && pos("self.repair_removals(services)") < pos("self.start_if_on(services)"),
+        "the ignore copy, then the removal repair, then the sync thread"
+    );
+    assert!(!body.contains("if "), "each unconditionally");
+}

@@ -2820,8 +2820,9 @@ fn sync_a_forgotten_voiceprint_stays_forgotten_when_a_later_live_copy_arrives() 
 }
 
 /// T12.77b3 (7.4): a tombstone pushed while the relay holds a later live copy is answered
-/// superseded; the pull brings the live copy, finality stamps the tombstone again, and the
-/// next push wins.
+/// superseded; the pull brings the live copy, finality stamps the tombstone again, and since
+/// T14.49d (docs/sync-spec.md 7A.2 C1) the same tick's extra push sends it, so the next tick has
+/// nothing left to push.
 #[test]
 fn sync_a_superseded_voiceprint_tombstone_wins_on_the_next_push() {
     let relay = relay();
@@ -2843,13 +2844,17 @@ fn sync_a_superseded_voiceprint_tombstone_wins_on_the_next_push() {
         r.superseded >= 1,
         "the relay holds a later live copy: {r:?}"
     );
+    assert!(
+        r.extra_push && r.tombstones_restamped >= 1,
+        "the tombstone stamped again left in this tick: {r:?}"
+    );
     assert_eq!(
         print_state(&a, print),
         (true, true),
         "the Forget stays on A"
     );
     let r = ca.tick().unwrap();
-    assert!(r.pushed >= 1 && r.superseded == 0, "{r:?}");
+    assert!(r.pushed == 0 && r.superseded == 0, "nothing left: {r:?}");
     cb.tick().unwrap();
     assert_eq!(print_state(&b, print), (true, true));
 }
@@ -5145,6 +5150,11 @@ mod edits;
 #[path = "sync_replaced_tests.rs"]
 mod replaced;
 
+#[path = "sync_removed_tests.rs"]
+mod removed;
+
+#[path = "sync_removal_repair_tests.rs"]
+mod removal_repair;
 /// The device's database file (for damage made by SQL in a test).
 fn db_path(dev: &Device) -> std::path::PathBuf {
     earshot_store::DataDir::new(dev._dir.0.join("data")).db_path()

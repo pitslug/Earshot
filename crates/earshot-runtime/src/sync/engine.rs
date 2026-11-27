@@ -28,9 +28,9 @@ use super::{
 use crate::services::Services;
 
 /// Outbox rows read per push request.
-const PUSH_PAGE: usize = 200;
-/// The most push requests in one tick, so a tick ends even when rows keep changing.
-const MAX_PUSH_PAGES: usize = 50;
+pub(super) const PUSH_PAGE: usize = 200;
+/// The most push requests in one push, so a tick ends even when rows keep changing.
+pub(super) const MAX_PUSH_PAGES: usize = 50;
 /// The most pull pages in one tick.
 const MAX_PULL_PAGES: usize = 50;
 /// Held rows read, opened and applied at a time, and the most the retry at the start of a
@@ -112,6 +112,23 @@ pub struct TickReport {
     pub damaged_skipped: usize,
     /// The rows behind [`Self::damaged_skipped`] (SQLite rowids, never logged or stored).
     pub(crate) damaged_rows: BTreeSet<(&'static str, i64)>,
+    /// Chain steps of a `merged_into` walk that did not read ([`earshot_store::Applied::chains_unknown`],
+    /// docs/sync-spec.md 7A.2 D1), summed over the tick's pages. Each is also one of
+    /// [`Self::damaged_rows`], so the Sync page's damaged note already counts it.
+    pub chains_unknown: usize,
+    /// Tombstones the tick's pages stamped again and kept queued
+    /// ([`earshot_store::Applied::tombstones_restamped`], docs/sync-spec.md 7A.2 C1): the
+    /// start-of-tick retry page, the pull's pages, the `parent` retry and the release.
+    pub tombstones_restamped: usize,
+    /// The rows those pages wrote with this device's stamp
+    /// ([`earshot_store::Applied::stamped_here`]): what C1's extra push sends. Ids only.
+    pub(crate) stamped_here: BTreeSet<EntityId>,
+    /// Whether C1's extra push ran in this tick (at most one per tick).
+    pub extra_push: bool,
+    /// The rows behind [`Self::refused`], over both pushes of the tick.
+    pub(crate) refused_ids: BTreeSet<EntityId>,
+    /// The rows behind [`Self::clock_ahead`], over both pushes of the tick.
+    pub(crate) ahead_ids: BTreeSet<EntityId>,
 }
 
 /// What the sweep of replaced text ([`crate::replaced_text`]) reads of a store's sync: whether
@@ -210,6 +227,22 @@ pub(crate) fn sealable(row: &SyncedRow) -> bool {
 }
 
 impl TickReport {
+    /// Folds one push's counts into the tick's (docs/sync-spec.md 7A.2 C1, "The tick's counts"):
+    /// `unsendable` the larger of the two (each is already the most found in one page),
+    /// `refused` and `clock_ahead` the rows of every push of the tick, each counted once.
+    pub(crate) fn fold_push(
+        &mut self,
+        unsendable: usize,
+        refused: BTreeSet<EntityId>,
+        ahead: BTreeSet<EntityId>,
+    ) {
+        self.unsendable = self.unsendable.max(unsendable);
+        self.refused_ids.extend(refused);
+        self.refused = self.refused_ids.len();
+        self.ahead_ids.extend(ahead);
+        self.clock_ahead = self.ahead_ids.len();
+    }
+
     /// Whether the tick changed anything here: rows written, a meeting deleted or a repair.
     #[must_use]
     pub fn changed(&self) -> bool {
@@ -367,6 +400,9 @@ pub struct SyncClient {
     /// Test only: called inside a tick, once the store's tick lock is held.
     #[cfg(test)]
     in_tick: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Test only: called inside a tick after its pages, just before C1 decides on its extra push.
+    #[cfg(test)]
+    before_extra_push: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// How often a tick waiting for another tick on its store looks again (and whether it was
@@ -614,6 +650,8 @@ impl SyncClient {
             pull_limit: earshot_sync::wire::PULL_DEFAULT,
             #[cfg(test)]
             in_tick: None,
+            #[cfg(test)]
+            before_extra_push: None,
         })
     }
 
@@ -621,6 +659,14 @@ impl SyncClient {
     #[cfg(test)]
     pub(crate) fn with_in_tick(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
         self.in_tick = Some(hook);
+        self
+    }
+
+    /// Test only: `hook` runs inside every tick of this client after its pages, just before C1
+    /// decides whether to push again (to stop the client or change the relay there).
+    #[cfg(test)]
+    pub(crate) fn with_before_extra_push(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.before_extra_push = Some(hook);
         self
     }
 
@@ -982,7 +1028,7 @@ impl SyncClient {
             // anything is pulled, so the list rebuilt after a page never loses them.
             crate::vocabulary::reconcile(&self.services)?;
         }
-        match self.push(&keys, &secrets.token, kinds, report) {
+        match self.push(&keys, &secrets.token, kinds, report, None) {
             // The relay refused the push for a far stamp: this device's clock is wrong now, or
             // the relay's is. The rows stay queued, as when this device finds such rows itself,
             // and the tick goes on to receive: a wrong clock must not cut a device off from
@@ -1011,7 +1057,54 @@ impl SyncClient {
         } else {
             Ok(())
         };
-        pulled.and(retried).and(released)
+        // A first tick that applied no page at all still runs every repair once, with no rows
+        // (docs/sync-spec.md 7A.2): rows an earlier build left are mended at the first start.
+        let repaired =
+            if self.repaired_all.load(Ordering::Relaxed) || self.stopping() || report.vault_reset {
+                Ok(())
+            } else {
+                self.repair_all_once(kinds, report)
+            };
+        #[cfg(test)]
+        if let Some(hook) = &self.before_extra_push {
+            hook();
+        }
+        // C1: tombstones the tick's pages stamped again leave in this tick, whatever the
+        // pull's result.
+        let extra = self.extra_push(&keys, &secrets.token, kinds, report);
+        pulled.and(retried).and(released).and(repaired).and(extra)
+    }
+
+    /// C1's extra push (docs/sync-spec.md 7A.2): when the tick's pages stamped a tombstone again,
+    /// [`Self::push`] once more, restricted to the rows they wrote with this device's stamp
+    /// ([`TickReport::stamped_here`]), so it keeps every filter a push has. At most once per
+    /// tick; never after a first push the relay refused for a far stamp (it would be refused
+    /// again), after a vault reset, or while stopping. A refusal for a far stamp here is the
+    /// tick's [`TickReport::clock_refused`] too; the rows stay queued for the next tick.
+    fn extra_push(
+        &self,
+        keys: &Keys,
+        token: &super::DeviceToken,
+        kinds: SyncKinds,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        if report.tombstones_restamped == 0
+            || report.stamped_here.is_empty()
+            || report.clock_refused
+            || report.vault_reset
+            || self.stopping()
+        {
+            return Ok(());
+        }
+        report.extra_push = true;
+        let only = report.stamped_here.clone();
+        match self.push(keys, token, kinds, report, Some(&only)) {
+            Err(SyncProblem::ClockAhead) => {
+                report.clock_refused = true;
+                Ok(())
+            }
+            other => other,
+        }
     }
 
     /// The release (docs/sync-spec.md 15.4): every row H1 or H2 holds
@@ -1083,12 +1176,17 @@ impl SyncClient {
         Ok(())
     }
 
+    /// Sends queued rows, oldest stamp first, in pages; `only` restricts them to those ids
+    /// (C1's extra push, [`earshot_store::Store::outbox_page_only`]). The tick's counts are folded, never
+    /// replaced, so a second push in one tick keeps what the first found: `unsendable` the larger,
+    /// `refused` and `clock_ahead` the rows of both pushes counted once.
     fn push(
         &self,
         keys: &Keys,
         token: &super::DeviceToken,
         kinds: SyncKinds,
         report: &mut TickReport,
+        only: Option<&BTreeSet<EntityId>>,
     ) -> Result<(), SyncProblem> {
         // Queued rows that cannot be read (a damaged voice sample row) stay queued and are
         // reported, never sent: one damaged row never stops every push.
@@ -1116,7 +1214,7 @@ impl SyncClient {
                     .services
                     .guarded_read()
                     .read()
-                    .outbox_page(PUSH_PAGE, &recording, kinds)?;
+                    .outbox_page_only(PUSH_PAGE, &recording, kinds, only)?;
                 unreadable = unreadable.max(page.unreadable);
                 let mut rows = page.rows;
                 if rows.is_empty() {
@@ -1166,9 +1264,7 @@ impl SyncClient {
             }
             Ok(())
         })();
-        report.unsendable = unreadable;
-        report.refused = refused.len();
-        report.clock_ahead = ahead.len();
+        report.fold_push(unreadable, refused, ahead);
         result
     }
 
@@ -1461,6 +1557,27 @@ impl SyncClient {
         if page.is_empty() {
             return Ok(0);
         }
+        self.apply_now(page, kinds, report, release)
+    }
+
+    /// Every convergence repair once, with no rows, for a client that has applied no page yet
+    /// (docs/sync-spec.md 7A.2, the last paragraph): a first tick whose pull is empty still mends
+    /// what an earlier build left.
+    fn repair_all_once(
+        &self,
+        kinds: SyncKinds,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        self.apply_now(&[], kinds, report, None).map(|_| ())
+    }
+
+    fn apply_now(
+        &self,
+        page: &[Incoming],
+        kinds: SyncKinds,
+        report: &mut TickReport,
+        release: Option<&BTreeSet<(EntityId, EntityId)>>,
+    ) -> Result<usize, SyncProblem> {
         for meeting in self.meetings_deleted_elsewhere(page)? {
             match self.services.delete_meeting(meeting) {
                 Ok(_) => {
@@ -1531,7 +1648,16 @@ impl SyncClient {
             + applied.withdrawals_kept
             + applied.edited_lines_kept
             + applied.lines_rewritten_under_edits
-            + applied.speakers_revived;
+            + applied.speakers_revived
+            + applied.persons_removed_with
+            + applied.speakers_unlinked;
+        // C1 (docs/sync-spec.md 7A.2): what every page of the tick stamped again, for the
+        // extra push.
+        report.tombstones_restamped += applied.tombstones_restamped;
+        report
+            .stamped_here
+            .extend(applied.stamped_here.iter().copied());
+        report.chains_unknown += applied.chains_unknown;
         report
             .damaged_rows
             .extend(applied.damaged_rows.iter().copied());
@@ -1599,11 +1725,17 @@ pub(crate) fn apply_page_in(
     release: Option<&BTreeSet<(EntityId, EntityId)>>,
     every: bool,
 ) -> Result<earshot_store::Applied, SyncProblem> {
-    // Rows `names_before` skipped count with the page's (docs/sync-spec.md 16.5 item 14).
+    // Rows `names_before` skipped count with the page's (docs/sync-spec.md 16.5 item 14). The
+    // names read are the page's own speaker rows' and those the removal rules can rename
+    // outside the page (7A.9, "Names").
     let (names_before, skipped_before) = {
         let r = w.read();
+        let mut rows = speakers.clone();
+        for (meeting, ids) in crate::summary_names::rows_removal_may_rename(&r, page, every)? {
+            rows.entry(meeting).or_default().extend(ids);
+        }
         (
-            crate::summary_names::names_before(&r, speakers)?,
+            crate::summary_names::names_before(&r, &rows)?,
             r.damaged_rows(),
         )
     };

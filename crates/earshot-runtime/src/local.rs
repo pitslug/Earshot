@@ -316,6 +316,15 @@ pub(crate) enum DeviceRecord {
     /// `replaced-text-swept`: the one-off sweep of replaced transcript text ran to the end
     /// (T14.47; [`crate::replaced_text`]).
     ReplacedTextSwept,
+    /// `removal-repair`: the one-off removal repair ran (T14.49e, docs/sync-spec.md 7A.2;
+    /// [`crate::sync::removal_repair`]).
+    RemovalRepair,
+    /// `identity-sweep`: the one-off sweep of speaker identity entries whose rows are gone ran
+    /// (T14.49c, docs/sync-spec.md 7A.2 P5). Written only by earshot-store inside `Store::open`
+    /// (`earshot_store::identities::SWEEP_KEY`, pinned to this key by a test). The runtime
+    /// never reads or writes it, so the variant exists only where the registry's tests run.
+    #[cfg(test)]
+    IdentitySweep,
 }
 
 impl DeviceRecord {
@@ -378,6 +387,8 @@ impl DeviceRecord {
         DeviceRecord::SummarySeenStart,
         DeviceRecord::IgnoreCopied,
         DeviceRecord::ReplacedTextSwept,
+        DeviceRecord::RemovalRepair,
+        DeviceRecord::IdentitySweep,
     ];
 
     /// Its key.
@@ -464,6 +475,9 @@ impl DeviceRecord {
                 DeviceRecord::SummarySeenStart => crate::summary_seen::SEEN_START_KEY,
                 DeviceRecord::IgnoreCopied => crate::ignore_copy::COPIED_KEY,
                 DeviceRecord::ReplacedTextSwept => crate::replaced_text::SWEPT_KEY,
+                DeviceRecord::RemovalRepair => crate::sync::REMOVAL_REPAIR_KEY,
+                #[cfg(test)]
+                DeviceRecord::IdentitySweep => "identity-sweep",
             }
             .to_owned(),
         )

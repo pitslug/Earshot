@@ -439,3 +439,436 @@ fn tombstones_elsewhere(mut n: Note) {
         ]
     );
 }
+
+/// Every shipped source of the workspace (xtask and test-support crates left out), with its
+/// path relative to the root and its blanked production code (`#[cfg(test)]` items left out).
+fn shipped_code() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let skip = test_support_packages(&root);
+    let mut files: Vec<PathBuf> = Vec::new();
+    for krate in workspace_members(&root)
+        .iter()
+        .filter(|m| m.as_str() != "xtask" && !skip.contains(m))
+    {
+        let dir = root.join("crates").join(krate);
+        if dir.join("src").exists() {
+            files.extend(production_files(&dir));
+        }
+    }
+    files.extend(production_files(&root.join("apps/desktop/src-tauri")));
+    files
+        .iter()
+        .map(|f| {
+            let path = f
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let src = std::fs::read_to_string(f).unwrap();
+            let mut kept = vec![String::new(); src.lines().count()];
+            for (n, line) in production_lines(&src) {
+                kept[n - 1] = line;
+            }
+            (path, blank(&kept.join("\n")))
+        })
+        .collect()
+}
+
+/// Byte offsets of `word` in blanked `code` as a whole identifier.
+fn word_at(code: &str, word: &str) -> Vec<usize> {
+    let b = code.as_bytes();
+    code.match_indices(word)
+        .map(|(at, _)| at)
+        .filter(|&at| {
+            (at == 0 || !is_ident(b[at - 1]))
+                && b.get(at + word.len()).is_none_or(|&c| !is_ident(c))
+        })
+        .collect()
+}
+
+/// docs/sync-spec.md 7A.2 N2: the final pass builds its identity entries in memory and writes
+/// its record whole, so it never calls P5's helper, which writes the stored record (a write
+/// the pass would overwrite). Control: the scan finds the helper where it is called.
+#[test]
+fn edit_scan_post_final_pass_never_calls_the_p5_helper() {
+    const HELPER: [&str; 3] = [
+        "row_relinked_tx",
+        "row_relinked_guarded",
+        "drop_row_entry_guarded",
+    ];
+    let code = shipped_code();
+    let mut post_files = 0;
+    let mut found = Vec::new();
+    for (path, src) in &code {
+        if !path.starts_with("crates/earshot-runtime/src/post/") {
+            continue;
+        }
+        post_files += 1;
+        for name in HELPER {
+            for at in word_at(src, name) {
+                let line = src[..at].matches('\n').count() + 1;
+                found.push(format!("{path}:{line}: {name}"));
+            }
+        }
+    }
+    assert!(post_files > 0, "the scan reaches the final pass");
+    assert!(
+        found.is_empty(),
+        "the final pass applies `relinked` to its in-memory entries and never calls the \
+         helper (docs/sync-spec.md 7A.2 N2):\n{}",
+        found.join("\n")
+    );
+    let edit = code
+        .iter()
+        .find(|(p, _)| p == "crates/earshot-runtime/src/edit.rs")
+        .map(|(_, s)| s.as_str())
+        .expect("edit.rs is scanned");
+    assert!(
+        !word_at(edit, "row_relinked_tx").is_empty(),
+        "control: the scan finds the helper in a user edit"
+    );
+}
+
+/// docs/sync-spec.md 7A.3: the writers that take an existing person, each with the check that
+/// refuses a removed one (a deleted, merged-away or missing person, or a chain that loops).
+const WRITERS: &[(&str, &str, &str)] = &[
+    (
+        "crates/earshot-runtime/src/edit.rs",
+        "link_in",
+        "live_person(",
+    ),
+    (
+        "crates/earshot-runtime/src/edit.rs",
+        "set_row_person",
+        "live_person(",
+    ),
+    (
+        "crates/earshot-runtime/src/edit.rs",
+        "save_voice_with",
+        "resolve_person(",
+    ),
+    (
+        "crates/earshot-runtime/src/edit.rs",
+        "merge_into_me",
+        "Person::is_live",
+    ),
+    (
+        "crates/earshot-runtime/src/edit.rs",
+        "rename_person",
+        "Person::is_live",
+    ),
+    (
+        "crates/earshot-core/src/voiceprint/mod.rs",
+        "merge_persons",
+        "Person::is_live",
+    ),
+    (
+        "crates/earshot-core/src/voiceprint/sample.rs",
+        "admissible",
+        "is_live()",
+    ),
+];
+
+/// The functions that change a speaker row's person through `set_row_person` (which resolves
+/// the person itself, docs/sync-spec.md 7A.3): a new caller is reviewed and listed here.
+const SET_ROW_PERSON_CALLERS: &[&str] = &["link_in", "mark_me", "unmark_me", "not_this_person"];
+
+/// The set of writers that refuse a removed person (docs/sync-spec.md 7A.3), pinned: each
+/// listed writer exists and holds its check, and the callers of `set_row_person` are exactly the
+/// listed ones.
+#[test]
+fn edit_scan_writers_refuse_a_removed_person() {
+    let code = shipped_code();
+    let of = |path: &str| {
+        code.iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, s)| s.as_str())
+            .unwrap_or_else(|| panic!("the scan reaches {path}"))
+    };
+    for (path, function, check) in WRITERS {
+        let src = of(path);
+        let fns = functions(src);
+        let (_, body) = fns
+            .iter()
+            .find(|(n, _)| n == function)
+            .unwrap_or_else(|| panic!("{path}: writer {function} not found"));
+        assert!(
+            src[body.clone()].contains(check),
+            "{path}: {function} must refuse a removed person ({check})"
+        );
+    }
+    let mut callers: Vec<String> = Vec::new();
+    for (path, src) in &code {
+        let fns = functions(src);
+        for at in word_at(src, "set_row_person") {
+            let rest = src[at + "set_row_person".len()..].trim_start();
+            if src[..at].ends_with("fn ") || !rest.starts_with('(') {
+                continue;
+            }
+            callers.push(format!("{path}::{}", enclosing(&fns, at)));
+        }
+    }
+    callers.sort();
+    callers.dedup();
+    let mut want: Vec<String> = SET_ROW_PERSON_CALLERS
+        .iter()
+        .map(|f| format!("crates/earshot-runtime/src/edit.rs::{f}"))
+        .collect();
+    want.sort();
+    assert_eq!(
+        callers, want,
+        "set_row_person's callers (docs/sync-spec.md 7A.3)"
+    );
+}
+
+/// Functions allowed to tombstone a person row, each with why it never tombstones the user
+/// (docs/sync-spec.md 7A.2 P4).
+const PERSON_TOMBSTONES: &[(&str, &str, &str)] = &[
+    (
+        "crates/earshot-store/src/delete.rs",
+        "remove_person_in",
+        "Remove: `edit::remove_person` refuses the user and anyone the user was merged into",
+    ),
+    (
+        "crates/earshot-store/src/sync.rs",
+        "merged_into_removed_repair",
+        "P2: skips a person whose `is_me` is true or does not read",
+    ),
+    (
+        "crates/earshot-store/src/guarded.rs",
+        "tombstone_person_by_rowid",
+        "the named by-rowid writer (16.4), called only by the two above",
+    ),
+];
+
+/// Functions allowed to build a person row with an `is_me` value: a new row and the store's
+/// reader. Nothing changes `is_me` on an existing row (docs/sync-spec.md 7A.2 P4).
+const IS_ME_WRITERS: &[(&str, &str)] = &[
+    ("crates/earshot-core/src/voiceprint/mod.rs", "new"),
+    ("crates/earshot-store/src/repo.rs", "person_row"),
+];
+
+/// Offsets in blanked `src` of a person tombstone: `x.meta.mark_deleted(..)` or
+/// `x.meta.deleted = true` on a value the same function then passes to `put_person(x`.
+fn person_tombstones(src: &str, fns: &[(String, std::ops::Range<usize>)]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for pat in [".meta.mark_deleted(", ".meta.deleted"] {
+        for (at, _) in src.match_indices(pat) {
+            if pat == ".meta.deleted" {
+                let after = src[at + pat.len()..].trim_start();
+                let Some(rhs) = after.strip_prefix('=') else {
+                    continue;
+                };
+                if rhs.starts_with('=') || !rhs.trim_start().starts_with("true") {
+                    continue;
+                }
+            }
+            // The value tombstoned: the identifier before `.meta`.
+            let start = src[..at]
+                .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1);
+            let value = &src[start..at];
+            if value.is_empty() {
+                continue;
+            }
+            let f = fns
+                .iter()
+                .filter(|(_, r)| r.contains(&at))
+                .min_by_key(|(_, r)| r.len());
+            if let Some((_, r)) = f
+                && src[r.clone()].match_indices("put_person(").any(|(k, p)| {
+                    let arg = src[r.start + k + p.len()..].trim_start();
+                    arg.strip_prefix(value).is_some_and(|rest| {
+                        !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                    })
+                })
+            {
+                out.push(at);
+            }
+        }
+    }
+    for at in word_at(src, "tombstone_person_by_rowid") {
+        if !src[..at].ends_with("fn ") {
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// Offsets in blanked `src` where a field `is_me` is assigned (`x.is_me = ..`), or set in a
+/// `Person { .. }` literal, with what matched.
+fn is_me_writes(src: &str) -> Vec<(usize, &'static str)> {
+    let b = src.as_bytes();
+    let mut out = Vec::new();
+    for at in word_at(src, "is_me") {
+        if at == 0 || b[at - 1] != b'.' {
+            continue;
+        }
+        let mut j = at + "is_me".len();
+        while j < b.len() && b[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if b.get(j) == Some(&b'=') && !matches!(b.get(j + 1), Some(b'=' | b'>')) {
+            out.push((at, "is_me assigned"));
+        }
+    }
+    for at in word_at(src, "Person") {
+        let mut j = at + "Person".len();
+        while j < b.len() && b[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if b.get(j) != Some(&b'{') {
+            continue;
+        }
+        let before = src[..at].trim_end();
+        let word = before
+            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        if before.ends_with("->") || matches!(word, "struct" | "impl" | "for" | "enum") {
+            continue;
+        }
+        let open = j;
+        let mut depth = 0;
+        while j < b.len() {
+            match b[j] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        let inside = &src[open..j.min(src.len())];
+        let has = inside.match_indices("is_me").any(|(k, _)| {
+            let after = inside[k + "is_me".len()..].trim_start();
+            (k == 0 || !is_ident(inside.as_bytes()[k - 1]))
+                && (after.starts_with(':') || after.starts_with(',') || after.starts_with('}'))
+        });
+        if has {
+            out.push((at, "a person literal sets is_me"));
+        }
+    }
+    out
+}
+
+/// P4's pin (docs/sync-spec.md 7A.2, 7A.11): no shipped code tombstones the user's person, and
+/// none changes `is_me` on an existing row. Every person tombstone writer is listed with its
+/// reason; `is_me` is never assigned, and set in a person literal only by a new row and the
+/// store's reader. An entry that matches nothing fails the test.
+#[test]
+fn edit_scan_no_shipped_code_tombstones_the_user_or_changes_is_me() {
+    let code = shipped_code();
+    let mut found = Vec::new();
+    let mut used_tombstones = vec![false; PERSON_TOMBSTONES.len()];
+    let mut used_is_me = vec![false; IS_ME_WRITERS.len()];
+    for (path, src) in &code {
+        let fns = functions(src);
+        for at in person_tombstones(src, &fns) {
+            let function = enclosing(&fns, at);
+            match PERSON_TOMBSTONES
+                .iter()
+                .position(|(p, f, _)| p == path && *f == function)
+            {
+                Some(k) => used_tombstones[k] = true,
+                None => {
+                    let line = src[..at].matches('\n').count() + 1;
+                    found.push(format!(
+                        "{path}:{line} in fn {function}: a person tombstone"
+                    ));
+                }
+            }
+        }
+        for (at, what) in is_me_writes(src) {
+            let function = enclosing(&fns, at);
+            match IS_ME_WRITERS
+                .iter()
+                .position(|(p, f)| p == path && *f == function)
+            {
+                Some(k) if what != "is_me assigned" => used_is_me[k] = true,
+                _ => {
+                    let line = src[..at].matches('\n').count() + 1;
+                    found.push(format!("{path}:{line} in fn {function}: {what}"));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "no shipped code tombstones the user's person or changes is_me on an existing row \
+         (docs/sync-spec.md 7A.2 P4); review and list a new writer with its reason:\n{}",
+        found.join("\n")
+    );
+    let stale: Vec<&str> = PERSON_TOMBSTONES
+        .iter()
+        .zip(&used_tombstones)
+        .filter(|(_, u)| !**u)
+        .map(|((_, f, _), _)| *f)
+        .chain(
+            IS_ME_WRITERS
+                .iter()
+                .zip(&used_is_me)
+                .filter(|(_, u)| !**u)
+                .map(|((_, f), _)| *f),
+        )
+        .collect();
+    assert!(stale.is_empty(), "entries that match nothing: {stale:?}");
+}
+
+/// The P4 scan's patterns on invented code: an assignment, a literal and a tombstone beside
+/// `put_person` are found; a comparison, a view struct and prose are not.
+#[test]
+fn edit_scan_p4_patterns_find_each_write() {
+    let src = r##"
+fn assigns(p: &mut Person) {
+    p.is_me = true;
+}
+fn compares(p: &Person) -> bool {
+    p.is_me == true
+}
+fn literal() -> Person {
+    Person { id, meta, display_name, is_me: false, merged_into: None }
+}
+fn view(p: &Person) -> PersonView {
+    PersonView { is_me: p.is_me }
+}
+fn tombstones(tx: &mut Tx, mut p: Person) {
+    p.meta.mark_deleted(h, c);
+    tx.put_person(p);
+}
+fn prose() {
+    // p.is_me = true; Person { is_me: true }; mark_deleted( put_person(
+}
+fn closure() {
+    let is_me = |k: usize| k == 0;
+}
+fn other_tombstone(tx: &mut Tx, mut s: Summary, p: Person) {
+    s.meta.deleted = true;
+    tx.put_summary(s);
+    tx.put_person(p);
+}
+"##;
+    let code = blank(src);
+    let fns = functions(&code);
+    let got: Vec<(&str, &str)> = is_me_writes(&code)
+        .into_iter()
+        .map(|(at, what)| (enclosing(&fns, at), what))
+        .chain(
+            person_tombstones(&code, &fns)
+                .into_iter()
+                .map(|at| (enclosing(&fns, at), "tombstone")),
+        )
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("assigns", "is_me assigned"),
+            ("literal", "a person literal sets is_me"),
+            ("tombstones", "tombstone"),
+        ]
+    );
+}

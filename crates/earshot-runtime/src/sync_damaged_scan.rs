@@ -18,8 +18,23 @@ const ROOTS: &[(&str, &str)] = &[
     ("crates/earshot-store/src/guarded.rs", "chain_end"),
     ("crates/earshot-store/src/guarded.rs", "identity_tx"),
     ("crates/earshot-store/src/guarded.rs", "identity_in"),
+    // T14.49a (docs/sync-spec.md 7A.2): P1, P4 and F1 in the page loop, P2, P3.
+    ("crates/earshot-store/src/guarded.rs", "tombstone_final"),
+    // T14.49c (docs/sync-spec.md 7A.2 P5): the one-off sweep, opened only by
+    // `Store::guarded_immediate` (checked in `sweep_findings`).
+    ("crates/earshot-store/src/guarded.rs", "sweep_identities"),
     ("crates/earshot-store/src/sync.rs", "converge"),
     ("crates/earshot-store/src/sync.rs", "dead_person_repair"),
+    (
+        "crates/earshot-store/src/sync.rs",
+        "merged_into_removed_repair",
+    ),
+    (
+        "crates/earshot-store/src/sync.rs",
+        "unlink_removed_speakers",
+    ),
+    // T14.49e (docs/sync-spec.md 7A.2): the store half of the one-off removal repair.
+    ("crates/earshot-store/src/sync.rs", "removal_repair_tx"),
     ("crates/earshot-store/src/sync.rs", "edits_win"),
     ("crates/earshot-store/src/sync.rs", "outbox_sent_in"),
     (
@@ -27,6 +42,15 @@ const ROOTS: &[(&str, &str)] = &[
         "forget_identity_biometrics",
     ),
     ("crates/earshot-store/src/identities.rs", "forget_identity"),
+    // T14.49b (docs/sync-spec.md 7A.2 P5): the helper's guarded entry point and its drop.
+    (
+        "crates/earshot-store/src/identities.rs",
+        "row_relinked_guarded",
+    ),
+    (
+        "crates/earshot-store/src/identities.rs",
+        "drop_row_entry_guarded",
+    ),
     ("crates/earshot-store/src/delete.rs", "remove_person_in"),
     ("crates/earshot-store/src/delete.rs", "unlink_speakers_tx"),
     ("crates/earshot-store/src/db.rs", "forget_voiceprints_in"),
@@ -37,6 +61,11 @@ const ROOTS: &[(&str, &str)] = &[
     (
         "crates/earshot-runtime/src/summary_names.rs",
         "names_changed_tx",
+    ),
+    // T14.49d (docs/sync-spec.md 7A.9): the widened set of `names_before`.
+    (
+        "crates/earshot-runtime/src/summary_names.rs",
+        "rows_removal_may_rename",
     ),
     ("crates/earshot-runtime/src/summary_names.rs", "record_tx"),
     (
@@ -74,6 +103,11 @@ const ROOTS: &[(&str, &str)] = &[
         "forget_my_voice_in",
     ),
     ("crates/earshot-runtime/src/ignore_copy.rs", "copy_once_in"),
+    // T14.49e (docs/sync-spec.md 7A.2): the one-off removal repair.
+    (
+        "crates/earshot-runtime/src/sync/removal.rs",
+        "removal_repair_in",
+    ),
     (
         "crates/earshot-runtime/src/summary_seen.rs",
         "mark_existing_once_in",
@@ -119,6 +153,11 @@ const WRAPPERS: &[(&str, &str, &str)] = &[
         "copy_once_in",
     ),
     (
+        "crates/earshot-runtime/src/sync/removal.rs",
+        "removal_repair",
+        "removal_repair_in",
+    ),
+    (
         "crates/earshot-runtime/src/summary_seen.rs",
         "mark_existing_once",
         "mark_existing_once_in",
@@ -158,6 +197,10 @@ const GLUE: &[&str] = &[
     "release_holds",
     "holds_rows_for_retry",
     "apply_with",
+    // T14.49d (docs/sync-spec.md 7A.2): the page's body, the first start's repair and C1.
+    "apply_now",
+    "repair_all_once",
+    "extra_push",
     "meetings_deleted_elsewhere",
 ];
 
@@ -660,11 +703,105 @@ fn check(files: &BTreeMap<String, String>) -> Vec<String> {
             }
         }
     }
+    bad.extend(sweep_findings(&stripped, &consts));
     // T14.26's one exception outside guarded.rs, used only by its writer.
     if let Some(delete) = stripped.get(&format!("{STORE}delete.rs")[..]) {
         let uses = delete.matches("ERASE_BY_ROWID").count();
         if uses != 2 {
             bad.push(format!("delete.rs: ERASE_BY_ROWID used {uses} times"));
+        }
+    }
+    bad
+}
+
+/// What the speaker identity sweep may not read: anything of a row besides its `id` and
+/// `deleted`, and anything of an entry besides its speaker id (docs/sync-spec.md 7A.2 P5, "What
+/// it reads").
+const SWEEP_MAY_NOT_READ: &[&str] = &[
+    "speaker_links",
+    "speakers_or_damaged",
+    "speakers_in_order",
+    "person_links",
+    "chain_end",
+    ".given_",
+    ".linked_before",
+    ".user_edited",
+    ".ignored",
+    ".enrolled",
+    ".centroid",
+    ".track",
+    ".person_id",
+    ".display_name",
+    ".role",
+];
+
+/// T14.49c: the sweep is opened only through `Store::guarded_immediate` (16.8), its speaker read
+/// is called only by it, and it reads no column but the speaker row's `id` and `deleted`.
+fn sweep_findings(
+    stripped: &BTreeMap<&str, String>,
+    consts: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    let guarded_path = format!("{STORE}guarded.rs");
+    // Opened only by `guarded_immediate`: every use outside its definition sits in a statement
+    // that calls it.
+    let mut opened = 0;
+    let scanned = || {
+        stripped
+            .iter()
+            .filter(|(p, _)| !p.ends_with("sync_damaged_scan.rs"))
+    };
+    for (path, src) in scanned() {
+        for (i, _) in src.match_indices("sweep_identities") {
+            let word = !src[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                && !src[i + 16..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
+            if !word || src[..i].ends_with("fn ") || src[..i].ends_with('"') {
+                continue;
+            }
+            let start = src[..i].rfind([';', '{', '}']).map_or(0, |s| s + 1);
+            if src[start..i].contains("guarded_immediate(") {
+                opened += 1;
+            } else {
+                bad.push(format!(
+                    "{path}: sweep_identities opened outside Store::guarded_immediate"
+                ));
+            }
+        }
+    }
+    if opened == 0 {
+        bad.push("sweep_identities is opened nowhere through Store::guarded_immediate".into());
+    }
+    let Some(guarded) = stripped.get(&guarded_path[..]) else {
+        bad.push("guarded.rs not found".into());
+        return bad;
+    };
+    match function(guarded, "sweep_identities") {
+        None => bad.push("the sweep sweep_identities not found".into()),
+        Some((_, body, start, end)) => {
+            for t in SWEEP_MAY_NOT_READ {
+                if body.contains(t) {
+                    bad.push(format!("the sweep reads more than id and deleted ({t})"));
+                }
+            }
+            for (path, src) in scanned() {
+                for (i, _) in src.match_indices(".sweep_speakers(") {
+                    if !(*path == guarded_path && i > start && i < end) {
+                        bad.push(format!("sweep_speakers called outside the sweep ({path})"));
+                    }
+                }
+            }
+        }
+    }
+    match consts.get("SWEEP_SPEAKERS_SQL") {
+        None => bad.push("SWEEP_SPEAKERS_SQL not found".into()),
+        Some(sql) => {
+            let columns = sql
+                .strip_prefix("SELECT ")
+                .and_then(|rest| rest.split_once(" FROM speaker "))
+                .map(|(cols, _)| cols.trim());
+            if columns != Some("rowid, id, deleted") {
+                bad.push(format!("the sweep reads more than id and deleted ({sql})"));
+            }
         }
     }
     bad
@@ -854,5 +991,38 @@ fn sync_damaged_rows_never_stop_the_guarded_paths() {
             insert_in(&s, "remove_person_in", "let _ = names_of(services);")
         }),
         "root remove_person_in takes a Services",
+    );
+    // (12) T14.49c: the sweep opened by an ordinary transaction, reading a person column or
+    // another reader, and its speaker read called from elsewhere.
+    let db = format!("{STORE}db.rs");
+    fails(
+        mutate(&db, &|s| {
+            s.replace(
+                "self.guarded_immediate(crate::sweep_identities)",
+                "self.guarded_transaction(crate::sweep_identities)",
+            )
+        }),
+        "sweep_identities opened outside Store::guarded_immediate",
+    );
+    fails(
+        mutate(&guarded, &|s| {
+            s.replace(
+                "SELECT rowid, id, deleted FROM speaker WHERE meeting_id",
+                "SELECT rowid, id, deleted, person_id FROM speaker WHERE meeting_id",
+            )
+        }),
+        "the sweep reads more than id and deleted",
+    );
+    fails(
+        mutate(&guarded, &|s| {
+            insert_in(s, "sweep_identities", "let _ = g.speaker_links(None);")
+        }),
+        "the sweep reads more than id and deleted (speaker_links)",
+    );
+    fails(
+        mutate(&guarded, &|s| {
+            insert_in(s, "chain_end", "let _ = g.sweep_speakers(person);")
+        }),
+        "sweep_speakers called outside the sweep",
     );
 }

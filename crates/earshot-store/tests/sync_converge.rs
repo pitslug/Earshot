@@ -337,6 +337,12 @@ impl Device {
                     .unwrap()
                     .collect::<Result<_, _>>()
                     .unwrap();
+                // The one-off identity sweep's device record (T14.49c), written by every first
+                // open since, is left out so the digest still pins exactly the rows it pinned
+                // before; the sweep has tests of its own (`tests/sync_sweep.rs`).
+                let sweep =
+                    rusqlite::types::Value::Text(earshot_store::identities::SWEEP_KEY.to_owned());
+                rows.retain(|r| !(t == "local_state" && r.first() == Some(&sweep)));
                 rows.sort_by_key(|r| format!("{r:?}"));
                 (t, rows)
             })
@@ -423,6 +429,7 @@ fn store_sync_repairs_by_the_kinds_a_page_wrote_equal_every_repair_after_every_p
                 );
             }
             let page = page(&mut dice, &mut seq, base);
+            let page = with_removal_rows(&mut dice, &mut seq, base, page);
             let (g, e) = (gated.apply(&page), every.apply(&page));
             assert_eq!(g, e, "seed {seed} step {step}: what the page did");
             assert_eq!(
@@ -451,6 +458,9 @@ fn store_sync_repairs_by_the_kinds_a_page_wrote_equal_every_repair_after_every_p
                 totals.biometrics_forgotten += a.biometrics_forgotten;
                 totals.written += a.written;
                 totals.ignored += a.ignored;
+                totals.tombstones_restamped += a.tombstones_restamped;
+                totals.persons_removed_with += a.persons_removed_with;
+                totals.speakers_unlinked += a.speakers_unlinked;
             }
         }
         // The outboxes agree row for row as well (the dump holds them): what goes out is the same.
@@ -471,6 +481,50 @@ fn store_sync_repairs_by_the_kinds_a_page_wrote_equal_every_repair_after_every_p
     assert!(totals.summaries_replaced > 5, "{totals:?}");
     assert!(totals.biometrics_forgotten > 5, "{totals:?}");
     assert!(totals.written > 500 && totals.ignored > 100, "{totals:?}");
+    // T14.49a: the removal rules (docs/sync-spec.md 7A.2) ran on both stores and agreed.
+    assert!(totals.tombstones_restamped > 5, "{totals:?}");
+    assert!(totals.persons_removed_with > 0, "{totals:?}");
+    assert!(totals.speakers_unlinked > 5, "{totals:?}");
+}
+
+const FOLDERS: std::ops::Range<u8> = 70..73;
+
+/// T14.49a: `page` plus up to two speaker rows linked to the generated people (P3) and folder
+/// rows, live or tombstones (F1), so the comparison above covers the removal rules too (P1, P2
+/// and P4 act on the generated person rows). Used by that comparison only: test 12's pages stay
+/// as they were.
+fn with_removal_rows(
+    dice: &mut Dice,
+    seq: &mut u64,
+    base: u64,
+    mut page: Vec<Incoming>,
+) -> Vec<Incoming> {
+    for _ in 0..dice.roll(3) {
+        let row = if dice.one_in(3) {
+            let deleted = dice.one_in(3);
+            let meta = dice.meta(base, deleted);
+            SyncedRow::Folder(Folder {
+                id: id(dice.pick(FOLDERS)),
+                meta,
+                name: if deleted {
+                    String::new()
+                } else {
+                    "An invented folder".into()
+                },
+            })
+        } else {
+            let n = dice.pick(SPEAKERS);
+            let deleted = dice.one_in(5);
+            let person = (!dice.one_in(4)).then(|| dice.pick(PERSONS));
+            let meta = dice.meta(base, deleted);
+            // A speaker keeps its meeting: the row's id decides it.
+            let meeting = MEETINGS.start + n % (MEETINGS.end - MEETINGS.start);
+            SyncedRow::Speaker(speaker_row(n, meeting, person, meta))
+        };
+        *seq += 1;
+        page.push(incoming(*seq, row));
+    }
+    page
 }
 
 /// What the gating rests on, shown by breaking it: this computer never leaves two live "Me"
@@ -585,6 +639,24 @@ const SPEAKERS: std::ops::Range<u8> = 80..96;
 /// people, speaker rows linked to people and their identity entries) leave exactly the rows and
 /// answers they left before T14.57. The digest was captured from the commit before the change
 /// (57f0369), never from the new code.
+///
+/// Changed on purpose by T14.49a (docs/sync-spec.md 7A.11, "The deliberate change to section
+/// 16"): the digest was `9d8564a2...ed77` until then. Per-step store dumps of these runs before
+/// 7A and with it (T14.49f, compared table by table) are equal up to the first page where a 7A
+/// rule acts, in every seed:
+/// - seed 0: P4, a pulled live copy of a person written over the user's tombstone here;
+/// - seed 1: `MeTombstone`, after this test's own `Store::remove_person` of an `is_me` person:
+///   of two voice samples the page pulls, the one of that "Me" is no longer erased by rule 3a
+///   but by rule 3 (its print is tombstoned) right after it, so the two erasures swap their
+///   logical stamps; no other column changes;
+/// - seed 2 and seed 5: P3 unlinking speaker rows from a removed person; in the same page the
+///   prints and samples rule 3a erases take stamps one logical tick later, because P1's decision
+///   (`tombstone_final`) observes a pulled person row's stamp once more before writing it;
+/// - seed 3: P1 writing a pulled person tombstone over a later live copy here, stamped again;
+/// - seed 4: `MeTombstone` again (after this test's `remove_person` of an `is_me` person): a
+///   pulled sample of that "Me" stays live.
+///
+/// Each of those rules is pinned with literal expectations in `tests/sync_removed.rs`.
 #[test]
 fn store_sync_damaged_same_answers_without_damage_as_before() {
     use sha2::Digest;
@@ -651,6 +723,7 @@ fn store_sync_damaged_same_answers_without_damage_as_before() {
                         user_edited: false,
                         enrolled: false,
                         ignored: false,
+                        linked_before: Vec::new(),
                     }
                 })
                 .collect();
@@ -687,7 +760,7 @@ fn store_sync_damaged_same_answers_without_damage_as_before() {
     );
     let digest: String = all.finalize().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
-        digest, "9d8564a2f41d1562c5e1bfb5e3e30b8113da5791c8809420729927ee995fed77",
+        digest, "abfe7d728d970db2a624301a987e31fc8371a4d17ba18e545214dc26146dee29",
         "the rows and answers of the generated stores"
     );
 }

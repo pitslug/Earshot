@@ -676,6 +676,7 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
         user_edited: false,
         enrolled: false,
         ignored: false,
+        linked_before: Vec::new(),
     };
     let dee_entry = SpeakerIdentity {
         speaker: linked.id,
@@ -687,6 +688,7 @@ fn store_remove_person_erases_the_name_and_voice_and_a_meeting_deletion_does_not
         user_edited: false,
         enrolled: false,
         ignored: false,
+        linked_before: Vec::new(),
     };
     let both = IdentityRecord {
         speakers: vec![dee_entry, cy_entry.clone()],

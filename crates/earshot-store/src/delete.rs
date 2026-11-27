@@ -60,6 +60,21 @@ pub struct PersonRemoval {
     pub damaged_skipped: usize,
 }
 
+/// One speaker row [`unlink_speakers_tx`] unlinked, as written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnlinkedRow {
+    /// The SQLite rowid.
+    pub rowid: i64,
+    /// The meeting it belongs to.
+    pub meeting: EntityId,
+    /// Its id, `None` when that does not read.
+    pub speaker: Option<EntityId>,
+    /// The person it was linked to.
+    pub from: EntityId,
+    /// Whether its stored name changed (a live row's to "Speaker N", a tombstone's to none).
+    pub name_erased: bool,
+}
+
 /// [`Store::remove_person`]'s transaction (docs/sync-spec.md 16.5 item 21): the identity
 /// placed inside it ([`crate::identity_in`]), its biometrics erased
 /// ([`crate::identities::forget_identity_biometrics`]'s erasure), its speaker rows unlinked
@@ -86,7 +101,9 @@ pub fn remove_person_in<C: Clock + ?Sized>(
     )?;
     report.voiceprints_forgotten = forgotten.voiceprints;
     report.samples_forgotten = forgotten.samples;
-    report.speakers_unnamed = unlink_speakers_tx(g, &identity.members, hlc, clock)?;
+    // No per-row work: the identity's entries went above, before the rows were unlinked.
+    report.speakers_unnamed =
+        unlink_speakers_tx(g, &identity.members, hlc, clock, &mut |_, _| Ok(()))?;
     for &id in &identity.members {
         match g.person_or_damaged(id)? {
             None => continue,
@@ -108,7 +125,7 @@ pub fn remove_person_in<C: Clock + ?Sized>(
                     .find(|l| l.id == crate::Col::Read(id))
                     .map(|l| l.rowid);
                 let Some(rowid) = rowid else { continue };
-                g.tombstone_person_by_rowid(hlc, clock, rowid)?;
+                g.tombstone_person_by_rowid(hlc, clock, rowid, Some(id))?;
             }
         }
         report.persons_removed += 1;
@@ -123,26 +140,39 @@ pub fn remove_person_in<C: Clock + ?Sized>(
 /// a member is unlinked by rowid under the written-columns rule of 16.4 ("Speaker N" only when
 /// its name and `deleted` read and it is live, `''` when `deleted` reads `Yes`, else the name
 /// as stored); a damaged row whose `person_id` or `meeting_id` does not read is left as it is
-/// and counted. Returns how many live rows went back to "Speaker N".
+/// and counted. `on_row` is called at each row's write, with what was written
+/// ([`UnlinkedRow`]; docs/sync-spec.md 7A.2 P5 drops the row's identity entry there). Rows are
+/// written meeting by meeting in `all_meetings`' order, by creation within a meeting, and only
+/// meetings holding such a row are read. Returns how many live rows went back to "Speaker N".
 ///
 /// # Errors
-/// Store errors.
+/// Store errors, and `on_row`'s.
 pub fn unlink_speakers_tx<C: Clock + ?Sized>(
     g: &mut crate::GuardedTx<'_, '_>,
     members: &[EntityId],
     hlc: &mut Hlc,
     clock: &C,
+    on_row: &mut dyn FnMut(&mut crate::GuardedTx<'_, '_>, &UnlinkedRow) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
     use crate::{Col, Deleted};
     let theirs = |p: Option<EntityId>| p.is_some_and(|p| members.contains(&p));
     let mut unnamed = 0;
+    let mut holding: std::collections::BTreeSet<EntityId> = std::collections::BTreeSet::new();
     for l in g.speaker_links(None)? {
         if !l.meeting_id.reads() || !l.person_id.reads() {
             g.count_damaged("speaker", &[l.rowid]);
         }
+        if let (Col::Read(m), Col::Read(p)) = (l.meeting_id, l.person_id)
+            && theirs(p)
+        {
+            holding.insert(m);
+        }
     }
     for meeting in g.meetings_lenient()? {
         let Col::Read(m) = meeting.id else { continue };
+        if !holding.contains(&m) {
+            continue;
+        }
         let rows = g.speakers_in_order(m)?;
         let links = g.speaker_links(Some(m))?;
         let link_of = |rowid: i64| links.iter().find(|l| l.rowid == rowid);
@@ -169,9 +199,10 @@ pub fn unlink_speakers_tx<C: Clock + ?Sized>(
         for (rowid, row) in rows {
             match row {
                 Some(mut row) => {
-                    if !theirs(row.person_id) {
+                    let Some(from) = row.person_id.filter(|p| members.contains(p)) else {
                         continue;
-                    }
+                    };
+                    let before = row.display_name.clone();
                     row.person_id = None;
                     // A linked row is never ignored; a flag a pulled row carried must not turn
                     // the unlinked voice into an ignored one (T12.93).
@@ -184,13 +215,25 @@ pub fn unlink_speakers_tx<C: Clock + ?Sized>(
                         unnamed += 1;
                     }
                     row.meta.touch(hlc, clock);
+                    let done = UnlinkedRow {
+                        rowid,
+                        meeting: m,
+                        speaker: Some(row.id),
+                        from,
+                        name_erased: before != row.display_name,
+                    };
+                    g.note_stamped(row.id);
                     g.put_speaker(row)?;
+                    on_row(g, &done)?;
                 }
                 None => {
                     let Some(l) = link_of(rowid).cloned() else {
                         continue;
                     };
-                    if !matches!(l.person_id, Col::Read(p) if theirs(p)) || !l.meeting_id.reads() {
+                    let Col::Read(Some(from)) = l.person_id else {
+                        continue;
+                    };
+                    if !members.contains(&from) || !l.meeting_id.reads() {
                         continue;
                     }
                     let name = match (l.deleted, &l.display_name) {
@@ -203,7 +246,20 @@ pub fn unlink_speakers_tx<C: Clock + ?Sized>(
                         }
                         _ => None,
                     };
-                    g.unlink_speaker_by_rowid(hlc, clock, rowid, name.as_deref())?;
+                    g.unlink_speaker_by_rowid(hlc, clock, rowid, l.id.read(), name.as_deref())?;
+                    let name_erased = match (&name, &l.display_name) {
+                        (Some(new), Col::Read(old)) => new != old,
+                        (Some(_), Col::Unreadable) => true,
+                        (None, _) => false,
+                    };
+                    let done = UnlinkedRow {
+                        rowid,
+                        meeting: m,
+                        speaker: l.id.read(),
+                        from,
+                        name_erased,
+                    };
+                    on_row(g, &done)?;
                 }
             }
         }

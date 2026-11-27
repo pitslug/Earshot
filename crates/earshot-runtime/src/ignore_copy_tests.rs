@@ -55,6 +55,7 @@ fn entry(row: &Speaker, ignored: bool) -> SpeakerIdentity {
         user_edited: false,
         enrolled: false,
         ignored,
+        linked_before: Vec::new(),
     }
 }
 
@@ -186,4 +187,89 @@ fn ignore_copy_legacy_of_reads_nothing_after_the_copy() {
     let entries = vec![entry(&s, true)];
     assert_eq!(legacy_of(false, &entries).len(), 1);
     assert!(legacy_of(true, &entries).is_empty());
+}
+
+/// Opens `dir`'s store again as an earlier build left it (no `identity-sweep`), so the open
+/// sweeps (T14.49c, docs/sync-spec.md 7A.2 P5).
+fn reopened_for_the_sweep(dir: &TempDir, svc: Services) -> Services {
+    let key = earshot_store::identities::SWEEP_KEY;
+    svc.store().delete_local_value(key).unwrap();
+    drop(svc);
+    let (svc, _) = services(dir);
+    assert!(svc.store().local_value(key).unwrap().is_some(), "swept");
+    svc
+}
+
+fn stored_entries(svc: &Services, meeting: EntityId) -> Vec<SpeakerIdentity> {
+    match svc
+        .store()
+        .local_value(crate::identities::record_key(meeting).as_str())
+        .unwrap()
+        .map(|b| crate::identities::decode(&b))
+    {
+        None => Vec::new(),
+        Some(StoredIdentities::Record(r)) => r.speakers,
+        Some(other) => panic!("{other:?}"),
+    }
+}
+
+/// T14.49c (docs/sync-spec.md 7A.11 "No wait for the ignore copy"): with `ignore-copied` absent
+/// the open still sweeps; a live row's entry holding a legacy ignore is kept as it was, and the
+/// copy then flags the row.
+#[test]
+fn edit_identity_sweep_does_not_wait_for_the_ignore_copy() {
+    let dir = TempDir::new("ignore-sweep");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Invented sweep", 4);
+    let live = add(&svc, m, SpeakerRole::Remote, "Speaker 2", None, 30);
+    put_record(&svc, m, vec![entry(&live, true)]);
+    assert!(!copied(&svc.store()).unwrap());
+    let svc = reopened_for_the_sweep(&dir, svc);
+    assert!(!copied(&svc.store()).unwrap(), "the copy has not run");
+    assert_eq!(stored_entries(&svc, m), vec![entry(&live, true)]);
+    assert_eq!(copy_once(&svc).unwrap(), 1);
+    assert!(row(&svc, m, live.id).ignored);
+}
+
+/// T14.49c, the documented limit of docs/sync-spec.md 7A.2 P5 ("When"): a row tombstoned at the
+/// sweep and holding a legacy ignore loses its entry; made live again (here a later live copy over
+/// the tombstone, as rule 4c would) before this device's copy runs, it comes back not ignored.
+/// Accepted by the owner (2026-11-27); a later fix changes this test on purpose.
+#[test]
+fn edit_known_limit_a_row_revived_after_the_identity_sweep_before_the_ignore_copy_comes_back_not_ignored()
+ {
+    let dir = TempDir::new("ignore-sweep-limit");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Invented sweep", 5);
+    let mut gone = add(&svc, m, SpeakerRole::Remote, "Speaker 2", None, 31);
+    put_record(&svc, m, vec![entry(&gone, true)]);
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        gone.meta.mark_deleted(hlc, &*clock);
+        store.put_speaker(gone.clone()).unwrap();
+    }
+    let svc = reopened_for_the_sweep(&dir, svc);
+    assert!(
+        stored_entries(&svc, m).is_empty(),
+        "the tombstoned row's entry"
+    );
+    {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        gone.meta.deleted = false;
+        gone.meta.touch(hlc, &*clock);
+        store.put_speaker(gone.clone()).unwrap();
+    }
+    assert_eq!(copy_once(&svc).unwrap(), 0);
+    let back = row(&svc, m, gone.id);
+    assert!(!back.meta.deleted);
+    assert!(!back.ignored);
+    let legacy = crate::edit::legacy_ignores(&svc.store(), m).unwrap();
+    assert!(
+        !crate::edit::is_ignored(&back, &legacy),
+        "comes back not ignored"
+    );
 }

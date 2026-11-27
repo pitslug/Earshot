@@ -29,8 +29,9 @@ use crate::{Store, StoreError, StoreTx};
 
 // ---- the SQL of the guarded paths, each used only by its owner (`SQL_OWNERS`) ----
 
-/// One step of a `merged_into` chain: the person's `deleted` and `merged_into`.
-const CHAIN_STEP_SQL: &str = "SELECT deleted, merged_into FROM person WHERE id = ?1";
+/// One step of a `merged_into` chain: the person's rowid, `deleted`, `merged_into` and `is_me`
+/// (read only at a tombstoned step, docs/sync-spec.md 7A.2 D1).
+const CHAIN_STEP_SQL: &str = "SELECT rowid, deleted, merged_into, is_me FROM person WHERE id = ?1";
 /// Every person row's links, by id (core `identity_of`'s order).
 const PERSON_LINKS_SQL: &str =
     "SELECT rowid, id, deleted, is_me, merged_into FROM person ORDER BY id";
@@ -68,14 +69,18 @@ const VOICE_SAMPLES_SQL: &str = "SELECT rowid, id, person_id, voiceprint_id, mee
 /// Rule 3a's samples: live samples naming a person (today's query, with the rowid).
 const DEAD_PERSON_SAMPLES_SQL: &str = "SELECT rowid, id, person_id, meeting_id \
      FROM voiceprint_sample WHERE deleted = 0 AND person_id IS NOT NULL";
-/// Rule 3a's prints: live prints (today's query, with the rowid).
-const DEAD_PERSON_PRINTS_SQL: &str = "SELECT rowid, person_id FROM voiceprint WHERE deleted = 0";
+/// Rule 3a's prints: live prints (today's query, with the rowid and the id).
+const DEAD_PERSON_PRINTS_SQL: &str =
+    "SELECT rowid, id, person_id FROM voiceprint WHERE deleted = 0";
 /// Rule 3: live samples of a print tombstoned here.
 const DEAD_PRINT_SAMPLES_SQL: &str = "SELECT s.rowid, s.id, s.meeting_id \
      FROM voiceprint_sample s JOIN voiceprint v ON v.id = s.voiceprint_id \
      WHERE s.deleted = 0 AND v.deleted = 1";
 /// The keys of every meeting's speaker identity record.
 const IDENTITY_RECORD_KEYS_SQL: &str = "SELECT key FROM local_state WHERE substr(key, 1, ?1) = ?2";
+/// The one-off sweep's read of one meeting's speaker rows (docs/sync-spec.md 7A.2 D1): `rowid`,
+/// `id` and `deleted` only, so nothing another writer has written can make it skip an entry.
+const SWEEP_SPEAKERS_SQL: &str = "SELECT rowid, id, deleted FROM speaker WHERE meeting_id = ?1";
 /// Erases a live sample whose id reads (every column a constant of the erased form).
 const ERASE_SAMPLE_BY_ID_SQL: &str = "UPDATE voiceprint_sample SET deleted = 1, \
      voiceprint_id = NULL, person_id = NULL, model = NULL, vector = x'', speech_ms = NULL, \
@@ -128,6 +133,7 @@ pub const SQL_OWNERS: &[(&str, &str)] = &[
     ("DEAD_PERSON_SAMPLES_SQL", "dead_person_samples"),
     ("DEAD_PERSON_PRINTS_SQL", "dead_person_prints"),
     ("IDENTITY_RECORD_KEYS_SQL", "identity_record_keys"),
+    ("SWEEP_SPEAKERS_SQL", "sweep_speakers"),
     ("ERASE_SAMPLE_BY_ID_SQL", "erase_sample_by_id"),
     ("ERASE_SAMPLE_BY_ROWID_SQL", "erase_sample_by_rowid"),
     ("ERASE_PRINT_BY_ROWID_SQL", "erase_print_by_rowid"),
@@ -181,6 +187,11 @@ pub const EXTERNAL_SQL_OWNERS: &[(&str, &str, &str)] = &[
         "put_held_replaced_keys",
     ),
     ("sync.rs", "PUT_HELD_REPLACED_SQL", "put_held_replaced_keys"),
+    // T14.49d (docs/sync-spec.md 7A.2 C1): the extra push's id restriction of the outbox read.
+    ("sync.rs", "PUSH_ONLY_CREATE_SQL", "fill_push_only"),
+    ("sync.rs", "PUSH_ONLY_INSERT_SQL", "fill_push_only"),
+    ("sync.rs", "PUSH_ONLY_DROP_SQL", "drop_push_only"),
+    ("sync.rs", "PUSH_ONLY_JOIN_SQL", "push_only_join"),
 ];
 
 // ---- lenient values ----
@@ -391,12 +402,15 @@ pub struct VoiceRows {
 /// Where a `merged_into` chain ends ([`chain_end`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChainEnd {
-    /// At a step whose `deleted` reads `Yes`.
+    /// At a step whose `deleted` reads `Yes` and whose `is_me` reads `false`: a removal.
     Removed,
+    /// At a step whose `deleted` reads `Yes` and whose `is_me` reads `true`: never a removal
+    /// (docs/sync-spec.md 7A.2 P4).
+    MeTombstone,
     /// At a live step with no `merged_into`.
     Live,
-    /// A loop, a person not known here, or a step whose `deleted` or `merged_into` does not
-    /// read.
+    /// A loop, a person not known here, a step whose `deleted` or `merged_into` does not read,
+    /// or a tombstoned step whose `is_me` does not read.
     Unknown,
 }
 
@@ -411,13 +425,18 @@ pub struct Identity {
 
 type Skips = RefCell<BTreeSet<(&'static str, i64)>>;
 
-/// One chain step's `deleted` and `merged_into`.
-type ChainStep = (Deleted, Col<Option<EntityId>>);
+/// One chain step's rowid, `deleted`, `merged_into` and `is_me`.
+type ChainStep = (i64, Deleted, Col<Option<EntityId>>, Col<bool>);
 
 /// A transaction on a guarded path (module docs).
 pub struct GuardedTx<'g, 'c> {
     tx: &'g mut StoreTx<'c>,
     skipped: Skips,
+    /// Person rowids a `merged_into` walk could not read ([`chain_end`]).
+    unknown_steps: RefCell<BTreeSet<i64>>,
+    /// Ids of rows the named writers stamped with this device's stamp, and those the repairs
+    /// named ([`GuardedTx::note_stamped`]): `Applied::stamped_here`.
+    stamped: RefCell<BTreeSet<EntityId>>,
 }
 
 /// A read under the store lock on a guarded path (module docs).
@@ -466,6 +485,8 @@ impl<'c> StoreTx<'c> {
         GuardedTx {
             tx: self,
             skipped: Skips::default(),
+            unknown_steps: RefCell::default(),
+            stamped: RefCell::default(),
         }
     }
 }
@@ -489,7 +510,12 @@ fn chain_step(c: &Connection, id: EntityId) -> Result<Option<ChainStep>, StoreEr
     use rusqlite::OptionalExtension;
     Ok(
         c.query_row(CHAIN_STEP_SQL, params![&id.as_uuid().as_bytes()[..]], |r| {
-            Ok((col_deleted(r.get_ref(0)?), col_opt_id(r.get_ref(1)?)))
+            Ok((
+                col_rowid(r.get_ref(0)?),
+                col_deleted(r.get_ref(1)?),
+                col_opt_id(r.get_ref(2)?),
+                col_bool(r.get_ref(3)?),
+            ))
         })
         .optional()?,
     )
@@ -686,10 +712,17 @@ fn dead_person_samples(c: &Connection) -> Result<Vec<PersonSample>, StoreError> 
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-fn dead_person_prints(c: &Connection) -> Result<Vec<(i64, Col<EntityId>)>, StoreError> {
+/// Rule 3a's prints: (rowid, id, person id).
+type DeadPrint = (i64, Col<EntityId>, Col<EntityId>);
+
+fn dead_person_prints(c: &Connection) -> Result<Vec<DeadPrint>, StoreError> {
     let mut st = c.prepare_cached(DEAD_PERSON_PRINTS_SQL)?;
     let rows = st.query_map([], |r| {
-        Ok((col_rowid(r.get_ref(0)?), col_id(r.get_ref(1)?)))
+        Ok((
+            col_rowid(r.get_ref(0)?),
+            col_id(r.get_ref(1)?),
+            col_id(r.get_ref(2)?),
+        ))
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
@@ -706,6 +739,26 @@ fn identity_record_keys(c: &Connection) -> Result<Vec<String>, StoreError> {
     )?;
     let keys: Vec<Col<String>> = rows.collect::<Result<_, _>>()?;
     Ok(keys.into_iter().filter_map(Col::read).collect())
+}
+
+/// A speaker row as the one-off sweep reads it: its rowid, `id` and `deleted`, nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SweptRow {
+    rowid: i64,
+    id: Col<EntityId>,
+    deleted: Deleted,
+}
+
+fn sweep_speakers(c: &Connection, meeting: EntityId) -> Result<Vec<SweptRow>, StoreError> {
+    let mut st = c.prepare_cached(SWEEP_SPEAKERS_SQL)?;
+    let rows = st.query_map(params![&meeting.as_uuid().as_bytes()[..]], |r| {
+        Ok(SweptRow {
+            rowid: col_rowid(r.get_ref(0)?),
+            id: col_id(r.get_ref(1)?),
+            deleted: col_deleted(r.get_ref(2)?),
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 fn erase_sample_by_id(c: &Connection, at: HlcTimestamp, id: EntityId) -> Result<usize, StoreError> {
@@ -1136,6 +1189,20 @@ impl GuardedRead<'_> {
         self.store.outbox_page(limit, meetings, kinds)
     }
 
+    /// [`Store::outbox_page_only`] (docs/sync-spec.md 7A.2 C1).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_page_only(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        kinds: crate::SyncKinds,
+        only: Option<&BTreeSet<EntityId>>,
+    ) -> Result<crate::OutboxPage, StoreError> {
+        self.store.outbox_page_only(limit, meetings, kinds, only)
+    }
+
     /// [`Store::held_page`].
     ///
     /// # Errors
@@ -1207,6 +1274,11 @@ impl GuardedTx<'_, '_> {
     /// Store errors.
     pub fn identity_record_keys(&self) -> Result<Vec<String>, StoreError> {
         identity_record_keys(self.c())
+    }
+
+    /// The one-off sweep's read of `meeting`'s speaker rows ([`sweep_identities`] only).
+    fn sweep_speakers(&self, meeting: EntityId) -> Result<Vec<SweptRow>, StoreError> {
+        sweep_speakers(self.c(), meeting)
     }
 
     /// Writes a whole readable person row.
@@ -1421,7 +1493,11 @@ impl GuardedTx<'_, '_> {
         id: EntityId,
     ) -> Result<bool, StoreError> {
         let at = hlc.now(clock);
-        Ok(erase_sample_by_id(self.c(), at, id)? > 0)
+        let erased = erase_sample_by_id(self.c(), at, id)? > 0;
+        if erased {
+            self.note_stamped(id);
+        }
+        Ok(erased)
     }
 
     /// Erases the live sample at `rowid` whose `id` does not read (16.4); returns whether one
@@ -1439,7 +1515,8 @@ impl GuardedTx<'_, '_> {
         Ok(erase_sample_by_rowid(self.c(), at, rowid)? > 0)
     }
 
-    /// Tombstones the print at `rowid`, its vector zeroed whatever it reads as (16.4).
+    /// Tombstones the print at `rowid`, its vector zeroed whatever it reads as (16.4); `id` is
+    /// its id when that reads ([`GuardedTx::note_stamped`]).
     ///
     /// # Errors
     /// Store errors.
@@ -1448,13 +1525,18 @@ impl GuardedTx<'_, '_> {
         hlc: &mut Hlc,
         clock: &C,
         rowid: i64,
+        id: Option<EntityId>,
     ) -> Result<(), StoreError> {
         let at = hlc.now(clock);
-        erase_print_by_rowid(self.c(), at, rowid).map(|_| ())
+        erase_print_by_rowid(self.c(), at, rowid)?;
+        if let Some(id) = id {
+            self.note_stamped(id);
+        }
+        Ok(())
     }
 
     /// Unlinks the speaker row at `rowid` (16.4): `person_id` NULL, `ignored` 0, the name only
-    /// when `name` is given.
+    /// when `name` is given; `id` is its id when that reads.
     ///
     /// # Errors
     /// Store errors.
@@ -1463,13 +1545,19 @@ impl GuardedTx<'_, '_> {
         hlc: &mut Hlc,
         clock: &C,
         rowid: i64,
+        id: Option<EntityId>,
         name: Option<&str>,
     ) -> Result<(), StoreError> {
         let at = hlc.now(clock);
-        unlink_speaker_by_rowid(self.c(), at, rowid, name).map(|_| ())
+        unlink_speaker_by_rowid(self.c(), at, rowid, name)?;
+        if let Some(id) = id {
+            self.note_stamped(id);
+        }
+        Ok(())
     }
 
-    /// Tombstones the person row at `rowid` with its name cleared (16.4).
+    /// Tombstones the person row at `rowid` with its name cleared (16.4); `id` is its id when
+    /// that reads.
     ///
     /// # Errors
     /// Store errors.
@@ -1478,9 +1566,20 @@ impl GuardedTx<'_, '_> {
         hlc: &mut Hlc,
         clock: &C,
         rowid: i64,
+        id: Option<EntityId>,
     ) -> Result<(), StoreError> {
         let at = hlc.now(clock);
-        tombstone_person_by_rowid(self.c(), at, rowid).map(|_| ())
+        tombstone_person_by_rowid(self.c(), at, rowid)?;
+        if let Some(id) = id {
+            self.note_stamped(id);
+        }
+        Ok(())
+    }
+
+    /// Notes that the row `id` was written here with this device's stamp and is to go out with
+    /// C1's extra push (`Applied::stamped_here`, docs/sync-spec.md 7A.2).
+    pub fn note_stamped(&self, id: EntityId) {
+        self.stamped.borrow_mut().insert(id);
     }
 
     /// Rule 3's rows: live samples of a print tombstoned here.
@@ -1499,11 +1598,11 @@ impl GuardedTx<'_, '_> {
         dead_person_samples(self.c())
     }
 
-    /// Rule 3a's prints: live prints, (rowid, person id).
+    /// Rule 3a's prints: live prints, (rowid, id, person id).
     ///
     /// # Errors
     /// Store errors.
-    pub(crate) fn dead_person_prints(&self) -> Result<Vec<(i64, Col<EntityId>)>, StoreError> {
+    pub(crate) fn dead_person_prints(&self) -> Result<Vec<DeadPrint>, StoreError> {
         dead_person_prints(self.c())
     }
 }
@@ -1584,15 +1683,26 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
         // A local row that does not read (T14.26) is replaced by the pulled one, as an absent
         // row is, except where the readable path below keeps the local state final against the
         // pulled copy: a meeting or voiceprint tombstone, an erased voice sample, and this
-        // device's withdrawal of its own summary request against an open one. Those are judged
+        // device's withdrawal of its own summary request against an open one, and a person or
+        // folder tombstone (docs/sync-spec.md 7A.2 P1, F1; never against a pulled "Me" row,
+        // which P4 decides: a damaged local row's `is_me` cannot be trusted). Those are judged
         // from the columns that still read and the pulled row is ignored (a damaged row cannot
         // be stamped again or sent).
+        // A local row that does not read and whose `deleted` does not read as a tombstone.
+        let mut damaged_live_here = false;
+        // A local row is here but does not read.
+        let mut damaged_here = false;
         let local = match g.synced_by_id_or_damaged(row.table(), row.id())? {
             Ok(local) => local,
             Err(()) => {
                 let stays_final = match row {
-                    SyncedRow::Meeting(_) | SyncedRow::Voiceprint(_) => {
+                    SyncedRow::Meeting(_) | SyncedRow::Voiceprint(_) | SyncedRow::Folder(_) => {
                         !row.meta().deleted && g.row_reads_deleted(row.table(), row.id())?
+                    }
+                    SyncedRow::Person(there) => {
+                        !there.meta.deleted
+                            && !there.is_me
+                            && g.row_reads_deleted(row.table(), row.id())?
                     }
                     SyncedRow::VoiceprintSample(there) => {
                         !there.is_erased() && g.row_reads_deleted(row.table(), row.id())?
@@ -1608,6 +1718,8 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
                     out.ignored += 1;
                     continue;
                 }
+                damaged_live_here = !g.row_reads_deleted(row.table(), row.id())?;
+                damaged_here = true;
                 None
             }
         };
@@ -1625,6 +1737,8 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
                 again.meta.touch(hlc, clock);
                 g.put_synced(&SyncedRow::Meeting(again))?;
                 out.deletions_kept += 1;
+                out.tombstones_restamped += 1;
+                g.note_stamped(here.id);
             } else {
                 out.ignored += 1;
             }
@@ -1654,6 +1768,8 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
                 g.put_synced(&SyncedRow::Voiceprint(again))?;
                 wrote.prints = true;
                 out.deletions_kept += 1;
+                out.tombstones_restamped += 1;
+                g.note_stamped(here.id());
             } else {
                 out.ignored += 1;
             }
@@ -1676,11 +1792,30 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
                 g.put_synced(&SyncedRow::VoiceprintSample(again))?;
                 wrote.samples = true;
                 out.deletions_kept += 1;
+                out.tombstones_restamped += 1;
+                g.note_stamped(here.id());
             } else {
                 out.ignored += 1;
             }
             g.unhold(inc)?;
             continue;
+        }
+        // A person or folder tombstone is final both ways, and sync never removes the user
+        // (docs/sync-spec.md 7A.2 P1, P4, F1).
+        let mut force_write = false;
+        let mut final_restamp = false;
+        match tombstone_final(g, local.as_ref(), row, inc.stamp, hlc, clock, &mut out)? {
+            Final::Lww => {}
+            Final::Kept { restamped } => {
+                // A copy here stamped again counts as written for the repairs (T14.50).
+                wrote.persons |= restamped && matches!(row, SyncedRow::Person(_));
+                g.unhold(inc)?;
+                continue;
+            }
+            Final::Write { restamp } => {
+                force_write = true;
+                final_restamp = restamp;
+            }
         }
         // A summary request's withdrawal is final (docs/sync-spec.md section 10.1).
         if let (Some(SyncedRow::SummaryRequest(here)), SyncedRow::SummaryRequest(there)) =
@@ -1744,6 +1879,7 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
             restamp_written = here.meta.updated_at > there.meta.updated_at;
         }
         if !restamp_written
+            && !force_write
             && local
                 .as_ref()
                 .is_some_and(|l| l.meta().updated_at >= row.meta().updated_at)
@@ -1776,6 +1912,28 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
             None => matches!(row, SyncedRow::Person(_)),
             Some(_) => false,
         };
+        // P5 (docs/sync-spec.md 7A.2): the person a pulled speaker row moves its row away from,
+        // the local row's, read from its own `person_id` column when the row does not read.
+        let p5_from: Option<Col<Option<EntityId>>> = match (&local, row) {
+            (Some(SyncedRow::Speaker(here)), SyncedRow::Speaker(_)) => {
+                Some(Col::Read(here.person_id))
+            }
+            (None, SyncedRow::Speaker(there)) if damaged_here => {
+                let found = g
+                    .speaker_links(Some(there.meeting_id))?
+                    .into_iter()
+                    .find(|l| l.id == Col::Read(there.id));
+                let found = match found {
+                    Some(l) => Some(l),
+                    None => g
+                        .speaker_links(None)?
+                        .into_iter()
+                        .find(|l| l.id == Col::Read(there.id)),
+                };
+                Some(found.map_or(Col::Unreadable, |l| l.person_id))
+            }
+            _ => None,
+        };
         let print_was_live = matches!(&local, Some(SyncedRow::Voiceprint(v)) if !v.meta().deleted);
         let sample_was_live =
             matches!(&local, Some(SyncedRow::VoiceprintSample(s)) if !s.is_erased());
@@ -1807,6 +1965,24 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
         g.unhold(inc)?;
         wrote.row(row);
         let _ = hlc.observe(inc.stamp, clock);
+        // P5 at a write that changes a speaker row's person: the row's identity entry remembers
+        // the person it moved away from, or goes (a removed one, or one that cannot be read).
+        if let (Some(from), SyncedRow::Speaker(there)) = (p5_from, row) {
+            let change = match from {
+                Col::Read(p) if p == there.person_id => crate::identities::RowRelink::Unchanged,
+                Col::Read(p) => crate::identities::row_relinked_guarded(
+                    g,
+                    there.meeting_id,
+                    there.id,
+                    p,
+                    there.person_id,
+                )?,
+                Col::Unreadable => {
+                    crate::identities::drop_row_entry_guarded(g, there.meeting_id, there.id)?
+                }
+            };
+            out.relinked(there.meeting_id, change);
+        }
         // Rule 4a: an edit that won over a later-stamped copy here is stamped again (after the
         // incoming stamp was observed), so it keeps its outbox entry and goes out to win at the
         // relay.
@@ -1815,6 +1991,29 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
             again.meta.touch(hlc, clock);
             g.put_synced(&SyncedRow::Segment(again.clone()))?;
             g.note_line(&again);
+        }
+        // P1, P4, F1: the copy that won over a later-stamped copy here is stamped again (after
+        // the incoming stamp was observed), so it keeps its outbox entry and replaces this
+        // device's copy at the relay if that got there.
+        if final_restamp && let Some(again) = stamped_again(row, hlc, clock) {
+            g.put_synced(&again)?;
+            if again.meta().deleted {
+                out.tombstones_restamped += 1;
+                g.note_stamped(again.id());
+            }
+        }
+        // A tombstone written over a named live copy here clears that name (7A.4).
+        let named_here = match &local {
+            Some(SyncedRow::Person(p)) => !p.meta.deleted && !p.display_name.is_empty(),
+            Some(SyncedRow::Folder(f)) => !f.meta.deleted && !f.name.is_empty(),
+            Some(_) => false,
+            None => damaged_live_here,
+        };
+        if named_here
+            && row.meta().deleted
+            && matches!(row, SyncedRow::Person(_) | SyncedRow::Folder(_))
+        {
+            out.erased += 1;
         }
         // A pulled tombstone that holds text leaves this device holding none (15.4): written,
         // then cleared (or, in a meeting deleted here, erased) through the one statement,
@@ -1863,9 +2062,16 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
         if matches!(row, SyncedRow::VoiceprintSample(s) if s.is_erased()) && sample_was_live {
             out.biometrics_forgotten += 1;
         }
+        // An "Me" tombstone is never a removal (P4, A1): whose `is_me` counts is the copy here
+        // when it read, else the pulled copy.
+        let decides_me = match &local {
+            Some(SyncedRow::Person(here)) => here.is_me,
+            _ => matches!(row, SyncedRow::Person(p) if p.is_me),
+        };
         if let SyncedRow::Person(p) = row
             && p.meta.deleted
             && person_was_live
+            && !decides_me
         {
             // Every erased item, identity entries included, so a removal that dropped only
             // centroids still leads the client to checkpoint (docs/sync-spec.md 16.7).
@@ -1887,21 +2093,129 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
     if h_held_before || !h_held.is_empty() {
         g.put_held_replaced_keys(&h_held)?;
     }
+    // Rule 1, P2, rule 3a and the voice rules (docs/sync-spec.md 7A.2's order).
     crate::sync::converge(g, hlc, clock, &mut out, wrote)?;
     crate::sync::edits_win(g, hlc, clock, rules.leased, &mut out)?;
+    // P3 after rule 4c, so a row 4c revived with its stored person is unlinked in this page,
+    // and before `rules.after`, so the names it rewrote are seen there (7A.9). Run by kind
+    // (T14.50): a page that wrote a person or speaker row, or after P2 or 4c wrote.
+    if wrote.persons || wrote.speakers || out.persons_removed_with > 0 || out.speakers_revived > 0 {
+        crate::sync::unlink_removed_speakers(g, hlc, clock, &mut out)?;
+    }
     // Lines this page stamped here (rule 4a's re-stamps, rule 4b's rewrites) go out before
     // the track's queued cleared rows (docs/sync-spec.md 15.2).
     g.send_lines_first(hlc, clock)?;
     if let Some(after) = rules.after {
         after(g)?;
     }
+    out.erased += out.biometrics_forgotten;
+    out.stamped_here = g.stamped_ids();
+    out.chains_unknown = g.chains_unknown();
     out.damaged_rows = g.skipped.borrow().clone();
     out.damaged_skipped = out.damaged_rows.len();
     Ok(out)
 }
 
-/// Where `person`'s `merged_into` chain ends (16.3 `chain_end`), reading each step's `deleted`
-/// and `merged_into` only: today's answer of `ends_deleted` on readable rows.
+/// What P1, P4 and F1 decide for a pulled person or folder row over the copy here
+/// ([`tombstone_final`]).
+enum Final {
+    /// Not a case of theirs: whole-row last writer wins.
+    Lww,
+    /// The copy here stays; `restamped` when it was stamped again above the pulled copy.
+    Kept { restamped: bool },
+    /// The pulled copy is written whatever the stamps; stamped again here when the copy here
+    /// was the later.
+    Write { restamp: bool },
+}
+
+/// P1, P4 and F1 (docs/sync-spec.md 7A.2) for a pulled person or folder row and the readable
+/// copy here, one a tombstone and one live: a folder tombstone, and a person tombstone of
+/// someone other than the user, stays final both ways; for the user (the copy here decides
+/// whose `is_me` counts, because it reads) the live copy wins. A copy here that stays is stamped
+/// again after the pulled stamp when the pulled copy is the later, and keeps its outbox entry
+/// (counted in `tombstones_restamped` when it is a tombstone); a live user's copy stamped again
+/// is not a tombstone. A local row that does not read never reaches here (the caller judged it
+/// already, `stays_final`).
+///
+/// # Errors
+/// Store errors.
+fn tombstone_final<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    local: Option<&SyncedRow>,
+    row: &SyncedRow,
+    stamp: HlcTimestamp,
+    hlc: &mut Hlc,
+    clock: &C,
+    out: &mut crate::Applied,
+) -> Result<Final, StoreError> {
+    let Some(here) = local else {
+        return Ok(Final::Lww);
+    };
+    let keep_here = match (here, row) {
+        (SyncedRow::Person(here), SyncedRow::Person(there))
+            if here.meta.deleted != there.meta.deleted =>
+        {
+            // P1 keeps a tombstone that is not the user's, P4 the user's live copy.
+            here.meta.deleted != here.is_me
+        }
+        (SyncedRow::Folder(here), SyncedRow::Folder(there))
+            if here.meta.deleted != there.meta.deleted =>
+        {
+            here.meta.deleted
+        }
+        _ => return Ok(Final::Lww),
+    };
+    let _ = hlc.observe(stamp, clock);
+    let here_later = here.meta().updated_at >= row.meta().updated_at;
+    if !keep_here {
+        return Ok(Final::Write {
+            restamp: here_later,
+        });
+    }
+    if here_later {
+        out.ignored += 1;
+        return Ok(Final::Kept { restamped: false });
+    }
+    let Some(again) = stamped_again(here, hlc, clock) else {
+        return Ok(Final::Lww);
+    };
+    g.put_synced(&again)?;
+    if again.meta().deleted {
+        out.tombstones_restamped += 1;
+        g.note_stamped(again.id());
+    }
+    out.people |= matches!(again, SyncedRow::Person(_));
+    Ok(Final::Kept { restamped: true })
+}
+
+/// A person or folder row with this device's stamp, content unchanged; `None` for any other
+/// kind.
+fn stamped_again<C: Clock + ?Sized>(
+    row: &SyncedRow,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Option<SyncedRow> {
+    match row {
+        SyncedRow::Person(p) => {
+            let mut again = p.clone();
+            again.meta.touch(hlc, clock);
+            Some(SyncedRow::Person(again))
+        }
+        SyncedRow::Folder(f) => {
+            let mut again = f.clone();
+            again.meta.touch(hlc, clock);
+            Some(SyncedRow::Folder(again))
+        }
+        _ => None,
+    }
+}
+
+/// Where `person`'s `merged_into` chain ends (16.3 `chain_end`, extended by docs/sync-spec.md
+/// 7A.2 D1): each step's `deleted` and `merged_into`, and at a tombstoned step its `is_me`
+/// (`true` is [`ChainEnd::MeTombstone`], never a removal; `false` is [`ChainEnd::Removed`]).
+/// A step that does not read ends the walk as [`ChainEnd::Unknown`], counted once per page as a
+/// damaged person row and in [`GuardedTx::chains_unknown`]; a loop or a person not known here is
+/// `Unknown` too and counts nothing, because nothing is damaged.
 ///
 /// # Errors
 /// Store errors.
@@ -1913,21 +2227,105 @@ pub fn chain_end(g: &GuardedTx<'_, '_>, person: EntityId) -> Result<ChainEnd, St
             return Ok(ChainEnd::Unknown);
         }
         seen.push(cur);
-        let Some((deleted, merged_into)) = g.chain_step(cur)? else {
+        let Some((rowid, deleted, merged_into, is_me)) = g.chain_step(cur)? else {
             return Ok(ChainEnd::Unknown);
         };
-        match (deleted, merged_into) {
-            (Deleted::Yes, _) => return Ok(ChainEnd::Removed),
-            (Deleted::Unreadable, _) | (_, Col::Unreadable) => return Ok(ChainEnd::Unknown),
-            (Deleted::No, Col::Read(None)) => return Ok(ChainEnd::Live),
-            (Deleted::No, Col::Read(Some(next))) => cur = next,
+        match (deleted, merged_into, is_me) {
+            (Deleted::Yes, _, Col::Read(false)) => return Ok(ChainEnd::Removed),
+            (Deleted::Yes, _, Col::Read(true)) => return Ok(ChainEnd::MeTombstone),
+            (Deleted::Yes, _, Col::Unreadable)
+            | (Deleted::Unreadable, _, _)
+            | (Deleted::No, Col::Unreadable, _) => {
+                g.unknown_step(rowid);
+                return Ok(ChainEnd::Unknown);
+            }
+            (Deleted::No, Col::Read(None), _) => return Ok(ChainEnd::Live),
+            (Deleted::No, Col::Read(Some(next)), _) => cur = next,
         }
     }
+}
+
+/// The one-off sweep of speaker identity entries (docs/sync-spec.md 7A.2 P5 and D1), run once
+/// per store inside `Store::open`, opened only by [`Store::guarded_immediate`] so the write lock
+/// is held before its first read. It re-reads the device record
+/// [`crate::identities::SWEEP_KEY`] and does nothing when it is there (another open swept
+/// already). Otherwise, in every `speaker-identities/<meeting>` record, it drops every entry whose
+/// speaker row is missing, tombstoned, or has a `deleted` that does not read; an entry that
+/// matches no readable row is missing, so a row whose `id` does not read keeps no entry (it is not
+/// shown). A record that does not decode is deleted whole, counting as one; a record left empty
+/// (or empty already) is deleted. A live row's entry is never touched, linked or not. It reads each
+/// meeting's speaker `id` and `deleted` only, and of an entry only its speaker id, so nothing
+/// another writer has written decides a drop. Then it writes the record with the count, in the
+/// same transaction. Returns the count, `None` when the sweep had run before.
+///
+/// # Errors
+/// Store errors (the caller rolls back and the next open tries again).
+pub fn sweep_identities(g: &mut GuardedTx<'_, '_>) -> Result<Option<u64>, StoreError> {
+    use crate::identities::{
+        IdentitySweep, RECORD_PREFIX, SWEEP_KEY, StoredIdentities, decode, encode, encode_sweep,
+    };
+    use std::str::FromStr;
+    if g.local_value(SWEEP_KEY)?.is_some() {
+        return Ok(None);
+    }
+    let mut dropped: u64 = 0;
+    for key in g.identity_record_keys()? {
+        let Some(bytes) = g.local_value(&key)? else {
+            continue;
+        };
+        let StoredIdentities::Record(mut record) = decode(&bytes) else {
+            g.delete_local_value(&key)?;
+            dropped += 1;
+            continue;
+        };
+        let rows = match EntityId::from_str(&key[RECORD_PREFIX.len()..]) {
+            Ok(meeting) => g.sweep_speakers(meeting)?,
+            Err(_) => Vec::new(),
+        };
+        for r in rows
+            .iter()
+            .filter(|r| !r.id.reads() || r.deleted == Deleted::Unreadable)
+        {
+            g.count_damaged("speaker", &[r.rowid]);
+        }
+        let before = record.speakers.len();
+        record.speakers.retain(|e| {
+            rows.iter()
+                .any(|r| r.id == Col::Read(e.speaker) && r.deleted == Deleted::No)
+        });
+        let n = before - record.speakers.len();
+        dropped += u64::try_from(n).unwrap_or(u64::MAX);
+        if record.speakers.is_empty() {
+            g.delete_local_value(&key)?;
+        } else if n > 0 {
+            g.set_local_value(&key, &encode(&record))?;
+        }
+    }
+    g.set_local_value(SWEEP_KEY, &encode_sweep(&IdentitySweep { dropped }))?;
+    Ok(Some(dropped))
 }
 
 impl GuardedTx<'_, '_> {
     fn chain_step(&self, id: EntityId) -> Result<Option<ChainStep>, StoreError> {
         chain_step(self.c(), id)
+    }
+
+    /// A chain step that does not read: a damaged person row, counted once.
+    fn unknown_step(&self, rowid: i64) {
+        skip(&self.skipped, "person", rowid);
+        self.unknown_steps.borrow_mut().insert(rowid);
+    }
+
+    /// How many distinct chain steps could not be read so far (`Applied::chains_unknown`).
+    #[must_use]
+    pub fn chains_unknown(&self) -> usize {
+        self.unknown_steps.borrow().len()
+    }
+
+    /// The ids noted by [`GuardedTx::note_stamped`] so far.
+    #[must_use]
+    pub fn stamped_ids(&self) -> BTreeSet<EntityId> {
+        self.stamped.borrow().clone()
     }
 }
 

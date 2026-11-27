@@ -367,6 +367,27 @@ pub struct Applied {
     /// The `(table, rowid)` of each row behind [`Applied::damaged_skipped`], so a caller can
     /// count the rows of several pages once (SQLite rowids only: never logged, shown or stored).
     pub damaged_rows: std::collections::BTreeSet<(&'static str, i64)>,
+    /// Tombstones the page stamped again and kept queued (docs/sync-spec.md 7A.2 C1): a meeting,
+    /// voiceprint or voice sample tombstone kept against a later live copy, and a person or folder
+    /// tombstone kept or written with this device's stamp (P1, F1). Not a skipped live child of a
+    /// deleted meeting, which is stamped nowhere ([`Applied::deletions_kept`]).
+    pub tombstones_restamped: usize,
+    /// The ids of the rows the page wrote with this device's stamp that C1's extra push sends
+    /// (docs/sync-spec.md 7A.2): the tombstones of [`Applied::tombstones_restamped`] and what P2,
+    /// P3, a pulled person tombstone's erasure, rule 3a and the voice rules wrote. Ids only.
+    pub stamped_here: std::collections::BTreeSet<EntityId>,
+    /// Items the page erased (docs/sync-spec.md 7A.4): person and folder names cleared, speaker
+    /// names P3 rewrote, and [`Applied::biometrics_forgotten`] (voices and identity entries). A
+    /// page with any is followed by `flush_erasures`.
+    pub erased: usize,
+    /// Live persons tombstoned because their `merged_into` chain ends at a person removed here
+    /// (P2).
+    pub persons_removed_with: usize,
+    /// Speaker rows unlinked from a person removed here (P3).
+    pub speakers_unlinked: usize,
+    /// Distinct chain steps a `merged_into` walk could not read (docs/sync-spec.md 7A.2 D1),
+    /// each also in [`Applied::damaged_rows`]. A loop or a person not known here counts nothing.
+    pub chains_unknown: usize,
 }
 
 impl Applied {
@@ -375,6 +396,20 @@ impl Applied {
             .iter()
             .position(|r| *r == reason)
             .expect("every reason is in ALL")] += 1;
+    }
+
+    /// What P5 did to a row's identity entry in `meeting` (docs/sync-spec.md 7A.9): a changed
+    /// record names its meeting and the people; a dropped entry is an erasure (7A.4).
+    pub(crate) fn relinked(&mut self, meeting: EntityId, change: crate::identities::RowRelink) {
+        use crate::identities::RowRelink;
+        if change == RowRelink::Unchanged {
+            return;
+        }
+        self.meetings.insert(meeting);
+        self.people = true;
+        if change == RowRelink::Dropped {
+            self.erased += 1;
+        }
     }
 }
 
@@ -391,6 +426,8 @@ pub(crate) struct Wrote {
     pub(crate) prints: bool,
     /// A voice sample row (rules 3 and 3a).
     pub(crate) samples: bool,
+    /// A speaker row (P3, docs/sync-spec.md 7A.2).
+    pub(crate) speakers: bool,
 }
 
 impl Wrote {
@@ -400,6 +437,7 @@ impl Wrote {
         summaries: true,
         prints: true,
         samples: true,
+        speakers: true,
     };
 
     pub(crate) fn row(&mut self, row: &SyncedRow) {
@@ -408,10 +446,10 @@ impl Wrote {
             SyncedRow::Summary(_) => self.summaries = true,
             SyncedRow::Voiceprint(_) => self.prints = true,
             SyncedRow::VoiceprintSample(_) => self.samples = true,
+            SyncedRow::Speaker(_) => self.speakers = true,
             SyncedRow::Meeting(_)
             | SyncedRow::Track(_)
             | SyncedRow::Segment(_)
-            | SyncedRow::Speaker(_)
             | SyncedRow::Note(_)
             | SyncedRow::Folder(_)
             | SyncedRow::SummaryRequest(_)
@@ -478,6 +516,42 @@ const DELETE_HELD_REPLACED_SQL: &str = "DELETE FROM local_state WHERE key = ?1";
 /// The H1 and H2 row keys stored (`put_held_replaced_keys`).
 const PUT_HELD_REPLACED_SQL: &str = "INSERT INTO local_state (key, value) VALUES (?1, ?2) \
      ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+
+/// C1's id restriction (docs/sync-spec.md 7A.2): the temporary table `outbox_page_only` joins,
+/// made and filled inside the read's own transaction (`fill_push_only`).
+const PUSH_ONLY_CREATE_SQL: &str =
+    "CREATE TEMP TABLE IF NOT EXISTS push_only (id BLOB PRIMARY KEY)";
+/// One id of the restriction (`fill_push_only`).
+const PUSH_ONLY_INSERT_SQL: &str = "INSERT OR IGNORE INTO temp.push_only (id) VALUES (?1)";
+/// The restriction dropped after the read (`drop_push_only`).
+const PUSH_ONLY_DROP_SQL: &str = "DROP TABLE IF EXISTS temp.push_only";
+/// The join that restricts an outbox read to the table's ids (`push_only_join`).
+const PUSH_ONLY_JOIN_SQL: &str = " JOIN temp.push_only p ON p.id = o.id";
+
+/// Makes `temp.push_only` and fills it with `ids`. The table never outlives its transaction:
+/// it is dropped before the commit, and a transaction that fails is rolled back with it.
+fn fill_push_only(
+    c: &rusqlite::Connection,
+    ids: &std::collections::BTreeSet<EntityId>,
+) -> Result<(), StoreError> {
+    c.execute(PUSH_ONLY_CREATE_SQL, [])?;
+    let mut st = c.prepare_cached(PUSH_ONLY_INSERT_SQL)?;
+    for id in ids {
+        st.execute(params![&id.as_uuid().as_bytes()[..]])?;
+    }
+    Ok(())
+}
+
+/// Drops `temp.push_only`.
+fn drop_push_only(c: &rusqlite::Connection) -> Result<(), StoreError> {
+    c.execute(PUSH_ONLY_DROP_SQL, [])?;
+    Ok(())
+}
+
+/// The join of [`PUSH_ONLY_JOIN_SQL`], for the outbox read's query.
+const fn push_only_join() -> &'static str {
+    PUSH_ONLY_JOIN_SQL
+}
 
 pub(crate) fn held_replaced_keys(
     c: &rusqlite::Connection,
@@ -574,7 +648,8 @@ pub(crate) fn withdrawal(
 /// prints zeroed and tombstoned by rowid, samples by id (or by rowid when their id does not
 /// read). A row whose `person_id` does not read is skipped and counted; a chain through a step
 /// that does not read is [`ChainEnd::Unknown`] and erases nothing (docs/sync-spec.md 16.5
-/// items 1 to 3).
+/// items 1 to 3), and a chain ending at the user's tombstone is [`ChainEnd::MeTombstone`],
+/// never a removal (7A.2 P4).
 pub(crate) fn dead_person_repair<C: Clock + ?Sized>(
     g: &mut GuardedTx<'_, '_>,
     hlc: &mut Hlc,
@@ -596,7 +671,7 @@ pub(crate) fn dead_person_repair<C: Clock + ?Sized>(
             }
         }
     }
-    for (rowid, person) in g.dead_person_prints()? {
+    for (rowid, id, person) in g.dead_person_prints()? {
         let Col::Read(person) = person else {
             g.count_damaged("voiceprint", &[rowid]);
             continue;
@@ -604,11 +679,160 @@ pub(crate) fn dead_person_repair<C: Clock + ?Sized>(
         if chain_end(g, person)? != ChainEnd::Removed {
             continue;
         }
-        g.erase_print_by_rowid(hlc, clock, rowid)?;
+        g.erase_print_by_rowid(hlc, clock, rowid, id.read())?;
         out.biometrics_forgotten += 1;
         out.people = true;
     }
     Ok(())
+}
+
+/// P2 of docs/sync-spec.md 7A.2: every live person whose `merged_into` chain ends at a person
+/// tombstoned here that is not the user ([`ChainEnd::Removed`]) is tombstoned with its name
+/// cleared (`merged_into` kept), with this device's stamp, its biometrics forgotten as for a
+/// pulled person tombstone; a damaged row by rowid (16.4). A chain that ends at the user's
+/// tombstone, at a person not known here, or loops, changes nothing; the user is never
+/// tombstoned; a person whose own `is_me` does not read is skipped and counted (16.5 item 18).
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn merged_into_removed_repair<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    out: &mut Applied,
+) -> Result<(), StoreError> {
+    for l in g.person_links()? {
+        let Col::Read(person) = l.id else { continue };
+        if l.deleted != Deleted::No || l.merged_into == Col::Read(None) {
+            continue;
+        }
+        if chain_end(g, person)? != ChainEnd::Removed {
+            continue;
+        }
+        match l.is_me {
+            Col::Read(false) => {}
+            Col::Read(true) => continue,
+            Col::Unreadable => {
+                g.count_damaged("person", &[l.rowid]);
+                continue;
+            }
+        }
+        out.biometrics_forgotten += crate::identities::forget_identity_biometrics(
+            g,
+            person,
+            hlc,
+            clock,
+            crate::identities::Erasure::Pulled,
+        )?
+        .erased();
+        match g.person_or_damaged(person)? {
+            None => continue,
+            Some(Ok(mut p)) => {
+                if !p.display_name.is_empty() {
+                    out.erased += 1;
+                }
+                p.display_name.clear();
+                p.meta.mark_deleted(hlc, clock);
+                g.put_person(p)?;
+                g.note_stamped(person);
+            }
+            Some(Err(())) => {
+                // Placed by its `id` and `merged_into`, both read: tombstoned by rowid with the
+                // name cleared whatever it read as (16.4).
+                g.tombstone_person_by_rowid(hlc, clock, l.rowid, Some(person))?;
+                out.erased += 1;
+            }
+        }
+        out.persons_removed_with += 1;
+        out.people = true;
+    }
+    Ok(())
+}
+
+/// P3 of docs/sync-spec.md 7A.2: no speaker row stays linked to a person tombstoned here that
+/// is not the user. Every such row is rewritten as `Store::remove_person` rewrites it, through
+/// [`crate::delete::unlink_speakers_tx`] (a damaged row by rowid under the written-columns rule
+/// of 16.4). A row linked to the user's tombstone is left linked (P4). Run after rule 4c and
+/// before the host's `after`.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn unlink_removed_speakers<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    out: &mut Applied,
+) -> Result<(), StoreError> {
+    // After P2 a chain never ends at such a tombstone through a live person, so the direct link
+    // is the whole test.
+    let removed: Vec<EntityId> = g
+        .person_links()?
+        .into_iter()
+        .filter(|l| l.deleted == Deleted::Yes && l.is_me == Col::Read(false))
+        .filter_map(|l| l.id.read())
+        .collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    // A row whose `person_id` does not read is not written, but its earlier person cannot be
+    // read either, so P5 drops its entry (docs/sync-spec.md 7A.2 D1: errs towards erasing).
+    for l in g.speaker_links(None)? {
+        if let (Col::Read(meeting), Col::Read(speaker), Col::Unreadable) =
+            (l.meeting_id, l.id, l.person_id)
+        {
+            let change = crate::identities::drop_row_entry_guarded(g, meeting, speaker)?;
+            out.relinked(meeting, change);
+        }
+    }
+    let mut on_row = |g: &mut GuardedTx<'_, '_>, row: &crate::delete::UnlinkedRow| {
+        // P5 at this row's write: unlinked from a removed person, its entry goes.
+        if let Some(speaker) = row.speaker {
+            let change = crate::identities::row_relinked_guarded(
+                g,
+                row.meeting,
+                speaker,
+                Some(row.from),
+                None,
+            )?;
+            out.relinked(row.meeting, change);
+        }
+        out.speakers_unlinked += 1;
+        out.meetings.insert(row.meeting);
+        out.people = true;
+        if row.name_erased {
+            out.erased += 1;
+        }
+        Ok(())
+    };
+    crate::delete::unlink_speakers_tx(g, &removed, hlc, clock, &mut on_row)?;
+    Ok(())
+}
+
+/// The store half of the one-off removal repair (docs/sync-spec.md 7A.2, "The one-off removal
+/// repair, sync on or off"): P2 ([`merged_into_removed_repair`]) then P3
+/// ([`unlink_removed_speakers`]) with P5's entry drops, in the caller's guarded transaction and
+/// outside any page, with this device's stamp, so what it writes waits in the outbox like any
+/// edit. Counted as a page's are: [`Applied::persons_removed_with`],
+/// [`Applied::speakers_unlinked`], [`Applied::erased`] (biometrics included), the rows skipped
+/// ([`Applied::damaged_skipped`]) and [`Applied::meetings`] / [`Applied::people`] for the window.
+/// A second run finds nothing left (7A.8).
+///
+/// # Errors
+/// Store errors (the caller rolls back).
+pub fn removal_repair_tx<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<Applied, StoreError> {
+    let mut out = Applied::default();
+    merged_into_removed_repair(g, hlc, clock, &mut out)?;
+    unlink_removed_speakers(g, hlc, clock, &mut out)?;
+    out.erased += out.biometrics_forgotten;
+    out.stamped_here = g.stamped_ids();
+    out.chains_unknown = g.chains_unknown();
+    out.damaged_rows = g.damaged_rows();
+    out.damaged_skipped = out.damaged_rows.len();
+    Ok(out)
 }
 
 /// The rules that keep devices converged (docs/sync-spec.md section 7), run inside
@@ -679,6 +903,11 @@ pub(crate) fn converge<C: Clock + ?Sized>(
             out.mes_merged += 1;
             out.people = true;
         }
+    }
+    // P2 reads persons (docs/sync-spec.md 7A.2): after rule 1, before rule 3a, so 3a and the
+    // voice rules see the persons it tombstoned.
+    if wrote.persons {
+        merged_into_removed_repair(g, hlc, clock, out)?;
     }
     // Rule 2 reads summaries.
     let crowded: Vec<EntityId> = if wrote.summaries {
@@ -826,7 +1055,8 @@ pub(crate) fn edits_win<C: Clock + ?Sized>(
         let (mut speakers, damaged) = g.speakers_or_damaged(m)?;
         speakers.sort_by_key(|s| s.id);
         // A damaged row whose role may be "Me" and that may be live counts as a live "Me".
-        let maybe_me = g.speaker_links(Some(m))?.into_iter().any(|l| {
+        let links = g.speaker_links(Some(m))?;
+        let maybe_me = links.iter().any(|l| {
             damaged.contains(&l.rowid)
                 && matches!(l.role, Col::Read(SpeakerRole::Me) | Col::Unreadable)
                 && l.deleted != Deleted::Yes
@@ -835,6 +1065,21 @@ pub(crate) fn edits_win<C: Clock + ?Sized>(
             || speakers
                 .iter()
                 .any(|s| !s.meta.deleted && s.role == SpeakerRole::Me);
+        // Names the meeting's live rows hold (a damaged live row's name when it reads), for a
+        // revived row whose stored name is empty (docs/sync-spec.md 7A.2, rule 4c and a
+        // nameless row).
+        let mut taken: Vec<String> = speakers
+            .iter()
+            .filter(|s| !s.meta.deleted)
+            .map(|s| s.display_name.clone())
+            .collect();
+        for l in links.iter().filter(|l| damaged.contains(&l.rowid)) {
+            if l.deleted == Deleted::No
+                && let Col::Read(name) = &l.display_name
+            {
+                taken.push(name.clone());
+            }
+        }
         for s in speakers {
             if s.meta.deleted && named.contains(&s.id) {
                 let mut back = s;
@@ -845,6 +1090,10 @@ pub(crate) fn edits_win<C: Clock + ?Sized>(
                     }
                     me_live = true;
                 }
+                if back.display_name.is_empty() {
+                    back.display_name = crate::first_free_speaker_name(&taken);
+                }
+                taken.push(back.display_name.clone());
                 back.meta.touch(hlc, clock);
                 g.put_synced(&SyncedRow::Speaker(back))?;
                 out.speakers_revived += 1;
@@ -1055,6 +1304,43 @@ impl Store {
         meetings: &[EntityId],
         kinds: SyncKinds,
     ) -> Result<OutboxPage, StoreError> {
+        self.outbox_page_only(limit, meetings, kinds, None)
+    }
+
+    /// [`Store::outbox_page`], restricted to the rows whose ids are in `only` when given
+    /// (docs/sync-spec.md 7A.2 C1, the extra push): the restriction is applied in the same
+    /// query, after the same filters and in the same oldest-stamp-first order, through a
+    /// temporary table (`temp.push_only`) filled and joined inside the read's own transaction
+    /// and dropped after it, never a bound `IN` list (`only` may be larger than SQLite's limit
+    /// on bound parameters). An id that is no longer queued is simply not found.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_page_only(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        kinds: SyncKinds,
+        only: Option<&std::collections::BTreeSet<EntityId>>,
+    ) -> Result<OutboxPage, StoreError> {
+        let Some(only) = only else {
+            return self.outbox_page_in(limit, meetings, kinds, "");
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        fill_push_only(&tx, only)?;
+        let page = self.outbox_page_in(limit, meetings, kinds, push_only_join());
+        drop_push_only(&tx)?;
+        tx.commit()?;
+        page
+    }
+
+    fn outbox_page_in(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        kinds: SyncKinds,
+        join: &str,
+    ) -> Result<OutboxPage, StoreError> {
         let mut rows = Vec::new();
         let mut unreadable = 0;
         let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
@@ -1079,7 +1365,7 @@ impl Store {
                 _ => String::new(),
             };
             let sql = format!(
-                "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id WHERE o.tbl = ?{except} \
+                "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id{join} WHERE o.tbl = ?{except} \
                  ORDER BY r.updated_wall, r.updated_logical, r.updated_node LIMIT ?"
             );
             let mut values: Vec<&dyn rusqlite::ToSql> = vec![&table];

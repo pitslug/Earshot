@@ -453,6 +453,7 @@ fn store_forget_voiceprints_drops_the_identitys_speaker_centroids_from_every_mee
         user_edited: false,
         enrolled: false,
         ignored: false,
+        linked_before: Vec::new(),
     };
 
     // Meeting 1: a row the user linked to Ada, one linked to Ada's merged duplicate, and an

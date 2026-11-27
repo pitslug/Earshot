@@ -204,9 +204,10 @@ impl ServicesWrite<'_> {
                 store.apply_remote_releasing(page, rules, blocked, hlc, &*clock)?
             }
         };
-        // Every erased biometric item counts, identity entries included (`Forgotten::erased`),
-        // so a removal that dropped only centroids is checkpointed too (docs/sync-spec.md 16.7).
-        if applied.biometrics_forgotten > 0 {
+        // Every erased item counts (docs/sync-spec.md 7A.4): names cleared, speaker names
+        // rewritten, identity entries dropped and biometric rows, so a removal of a person with
+        // no saved voice is checkpointed too.
+        if applied.erased > 0 {
             // A Busy here means the erasure is committed; the next checkpoint erases it.
             let _ = store.flush_erasures();
         }

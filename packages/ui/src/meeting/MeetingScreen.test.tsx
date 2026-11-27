@@ -624,7 +624,8 @@ describe("meeting screen", () => {
   it("validates the start view: call by default, title length checked", async () => {
     const s = setup();
     const main = await screen.findByRole("main");
-    await s.user.click(within(main).getByRole("button", { name: "New meeting" }));
+    // The list (and the main area's button) comes once the sync subscription is in place.
+    await s.user.click(await within(main).findByRole("button", { name: "New meeting" }));
     expect(screen.getByRole("heading", { name: "New meeting" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Call: mic + computer audio" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "In the room: mic only" })).not.toBeChecked();

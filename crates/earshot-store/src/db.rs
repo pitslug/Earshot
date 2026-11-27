@@ -277,11 +277,40 @@ impl Store {
             push_guard: None,
         };
         store.migrate()?;
+        let swept = store.sweep_identities_once();
         // Fold any WAL left by an earlier session (for example one whose checkpoint after
         // forgetting voiceprints was blocked) into the database. Best effort: another
-        // connection may legitimately hold it.
-        let _ = store.checkpoint_with_retry(1);
+        // connection may legitimately hold it. After the sweep dropped a centroid, with
+        // `flush_erasures`' retries (a `Busy` means the drop is committed and leaves at the
+        // closing checkpoint).
+        let attempts = if swept > 0 { CHECKPOINT_ATTEMPTS } else { 1 };
+        let _ = store.checkpoint_with_retry(attempts);
         Ok(store)
+    }
+
+    /// The one-off sweep of speaker identity entries (docs/sync-spec.md 7A.2 P5,
+    /// [`crate::sweep_identities`]), best effort: a store already swept is seen by one read; any
+    /// error rolls the sweep back, the open still succeeds, no record is written and the next
+    /// open tries again. Returns how many entries it dropped (0 when it did not run). Logs only a
+    /// fixed word and a count.
+    fn sweep_identities_once(&mut self) -> u64 {
+        match self.local_value(crate::identities::SWEEP_KEY) {
+            Ok(None) => {}
+            Ok(Some(_)) | Err(_) => return 0,
+        }
+        match self.guarded_immediate(crate::sweep_identities) {
+            Ok(Some(n)) => {
+                if n > 0 {
+                    eprintln!("identity sweep: entries dropped {n}");
+                }
+                n
+            }
+            Ok(None) => 0,
+            Err(_) => {
+                eprintln!("identity sweep: not run");
+                0
+            }
+        }
     }
 
     fn migrate(&mut self) -> Result<(), StoreError> {

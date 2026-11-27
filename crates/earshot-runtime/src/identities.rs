@@ -155,6 +155,7 @@ mod tests {
                 user_edited: true,
                 enrolled: false,
                 ignored: false,
+                linked_before: Vec::new(),
             }],
         };
         let pinned_json = concat!(
@@ -214,6 +215,7 @@ mod tests {
                 user_edited: true,
                 enrolled: false,
                 ignored: false,
+                linked_before: Vec::new(),
             }],
         };
         let bytes = encode(&record);
@@ -298,6 +300,17 @@ mod tests {
         );
         assert_eq!(MeetingRecord::SpeakerIdentities.prefix(), RECORD_PREFIX);
         assert_eq!(crate::local::meeting_of(record_key(m).as_str()), Some(m));
+    }
+
+    /// The one-off sweep's device record (T14.49c) is written by earshot-store inside
+    /// `Store::open`; the registry names the same key.
+    #[test]
+    fn sync_identity_sweep_record_key_is_the_stores() {
+        assert_eq!(
+            crate::local::DeviceRecord::IdentitySweep.key().as_str(),
+            earshot_store::identities::SWEEP_KEY
+        );
+        assert_eq!(earshot_store::identities::SWEEP_KEY, "identity-sweep");
     }
 
     #[test]
