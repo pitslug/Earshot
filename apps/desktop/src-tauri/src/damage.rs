@@ -152,11 +152,17 @@ impl Gate {
             self.again_forced = true;
             return Start::None;
         }
+        // It starts in place of any due request, whose sleeper then finds it stale.
+        self.due = None;
         self.begin(now)
     }
 
-    /// The time a request waited for has come.
-    pub fn due(&mut self, now: Duration) -> Start {
+    /// The time `at` a request waited for has come. A due that was taken over meanwhile (a
+    /// forced scan started in its place) is stale and starts nothing.
+    pub fn due(&mut self, at: Duration, now: Duration) -> Start {
+        if self.due != Some(at) {
+            return Start::None;
+        }
         self.due = None;
         if self.running {
             self.again = true;
@@ -180,18 +186,34 @@ impl Gate {
         }
     }
 
-    /// The scan just begun could not be started (no thread): nothing runs and nothing is due.
-    fn not_started(&mut self) {
+    /// The scan just begun could not be started (no thread): nothing runs, and the one more
+    /// asked for meanwhile is given up with it. Returns whether one more had been asked for. A
+    /// due request is kept: its own sleeper starts it.
+    fn not_started(&mut self) -> bool {
         self.running = false;
-        self.again = false;
         self.again_forced = false;
-        self.due = None;
+        std::mem::take(&mut self.again)
+    }
+
+    /// The sleeper for the due request `at` could not be started: that request is dropped, and
+    /// nothing else (a scan running meanwhile keeps the gate).
+    fn due_not_started(&mut self, at: Duration) {
+        if self.due == Some(at) {
+            self.due = None;
+        }
     }
 
     fn begin(&mut self, now: Duration) -> Start {
         self.running = true;
         self.last_start = Some(now);
         Start::Now
+    }
+
+    /// Whether one more scan is asked for (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub fn again_for_test(&self) -> bool {
+        self.again
     }
 
     /// Whether a scan runs (tests).
@@ -397,12 +419,16 @@ impl Scans {
                     .upgrade()
                     .is_some_and(|me| (self.spawn)(Box::new(move || me.run(number))));
                 if !spawned {
-                    // No thread: the scan counts as finished and failed, so nothing waits for
-                    // it and the next request can start one.
+                    // No thread: the scan counts as finished and failed, and so does the one more
+                    // a forced request asked for meanwhile (given up with it), so every waiter
+                    // whose scan will not run returns `internal`, and the next request can start
+                    // one.
                     let mut s = self.lock();
-                    s.gate.not_started();
+                    if s.gate.not_started() {
+                        s.started += 1;
+                    }
                     s.failed = true;
-                    s.finished += 1;
+                    s.finished = s.started;
                     self.done.notify_all();
                 }
             }
@@ -416,12 +442,12 @@ impl Scans {
                         let start = {
                             let mut s = me.lock();
                             let now = (me.clock)();
-                            s.gate.due(now)
+                            s.gate.due(at, now)
                         };
                         me.act(start);
                     }));
                     if !spawned {
-                        self.lock().gate.not_started();
+                        self.lock().gate.due_not_started(at);
                     }
                 }
             }
@@ -459,9 +485,14 @@ impl Scans {
                     if closes {
                         s.closing_after = None;
                     }
-                    if closes || s.repair_left.is_some() {
-                        s.repair_left = Some(scan.counts());
-                    }
+                    // Done follows every later scan while it finds no more than the Repair left;
+                    // new damage (more in any kind) is not the Repair's result, so Done ends.
+                    let found = scan.counts();
+                    s.repair_left = match s.repair_left {
+                        _ if closes => Some(found),
+                        Some(left) if !found.more_in_any_kind_than(&left) => Some(found),
+                        _ => None,
+                    };
                     event = Some(items.shown());
                 }
                 None => s.failed = true,

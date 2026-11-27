@@ -200,7 +200,7 @@ fn damaged_gate_debounces_and_never_overlaps() {
         "an unforced one more waits for the debounce"
     );
     assert_eq!(g.request(t(3)), Start::None, "already due");
-    assert_eq!(g.due(t(30)), Start::Now);
+    assert_eq!(g.due(t(30), t(30)), Start::Now);
     assert_eq!(g.finished(t(31)), Start::None, "nothing more asked");
     // Control: a request after the debounce starts at once.
     assert_eq!(g.request(t(61)), Start::Now);
@@ -730,7 +730,13 @@ fn damaged_done_follows_every_later_scan() {
         };
         assert_eq!(view.counts, want);
         assert!(view.sync_repairs, "Repair is offered");
-        assert_eq!(view.repair, RepairView::Done { left: want });
+        // New damage is not the Repair's result: Done ends; with no more damage it stays.
+        let repair_view = if later {
+            RepairView::Idle
+        } else {
+            RepairView::Done { left: want }
+        };
+        assert_eq!(view.repair, repair_view);
     }
 }
 
@@ -905,4 +911,159 @@ fn damaged_repair_with_sync_off_arms_nothing() {
         earshot_runtime::sync::start_repair(&svc).unwrap(),
         earshot_runtime::sync::RepairStart::Started
     );
+}
+
+/// Done follows a later scan that finds the same or fewer (a row healed since), and ends on any
+/// increase in any kind. Control: an equal scan keeps it.
+#[test]
+fn damaged_done_ends_on_more_damage_and_follows_less() {
+    let dir = TempDir::new("damaged-done-less");
+    let svc = services(&dir);
+    let a = a_meeting(&svc, "Invented Wrenfield review");
+    let b = a_meeting(&svc, "Invented Ferrow planning");
+    let bad = "UPDATE meeting SET template = 'invented-word' WHERE id = ?1";
+    let good_template: String = rusqlite::Connection::open(db(&dir))
+        .unwrap()
+        .query_row("SELECT template FROM meeting LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    damage(&dir, bad, a);
+    damage(&dir, bad, b);
+    let w = Watch::new(&svc);
+    let sync = sync_on(&svc);
+    repair(&w.scans, &sync).unwrap();
+    end_repair(&w, &svc);
+    let two = DamageCountsView {
+        meetings: 2,
+        ..DamageCountsView::default()
+    };
+    assert_eq!(w.scans.repair_view(&sync), RepairView::Done { left: two });
+    // Equal: kept.
+    w.advance(Duration::from_secs(60));
+    assert_eq!(
+        w.details(&sync).unwrap().repair,
+        RepairView::Done { left: two }
+    );
+    // Fewer (one healed by hand): follows.
+    {
+        let c = rusqlite::Connection::open(db(&dir)).unwrap();
+        c.execute(
+            "UPDATE meeting SET template = ?2 WHERE id = ?1",
+            rusqlite::params![b.as_uuid().as_bytes().to_vec(), good_template],
+        )
+        .unwrap();
+    }
+    let one = DamageCountsView {
+        meetings: 1,
+        ..DamageCountsView::default()
+    };
+    w.advance(Duration::from_secs(60));
+    let fewer = w.details(&sync).unwrap();
+    assert_eq!(fewer.counts, one);
+    assert_eq!(fewer.repair, RepairView::Done { left: one });
+    // More in a kind: ends.
+    damage(&dir, bad, b);
+    w.advance(Duration::from_secs(60));
+    assert_eq!(w.details(&sync).unwrap().repair, RepairView::Idle);
+}
+
+/// Advisory 1: a waiter that asks for one more scan while the scan being started cannot start
+/// (it arrives between the start and the refusal) is answered, never left waiting: both return
+/// `internal`. Control: when the scan starts, both get answers.
+#[test]
+fn damaged_waiters_of_a_scan_that_cannot_start_all_return() {
+    for refuse in [true, false] {
+        let dir = TempDir::new("damaged-two-waiters");
+        let svc = services(&dir);
+        let jobs: Jobs = Arc::default();
+        let j = Arc::clone(&jobs);
+        let me: Arc<std::sync::OnceLock<Weak<Scans>>> = Arc::default();
+        let me2 = Arc::clone(&me);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let scans = Scans::new(
+            svc.clone(),
+            Arc::new(|| Duration::from_secs(1_000)),
+            Arc::new(move |job| {
+                let first = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                if first {
+                    // A second waiter arrives in the window between the start and the answer.
+                    let scans = me2.get().and_then(Weak::upgrade).unwrap();
+                    let tx = tx.clone();
+                    let waiter = Arc::clone(&scans);
+                    std::thread::spawn(move || {
+                        let _ = tx.send(waiter.scan_and_wait().map(|_| ()));
+                    });
+                    while !scans.gate_for_test().again_for_test() {
+                        std::thread::yield_now();
+                    }
+                    if refuse {
+                        return false;
+                    }
+                }
+                j.lock().unwrap().push(job);
+                true
+            }),
+            Arc::new(|_| {}),
+        );
+        me.set(Arc::downgrade(&scans)).unwrap();
+        let (first, second) = std::thread::scope(|s| {
+            let first = s.spawn(|| scans.scan_and_wait().map(|_| ()));
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            let mut second = None;
+            while second.is_none() || !first.is_finished() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a waiter was left waiting"
+                );
+                let next = jobs.lock().unwrap().pop();
+                if let Some(job) = next {
+                    job();
+                }
+                if second.is_none() {
+                    second = rx.try_recv().ok();
+                }
+                std::thread::yield_now();
+            }
+            (first.join().unwrap(), second.unwrap())
+        });
+        assert_eq!(first.is_err(), refuse, "{first:?}");
+        assert_eq!(second.is_err(), refuse, "{second:?}");
+        assert!(!scans.gate_for_test().running());
+    }
+}
+
+/// Advisory 2: a due request whose sleeper cannot start drops only that request; a scan running
+/// meanwhile keeps the gate (no second scan overlaps it). Control: the gate is free once that
+/// scan finishes.
+#[test]
+fn damaged_a_sleeper_that_cannot_start_never_frees_a_running_scan() {
+    let mut g = Gate::default();
+    let t = |s: u64| Duration::from_secs(s);
+    assert_eq!(g.request(t(0)), Start::Now);
+    assert_eq!(g.finished(t(1)), Start::None);
+    assert_eq!(g.request(t(2)), Start::At(t(30)));
+    // A forced scan runs meanwhile, then the sleeper for 30 s fails to start.
+    assert_eq!(g.force(t(3)), Start::Now);
+    g.due_not_started(t(30));
+    assert!(g.running(), "the running scan keeps the gate");
+    assert_eq!(g.request(t(4)), Start::None, "no second scan overlaps it");
+    assert_eq!(g.finished(t(5)), Start::At(t(33)));
+}
+
+/// Advisory 3: a due request taken over by a forced scan is stale: its sleeper starts nothing.
+/// Control: a due that was not taken over starts its scan.
+#[test]
+fn damaged_a_stale_due_starts_nothing() {
+    let t = |s: u64| Duration::from_secs(s);
+    let mut g = Gate::default();
+    assert_eq!(g.request(t(0)), Start::Now);
+    assert_eq!(g.finished(t(1)), Start::None);
+    assert_eq!(g.request(t(2)), Start::At(t(30)));
+    // A forced scan starts in its place and takes the due over.
+    assert_eq!(g.force(t(3)), Start::Now);
+    assert_eq!(g.finished(t(4)), Start::None);
+    assert_eq!(g.due(t(30), t(30)), Start::None, "stale");
+    // Control: a due nothing took over starts its scan.
+    assert_eq!(g.request(t(5)), Start::At(t(33)));
+    assert_eq!(g.due(t(33), t(33)), Start::Now);
 }
