@@ -331,6 +331,10 @@ pub struct MeetingDetail {
     /// At least one track's recording is still kept: re-transcription and speaker samples
     /// need it (T7.4k: audio retention deletes recordings, everything else stays).
     pub audio_kept: bool,
+    /// This computer exported the meeting to Obsidian before (its export record,
+    /// `earshot_runtime::export::was_exported`): exporting again replaces the whole note, so
+    /// the page asks first (T14.63).
+    pub exported: bool,
     /// Every time a summary of this meeting handed text to Claude Code (T7.4ga) or Codex
     /// (T7.4gc), oldest first (PLAN.md 3.9: when and how much, never text; empty for any
     /// other summary and for a record this version cannot read).
@@ -985,6 +989,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         summary_edited,
         waiting_for,
         run_view,
+        exported,
     ) = {
         let db = services.store();
         let persons = edit::list_persons_in(&db.guarded_read())?.persons;
@@ -1053,6 +1058,8 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         // A summary that arrived before the request's own row ends the waiting (T12.81).
         let waiting_for = earshot_runtime::offload::waiting_shown(&db, db.device(), meeting)?;
         let run_view = earshot_runtime::summary_order::run::run_view(&db, meeting)?;
+        let exported =
+            earshot_runtime::export::was_exported(&db, meeting).map_err(RuntimeError::from)?;
         (
             persons,
             history,
@@ -1067,6 +1074,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
             summary_edited,
             waiting_for,
             run_view,
+            exported,
         )
     };
     // The final pass's own rule, as the Speakers panel's offers use it.
@@ -1192,6 +1200,7 @@ pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingD
         summary_stale,
         summary_stale_names,
         audio_kept,
+        exported,
         handovers: handovers
             .entries
             .iter()

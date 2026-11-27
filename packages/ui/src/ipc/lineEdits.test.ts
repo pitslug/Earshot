@@ -101,6 +101,7 @@ function detailOf(c: Case): MeetingDetail {
     summary_stale: false,
     summary_stale_names: false,
     audio_kept: true,
+    exported: false,
     waiting_for: null,
     summary_run: null,
     handovers: [],

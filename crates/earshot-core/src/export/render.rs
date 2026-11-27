@@ -86,10 +86,9 @@ impl ExportUser<'_> {
     }
 }
 
-/// A name as one line's owners are told apart, and as the merge compares old and new
-/// owners: white space trimmed and collapsed, lower case. Not the user rule
-/// ([`ExportUser::key`]).
-pub(super) fn name_key(name: &str) -> String {
+/// A name as one line's owners are told apart without a user: white space trimmed and
+/// collapsed, lower case. Not the user rule ([`ExportUser::key`]).
+fn name_key(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -226,29 +225,8 @@ pub struct RenderedExport {
     /// Frontmatter blocks in order: `(key, text)`, the text being the key line and its
     /// continuation lines, each ending in `\n`.
     pub frontmatter: Vec<(String, String)>,
-    /// Tags as written (for the union merge).
-    pub tags: Vec<String>,
-    /// The managed region, from [`BEGIN_MARKER`] to [`END_MARKER`] and a final `\n`.
+    /// The body, from [`BEGIN_MARKER`] to [`END_MARKER`] and a final `\n`.
     pub region: String,
-    /// The action-item lines of `region`, in order, as the render built them (T14.61): what
-    /// the merge needs to carry a tick to the same action in another form.
-    pub actions: Vec<RenderedAction>,
-}
-
-/// One action-item line of a rendered region (T14.61). All text is as written (generated
-/// text escaped).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderedAction {
-    /// The line's text after `- [ ] `.
-    pub text: String,
-    /// The task and its " (due: ...)", without owners.
-    pub task: String,
-    /// Under "### My actions".
-    pub mine: bool,
-    /// Every owner name, the user's included.
-    pub owners: Vec<String>,
-    /// The names shown after "with" on a line of the user's own; empty otherwise.
-    pub others: Vec<String>,
 }
 
 impl RenderedExport {
@@ -266,7 +244,7 @@ impl RenderedExport {
 }
 
 /// A YAML block list (`key: []` when empty).
-pub(super) fn yaml_list(key: &str, items: &[String]) -> String {
+fn yaml_list(key: &str, items: &[String]) -> String {
     if items.is_empty() {
         return format!("{key}: []\n");
     }
@@ -278,13 +256,13 @@ pub(super) fn yaml_list(key: &str, items: &[String]) -> String {
 }
 
 /// The `tags` block for already-sanitised tags.
-pub(super) fn tags_block(tags: &[String]) -> String {
+fn tags_block(tags: &[String]) -> String {
     let items: Vec<String> = tags.iter().map(|t| yaml_tag(t)).collect();
     yaml_list("tags", &items)
 }
 
 /// Appends sanitised `tags` not yet in `out`.
-pub(super) fn union_tags<'a>(out: &mut Vec<String>, tags: impl IntoIterator<Item = &'a str>) {
+fn union_tags<'a>(out: &mut Vec<String>, tags: impl IntoIterator<Item = &'a str>) {
     for t in tags {
         if let Some(t) = sanitize_tag(t)
             && !out.contains(&t)
@@ -385,18 +363,14 @@ pub fn render(
         );
     }
 
-    let (region, actions) = region(input, opts);
     Ok(RenderedExport {
         path,
         frontmatter,
-        tags,
-        region,
-        actions,
+        region: region(input, opts),
     })
 }
 
-/// The line an empty action group holds (fixed text, not a task line, so the merge never
-/// reads or matches it).
+/// The line an empty action group holds (fixed text, not a task line).
 const EMPTY_GROUP: &str = "_None_\n";
 
 /// The "## Action items" section (T14.61), as the meeting page lists them: with a user
@@ -411,17 +385,15 @@ fn action_items(
     segments: &[Segment],
     user: Option<ExportUser<'_>>,
     gen_text: &dyn Fn(&str) -> String,
-) -> (String, Vec<RenderedAction>) {
+) -> String {
     let user = user.filter(|u| !(u.key)(u.name).trim().is_empty());
     let lines = action_lines(sum, segments, user);
-    let mut actions = Vec::new();
-    let mut line = |l: &ActionLine<'_>, shown: &[&str], mine: bool| {
-        let mut task = gen_text(l.task);
+    let line = |l: &ActionLine<'_>, shown: &[&str], mine: bool| {
+        let mut text = gen_text(l.task);
         if let Some(due) = l.due {
-            let _ = write!(task, " (due: {})", gen_text(due));
+            let _ = write!(text, " (due: {})", gen_text(due));
         }
         let names: Vec<String> = shown.iter().map(|o| gen_text(o)).collect();
-        let mut text = task.clone();
         if !names.is_empty() {
             let _ = write!(
                 text,
@@ -430,27 +402,19 @@ fn action_items(
                 names.join(", ")
             );
         }
-        let s = format!("- [ ] {text}\n");
-        actions.push(RenderedAction {
-            text,
-            task,
-            mine,
-            owners: l.owners.iter().map(|o| gen_text(o)).collect(),
-            others: if mine { names } else { Vec::new() },
-        });
-        s
+        format!("- [ ] {text}\n")
     };
     let mut s = String::from("## Action items\n\n");
     let Some(user) = user else {
         for l in &lines {
             s.push_str(&line(l, &l.owners, false));
         }
-        return (s, actions);
+        return s;
     };
     let mine: Vec<&ActionLine<'_>> = lines.iter().filter(|l| l.mine).collect();
     let other: Vec<&ActionLine<'_>> = lines.iter().filter(|l| !l.mine).collect();
     // Both groups always (the owner, 2026-11-27): an empty one says so, so its absence never
-    // looks like a fault, and the merge can tell a deleted heading from an empty group.
+    // looks like a fault.
     s.push_str("### My actions\n\n");
     if mine.is_empty() {
         s.push_str(EMPTY_GROUP);
@@ -466,11 +430,11 @@ fn action_items(
     for l in &other {
         s.push_str(&line(l, &l.owners, false));
     }
-    (s, actions)
+    s
 }
 
-/// The managed region and its action-item lines.
-fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> (String, Vec<RenderedAction>) {
+/// The body between the markers.
+fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
     // Generated text: one line, em dashes per the option, no markers, images, embeds or
     // HTML.
     let gen_text = |s: &str| {
@@ -482,7 +446,6 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> (String, Vec<Rendere
         }
     };
     let mut sections: Vec<String> = Vec::new();
-    let mut actions = Vec::new();
 
     if let Some(sum) = input.summary {
         if !sum.tldr.trim().is_empty() {
@@ -497,9 +460,7 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> (String, Vec<Rendere
             sections.push(s);
         }
         if !sum.action_items.is_empty() {
-            let (s, a) = action_items(sum, input.segments, input.user, &gen_text);
-            sections.push(s);
-            actions = a;
+            sections.push(action_items(sum, input.segments, input.user, &gen_text));
         }
         if !sum.enhanced_notes.is_empty() {
             let mut s = String::from("## Notes\n");
@@ -572,5 +533,5 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> (String, Vec<Rendere
     out.push_str(&sections.join("\n"));
     out.push_str(END_MARKER);
     out.push('\n');
-    (out, actions)
+    out
 }

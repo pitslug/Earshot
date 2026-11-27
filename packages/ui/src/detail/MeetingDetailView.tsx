@@ -34,6 +34,7 @@ import {
   makeStyles,
   mergeClasses,
   tokens,
+  useRestoreFocusTarget,
 } from "@fluentui/react-components";
 import {
   type KeyboardEvent,
@@ -80,6 +81,7 @@ import { useLabelsFit } from "./headerFit";
 import { KeptLocal } from "./KeptLocal";
 import { keepUnchanged } from "./keepUnchanged";
 import { scrollLineIntoView } from "./scrollLine";
+import { ReexportQuestion } from "./ReexportQuestion";
 import { ResummariseControl } from "./ResummariseControl";
 import { SpeakersPanel, userNamed } from "./SpeakersPanel";
 import {
@@ -735,6 +737,10 @@ export function MeetingDetailView({
   const [tab, setTab] = useState<Tab>(initialTab);
   const [cited, setCited] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [askingReexport, setAskingReexport] = useState(false);
+  // The meeting this page exported since its detail was read (T14.63).
+  const [exportedId, setExportedId] = useState<string | null>(null);
+  const restoreFocus = useRestoreFocusTarget();
   const [noAudio, setNoAudio] = useState<Set<string>>(new Set());
   const [editingTitle, setEditingTitle] = useState(false);
   // Separate persons named after the user, offered one at a time after "This is me" (T12.44).
@@ -1080,10 +1086,18 @@ export function MeetingDetailView({
   const exportNote = async () => {
     try {
       const done = await ipc.exportMeeting(id);
+      setExportedId(id);
       setNotice({ key: "export", intent: "success", text: `Exported to ${done.note_path}` });
     } catch (e) {
       setNotice({ key: "export", intent: "warning", text: failureText(e) });
     }
+  };
+  // T14.63: a re-export replaces the whole note, so a meeting exported before (by its record,
+  // or by an export from this page since the detail was read) asks first.
+  const exportedBefore = (detail?.exported ?? false) || exportedId === id;
+  const onExport = () => {
+    if (exportedBefore) setAskingReexport(true);
+    else void exportNote();
   };
 
   const startJob = async (job: "retranscribe" | "resummarise") => {
@@ -1262,12 +1276,18 @@ export function MeetingDetailView({
               <Button
                 aria-label={labelled ? undefined : "Export to Obsidian"}
                 icon={labelled ? undefined : <ExportIcon />}
-                onClick={() => void exportNote()}
+                onClick={onExport}
                 disabled={detail === null}
+                {...restoreFocus}
               >
                 {labelled ? "Export to Obsidian" : undefined}
               </Button>
             </IconTip>
+            <ReexportQuestion
+              open={askingReexport}
+              onExport={() => void exportNote()}
+              onClose={() => setAskingReexport(false)}
+            />
             {summaryText !== "" && (
               <CopySummaryButton
                 text={summaryText}

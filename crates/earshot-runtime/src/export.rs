@@ -8,7 +8,8 @@
 //! A meeting is rendered from its [`MeetingView`] (final transcript when there is one,
 //! else the live draft; speakers; notes; current summary). Deleted meetings are never
 //! exported. The vault is only ever written through `earshot-store`'s export writer
-//! (atomic, merge-preserving).
+//! (atomic). A re-export replaces the whole note (T14.63, the owner: "export is export"):
+//! the desktop asks first with [`REEXPORT_WARNING`] when [`was_exported`] holds.
 //!
 //! # "Changed"
 //!
@@ -27,7 +28,7 @@
 //! Neither export holds the store lock across vault work. Each meeting's view is loaded
 //! and its fingerprint read under a short lock; rendering runs without it; the store
 //! writer reaches the store through `LockedStore`, which takes the lock for one record
-//! read or write at a time ([`earshot_store::ExportDb`]), so the vault walk, merges and file
+//! read or write at a time ([`earshot_store::ExportDb`]), so the note reads and
 //! writes never block a live session's segment writes. A fingerprint is written under the
 //! lock only after its note was written.
 //!
@@ -37,11 +38,11 @@
 //! - Two exports of one meeting at once (`export_meeting` during an `export_meetings`
 //!   batch, two batches, another process), whatever their renders, never give it a second
 //!   note: the store writer holds the meeting's export lease (a database row, so across
-//!   processes too; `earshot_store` export docs, "Serialisation") from its search to its
-//!   final record write, so the later export waits and then merges into the first one's
+//!   processes too; `earshot_store` export docs, "Serialisation") from its record read to its
+//!   final record write, so the later export waits and then replaces the first one's
 //!   note. It waits outside the store lock. Past the wait it fails for that meeting with the
 //!   retryable `StoreError::ConcurrentEdit` (its fingerprint is not written, so it stays
-//!   "changed"). An edit of the note by Obsidian or a sync client during the merge is also
+//!   "changed"). An edit of the note by Obsidian or a sync client during the write is also
 //!   `ConcurrentEdit`. Behind the lease, each create still claims the meeting's export
 //!   record and checks the claim before its rename (`earshot_store` export docs, step 4),
 //!   for a lease taken over from a hung export.
@@ -56,7 +57,7 @@ use std::sync::Arc;
 
 use earshot_core::export::{ExportInput, ExportOptions, ExportUser, RenderedExport, render};
 use earshot_core::identity::{DeviceId, EntityId};
-use earshot_core::model::MeetingRepo;
+use earshot_core::model::{ExportRepo, MeetingRepo};
 use earshot_store::{
     ExportDb, ExportItem, ExportReport, Store, StoreError, export_note, export_notes,
 };
@@ -79,6 +80,25 @@ pub enum ExportSelection {
     /// Meetings whose note differs from the one last exported from this device (module
     /// docs).
     Changed,
+}
+
+/// What to say before exporting a meeting that was exported before (T14.63): a re-export
+/// replaces the whole note. The desktop asks with it (with [`REEXPORT_CONFIRM`] and
+/// "Cancel"); the CLI prints it and goes ahead. Pinned to
+/// `fixtures/ui/reexport_copy_cases.json`, which the UI reads too.
+pub const REEXPORT_WARNING: &str = "This meeting has already been exported. Exporting again replaces the whole note, including anything you ticked, changed or added there.";
+
+/// The button that goes ahead after [`REEXPORT_WARNING`].
+pub const REEXPORT_CONFIRM: &str = "Export again";
+
+/// Whether `meeting` was exported from this device: it has this device's export record
+/// (written with every export, removed by the meeting's deletion). What the re-export
+/// question is asked on.
+///
+/// # Errors
+/// Store errors.
+pub fn was_exported(db: &crate::Db, meeting: EntityId) -> Result<bool, StoreError> {
+    Ok(db.export_record(meeting, db.device())?.is_some())
 }
 
 /// The user for the note's action groups (T14.61): `user_name` as
@@ -132,8 +152,8 @@ fn fingerprint(note: &RenderedExport) -> Vec<u8> {
 /// [`ExportDb::with_store`] call only (module docs, "Locking").
 struct LockedStore<'a> {
     services: &'a Services,
-    /// Called when the writer starts a vault search (tests: a rendezvous).
-    on_search: &'a mut dyn FnMut(),
+    /// Called when the writer starts its vault work (tests: a rendezvous).
+    on_vault: &'a mut dyn FnMut(),
 }
 
 impl ExportDb for LockedStore<'_> {
@@ -144,8 +164,8 @@ impl ExportDb for LockedStore<'_> {
         f(&mut self.services.store())
     }
 
-    fn vault_search_starts(&mut self) {
-        (self.on_search)();
+    fn vault_work_starts(&mut self) {
+        (self.on_vault)();
     }
 }
 
@@ -190,7 +210,7 @@ pub fn export_meeting<R: Rng + ?Sized>(
     let note = rendered(&view, user_name.as_deref(), options)?;
     let mut locked = LockedStore {
         services,
-        on_search: &mut || {},
+        on_vault: &mut || {},
     };
     let report = export_note(&mut locked, vault, device, meeting, &note, &*clock, rng)?;
     record_fingerprint(&mut services.store(), device, meeting, &note)?;
@@ -215,8 +235,8 @@ pub fn export_meetings<R: Rng + ?Sized>(
     export_meetings_observed(services, vault, selection, options, rng, &mut || {})
 }
 
-/// [`export_meetings`] with `on_search` called when the writer starts a vault search,
-/// with the store lock free (tests).
+/// [`export_meetings`] with `on_vault` called when the writer starts each meeting's vault
+/// work, with the store lock free (tests).
 #[allow(clippy::type_complexity)]
 fn export_meetings_observed<R: Rng + ?Sized>(
     services: &Services,
@@ -224,7 +244,7 @@ fn export_meetings_observed<R: Rng + ?Sized>(
     selection: ExportSelection,
     options: &ExportOptions,
     rng: &mut R,
-    on_search: &mut dyn FnMut(),
+    on_vault: &mut dyn FnMut(),
 ) -> Result<Vec<(EntityId, Result<ExportReport, StoreError>)>, RuntimeError> {
     let clock = Arc::clone(&services.clock);
     let (device, meetings, user_name) = {
@@ -269,10 +289,7 @@ fn export_meetings_observed<R: Rng + ?Sized>(
             rendered,
         })
         .collect();
-    let mut locked = LockedStore {
-        services,
-        on_search,
-    };
+    let mut locked = LockedStore { services, on_vault };
     let results = export_notes(&mut locked, vault, device, &items, &*clock, rng)?;
     for ((meeting, note), result) in chosen.iter().zip(&results) {
         if result.is_ok() {

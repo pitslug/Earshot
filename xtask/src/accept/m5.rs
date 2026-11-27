@@ -11,17 +11,19 @@
 //!   dir, never a real vault):
 //!   1. the first export creates the note with exactly the rendered bytes;
 //!   2. a second export is `Unchanged` and the bytes are identical;
-//!   3. after user edits (a frontmatter key, a tag, text above and below the managed
-//!      region, a changed owned key, a scribble inside the region) a re-export keeps every
-//!      user edit outside the region, restores the owned key, merges the tag, and leaves
-//!      the managed region equal to the render;
-//!   4. a further export is `Unchanged` and byte-identical (fixed point);
-//!   5. after the user renames and moves the note, the export finds it by `earshot_id`
-//!      and writes no second copy;
-//!   6. with a store that has no export record (the database was lost), the export
-//!      searches the whole vault, adopts the moved and renamed note and records it: no
-//!      second copy. (Crashes before the rename are forced in `earshot_store`'s unit
-//!      tests: since T5.4a the record is written before the rename.)
+//!   3. after user edits (a frontmatter key, a tag, text above and below the body, a
+//!      changed owned key, a scribble inside the body, a ticked action item where the case
+//!      has one) a re-export is `Updated` and the note is exactly the render again: a
+//!      re-export replaces the whole note (T14.63, the owner: "export is export");
+//!   4. a further export is `Unchanged` and byte-identical (two exports in a row);
+//!   5. after the user renames and moves the note, the moved note is left alone and the
+//!      export writes the render again at the recorded path (T14.63: the vault is never
+//!      searched);
+//!   6. with a store that has no export record (the database was lost), the export finds
+//!      this meeting's note at the render's path by its `earshot_id`, writes nothing new
+//!      and records it: no second copy. (Crashes before the rename are forced in
+//!      `earshot_store`'s unit tests: since T5.4a the record is written before the
+//!      rename.)
 //!
 //! Check: the case set contains [`REQUIRED_CASES`].
 
@@ -31,7 +33,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use earshot_core::asr::Segment;
 use earshot_core::export::{
-    BEGIN_MARKER, END_MARKER, ExportInput, ExportOptions, ExportUser, RenderedExport, render,
+    BEGIN_MARKER, ExportInput, ExportOptions, ExportUser, RenderedExport, render,
 };
 use earshot_core::identity::{DeviceId, ManualClock};
 use earshot_core::model::{ExportRepo, Meeting, MeetingRepo, Note, Speaker, TranscriptPass};
@@ -225,7 +227,8 @@ fn md_files(dir: &Path) -> Vec<String> {
     out
 }
 
-/// The user's edits of step 3, applied to an exported note.
+/// The user's edits of step 3, applied to an exported note (each must take, so the note then
+/// differs from the render and step 3 proves the re-export replaced them).
 fn user_edit(doc: &str) -> Result<String, String> {
     let date_line = doc
         .lines()
@@ -249,6 +252,8 @@ fn user_edit(doc: &str) -> Result<String, String> {
         1,
     );
     s.push_str("\nUser outro line.\n");
+    // The user ticks the first action item, if the note has one.
+    s = s.replacen("\n- [ ] ", "\n- [x] ", 1);
     for (needle, what) in [
         ("reviewed_by: \"me\"\n", "user key"),
         ("  - user-tag\n", "user tag"),
@@ -306,7 +311,7 @@ pub fn idempotent(case: &ExportCase, vault: &Path) -> Result<(), String> {
         "re-export changed the bytes".into()
     })?;
 
-    // 3. User edits survive.
+    // 3. A re-export replaces the user's edits (T14.63).
     let edited = user_edit(&first)?;
     let mut file = vault.to_path_buf();
     file.extend(a.path.components());
@@ -315,54 +320,22 @@ pub fn idempotent(case: &ExportCase, vault: &Path) -> Result<(), String> {
     ensure(c.action == ExportAction::Updated, || {
         format!("export after edits: {:?}", c.action)
     })?;
-    let merged = read(a.path.as_str())?;
-    let date_block = r
-        .frontmatter
-        .iter()
-        .find(|(k, _)| k == "date")
-        .map(|(_, t)| t.as_str())
-        .ok_or("render has no date")?;
-    for (ok, what) in [
-        (
-            merged.contains("reviewed_by: \"me\"\n"),
-            "user frontmatter key lost",
-        ),
-        (merged.contains("  - user-tag\n"), "user tag lost"),
-        (
-            merged.contains(date_block) && !merged.contains("1999-01-01"),
-            "owned key not restored",
-        ),
-        (
-            merged.contains(&format!("User intro line.\n\n{BEGIN_MARKER}")),
-            "text above the region lost",
-        ),
-        (
-            merged.ends_with(&format!("{END_MARKER}\n\nUser outro line.\n")),
-            "text below the region lost",
-        ),
-        (
-            !merged.contains("user scribble inside"),
-            "managed region not replaced",
-        ),
-    ] {
-        ensure(ok, || what.to_owned())?;
-    }
-    let begin = merged.find(BEGIN_MARKER).ok_or("begin marker missing")?;
-    let end = merged.find(END_MARKER).ok_or("end marker missing")? + END_MARKER.len() + 1;
-    ensure(merged.get(begin..end) == Some(r.region.as_str()), || {
-        "managed region differs from the render".into()
+    let replaced = read(a.path.as_str())?;
+    ensure(replaced == r.to_file(), || {
+        "export after edits is not the render".into()
     })?;
 
-    // 4. Fixed point.
+    // 4. Two exports in a row: byte-identical.
     let d = export(&mut store)?;
     ensure(d.action == ExportAction::Unchanged, || {
-        format!("export after merge: {:?}", d.action)
+        format!("export after the replace: {:?}", d.action)
     })?;
-    ensure(read(a.path.as_str())? == merged, || {
-        "export after merge changed the bytes".into()
+    ensure(read(a.path.as_str())? == replaced, || {
+        "export after the replace changed the bytes".into()
     })?;
 
-    // 5. Renamed and moved by the user.
+    // 5. Renamed and moved by the user: left alone, and the note is written again at the
+    //    recorded path (T14.63: the vault is never searched).
     let moved_rel = "Moved by user/renamed by user.md";
     let mut moved = vault.to_path_buf();
     moved.extend(moved_rel.split('/'));
@@ -370,29 +343,40 @@ pub fn idempotent(case: &ExportCase, vault: &Path) -> Result<(), String> {
     std::fs::rename(&file, &moved).map_err(|e| e.to_string())?;
     let e = export(&mut store)?;
     ensure(
-        e.path.as_str() == moved_rel && e.action == ExportAction::Unchanged,
+        e.path == a.path && e.action == ExportAction::Created,
         || format!("after a move: {:?} at {}", e.action, e.path),
     )?;
-    ensure(md_files(vault) == vec![moved_rel.to_owned()], || {
+    ensure(read(a.path.as_str())? == r.to_file(), || {
+        "after a move the recorded note is not the render".into()
+    })?;
+    ensure(read(moved_rel)? == replaced, || {
+        "the moved note was changed".into()
+    })?;
+    let both = {
+        let mut v = vec![moved_rel.to_owned(), a.path.as_str().to_owned()];
+        v.sort();
+        v
+    };
+    ensure(md_files(vault) == both, || {
         format!("after a move the vault has {:?}", md_files(vault))
     })?;
 
-    // 6. No export record (database lost) and the note renamed and moved: adopted, not
-    //    duplicated, and recorded.
+    // 6. No export record (database lost): the note at the render's path is this meeting's
+    //    (its earshot_id), so it is written there again, not beside it, and recorded.
     let mut fresh = new_store()?;
     let f = export(&mut fresh)?;
     ensure(
-        f.path.as_str() == moved_rel && f.action == ExportAction::Unchanged,
+        f.path == r.path && f.action == ExportAction::Unchanged,
         || format!("orphan recovery: {:?} at {}", f.action, f.path),
     )?;
-    ensure(md_files(vault) == vec![moved_rel.to_owned()], || {
+    ensure(md_files(vault) == both, || {
         format!("orphan recovery left {:?}", md_files(vault))
     })?;
     let rec = fresh
         .export_record(meeting.id, DEVICE)
         .map_err(|e| e.to_string())?
         .ok_or("orphan recovery wrote no record")?;
-    ensure(rec.path.as_str() == moved_rel, || {
+    ensure(rec.path == r.path, || {
         format!("record points at {}", rec.path)
     })?;
     Ok(())
@@ -434,7 +418,7 @@ pub fn evaluate(cases: &[ExportCase], scratch: &Path) -> RunOutput {
             measurement(
                 "exp.idempotent",
                 &idem_fail,
-                "re-export byte-identically, keep user edits, follow moves and recover orphans",
+                "re-export byte-identically, replace user edits, leave moved notes alone and recover orphans",
             ),
         ],
         checks: vec![Check::new(
@@ -539,5 +523,18 @@ mod tests {
         let edited = user_edit(&doc).unwrap();
         assert!(edited.contains("User intro line.") && edited.ends_with("User outro line.\n"));
         assert!(!edited.contains(&case.render().unwrap().frontmatter[1].1));
+        // Step 3's ticked action item (T14.63): every case with an action item gets one, so
+        // a writer that kept ticks would fail `exp.idempotent`.
+        let mut ticked = 0;
+        for case in repo_cases() {
+            let doc = case.render().unwrap().to_file();
+            let edited = user_edit(&doc).unwrap();
+            assert_ne!(edited, doc, "{}", case.name);
+            if doc.contains("\n- [ ] ") {
+                assert!(edited.contains("\n- [x] "), "{}", case.name);
+                ticked += 1;
+            }
+        }
+        assert!(ticked > 0, "no case has an action item to tick");
     }
 }

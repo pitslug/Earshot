@@ -604,9 +604,7 @@ fn store_copy(e: &StoreError) -> &'static str {
     match e {
         StoreError::SchemaTooNew { .. } => crate::ipc::NEWER_DATA_COPY,
         e if e.is_retryable() => TRY_AGAIN_SOON,
-        StoreError::Vault(_) | StoreError::Export(_) | StoreError::UnusableNotePath(_) => {
-            EXPORT_FAILED
-        }
+        StoreError::Vault(_) => EXPORT_FAILED,
         _ => DATA_FAILED,
     }
 }
@@ -1610,7 +1608,7 @@ mod every_variant_tests {
     use earshot_core::diar::{DiarError, EmbeddingModelId};
     use earshot_core::export::ExportError;
     use earshot_core::identity::EntityId;
-    use earshot_core::model::RepoError;
+    use earshot_core::model::{RepoError, VaultPathError};
     use earshot_core::pipeline::PipelineError;
     use earshot_core::voiceprint::VoiceprintError;
     use earshot_runtime::claude_code::LlmError;
@@ -1689,7 +1687,10 @@ mod every_variant_tests {
             RuntimeError::Net(NetError::Build(words.into())),
             RuntimeError::Endpoint(UrlError::Parse(words.into())),
             RuntimeError::EndpointDenied(DenyReason::InsecureScheme),
-            RuntimeError::Export(ExportError::Markers(words)),
+            RuntimeError::Export(ExportError::Folder(VaultPathError {
+                path: words.into(),
+                reason: words,
+            })),
             RuntimeError::Conflict(words),
             RuntimeError::ModelMissing {
                 path: path(),
