@@ -2651,13 +2651,31 @@ pub fn legacy_ignores(
     store: &earshot_store::Store,
     meeting: EntityId,
 ) -> Result<BTreeSet<EntityId>, RuntimeError> {
-    if crate::ignore_copy::copied(store)? {
+    legacy_ignores_by(&|key| store.local_value(key), meeting)
+}
+
+/// A reader of one device-local value by key ([`legacy_ignores_by`]).
+pub type LocalRead<'a> = dyn Fn(&str) -> Result<Option<Vec<u8>>, earshot_store::StoreError> + 'a;
+
+/// [`legacy_ignores`] over any reader of device-local values (`local(key)`): a locked store,
+/// a transaction or a read-only copy (`earshot_store::ReadOnlyStore`, the T12.25a evaluation).
+///
+/// # Errors
+/// Store errors.
+pub fn legacy_ignores_by(
+    local: &LocalRead<'_>,
+    meeting: EntityId,
+) -> Result<BTreeSet<EntityId>, RuntimeError> {
+    if local(crate::ignore_copy::COPIED_KEY)?.is_some() {
         return Ok(BTreeSet::new());
     }
-    Ok(crate::ignore_copy::legacy_of(
-        false,
-        &identities_in(store, meeting)?,
-    ))
+    let key = crate::identities::record_key(meeting);
+    Ok(
+        match local(key.as_str())?.map(|b| crate::identities::decode(&b)) {
+            Some(StoredIdentities::Record(r)) => crate::ignore_copy::legacy_of(false, &r.speakers),
+            None | Some(StoredIdentities::Unreadable(_)) => BTreeSet::new(),
+        },
+    )
 }
 
 /// [`legacy_ignores`] inside a transaction.
@@ -2665,19 +2683,7 @@ fn legacy_ignores_tx(
     tx: &StoreTx<'_>,
     meeting: EntityId,
 ) -> Result<BTreeSet<EntityId>, RuntimeError> {
-    if crate::ignore_copy::copied_tx(tx)? {
-        return Ok(BTreeSet::new());
-    }
-    let key = crate::identities::record_key(meeting);
-    Ok(
-        match tx
-            .local_value(key.as_str())?
-            .map(|b| crate::identities::decode(&b))
-        {
-            Some(StoredIdentities::Record(r)) => crate::ignore_copy::legacy_of(false, &r.speakers),
-            None | Some(StoredIdentities::Unreadable(_)) => BTreeSet::new(),
-        },
-    )
+    legacy_ignores_by(&|key| tx.local_value(key), meeting)
 }
 
 /// Whether the user ignored `row` in its meeting ([`ignore_speaker`], T12.19, T12.93): the

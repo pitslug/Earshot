@@ -1874,6 +1874,10 @@ fn store_summary_answering<R: Rng + ?Sized>(
 /// words or saved people's names: what the T12.25a evaluation (`store_inputs` example) summarises from a copy of the
 /// user's store, so every condition it compares starts from the production input and none
 /// from the settings of the day. Evaluation only; production goes through `load_input`.
+/// `view` must carry this device's legacy ignores ([`MeetingView::legacy_ignores`], as
+/// `load_named` reads them) for its attendees to equal production's. T12.25a result files
+/// from before T14.68 listed ignored voices as attendees, so they are not comparable for
+/// meetings with ignored rows.
 #[must_use]
 pub fn evaluation_input(view: &MeetingView) -> SummaryInput {
     input_of(

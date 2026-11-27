@@ -130,18 +130,26 @@ fn view_attendees_never_leave_out_the_user() {
 }
 
 #[test]
-fn view_attendees_keep_the_names_the_transcript_shows() {
+fn view_attendees_are_told_apart_only_among_those_kept() {
     let dir = TempDir::new("view");
     let (svc, _) = services(&dir);
     let m = meeting(&svc, "Invented handover", 10);
-    // Two people sharing a first name are told apart by initial; one of them is an ignored,
-    // unnamed voice the user renamed here.
+    // Two people sharing a first name; one is an ignored, unnamed voice the user renamed here.
     let named_row = add_speaker(&svc, m, SpeakerRole::Remote, "Casey Pine", true, false, 11);
     let ignored = add_speaker(&svc, m, SpeakerRole::Remote, "Casey Vale", false, true, 12);
     let v = named(&svc, m);
+    // The transcript tells them apart over every row, as before.
     assert_eq!(label_of(&v, named_row.id), "Casey P");
     assert_eq!(label_of(&v, ignored.id), "Casey V");
-    // The named attendee keeps the label the transcript shows: dropping the ignored row
-    // does not renumber or un-initial anyone.
-    assert_eq!(v.attendees(), ["Me", "Alice", "Casey P"]);
+    // The attendee's only namesake is ignored, so the full name is kept.
+    assert_eq!(v.attendees(), ["Me", "Alice", "Casey Pine"]);
+
+    // Control: two kept Caseys are still told apart among the attendees.
+    let mut back = ignored.clone();
+    back.ignored = false;
+    svc.store().put_speaker(back).unwrap();
+    assert_eq!(
+        named(&svc, m).attendees(),
+        ["Me", "Alice", "Casey P", "Casey V"]
+    );
 }

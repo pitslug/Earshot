@@ -13,7 +13,8 @@
 //!    `--exclude <id,...>`, most recent start first, the first `--count` (default 6).
 //! 4. Writes, for each picked meeting `r<k>` (k = 1 for the most recent):
 //!    `inputs/r<k>.json`, the `SummaryInput` production builds for it
-//!    (`MeetingView::load` + `earshot_runtime::summary::evaluation_input`: the Final
+//!    (`MeetingView::load` with the legacy ignores `load_named` reads +
+//!    `earshot_runtime::summary::evaluation_input`: the Final
 //!    transcript, speaker names as the app shows them, no style, template or own words),
 //!    which `sum_eval --store-inputs <run>` reads as the `earshot` source reads its inputs;
 //!    `transcripts/r<k>.txt`, the transcript as a model reads it (the user turn of a
@@ -31,6 +32,7 @@ use std::path::{Path, PathBuf};
 use earshot_core::identity::EntityId;
 use earshot_core::model::{Meeting, MeetingRepo, TranscriptPass};
 use earshot_core::prompt::{ContextBudget, PromptPlan, Role, SummaryInput, plan};
+use earshot_runtime::edit::legacy_ignores_by;
 use earshot_runtime::summary::evaluation_input;
 use earshot_runtime::view::MeetingView;
 use serde_json::json;
@@ -202,9 +204,12 @@ fn run(a: &Args) -> Result<Counts, String> {
     let mut index = Vec::new();
     for (k, id) in picked.iter().enumerate() {
         let label = format!("r{}", k + 1);
-        let view = MeetingView::load(&store, *id)
+        let mut view = MeetingView::load(&store, *id)
             .map_err(|e| format!("{label}: {e}"))?
             .ok_or_else(|| format!("{label}: the meeting is gone"))?;
+        // The legacy ignores, as `MeetingView::load_named` reads them (T14.68).
+        view.legacy_ignores = legacy_ignores_by(&|key| store.local_value(key), *id)
+            .map_err(|e| format!("{label}: {e}"))?;
         if view.pass != Some(TranscriptPass::Final) {
             return Err(format!("{label}: no Final transcript"));
         }
@@ -509,7 +514,8 @@ mod tests {
             serde_json::from_slice(&std::fs::read(into.join("inputs").join("r2.json")).unwrap())
                 .unwrap();
         let ro = ReadOnlyStore::open(&into.join("earshot.db")).unwrap();
-        let view = MeetingView::load(&ro, old).unwrap().unwrap();
+        let mut view = MeetingView::load(&ro, old).unwrap().unwrap();
+        view.legacy_ignores = legacy_ignores_by(&|key| ro.local_value(key), old).unwrap();
         assert_eq!(r2, evaluation_input(&view));
         assert_eq!(r2.segments.len(), 2);
         assert_eq!(r2.segments[0].speaker, "Robin Example");

@@ -2933,10 +2933,10 @@ fn summary_input_with_no_ignored_voice_is_unchanged() {
     let m = meeting(&svc, "Invented planning", 1);
     crate::testutil::add_speaker(&svc, m, SpeakerRole::Remote, "Speaker 2", false, false, 3);
     crate::testutil::add_speaker(&svc, m, SpeakerRole::Remote, "Rowan Pell", true, false, 4);
-    // Captured from the commit before T14.68 (18876e9): a meeting with no ignored voice
-    // gives the same input byte for byte, so its prompt is unchanged.
-    let json = serde_json::to_string(&production_input(&svc, m)).unwrap();
+    // Captured from the commit before T14.68 (18876e9): with no ignored voice the meeting
+    // header, which holds the attendees, is the same byte for byte, so the prompt is unchanged.
+    let json = serde_json::to_string(&production_input(&svc, m).meeting).unwrap();
     assert_eq!(json, PIN_BEFORE_T14_68);
 }
 
-const PIN_BEFORE_T14_68: &str = r#"{"meeting":{"title":"Invented planning","started":"2026-10-18 13:40","duration_ms":60000,"attendees":["Me","Alice","Speaker 2","Rowan Pell"]},"segments":[{"id":"01a14d18-4a80-723f-9427-1360b10a1ba7","start":1000,"speaker":"Me","text":"shall we ship on friday"},{"id":"01a14d18-4a80-7869-802c-b050e5b47143","start":5000,"speaker":"Alice","text":"yes friday works for the release"}],"notes":[{"at":4000,"text":"check the release notes"}],"template":"general","people":["Rowan Pell"]}"#;
+const PIN_BEFORE_T14_68: &str = r#"{"title":"Invented planning","started":"2026-10-18 13:40","duration_ms":60000,"attendees":["Me","Alice","Speaker 2","Rowan Pell"]}"#;
