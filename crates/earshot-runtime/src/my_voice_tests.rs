@@ -600,3 +600,152 @@ fn my_voice_a_zero_base_print_with_stored_samples_reads_as_a_voice() {
     assert_eq!(my_voice(&svc).unwrap().voiceprints, 0);
     assert!(svc.store().samples_of(print.id()).unwrap().is_empty());
 }
+
+/// People, prints and samples for the T14.57 baseline: merges into the user, a tombstoned
+/// "Me" with someone merged into it, prints whose voice is only in samples, and samples the
+/// fold leaves out (another model, another length).
+fn damaged_baseline_store(svc: &Services) {
+    use earshot_core::identity::{EntityId, SyncMeta};
+    use earshot_core::voiceprint::{Person, SampleRecord, Voiceprint, VoiceprintSample};
+    let pid =
+        |n: u8| EntityId::from_bytes([0x01, 0x91, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, n, 3]);
+    crate::edit::write(svc, |tx, stamp| {
+        // (n, name, is_me, deleted, merged into)
+        let people: [(u8, &str, bool, bool, Option<u8>); 9] = [
+            (1, "Me", true, false, None),
+            (2, "Invented Rowan", false, false, Some(1)),
+            (3, "Invented Sasha", false, false, None),
+            (4, "Invented Tamsin", false, false, None),
+            (5, "Invented Ulla", false, false, None),
+            (6, "Me", true, true, None),
+            (7, "Invented Vito", false, false, Some(6)),
+            (8, "Invented Wren", false, false, None),
+            (9, "Invented Xavi", false, false, Some(3)),
+        ];
+        for (n, name, is_me, deleted, into) in people {
+            let mut meta = SyncMeta::new(stamp.hlc, stamp.clock);
+            meta.deleted = deleted;
+            tx.put_person(Person {
+                id: pid(n),
+                meta,
+                display_name: if deleted { String::new() } else { name.into() },
+                is_me,
+                merged_into: into.map(pid),
+            })
+            .map_err(RuntimeError::Voiceprint)?;
+        }
+        let unit =
+            |k: usize| -> Vec<f32> { (0..DIM).map(|i| if i == k { 1.0 } else { 0.0 }).collect() };
+        // (print n, person, base count, base sum axis)
+        let prints: [(u8, u8, u32); 7] = [
+            (31, 1, 2),
+            (32, 2, 0),
+            (33, 3, 0),
+            (34, 4, 0),
+            (35, 5, 0),
+            (36, 6, 1),
+            (37, 7, 0),
+        ];
+        let mut stored = Vec::new();
+        for (n, person, count) in prints {
+            let sum = if count == 0 {
+                vec![0.0; DIM]
+            } else {
+                unit(usize::from(n) % DIM)
+            };
+            let v = Voiceprint::from_stored(
+                pid(n),
+                SyncMeta::new(stamp.hlc, stamp.clock),
+                pid(person),
+                EmbeddingModelId::new(MODEL),
+                sum,
+                count,
+                u64::from(count) * 5_000,
+            );
+            tx.put_voiceprint(v.clone())
+                .map_err(RuntimeError::Voiceprint)?;
+            stored.push(v);
+        }
+        // (sample n, print, person, model, vector, origin own)
+        let records: [(u8, u8, u8, &str, Vec<f32>, bool); 8] = [
+            (41, 31, 1, MODEL, unit(4), true),
+            (42, 32, 2, MODEL, unit(5), false),
+            // The fold leaves these out: another model, another length.
+            (43, 33, 3, "other-emb@1", unit(6), false),
+            (44, 34, 4, MODEL, unit(1)[..DIM / 2].to_vec(), false),
+            // The control of the last two: a matching sample makes a voice.
+            (45, 35, 5, MODEL, unit(7), false),
+            (46, 36, 6, MODEL, unit(8), true),
+            (47, 37, 7, MODEL, unit(9), false),
+            // A sample of the user's on another person's print.
+            (48, 35, 1, MODEL, unit(10), true),
+        ];
+        for (n, print, person, model, vector, own) in records {
+            let r = SampleRecord {
+                id: pid(n),
+                meta: SyncMeta::new(stamp.hlc, stamp.clock),
+                voiceprint_id: Some(pid(print)),
+                person_id: Some(pid(person)),
+                model: Some(EmbeddingModelId::new(model)),
+                vector,
+                speech_ms: Some(6_000),
+                meeting_id: (!own).then(|| pid(200)),
+                speaker_id: (!own).then(|| pid(201)),
+            };
+            let s = VoiceprintSample::from_stored(r).map_err(RuntimeError::Voiceprint)?;
+            tx.put_sample(s).map_err(RuntimeError::Voiceprint)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// T14.57 test 12 (docs/sync-spec.md 16.9): on a store with no damaged row, the People list
+/// (who is listed, who has a voice, by today's fold) and Forget my voice (its count, and the
+/// live count it answers with when the checkpoint is blocked) answer as before T14.57. The
+/// expected values were captured from the commit before the change (57f0369).
+#[test]
+fn my_voice_damaged_same_answers_without_damage_as_before() {
+    let dir = TempDir::new("my-voice-damaged-baseline");
+    let (svc, _) = services(&dir);
+    damaged_baseline_store(&svc);
+    let listed: Vec<String> = crate::edit::list_persons(&svc)
+        .unwrap()
+        .into_iter()
+        .map(|p| {
+            format!(
+                "{} voice={} me={} meetings={}",
+                p.name, p.has_voiceprint, p.is_me, p.meetings
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "Invented Sasha voice=false me=false meetings=0",
+            "Invented Tamsin voice=false me=false meetings=0",
+            "Invented Ulla voice=true me=false meetings=0",
+            "Invented Wren voice=false me=false meetings=0",
+            "Me voice=true me=true meetings=0",
+        ],
+        "the People list"
+    );
+    assert_eq!(forget_my_voice(&svc).unwrap(), 9, "Forget my voice");
+
+    // The same store, with a reader holding the file so the checkpoint is refused: the answer
+    // is the live count read before the erasure.
+    let dir = TempDir::new("my-voice-damaged-baseline-busy");
+    let (svc, _) = services(&dir);
+    damaged_baseline_store(&svc);
+    let db = earshot_store::DataDir::new(dir.0.join("data")).db_path();
+    let reader = rusqlite::Connection::open(&db).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM person;")
+        .unwrap();
+    assert_eq!(
+        forget_my_voice(&svc).unwrap(),
+        9,
+        "the live count when Busy"
+    );
+    reader.execute_batch("COMMIT;").unwrap();
+}
