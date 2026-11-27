@@ -2839,7 +2839,7 @@ Second wave (after the lanes above are merged):
     - (3) each writer step that fails and moves on is said as it happens (writer and outcome word, then the next writer), for a meeting's own summary and for a re-summarise, from the existing step copy;
     - (4) new copy in a fixture for the owner to approve;
     - (5) while a summary run is in progress, the stale-names and out-of-date notes are hidden, and the header says a new summary is being written (and where), not only who wrote the current one;
-    - (6) the header's buttons never squeeze a long title into a narrow column at a normal window width;
+    - (6) the header's buttons sit on their own row below the title and above the Summary/Transcript tabs, as icons at every width (the owner, 2026-11-28), so they never narrow the title;
     - (7) a local summary that fails says which kind of failure it was, in fixed words (today every kind reads "could not finish");
     - (8) confirmations on the Summary tab ("New summary ready", "Exported to ...") hide by themselves like any other; T14.59's exclusion covers only that tab's notes.
     No meeting content in any new record, event or log; nothing new sent.
