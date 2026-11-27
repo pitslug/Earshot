@@ -1246,8 +1246,10 @@ fn run(
     // recording and the work after it goes without one (the two overlap while it records). It is
     // released when this thread ends, on every way off it: finished, failed, cancelled, left after
     // a stall (the left work goes on without it), a panic's unwind. A refusal costs nothing; it is
-    // said once, after `Ended`.
+    // said once, with `RecordingSaved` (which the UI hears as `Ended`), or before the work after
+    // the meeting when no event said it.
     let awake = inner.keep_awake.hold();
+    let mut awake_said = false;
     let mut session = match (prepared.start)(svc) {
         Ok(s) => s,
         Err(e) => {
@@ -1340,6 +1342,7 @@ fn run(
                     }
                     if saved && awake.is_err() {
                         send(crate::meeting_events::keep_awake_finishing_warning());
+                        awake_said = true;
                     }
                     if matches!(event, RuntimeEvent::Started { .. }) {
                         // `Started` is out: from here a press of the tray's item or the shortcut
@@ -1376,6 +1379,11 @@ fn run(
         }
     };
     finishing.open();
+    // No `RecordingSaved` was heard (the events were taken elsewhere, or the stream closed before
+    // it), yet the meeting goes on to its work after: the refusal is said here, once.
+    if awake.is_err() && !awake_said {
+        send(crate::meeting_events::keep_awake_finishing_warning());
+    }
     // A live catch-up or a live model load that stopped answering (T9.22): whatever hung may hang
     // the final pass too, so the meeting is left unprocessed and its turn passes to the next (the
     // banner came with it).

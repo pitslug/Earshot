@@ -97,6 +97,8 @@ enum Script {
     StopHangs,
     /// Records until stopped through a capture source whose thread never ends (T9.20).
     CaptureThreadHangs,
+    /// [`Script::Ends`] whose session's events were taken before the driver could (T14.56).
+    EventsTaken,
 }
 
 /// Holds a stuck stop until the test lets it go (`true`).
@@ -296,6 +298,17 @@ impl Prepare for FakePrepare {
                     None,
                     Box::new(ChaCha8Rng::seed_from_u64(seed)),
                 ),
+                Script::EventsTaken => start_live(
+                    replay(3.0, reference),
+                    svc.clone(),
+                    cfg,
+                    None,
+                    Box::new(ChaCha8Rng::seed_from_u64(seed)),
+                )
+                .map(|mut s| {
+                    drop(s.take_events());
+                    s
+                }),
                 _ => start_live(
                     replay(3.0, reference),
                     svc.clone(),
@@ -4083,6 +4096,30 @@ fn meeting_keep_awake_refused_is_one_banner_after_the_end_and_the_meeting_finish
         |e| matches!(e, MeetingEvent::Warning { key, .. } if key == "keep-awake"),
     );
     assert!(ended < banner, "shown on the screen after the meeting");
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Skipped { .. }
+    ));
+}
+
+#[test]
+fn meeting_keep_awake_refused_is_said_once_when_no_event_was_heard() {
+    // The session's events are gone before the driver looks: no `RecordingSaved` carries the
+    // banner, so it goes before the work after the meeting, once.
+    let dir = TempDir::new("awake-no-events");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::refusing();
+    let (d, rx) = driver(FakePrepare::new(Script::EventsTaken));
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    assert_eq!(awake.refused(), 1);
+    assert_eq!(
+        keep_awake_banners(&events),
+        [&crate::meeting_events::keep_awake_finishing_warning()],
+        "{events:?}"
+    );
     assert!(matches!(
         result_of(&events, &meeting),
         SummaryEvent::Skipped { .. }
