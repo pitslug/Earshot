@@ -397,6 +397,20 @@ impl Applied {
             .position(|r| *r == reason)
             .expect("every reason is in ALL")] += 1;
     }
+
+    /// What P5 did to a row's identity entry in `meeting` (docs/sync-spec.md 7A.9): a changed
+    /// record names its meeting and the people; a dropped entry is an erasure (7A.4).
+    pub(crate) fn relinked(&mut self, meeting: EntityId, change: crate::identities::RowRelink) {
+        use crate::identities::RowRelink;
+        if change == RowRelink::Unchanged {
+            return;
+        }
+        self.meetings.insert(meeting);
+        self.people = true;
+        if change == RowRelink::Dropped {
+            self.erased += 1;
+        }
+    }
 }
 
 /// The kinds of row a page wrote here that a convergence repair reads ([`converge`]): each
@@ -724,9 +738,28 @@ pub(crate) fn unlink_removed_speakers<C: Clock + ?Sized>(
     if removed.is_empty() {
         return Ok(());
     }
-    let mut on_row = |_g: &mut GuardedTx<'_, '_>, row: &crate::delete::UnlinkedRow| {
-        // P5 (T14.49, a later slice) drops the row's identity entry here, at this row's write:
-        // `identities::row_relinked_guarded(_g, row.meeting, row.speaker, Some(row.from), None)`.
+    // A row whose `person_id` does not read is not written, but its earlier person cannot be
+    // read either, so P5 drops its entry (docs/sync-spec.md 7A.2 D1: errs towards erasing).
+    for l in g.speaker_links(None)? {
+        if let (Col::Read(meeting), Col::Read(speaker), Col::Unreadable) =
+            (l.meeting_id, l.id, l.person_id)
+        {
+            let change = crate::identities::drop_row_entry_guarded(g, meeting, speaker)?;
+            out.relinked(meeting, change);
+        }
+    }
+    let mut on_row = |g: &mut GuardedTx<'_, '_>, row: &crate::delete::UnlinkedRow| {
+        // P5 at this row's write: unlinked from a removed person, its entry goes.
+        if let Some(speaker) = row.speaker {
+            let change = crate::identities::row_relinked_guarded(
+                g,
+                row.meeting,
+                speaker,
+                Some(row.from),
+                None,
+            )?;
+            out.relinked(row.meeting, change);
+        }
         out.speakers_unlinked += 1;
         out.meetings.insert(row.meeting);
         out.people = true;

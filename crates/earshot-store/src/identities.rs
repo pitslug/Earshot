@@ -98,6 +98,13 @@ pub struct SpeakerIdentity {
     /// `false` default, as [`SpeakerIdentity::enrolled`] was.
     #[serde(default)]
     pub ignored: bool,
+    /// Persons the row was linked to before a write that unlinked it or linked it to someone not
+    /// shown to be live (docs/sync-spec.md 7A.2 P5, [`relinked`]), so a removal of one of them
+    /// finds this centroid whatever order the rows arrive in ([`forget_identity`]). Cleared by a
+    /// link to a live person. Added within version 2 with an empty default, left out when empty:
+    /// earlier readers ignore it, as [`SpeakerIdentity::enrolled`] joined.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_before: Vec<EntityId>,
 }
 
 /// The one rule for an ignored voice (T12.19, T12.93; `earshot_runtime::edit::is_ignored`
@@ -176,6 +183,197 @@ pub fn decode(bytes: &[u8]) -> StoredIdentities {
     }
 }
 
+/// P5's one rule (docs/sync-spec.md 7A.2): what a write that changes a speaker row's person
+/// from `from` to `to` does to the row's identity entry. `end` says where a person's
+/// `merged_into` chain ends here ([`crate::chain_end`]). The first case that holds decides:
+/// 1. `from` is removed (its chain ends [`crate::ChainEnd::Removed`]): `None`, the entry goes,
+///    whatever `to` is.
+/// 2. `to` is a person whose chain ends [`crate::ChainEnd::Live`]: the entry with
+///    [`SpeakerIdentity::linked_before`] cleared and `from` not added (the voice is that
+///    person's now, so a later removal of an earlier one must not take it).
+/// 3. `from` is a person: the entry with `from` added to `linked_before` (once).
+/// 4. Otherwise the entry unchanged.
+#[must_use]
+pub fn relinked(
+    entry: &SpeakerIdentity,
+    from: Option<EntityId>,
+    to: Option<EntityId>,
+    end: impl Fn(EntityId) -> crate::ChainEnd,
+) -> Option<SpeakerIdentity> {
+    use crate::ChainEnd;
+    if from.is_some_and(|p| end(p) == ChainEnd::Removed) {
+        return None;
+    }
+    let mut out = entry.clone();
+    if to.is_some_and(|q| end(q) == ChainEnd::Live) {
+        out.linked_before.clear();
+    } else if let Some(p) = from
+        && !out.linked_before.contains(&p)
+    {
+        out.linked_before.push(p);
+    }
+    Some(out)
+}
+
+/// The chain ends [`relinked`] reads for `from` and `to`, walked in `g`.
+fn ends_of(
+    g: &GuardedTx<'_, '_>,
+    from: Option<EntityId>,
+    to: Option<EntityId>,
+) -> Result<Vec<(EntityId, crate::ChainEnd)>, StoreError> {
+    let mut out = Vec::new();
+    for p in [from, to].into_iter().flatten() {
+        if !out.iter().any(|(q, _)| *q == p) {
+            out.push((p, crate::chain_end(g, p)?));
+        }
+    }
+    Ok(out)
+}
+
+/// Rewrites `speaker`'s entry in `meeting`'s record by `f` (`None` drops it); a record left
+/// empty is deleted, an unreadable or absent record is left as it is.
+fn rewrite_entry(
+    g: &mut GuardedTx<'_, '_>,
+    meeting: EntityId,
+    speaker: EntityId,
+    f: impl FnOnce(&SpeakerIdentity) -> Option<SpeakerIdentity>,
+) -> Result<RowRelink, StoreError> {
+    let key = record_key(meeting);
+    let Some(bytes) = g.local_value(&key)? else {
+        return Ok(RowRelink::Unchanged);
+    };
+    let StoredIdentities::Record(mut record) = decode(&bytes) else {
+        return Ok(RowRelink::Unchanged);
+    };
+    let Some(at) = record.speakers.iter().position(|i| i.speaker == speaker) else {
+        return Ok(RowRelink::Unchanged);
+    };
+    let change = match f(&record.speakers[at]) {
+        None => {
+            record.speakers.remove(at);
+            RowRelink::Dropped
+        }
+        Some(new) if new == record.speakers[at] => return Ok(RowRelink::Unchanged),
+        Some(new) => {
+            record.speakers[at] = new;
+            RowRelink::Changed
+        }
+    };
+    if record.speakers.is_empty() {
+        g.delete_local_value(&key)?;
+    } else {
+        g.set_local_value(&key, &encode(&record))?;
+    }
+    Ok(change)
+}
+
+/// What [`row_relinked_guarded`] or [`row_relinked_tx`] did to the row's identity entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowRelink {
+    /// No entry, an unreadable record, or nothing to change.
+    Unchanged,
+    /// The entry was rewritten ([`SpeakerIdentity::linked_before`] changed).
+    Changed,
+    /// The entry was dropped (a centroid erased: the caller checkpoints after its commit).
+    Dropped,
+}
+
+impl RowRelink {
+    /// Whether an entry was dropped.
+    #[must_use]
+    pub fn dropped(self) -> bool {
+        self == RowRelink::Dropped
+    }
+}
+
+/// P5's helper on a guarded path (docs/sync-spec.md 7A.2 "Writers that change one row"): reads
+/// `meeting`'s record, applies [`relinked`] to `speaker`'s entry for a write that changes the
+/// row's person from `from` to `to`, and writes the record back in `g` (a record left empty is
+/// deleted). An unreadable record is left as it is. Called by `apply_remote` when a pulled
+/// speaker row's person differs from the local row's, and by P3 at each row it unlinks.
+///
+/// # Errors
+/// Store errors.
+pub fn row_relinked_guarded(
+    g: &mut GuardedTx<'_, '_>,
+    meeting: EntityId,
+    speaker: EntityId,
+    from: Option<EntityId>,
+    to: Option<EntityId>,
+) -> Result<RowRelink, StoreError> {
+    let ends = ends_of(g, from, to)?;
+    let end = |p: EntityId| {
+        ends.iter()
+            .find(|(q, _)| *q == p)
+            .map_or(crate::ChainEnd::Unknown, |(_, e)| *e)
+    };
+    rewrite_entry(g, meeting, speaker, |e| relinked(e, from, to, end))
+}
+
+/// Drops `speaker`'s entry from `meeting`'s record in `g`: the row's earlier person cannot be
+/// read (a damaged local row whose `person_id` does not read), so P5 errs towards erasing
+/// (docs/sync-spec.md 7A.2). An unreadable record is left as it is.
+///
+/// # Errors
+/// Store errors.
+pub fn drop_row_entry_guarded(
+    g: &mut GuardedTx<'_, '_>,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Result<RowRelink, StoreError> {
+    rewrite_entry(g, meeting, speaker, |_| None)
+}
+
+/// [`row_relinked_guarded`] for a user's edit holding a [`StoreTx`] (`edit::set_row_person`,
+/// docs/sync-spec.md 7A.2 D1: one rule, two entry points).
+///
+/// # Errors
+/// Store errors.
+pub fn row_relinked_tx(
+    tx: &mut crate::StoreTx<'_>,
+    meeting: EntityId,
+    speaker: EntityId,
+    from: Option<EntityId>,
+    to: Option<EntityId>,
+) -> Result<RowRelink, StoreError> {
+    let mut g = tx.guarded();
+    row_relinked_guarded(&mut g, meeting, speaker, from, to)
+}
+
+/// [`relinked`] with the chain ends read in `tx`, for the final pass's in-memory entries (the
+/// pass writes its record whole and never calls the helper, docs/sync-spec.md 7A.2 N2).
+///
+/// # Errors
+/// Store errors.
+pub fn relinked_tx(
+    tx: &mut crate::StoreTx<'_>,
+    entry: &SpeakerIdentity,
+    from: Option<EntityId>,
+    to: Option<EntityId>,
+) -> Result<Option<SpeakerIdentity>, StoreError> {
+    let g = tx.guarded();
+    let ends = ends_of(&g, from, to)?;
+    let end = |p: EntityId| {
+        ends.iter()
+            .find(|(q, _)| *q == p)
+            .map_or(crate::ChainEnd::Unknown, |(_, e)| *e)
+    };
+    Ok(relinked(entry, from, to, end))
+}
+
+/// Where `person`'s `merged_into` chain ends ([`crate::chain_end`]), for a caller holding a
+/// [`StoreTx`] (the final pass resolving a carried row's person, docs/sync-spec.md 7A.3).
+///
+/// # Errors
+/// Store errors.
+pub fn chain_end_tx(
+    tx: &mut crate::StoreTx<'_>,
+    person: EntityId,
+) -> Result<crate::ChainEnd, StoreError> {
+    let g = tx.guarded();
+    crate::chain_end(&g, person)
+}
+
 /// Who started an erasure ([`forget_identity_biometrics`]): an identity entry that cannot be
 /// placed is kept when it could be the user's only for a pulled person tombstone
 /// (docs/sync-spec.md 16.5 item 20, 16.12 b); an erasure the user started drops it whatever it
@@ -250,7 +448,8 @@ pub(crate) fn forget_identity_voices<C: Clock + ?Sized>(
 
 /// Drops from every meeting's record the entries of the identity `persons` (a person and
 /// everyone merged into it, [`crate::identity_in`]): entries the pass linked to one of them,
-/// or whose speaker row links to one of them now. An entry that cannot be placed (its row's
+/// whose [`SpeakerIdentity::linked_before`] holds one of them (P5), or whose speaker row links
+/// to one of them now. An entry that cannot be placed (its row's
 /// `person_id` does not read, or it matches no readable row while the meeting holds a row
 /// whose `id` does not read) is dropped too, except that for a pulled person tombstone
 /// ([`Erasure::Pulled`]) one that could be the user's is kept (docs/sync-spec.md 16.5 item 20,
@@ -316,7 +515,11 @@ pub fn forget_identity(
         let unplaced_rows: Vec<&SpeakerLink> = rows.iter().filter(|r| !r.id.reads()).collect();
         // `Some(true)` drop, `Some(false)` keep, `None` keep because it could be the user's.
         let decide = |i: &SpeakerIdentity| -> Option<bool> {
-            if i.given_person.is_some_and(|p| persons.contains(&p)) {
+            // The pass's link, or a link a write moved the row away from (P5,
+            // docs/sync-spec.md 7A.2): found whatever order the rows arrived in.
+            if i.given_person.is_some_and(|p| persons.contains(&p))
+                || i.linked_before.iter().any(|p| persons.contains(p))
+            {
                 return Some(true);
             }
             let could_be_user = |row_says: bool| {

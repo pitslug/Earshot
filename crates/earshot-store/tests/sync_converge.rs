@@ -708,6 +708,7 @@ fn store_sync_damaged_same_answers_without_damage_as_before() {
                         user_edited: false,
                         enrolled: false,
                         ignored: false,
+                        linked_before: Vec::new(),
                     }
                 })
                 .collect();

@@ -55,6 +55,7 @@ fn entry(row: &Speaker, ignored: bool) -> SpeakerIdentity {
         user_edited: false,
         enrolled: false,
         ignored,
+        linked_before: Vec::new(),
     }
 }
 

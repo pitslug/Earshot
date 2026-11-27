@@ -91,6 +91,7 @@ fn store_speaker_ignore_counts_only_on_an_unnamed_voice_that_is_not_the_user() {
         user_edited: false,
         enrolled: false,
         ignored,
+        linked_before: Vec::new(),
     };
     assert!(!entry(&row, false).edited(&row, true));
     assert!(

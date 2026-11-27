@@ -1642,6 +1642,8 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
         // be stamped again or sent).
         // A local row that does not read and whose `deleted` does not read as a tombstone.
         let mut damaged_live_here = false;
+        // A local row is here but does not read.
+        let mut damaged_here = false;
         let local = match g.synced_by_id_or_damaged(row.table(), row.id())? {
             Ok(local) => local,
             Err(()) => {
@@ -1669,6 +1671,7 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
                     continue;
                 }
                 damaged_live_here = !g.row_reads_deleted(row.table(), row.id())?;
+                damaged_here = true;
                 None
             }
         };
@@ -1861,6 +1864,28 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
             None => matches!(row, SyncedRow::Person(_)),
             Some(_) => false,
         };
+        // P5 (docs/sync-spec.md 7A.2): the person a pulled speaker row moves its row away from,
+        // the local row's, read from its own `person_id` column when the row does not read.
+        let p5_from: Option<Col<Option<EntityId>>> = match (&local, row) {
+            (Some(SyncedRow::Speaker(here)), SyncedRow::Speaker(_)) => {
+                Some(Col::Read(here.person_id))
+            }
+            (None, SyncedRow::Speaker(there)) if damaged_here => {
+                let found = g
+                    .speaker_links(Some(there.meeting_id))?
+                    .into_iter()
+                    .find(|l| l.id == Col::Read(there.id));
+                let found = match found {
+                    Some(l) => Some(l),
+                    None => g
+                        .speaker_links(None)?
+                        .into_iter()
+                        .find(|l| l.id == Col::Read(there.id)),
+                };
+                Some(found.map_or(Col::Unreadable, |l| l.person_id))
+            }
+            _ => None,
+        };
         let print_was_live = matches!(&local, Some(SyncedRow::Voiceprint(v)) if !v.meta().deleted);
         let sample_was_live =
             matches!(&local, Some(SyncedRow::VoiceprintSample(s)) if !s.is_erased());
@@ -1892,6 +1917,24 @@ pub(crate) fn apply_page<C: Clock + ?Sized>(
         g.unhold(inc)?;
         wrote.row(row);
         let _ = hlc.observe(inc.stamp, clock);
+        // P5 at a write that changes a speaker row's person: the row's identity entry remembers
+        // the person it moved away from, or goes (a removed one, or one that cannot be read).
+        if let (Some(from), SyncedRow::Speaker(there)) = (p5_from, row) {
+            let change = match from {
+                Col::Read(p) if p == there.person_id => crate::identities::RowRelink::Unchanged,
+                Col::Read(p) => crate::identities::row_relinked_guarded(
+                    g,
+                    there.meeting_id,
+                    there.id,
+                    p,
+                    there.person_id,
+                )?,
+                Col::Unreadable => {
+                    crate::identities::drop_row_entry_guarded(g, there.meeting_id, there.id)?
+                }
+            };
+            out.relinked(there.meeting_id, change);
+        }
         // Rule 4a: an edit that won over a later-stamped copy here is stamped again (after the
         // incoming stamp was observed), so it keeps its outbox entry and goes out to win at the
         // relay.

@@ -155,6 +155,7 @@ mod tests {
                 user_edited: true,
                 enrolled: false,
                 ignored: false,
+                linked_before: Vec::new(),
             }],
         };
         let pinned_json = concat!(
@@ -214,6 +215,7 @@ mod tests {
                 user_edited: true,
                 enrolled: false,
                 ignored: false,
+                linked_before: Vec::new(),
             }],
         };
         let bytes = encode(&record);

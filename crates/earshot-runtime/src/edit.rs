@@ -1424,13 +1424,36 @@ pub struct TakenBack {
 }
 
 impl TakenBack {
-    /// After the commit: checkpoints when anything was taken back, so with `secure_delete`
-    /// the vectors leave the WAL; a failure is reported, never an error.
-    fn flushed(taken_back: usize, services: &Services) -> Self {
-        let checkpoint_pending = taken_back > 0 && services.store().flush_erasures().is_err();
+    /// After the commit: checkpoints when anything was taken back (a voice sample, or a
+    /// speaker identity entry [`set_row_person`] dropped, docs/sync-spec.md 7A.2 P5), so with
+    /// `secure_delete` the vectors leave the WAL; a failure is reported, never an error.
+    fn flushed(back: impl Into<Back>, services: &Services) -> Self {
+        let back = back.into();
+        let checkpoint_pending =
+            (back.samples > 0 || back.entry_dropped) && services.store().flush_erasures().is_err();
         TakenBack {
-            taken_back,
+            taken_back: back.samples,
             checkpoint_pending,
+        }
+    }
+}
+
+/// What a write of a speaker row's person took back inside its transaction: voice samples,
+/// and whether the row's speaker identity entry was dropped (P5, docs/sync-spec.md 7A.2). The
+/// caller checkpoints after its commit when either holds ([`TakenBack::flushed`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Back {
+    /// Voice samples taken back.
+    samples: usize,
+    /// The row's identity entry (a centroid) was dropped.
+    entry_dropped: bool,
+}
+
+impl From<usize> for Back {
+    fn from(samples: usize) -> Self {
+        Back {
+            samples,
+            entry_dropped: false,
         }
     }
 }
@@ -1441,22 +1464,38 @@ impl TakenBack {
 /// a user's edit changes a speaker row's person (docs/voice-samples.md 3.3, pinned by
 /// `edit_speaker_person_changes_only_through_set_row_person`); the caller sets the row's other
 /// fields first. Linking (`person` set) also ends an ignore (`Speaker::ignored`, T12.93): a
-/// named voice is not ignored, and this is the one place a user's link clears it. Returns how
-/// many samples were taken back.
+/// named voice is not ignored, and this is the one place a user's link clears it. The person is
+/// resolved here, inside the transaction, and a removed one (a chain that ends deleted or
+/// missing, or loops) is refused with [`EditError::PersonNotFound`], so no caller can link a row
+/// to one (docs/sync-spec.md 7A.3); a merged one links to the person it was merged into. When
+/// the person changes, the row's identity entry follows P5's rule through
+/// `identities::row_relinked_tx` (7A.2). Returns what was taken back.
 fn set_row_person(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
     meeting: EntityId,
     row: &mut Speaker,
     person: Option<EntityId>,
-) -> Result<usize, RuntimeError> {
+) -> Result<Back, RuntimeError> {
+    let person = match person {
+        Some(p) => Some(live_person(&*tx, p)?.id),
+        None => None,
+    };
+    let from = row.person_id;
     row.person_id = person;
     if person.is_some() {
         row.ignored = false;
     }
     row.meta.touch(stamp.hlc, stamp.clock);
     tx.put_speaker(row.clone())?;
-    take_back(tx, meeting, row.id, person, stamp.hlc, stamp.clock).map_err(voiceprint_err)
+    let entry_dropped = from != person
+        && earshot_store::identities::row_relinked_tx(tx, meeting, row.id, from, person)?.dropped();
+    let samples =
+        take_back(tx, meeting, row.id, person, stamp.hlc, stamp.clock).map_err(voiceprint_err)?;
+    Ok(Back {
+        samples,
+        entry_dropped,
+    })
 }
 
 /// Tombstones speaker row `row` of `meeting` (a user's edit: the merged-away voice) and takes
@@ -1653,7 +1692,7 @@ fn checked_choice(choice: &PersonChoice) -> Result<Option<String>, RuntimeError>
 
 /// [`link_speaker`] inside `tx` (`new_name`: [`checked_choice`] of `choice`). Linking a voice
 /// to a person also ends an ignore ([`ignore_speaker`]): a named voice is not ignored.
-/// Returns the person and how many voice samples were taken back.
+/// Returns the person and what was taken back (voice samples, and a dropped identity entry).
 fn link_in(
     tx: &mut StoreTx<'_>,
     stamp: &mut DynStamp<'_, '_>,
@@ -1661,7 +1700,7 @@ fn link_in(
     speaker: EntityId,
     choice: &PersonChoice,
     new_name: Option<String>,
-) -> Result<(EntityId, usize), RuntimeError> {
+) -> Result<(EntityId, Back), RuntimeError> {
     let mut row = live_speaker(&*tx, meeting, speaker)?;
     let person = match (choice, new_name) {
         (PersonChoice::Existing(id), _) => live_person(&*tx, *id)?,
@@ -1693,7 +1732,7 @@ fn link_in(
             stamp.clock,
         )
         .map_err(voiceprint_err)?;
-        return Ok((person.id, taken_back));
+        return Ok((person.id, taken_back.into()));
     }
     if row.person_id != Some(person.id) {
         update_identity_entry(tx, meeting, speaker, |i| {
@@ -2540,8 +2579,16 @@ pub fn save_voice_with(
             remembered,
             Remembered::Enrolled { .. } | Remembered::Replaced { .. }
         );
-        let moved_from = before.filter(|b| saved && linked_back > 0 && *b != person);
-        Ok((person, remembered, linked_back + replaced, moved_from))
+        let moved_from = before.filter(|b| saved && linked_back.samples > 0 && *b != person);
+        Ok((
+            person,
+            remembered,
+            Back {
+                samples: linked_back.samples + replaced,
+                ..linked_back
+            },
+            moved_from,
+        ))
     })?;
     Ok(SavedVoice {
         person,

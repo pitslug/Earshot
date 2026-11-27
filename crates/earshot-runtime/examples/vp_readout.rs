@@ -736,6 +736,7 @@ mod tests {
                 user_edited: edited,
                 enrolled,
                 ignored,
+                linked_before: Vec::new(),
             }
         };
         let rec1 = IdentityRecord {
@@ -892,6 +893,7 @@ mod tests {
                 user_edited: false,
                 enrolled: false,
                 ignored: false,
+                linked_before: Vec::new(),
             }],
         };
         store

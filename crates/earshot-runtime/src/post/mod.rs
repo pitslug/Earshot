@@ -1950,30 +1950,64 @@ where
                     // re-stamp it and could beat a name another computer gave it that is not
                     // pulled yet. It is carried into the new entry instead (below), so it stays
                     // honoured until the copy, which runs after a completed pull (T12.93).
-                    let legacy_flag = legacy && identity.ignored;
-                    if row.role != role {
+                    let mut legacy_flag = legacy && identity.ignored;
+                    // The carried person, resolved inside this transaction (docs/sync-spec.md
+                    // 7A.3): a person removed here is not kept on the row, which is written as
+                    // P3 writes it ("Speaker N", unlinked, not ignored).
+                    let unlinked_from = match row.person_id {
+                        Some(p) if !person_resolves(tx, p)? => Some(p),
+                        _ => None,
+                    };
+                    if unlinked_from.is_some() {
+                        next_unknown += 1;
+                        row.display_name = format!("Speaker {next_unknown}");
+                        row.person_id = None;
+                        row.ignored = false;
+                        legacy_flag = false;
+                        row.role = role;
+                        row.meta.touch(stamp.hlc, stamp.clock);
+                        tx.put_speaker(row.clone())?;
+                    } else if row.role != role {
                         row.role = role;
                         row.meta.touch(stamp.hlc, stamp.clock);
                         tx.put_speaker(row.clone())?;
                     }
-                    if s.centroid.is_valid() {
-                        identities.push(SpeakerIdentity {
-                            speaker: row.id,
-                            track: s.track,
-                            centroid: s.centroid.clone(),
-                            given_name: identity.given_name.clone(),
-                            given_person: identity.given_person,
-                            // The user's edit, kept: an edit for the next run too.
-                            given_stamp: None,
-                            user_edited: true,
-                            // The same voice: a save from before samples (the frozen marker,
-                            // docs/voice-samples.md 5.2) still counts, so a re-save adds it
-                            // nothing again.
-                            enrolled: identity.enrolled,
-                            // The ignore lives on the row (T12.93); only a legacy flag from
-                            // before the one-off copy is carried, for the copy to find.
-                            ignored: legacy_flag,
-                        });
+                    // An entry's person that does not resolve is read as none (7A.3).
+                    let given_person = match identity.given_person {
+                        Some(p) if !person_resolves(tx, p)? => None,
+                        other => other,
+                    };
+                    let carried = SpeakerIdentity {
+                        speaker: row.id,
+                        track: s.track,
+                        centroid: s.centroid.clone(),
+                        given_name: identity.given_name.clone(),
+                        given_person,
+                        // The user's edit, kept: an edit for the next run too.
+                        given_stamp: None,
+                        user_edited: true,
+                        // The same voice: a save from before samples (the frozen marker,
+                        // docs/voice-samples.md 5.2) still counts, so a re-save adds it
+                        // nothing again.
+                        enrolled: identity.enrolled,
+                        // The ignore lives on the row (T12.93); only a legacy flag from
+                        // before the one-off copy is carried, for the copy to find.
+                        ignored: legacy_flag,
+                        // The continued voice keeps the links it was moved away from (P5).
+                        linked_before: identity.linked_before.clone(),
+                    };
+                    // P5 in memory (never the helper, 7A.2 N2): a row unlinked from a person
+                    // removed here has no entry.
+                    let carried = match unlinked_from {
+                        Some(p) => {
+                            earshot_store::identities::relinked_tx(tx, &carried, Some(p), None)?
+                        }
+                        None => Some(carried),
+                    };
+                    if s.centroid.is_valid()
+                        && let Some(carried) = carried
+                    {
+                        identities.push(carried);
                     }
                     row_ids[k] = Some(row.id);
                     // By the one rule over the row's flag and a carried legacy flag (an ignored
@@ -2020,6 +2054,9 @@ where
                 let carried_marker = earlier_speaker
                     .as_ref()
                     .is_some_and(|(_, i)| i.enrolled && i.given_person == person);
+                // A continued voice's earlier entry and person (P5, docs/sync-spec.md 7A.2).
+                let before =
+                    earlier_speaker.map(|(row, i)| (row.person_id, i.linked_before.clone()));
                 // An earlier speaker without an edit: its row, named by this run.
                 let row = match earlier_speaker {
                     Some((row, _)) => {
@@ -2051,7 +2088,7 @@ where
                     }
                 };
                 if naming.role != SpeakerRole::Me && s.centroid.is_valid() {
-                    identities.push(SpeakerIdentity {
+                    let new = SpeakerIdentity {
                         speaker: row.id,
                         track: s.track,
                         centroid: s.centroid.clone(),
@@ -2062,7 +2099,21 @@ where
                         user_edited: false,
                         enrolled: carried_marker,
                         ignored: false,
-                    });
+                        // A continued voice starts from its earlier entry's (P5).
+                        linked_before: before.as_ref().map(|(_, l)| l.clone()).unwrap_or_default(),
+                    };
+                    // P5 in memory (never the helper, 7A.2 N2): the pass wrote the row with
+                    // another person than the old row's, so the new entry holds the old person
+                    // in `linked_before`, or is not written when that person is removed here.
+                    let new = match before {
+                        Some((old, _)) if old != person => {
+                            earshot_store::identities::relinked_tx(tx, &new, old, person)?
+                        }
+                        _ => Some(new),
+                    };
+                    if let Some(new) = new {
+                        identities.push(new);
+                    }
                 }
                 row_ids[k] = Some(row.id);
                 if naming.role == SpeakerRole::Me {
@@ -2938,6 +2989,18 @@ fn label_tracks(
         out.parts.extend(labelled.parts);
     }
     out
+}
+
+/// Whether `person` resolves for the final pass's checks of a carried row's person and an
+/// entry's `given_person` (docs/sync-spec.md 7A.3), read inside the write transaction: only a
+/// person removed here does not ([`earshot_store::ChainEnd::Removed`]). The user's tombstone
+/// resolves as the user (P4), and a chain that cannot be judged here (a person not pulled yet, a
+/// step that does not read) is left as it is, as P3 leaves it.
+fn person_resolves(
+    tx: &mut earshot_store::StoreTx<'_>,
+    person: EntityId,
+) -> Result<bool, RuntimeError> {
+    Ok(earshot_store::identities::chain_end_tx(tx, person)? != earshot_store::ChainEnd::Removed)
 }
 
 /// `N` of an automatic speaker name "Speaker N".

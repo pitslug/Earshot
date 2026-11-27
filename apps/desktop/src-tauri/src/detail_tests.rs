@@ -132,6 +132,7 @@ fn call_meeting(svc: &Services, seed: u64) -> Fixture {
             user_edited: false,
             enrolled: false,
             ignored: false,
+            linked_before: Vec::new(),
         }],
     };
     // Test set-up only: production writes this record through the runtime's registry.
@@ -1481,6 +1482,7 @@ fn give_identity(svc: &Services, meeting: EntityId, speaker: EntityId) {
             user_edited: false,
             enrolled: false,
             ignored: false,
+            linked_before: Vec::new(),
         });
     db.set_local_value(&key, &encode(&record)).unwrap();
 }

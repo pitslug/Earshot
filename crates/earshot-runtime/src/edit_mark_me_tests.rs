@@ -94,6 +94,7 @@ fn in_room_meeting(svc: &Services, seed: u64) -> (EntityId, EntityId, EntityId) 
             user_edited: false,
             enrolled: false,
             ignored: false,
+            linked_before: Vec::new(),
         });
         rows.push(row.id);
     }

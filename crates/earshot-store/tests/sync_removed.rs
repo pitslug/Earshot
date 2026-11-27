@@ -163,6 +163,7 @@ fn entry(speaker: u8, given: Option<u8>) -> SpeakerIdentity {
         user_edited: false,
         enrolled: false,
         ignored: false,
+        linked_before: Vec::new(),
     }
 }
 

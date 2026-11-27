@@ -37,6 +37,15 @@ const ROOTS: &[(&str, &str)] = &[
         "forget_identity_biometrics",
     ),
     ("crates/earshot-store/src/identities.rs", "forget_identity"),
+    // T14.49b (docs/sync-spec.md 7A.2 P5): the helper's guarded entry point and its drop.
+    (
+        "crates/earshot-store/src/identities.rs",
+        "row_relinked_guarded",
+    ),
+    (
+        "crates/earshot-store/src/identities.rs",
+        "drop_row_entry_guarded",
+    ),
     ("crates/earshot-store/src/delete.rs", "remove_person_in"),
     ("crates/earshot-store/src/delete.rs", "unlink_speakers_tx"),
     ("crates/earshot-store/src/db.rs", "forget_voiceprints_in"),
