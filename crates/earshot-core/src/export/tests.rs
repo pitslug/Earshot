@@ -916,6 +916,22 @@ fn export_golden_with_the_users_own_actions() {
 }
 
 #[test]
+fn export_golden_with_only_the_users_actions() {
+    // Copied by hand to `acceptance/export/all_mine.md`, whose JSON is this input.
+    let mut f = fixture();
+    f.speakers[0].display_name = "Casey Lane".into();
+    f.attendees = vec!["Ada Lovelace".into(), "Casey Lane".into()];
+    f.summary.action_items = vec![
+        item("Casey Lane", "Update the forecast", None, 22),
+        item("Casey Lane", "Book the room", Some("Friday"), 21),
+    ];
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    assert_snapshot("all_mine", &r.to_file());
+}
+
+#[test]
 fn export_region_follows_the_meeting_page_order() {
     let f = fixture();
     let r = render(&input(&f), &opts()).unwrap();
