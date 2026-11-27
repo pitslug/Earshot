@@ -163,7 +163,7 @@ All copy here (step names, destinations, outcome words, banners, re-summarise it
 
 ## 11. T14.66: stopping a summary written elsewhere, and saying failed writers as they happen
 
-Status: design (T14.66, PLAN.md section 8, with the owner's additions of 2026-11-27 in 11.6 to 11.8); not built, not yet spec-reviewed.
+Status: design (T14.66, PLAN.md section 8, with the owner's additions of 2026-11-27 in 11.6 to 11.8 and 11.13); not built, not yet spec-reviewed.
 
 ### 11.1 What went wrong
 
@@ -326,9 +326,22 @@ New keys in `fixtures/ui/summary_order_cases.json`. The UI and its mock import t
 
 `{device}` is filled with a function replacer, because a name can hold `$&`.
 
+The local failure kinds of 11.13 add `words.too_long` ("too long"), `words.reply_unusable` ("reply could not be used"), `words.card_stopped` ("graphics card process stopped"), `words.stalled` ("stopped making progress"), `words.load_failed` ("could not load"), `words.cuda_changed` ("CUDA files changed"), and one `local_failures` object of whole sentences:
+
+| Kind | Draft |
+|---|---|
+| `too_long` | The meeting is too long for the summary model on this computer. Choose another writer in Settings, Summaries. |
+| `reply_unusable` | The summary model on this computer wrote a reply Earshot could not use, even after asking it to correct it. Try again or choose another model. |
+| `card_stopped` | The graphics card's summary process stopped before it finished. Try again: the next summary tries the card again. |
+| `stalled` | The summary model on this computer stopped making progress. Restart Earshot and try again. |
+| `load_failed` | The summary model on this computer could not be loaded. Download it again in Settings, Summaries, or choose another model. |
+| `cuda_changed` | The CUDA files changed after Earshot started. Restart Earshot so it can check them. |
+| `other` | today's `LOCAL_SUMMARY_FAILED`, unchanged |
+
 ### 11.10 Privacy
 
-- **Records.** The run record gains one fixed word (`stopped`). The request gains no field, and `offload-times` is unchanged.
+- **Records.** The run record gains fixed words only (`stopped`, and the six local kinds of 11.13).
+- **The child protocol.** `ChildLine::Failed` gains only a fixed kind word. The request gains no field, and `offload-times` is unchanged.
 - **Events and fields.** `HostStep::SummaryStepMoved`, the warnings, `StopAnswer`, `summary_elsewhere` and `waiting_device` hold fixed words, step kinds and a computer's name the page already shows.
 - **Logs.** No log line is added.
 - **Wire.** Nothing new is sent. Stop writes the existing `Withdrawn` state, which only the asker may write. A cancelled helper sends nothing and writes no decline.
@@ -342,6 +355,7 @@ New keys in `fixtures/ui/summary_order_cases.json`. The UI and its mock import t
 4. **A stopped run has no account.** `steps_text` returns `None` for a run that ended with steps untried. 11.7 adds a note for `stopped` only.
 5. **`measureRow` ignores the title** (11.8).
 6. **The list could never show 10.1's waiting state.** Its working dot reads only this process's leases.
+7. **A GPU run's failure loses its kind.** It crosses from the child as text only (`ChildLine::Failed { message }` -> `LocalSummaryError::ChildRun(String)`), so no rule could classify it without reading error text (11.13).
 
 ### 11.12 Tests (each with its control)
 
@@ -363,3 +377,42 @@ New keys in `fixtures/ui/summary_order_cases.json`. The UI and its mock import t
 16. **Stop (UI).** Stop calls `stopWaitingSummary`, and the page and list re-read. Controls: each answer's copy (`AlreadyWritten`, `NotWaiting`, a failure), and no Stop while `waiting_for` is null.
 17. **Header width (UI, `headerButtons.test.tsx`).** Labels whose need fits the whole header but not the header less `TITLE_MIN_PX` show icons. Control: a header wide enough for both keeps labels. Plus a Browser-pane check of the Vite preview with an invented long title ("Quarterly planning review for the northern warehouse fit-out and supplier onboarding") at 1024 px and narrower, in light and dark.
 18. **Copy.** The new keys in `summary_order_cases.json` are read by both suites (the desktop's copy tests and the UI mock's tests), with no em dash and no run of spaces.
+19. **Every local error has a kind.** A test builds every `LocalSummaryError` variant, and every `SummaryFailure` inside `Run` (each `LoadRetried` built from two kinds), and checks `kind()` against a written-out table. Each kind's copy and word must be fixed text holding no part of the error's own text: each error is built twice with different words, as `plain_text_every_runtime_error_maps_to_fixed_copy` does. Control: `Run(Cancelled)` gives `Cancelled`, which keeps `SUMMARY_CANCELLED`.
+20. **The child's kind is carried.** A fake summary child failing with `Invalid` gives the parent `ChildRun { kind: ReplyUnusable }`, and the copy is `reply_unusable`. Control: a `Failed` line with no kind reads `Other`.
+21. **Kind words in the order.** `failure_word(Local, ..)` gives the kind's word for each kind and `failed` for `Other`; the `step_moved` line and the end banner use it. Control: endpoint and agent-CLI failures still give `failed`.
+22. **Pinned copy.** `runtime_text(LocalSummary(..))` gives each kind's `local_failures` sentence. A kind added to the enum fails to compile until it is mapped (no wildcard).
+
+### 11.13 Local summary failures say which kind (owner addition 8)
+
+Today `plain_text::runtime_text` maps every `LocalSummaryError` except a cancel to `LOCAL_SUMMARY_FAILED`, and `run::local_word` maps every one to `failed`.
+
+**The classifier.**
+- A new `summary::LocalFailureKind`: `TooLong`, `ReplyUnusable`, `CardStopped`, `Stalled`, `LoadFailed`, `CudaChanged`, `Other`, `Cancelled`.
+- It is returned by `LocalSummaryError::kind()`, matching every variant explicitly with no wildcard (nested `SummaryFailure` included):
+
+| Error | Kind |
+|---|---|
+| `Run(TooLong)`, `Run(Plan)` (no plan fits the context) | TooLong |
+| `Run(Invalid)` (still invalid after the repair rounds) | ReplyUnusable |
+| `GpuChildDied`, `GpuChildStalled` | CardStopped |
+| `GpuStalled`, `LoadStalled` | Stalled |
+| `Load`, `LoadRetried` | LoadFailed (the CPU retry's own kind is not shown, since both loads failed) |
+| `CudaFilesChanged` | CudaChanged |
+| `Run(Grammar)`, `Run(Model)`, `Chunks` | Other |
+| `ChildRun` | the kind the child sent, else Other |
+| `Run(Cancelled)` | Cancelled |
+
+**The GPU child.** A GPU summary's run failure today reaches the parent only as `ChildRun(String)`: the child's error text, which can never be shown. That is the likely path of the owner's 79-minute failure. So:
+- `summary_child::ChildLine::Failed` gains `kind: Option<String>` (`serde(default)`). The child fills it with `LocalFailureKind`'s word for its own error.
+- `ChildEnd::RunFailed` carries the parsed kind.
+- `LocalSummaryError::ChildRun` becomes `ChildRun { message: String, kind: Option<LocalFailureKind> }`.
+- The child and the parent are the same exe, so an unknown word reads as `None` (Other) and never fails the run.
+
+**Copy.** `runtime_text`'s arm becomes `RuntimeError::LocalSummary(l) => local_failure_copy(l.kind())`. That is an exhaustive match giving `SUMMARY_CANCELLED` for Cancelled and the `local_failures` sentences of 11.9 for the rest, never the error's text. "Try again or choose another model" is kept only where it helps: the reply, and the load (as "choose another model").
+
+**The order's words.**
+- `run::local_word` returns one new `OutcomeWord` per kind: `TooLong`, `ReplyUnusable`, `CardStopped`, `Stalled`, `LoadFailed`, `CudaChanged`.
+- `Other` keeps `Failed`, and `Cancelled` keeps `None` (stops the run).
+- These words are what the record stores, so `step_moved`, the end banner and `earlier` all say the kind (for example "This computer: too long. Trying Claude Code next."). `OutcomeWord::ALL` and the fixture's `words` table grow with them.
+- Endpoint and agent-CLI failures keep `failed`: their errors are not in scope here.
+- An older build reading these words fails closed as in 11.10.
