@@ -1354,3 +1354,190 @@ After spec review 5 (2026-11-27: passed, with seven advisories, all fixed):
 - A7: test 12 pins Forget my voice's count and its `Busy` live count on undamaged stores; the count does not change.
 - Lesson from the review (the reviewer's): "Before a scan forbids `parts()` or `.store()` in glue code, the guarded type gives every store call that glue makes (`apply_remote`, `flush_erasures`). The scan judges store access only, never every use of `Services`."
 - **After building 7A (T14.49f, 2026-11-27).** Test 12's note on what 7A changed in its digest named P1 as seed 1's cause; a table-by-table comparison of the per-step dumps, with `MeTombstone` and that observe each undone alone, showed seed 1's first change is `MeTombstone` swapping the logical stamps of two sample erasures, and that in seeds 2 and 5 P1's decision ticks the clock once more for a pulled person row. Test 12 and the test's doc comment now say so seed by seed.
+
+## 17. Damaged items can be cleared by the user (T14.62)
+
+Status: proposed (first draft, 2026-11-27), not spec-reviewed, not built. Built after sections 16 (T14.57) and 7A (T14.49), which it relies on. No row changes shape: `ENVELOPE_FORMAT` stays 4, there is no migration, no relay change and no wire field. Open questions for the owner are in 17.12.
+
+### 17.1 The problem
+
+After section 16 a damaged row (16.1: its stored values do not convert for this build, `repo::is_unreadable`) is left as it is and noted: on the Sync page (`damaged_note`), on the People page (`list_damaged_note` and the result notes after Remove, Forget voice and Forget my voice), and on the Dictionary page (`dictionary_damaged`). It clears only when a pulled copy replaces it (16.1, test 11 of 16.9) or its meeting is deleted (T14.26). A row that no pull ever reaches stays for good, and with it the note, with nothing the user can do (16.10a, last point). This section gives the user two actions:
+
+- **Repair** (17.3): this computer reads the whole vault again, so every damaged row that has a good copy at the relay is replaced. Sync must be set up and on.
+- **Remove damaged items** (17.4 to 17.6): what is still damaged is deleted on this computer only, never sent, so the other computers keep their copies. Works with sync on, off or never set up.
+
+It is a rare-case tool: both actions are started by the user, reuse what exists, and change no sync rule.
+
+### 17.2 Where the actions are
+
+- **One shared control.** A "Remove damaged items" button that opens one confirmation dialog (17.6), the same component on every page that shows a damaged note: beside the Sync page's `damaged_note` (`packages/ui/src/settings/SyncPage.tsx:351`), beside the People page's `list_damaged_note` and its three result notes (`remove_damaged_note`, `forget_damaged_note`, `forget_my_voice_incomplete`), and beside the Dictionary page's `dictionary_damaged`. So a computer that never set up sync (whose Sync page has no Status section) can still remove what the People or Dictionary page found.
+- **Repair** is a button beside the Sync page's note only, shown when sync is set up and on (`SyncView.set_up && SyncView.on`). With sync off or not set up only Remove is offered (T14.62). A Repair in progress shows its progress line there instead of the button (17.3.4).
+- When sync is set up and on, the dialog adds one line suggesting Repair first (`dialog_try_repair`, 17.7), because Remove deletes rows Repair might have replaced.
+
+### 17.3 Repair
+
+#### 17.3.1 The mechanism
+
+Repair is the existing pull restart a switch uses when it is turned on (`set_sync_voiceprints` and `set_sync_dictionary`, `crates/earshot-runtime/src/sync/mod.rs:540-573`): `restart_pull_tx` (`sync/mod.rs:686-695`) sets the `sync-cursor` record's `pull_seq` to 0 and keeps `seen_seq`, `epoch` and `resets`. The next tick pulls the vault from its first row, page by page, through the ordinary `apply_remote`. Nothing else changes:
+
+- **No re-push and no `queue_everything`.** The relay keeps every row any device ever pushed, its latest copy, and never deletes a row (section 4: "Rows are never deleted"; an accepted push replaces the older copy of that key). So a pull from 0 hears every row the relay holds, and no other device needs to push anything. `queue_everything` (`crates/earshot-store/src/sync.rs:1405-1422`) is for joining another vault and is not called; Repair queues nothing and sends nothing beyond what the tick would send anyway.
+- **Not a vault reset.** Because `seen_seq` and `epoch` are kept, `judge_vault` (`sync/mod.rs:727-764`) still reads the relay's history as the same (`before` is not below `Cursor::seen()`), so Repair never counts towards `MAX_VAULT_RESETS` and never re-queues.
+- **Applying a page twice changes nothing** (6.2): a pulled row that is not newer than the local copy is ignored, and side effects (5.4) follow only what was written. This is what the switch restart and the vault reset already rely on.
+- **The cursor race** is the existing one: the cursor moves only by compare-and-set from the value its page was pulled after (`advance_cursor`, `sync/mod.rs:662-681`), so a Repair pressed while a page is on the way wins, as a switch does.
+
+The Repair command (`repair_sync`, 17.8) runs `restart_pull_tx` and writes the device record `sync-repair` (17.3.4) in one store transaction, then asks the sync thread for a tick at once (as "Sync now" does). It is refused (`invalid`, never reached by the page) when sync is not set up or is off. It may run while a meeting records: a pull already runs then, and rows of a leased meeting are held `busy` as always (5.3 step 4).
+
+#### 17.3.2 What a re-pull heals
+
+T14.26 made `apply_remote` treat a local row that does not read as absent (`crates/earshot-store/src/guarded.rs:1683-1725`): the pulled copy is written whatever the two stamps, and its outbox entry goes with the write (`write_or_hold`). So a damaged row is replaced by any readable pulled copy of it, with these exceptions, unchanged by this section:
+
+- **A tombstone here stays final** (`stays_final`, `guarded.rs:1698-1720`): a damaged meeting, voiceprint or folder row whose `deleted` reads `Yes` against a live pulled copy; the same for a person row (not against a pulled "Me", 7A.2 P4); an erased voice sample against a live copy; this device's withdrawal of its own summary request against an open one. The pulled copy is ignored and the damaged row stays. A pulled tombstone does replace it.
+- **A kind switched off** (5.3 step 1): voiceprints (off by default) and, when turned off, Dictionary words are not applied, so their damaged rows are not healed.
+- **A pulled copy that does not open or decode** is held `format` (5.3 step 2), not written.
+- **No copy at the relay**: a row nobody ever pushed. That is a row damaged here before its first push (it then sits in this outbox as unsendable), a row of a kind every device keeps switched off, the rows of a meeting being recorded, and a row refused before sealing (6.2).
+- **An unsent edit is lost.** A row edited here and damaged before it was pushed is replaced by the older copy the relay holds. Its newer values did not read, so nothing readable is lost.
+
+Damaged rows that remain after a Repair are what Remove is for.
+
+#### 17.3.3 Cost
+
+A Repair reads what joining a new computer reads: every row body the relay holds, tombstones included (transcripts, summaries, notes, people, voices and words; never audio, which is not synced). It sends nothing extra. It is bounded by the relay's page limits (at most 500 rows and 4 MiB of bodies per page, section 3) and runs on the sync thread, one tick at a time, with the store lock held only for each page's transaction (6.2). Time and bytes grow with the vault; the build measures both on `sync_eval` with a generated vault of a stated size and writes the figures here (17.11 test 16). No figure is claimed before that.
+
+#### 17.3.4 Progress and result
+
+- **Record.** Device record `sync-repair` (`DeviceRecord::SyncRepair`, `version u32 LE | JSON {state}`, `state` `armed` or `reading`), written only by `repair_sync` (`armed`) and by the pull (`reading`, when it fetches a page with `after = 0` while the record says `armed`). It exists only while a Repair runs, so a restart resumes it. Setting up, joining and Remove this device delete it (another vault, or none).
+- **Done.** A Repair is done at the end of the first tick whose pull ended with no further rows (`TickReport.pull_complete`) while the record says `reading`: it read from 0 to the relay's last row. That tick then deletes the record, runs the damaged-items scan (17.4.1) and reports `TickReport.repair_done: Option<u64>`, the number of damaged rows still here. Requiring `reading` first means a tick that was already past 0 when Repair was pressed (and whose cursor move then failed the compare-and-set) never ends it.
+- **Progress.** While the record exists the Sync page shows `repair_running` with a percentage: `pull_seq * 100 / seen_seq` from the `sync-cursor` record, rounded down and at most 99 (sequence numbers have gaps, so this is an estimate of the vault read, never a promise). While sync is stopped by a problem (`SyncView.stopped`) the existing problem bar says why and the percentage does not move.
+- **Result.** `SyncHost` keeps the last `repair_done` in memory and the page shows it once the Repair has ended: `repair_done_none` when nothing damaged is left (the note then goes, 17.7), `repair_done_left` with the count otherwise, beside the Remove button. It is cleared by Remove, by a new Repair and by a restart, and is never stored.
+
+### 17.4 Remove: which rows
+
+#### 17.4.1 The scan
+
+Remove's set is every row of a synced table (`SYNCED_TABLES`, `crates/earshot-store/src/schema.rs:385`) that does not read: section 16's definition, judged by the same row decoders through `split_rows`, nothing looser. A new store reader `damaged_rows(table, after_rowid, limit) -> (Vec<rowid>, last_rowid)` walks each table in rowid order, 500 rows per read, each read under one short `guarded_read` (the store lock is released between reads, so a recording meeting's writes are never held up for the whole scan). It reads whole rows to decode them, so its cost grows with the store; the build measures it on a generated store and writes the figure here (17.11 test 16). It runs off the main thread (`ipc::blocking`) when the dialog opens, when Remove runs, and at the end of a Repair. The scan's count is as of the scan; Remove re-checks each row in its own transaction (17.5).
+
+Not in the set: device-local tables and records (`local_state`, `sync_pending`, `sync_outbox`), and NeverSync rows (`audio_file`, `export_record`), whose damage T14.26's deletion handles.
+
+#### 17.4.2 Why deletion
+
+Remove deletes rows; it writes no column of any synced row. That keeps section 16's written-columns rule (R4, 16.4) trivially: nothing is set on a guess, because nothing is set. It also gives the "this computer only" property without a new sync rule:
+
+- **Never queued.** The outbox triggers fire on `INSERT` and `UPDATE` only (5.2), so a `DELETE` queues nothing; Remove also deletes the row's existing `sync_outbox` entry, matched by `tbl` and the row's raw stored `id` bytes. No tombstone is written, so nothing reaches the relay or another computer, and their copies stay as they are.
+- **Healable later.** A deleted row is absent here, so any later pull of a good copy (a Repair, another computer's edit, a switch turned on) writes it back as a new row (5.3 step 6). Remove does not prevent that, by design: the other computers still hold the row.
+- **Erased from the file.** The store runs with `secure_delete` on, and Remove ends with `flush_erasures` (the truncating checkpoint), so deleted bytes leave the database pages and the WAL, as a biometric erasure does (PLAN 3.9). A `Busy` after the commit means the removal is committed (as for `forget_voiceprints`).
+
+### 17.5 Remove: what happens to each row
+
+One IMMEDIATE transaction with `PRAGMA defer_foreign_keys = ON` (the store enforces foreign keys: `track`, `speaker`, `segment`, `note`, `summary`, `summary_request`, `audio_file` and `export_record` reference `meeting(id)`; `segment` references `track(id)` and `speaker(id)`; `audio_file` references `track(id)`). For each row of the scan, re-read by rowid inside the transaction (a row that now reads, or is gone, is skipped):
+
+| Damaged row | What Remove does |
+|---|---|
+| `segment`, `note`, `summary`, `summary_request`, `folder`, `dictionary_word` | Deleted by rowid. |
+| `voiceprint_sample` | Deleted by rowid. |
+| `voiceprint` | Deleted by rowid, with every sample whose stored `voiceprint_id` equals its stored `id` (raw byte equality, so it works when either does not read). |
+| `person` | Deleted by rowid, with every print and sample whose stored `person_id` equals its stored `id` (raw), and, when its `id` reads, its identity entries (`forget_identity` with that one member, user-started, 16.5 item 20). Speaker rows linked to it keep their link and stored name (rewriting them would be a synced write); readable persons merged into it keep their rows, their chain ending at a person not known here, as for a person not yet pulled (`chain_end` `Unknown`). |
+| `track` or `speaker` that no `segment` or `audio_file` row references (raw equality) | Deleted by rowid; for a speaker whose `meeting_id` and `id` read, its identity entry is dropped. |
+| `track` or `speaker` still referenced | **Left as it is** and counted `in_use` (17.12 question 2). |
+| `meeting` | **The whole meeting, on this computer only** (17.5.1). |
+
+A damaged tombstone is deleted like a live row (17.12 question 1): a meeting, voiceprint, person or folder row whose `deleted` reads `Yes`, or an erased sample. Its content was cleared when it was written, so nothing readable is lost, but a live copy pulled later (possible only when this computer's deletion never reached the relay) then comes back here, as it is on the computers that still hold it. A row whose `deleted` does not read is deleted the same way: whether it was a tombstone cannot be known, and deleting writes no guess.
+
+Device-local per-row records that name a deleted row (word choices and unknown-line marks by segment id, summary-seen and summary-names by summary id, summary edits) keep their entries; every reader already ignores an entry whose row is gone (as after a re-transcription replaces lines). The build checks this per record and lists any reader that does not (17.11 test 11).
+
+#### 17.5.1 A damaged meeting row
+
+The meeting cannot be read, so nothing of it can be shown or opened, and its children cannot be deleted alone without breaking the foreign keys. So the whole meeting goes, on this computer only, through a new store function `remove_meeting_here(rowid)` beside `delete_meeting` (`crates/earshot-store/src/delete.rs:287`), which reuses its file step:
+
+1. Audio files first, each before its row, read from the meeting's `audio_file` rows matched by raw `meeting_id`, then, when the meeting's `id` reads, its audio folder (`remove_meeting_audio_dir`), as `delete_meeting` does.
+2. In the transaction: every row of `segment`, `note`, `summary`, `summary_request`, `speaker`, `track`, `audio_file` and `export_record` whose stored `meeting_id` equals the meeting row's stored `id` (raw), readable or not, then the meeting row, each with its outbox entry. Nothing is tombstoned.
+3. When the meeting's `id` reads, the device-local keys `Services::delete_meeting` erases for a meeting (the `meeting_records!` list and the export lease).
+4. People, voiceprints and voice samples stay, whichever meeting they came from, as for a deletion (T9.1u).
+
+The meeting's readable rows go too: they are counted separately (`meetings`, 17.7) and the dialog says so, with their recordings. On a computer where this is the only copy (sync never set up, or the meeting never pushed) the meeting is gone for good (17.12 question 3). The other computers keep it; a later Repair brings it back here without its recordings, as a meeting synced from another computer.
+
+### 17.6 Remove: when it runs and how it is confirmed
+
+- **Never while a meeting records or finishes, or a meeting job runs.** Remove takes a new pass, `WorkGate::enter_damaged_removal` (`apps/desktop/src-tauri/src/activity.rs`), refused `busy` (`busy` copy, 17.7) while `work > 0` (meetings, which hold their pass through finishing, and meeting jobs) or `left > 0` (an after-meeting thread that stopped answering), and while it is held `enter_meeting` and `enter_work` refuse `busy` with the same kind of copy. It is short (no model, no network), so a meeting started by the tray or the shortcut in that moment is refused once and can be started again; nothing records meanwhile. It is held from the re-scan to the end of the checkpoint. A refusal writes nothing.
+- **Confirmed with a count.** The dialog runs the scan (`damaged_items`, 17.8) and shows `dialog_body` with the number of rows it would delete, plus `dialog_meetings` when whole meetings go and `dialog_in_use` when rows will be left. With nothing to remove it shows `dialog_nothing` and no Remove button. Remove sends the counts it showed; the command scans again under its pass and refuses with kind `changed` (copy `changed`) when it would delete more rows or more whole meetings than were confirmed, writing nothing; the dialog then scans again. Fewer is accepted (a row healed meanwhile).
+- **Result.** `result_removed` with the count, plus `result_in_use` when rows were left; with nothing left the damaged notes go (17.7).
+- **Sync running.** Remove does not stop the sync thread. Its transaction and a page's are both IMMEDIATE under the store lock, so they never interleave; a page that writes a good copy right after Remove is a heal. The push never reads a damaged row (it is unsendable), so nothing Remove deletes was on its way out.
+- **What updates.** The command's result says whether meetings, people or voices changed; the desktop then sends the existing `SyncEvent` (`apps/desktop/src-tauri/src/sync_settings.rs:206`) with the ids of removed meetings whose `id` read and `people: true` when a person, print, sample or speaker row went, so the meeting list, an open meeting and the People page reload as they do after a sync. The Dictionary page needs nothing: `settings/vocabulary` is not touched (17.5 and 17.12 question 4).
+
+### 17.7 Copy and the notes
+
+- **Copy table.** A new `fixtures/ui/damaged_copy_cases.json`, read by both suites (the desktop's tests through a `damaged_copy` module and the UI through `ipc/damagedCopy.ts`, as `people_copy_cases.json` is). Shipped with the app: public copy only, counts as `{count}` with `one` and `many` forms as `refused_note`. Draft copy, to be approved by the owner (17.12 question 5):
+  - `remove_button`: "Remove damaged items"
+  - `repair_button`: "Repair"
+  - `repair_intro`: "Repair reads everything from the sync server again, so damaged items can be replaced by good copies from your other computers. Nothing extra is sent. It can take as long as setting up a new computer."
+  - `repair_running`: "Repairing: {percent}% read from the sync server."
+  - `repair_done_none`: "Repair finished. Nothing damaged is left on this computer."
+  - `repair_done_left`: one "Repair finished. 1 damaged item has no good copy on your other computers. You can remove it.", many "Repair finished. {count} damaged items have no good copy on your other computers. You can remove them."
+  - `dialog_title`: "Remove damaged items?"
+  - `dialog_checking`: "Checking this computer..."
+  - `dialog_body`: one "1 damaged item on this computer will be removed.", many "{count} damaged items on this computer will be removed." Followed always by "They are removed from this computer only. Your other computers keep their copies."
+  - `dialog_meetings`: one "This includes 1 meeting that can't be opened, with its recordings.", many "This includes {count} meetings that can't be opened, with their recordings."
+  - `dialog_in_use`: one "1 damaged item is still part of a meeting's transcript and will be left.", many "{count} damaged items are still part of a meeting's transcript and will be left."
+  - `dialog_try_repair`: "Repair on the Sync page may replace them with good copies from your other computers first."
+  - `dialog_nothing`: "Nothing damaged is left on this computer."
+  - `confirm`: "Remove", `cancel`: "Cancel"
+  - `result_removed`: one "Removed 1 damaged item.", many "Removed {count} damaged items."
+  - `result_in_use`: one "1 damaged item was left because a meeting's transcript still uses it.", many "{count} damaged items were left because a meeting's transcript still uses them."
+  - `busy`: "Damaged items can't be removed while a meeting is recording or finishing, or a meeting job is running. Try again when it has finished."
+  - `changed`: "The damaged items on this computer changed. Check them again."
+- `dialog_try_repair` names the Sync page, so it gets a source-pinning case in `page_names_tests.rs` (AGENTS: a note naming a page). No copy names a row, value or meeting (R5).
+- **The notes go when nothing damaged is left.** The People page's list note and the Dictionary refusal are computed when read, so they go by themselves. The Sync page's `damaged_note` follows the last tick's `unsendable` and `damaged_skipped` (`sync_settings.rs:745-746`), which with sync off would never be refreshed, and misses damaged rows no tick touches. So a new device record `damaged-left` (`DeviceRecord::DamagedLeft`, `version u32 LE | JSON {count}`) holds the last scan's count, written by every scan (the dialog, Remove's end, a Repair's end); when a scan finds 0 it also sets the stored `sync-status`'s `unsendable` and `damaged_skipped` to 0 (they describe rows that are gone; a later tick that finds new damage sets them again). The note shows when `unsendable`, `damaged_skipped` or `damaged-left` is above 0. A tick that wrote its status from counts taken before Remove can bring the note back for one tick (at most 30 s while sync runs), accepted.
+
+### 17.8 IPC, records and interfaces
+
+- **Commands** (desktop, all `async` plus `ipc::blocking`, since they reach the store or a pass): `damaged_items() -> DamagedItemsView { count: u32, meetings: u32, in_use: u32, repair_offered: bool }`; `remove_damaged_items(confirmed: DamagedConfirm { count: u32, meetings: u32 }) -> DamagedRemovedView { removed: u32, meetings: u32, in_use: u32 }`, errors `busy`, `changed` (new kind, retryable) and `internal`; `repair_sync() -> ()`. `SyncView` gains `repair_percent: Option<u8>` (while `sync-repair` exists) and `repair_left: Option<u64>` (the in-memory result of 17.3.4). Counts and flags only; tests assert on the serialised JSON that no id or name is in any result. `bindings.ts` regenerated with `EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings`, with the `Ipc` methods and `createMockIpc` (mock data option `damaged: { count, meetings, in_use }`).
+- **Runtime**: `earshot_runtime::damaged` with `scan(services) -> DamagedScan` and `remove(services, confirmed) -> Result<DamagedRemoval, DamagedError>`, both one-line `services.guarded_read` / `guarded_write` wrappers over their roots (16.3); `sync::repair(services)`. Store: `damaged_rows` (17.4.1), `remove_damaged_in` and `remove_meeting_here` in `guarded.rs` (17.9). The sync client: `TickReport.repair_done`, the `reading` mark on the first page from 0.
+- **Records** (device-local, no migration): `sync-repair` (17.3.4) and `damaged-left` (17.7). Both counts only.
+
+### 17.9 Guarded paths and the scan test
+
+Remove is a user-started erasure, so it joins R1 (16.2) and the scan test of 16.8: its roots (`damaged::scan_in`, `damaged::remove_in`, store `remove_damaged_in`, `remove_meeting_here`) take guarded types; every statement it runs is a named `const` in `guarded.rs` in `SQL_OWNERS`; its `DELETE ... WHERE rowid` statements (one constant per synced table, since a table name cannot be a parameter) are owned by one named writer, `delete_damaged_by_rowid`, and its meeting statements by `remove_meeting_here`. The scan gains a rule: a constant holding `DELETE FROM` keyed on `rowid` or on a raw `meeting_id`, `voiceprint_id` or `person_id` match is owned only by those two writers (beside `ERASE_BY_ROWID`, T14.26). Mutation controls: such a constant used from a copy of `unlink_speaker_by_rowid` fails; a copy of `remove_damaged_in` that calls `put_speaker` (a synced write) fails, because the scan refuses every `put_*` and by-rowid writer of 16.4 in Remove's roots (Remove writes no synced row, 17.4.2). Repair reads no synced row and is not a guarded root.
+
+### 17.10 Formats and other builds
+
+- No row changes shape and no row is written by Remove: `ENVELOPE_FORMAT` stays 4, no migration, no relay change, no wire field, no `sync_pending` reason.
+- Repair uses the existing pull and cursor; a 0.9.0 relay or worker sees ordinary pulls.
+- `sync-repair` and `damaged-left` are new device records; an older build ignores them. `sync-status` keeps its shape (17.7 only zeroes two optional fields, left out when 0).
+- What another computer holds never changes because of Remove; a Repair changes this computer only.
+
+### 17.11 Tests
+
+Damage is made by SQL in the test as in 16.9; names are invented. Store tests in `crates/earshot-store/tests/damaged_remove.rs` (names start `store_damaged_remove_`), runtime tests `sync_repair_*` and `damaged_*`, desktop tests `damaged_*`. Every test states its control.
+
+1. **Repair heals** (through `LocalRelay`, two computers): A damages a speaker row (`role` bogus) and a segment row that B holds readable; Repair; after A's ticks both read equal to B's, the scan finds 0, `repair_done` is 0 and the Sync page shows `repair_done_none` and no `damaged_note`. Control: the same ticks without Repair leave both damaged.
+2. **Repair sends nothing and is not a vault reset**: A's outbox length and the relay's row count are unchanged by the Repair alone; the cursor's `epoch`, `seen_seq` and `resets` are unchanged; no `queue_everything` ran. Control: a local edit made during the Repair is pushed (the push did run), and a changed epoch in the same harness gives a reset.
+3. **Repair's end needs a read from 0**: a tick already past 0 when Repair is pressed (its compare-and-set fails) does not end it; the next tick, which fetches `after = 0`, marks `reading`, and the following complete pull ends it and deletes `sync-repair`. A restart in the middle resumes. Control: with the `reading` check removed, the first tick ends it and test 3 fails.
+4. **What Repair cannot heal**: a damaged meeting tombstone against B's live copy (7A and T14.26's finality), a damaged voiceprint with voiceprint sync off, and a row never pushed stay damaged and are counted in `repair_done`. Control: with B's copy a tombstone, voiceprint sync on, and the row pushed before its damage, each is healed.
+5. **Remove deletes on this computer only and sends nothing**: a damaged segment with no copy anywhere and a damaged note B holds are deleted by rowid; their outbox entries are gone; the next push sends nothing for them; B's rows are byte for byte unchanged; no synced row's `updated_at` changed on A. Control: with the damage removed the scan finds nothing and the rows stay.
+6. **Healable after Remove**: after test 5, a Repair brings B's note back to A. Control: without the Repair it stays absent.
+7. **A damaged meeting row**: its tracks, speakers, segments, notes, summaries, requests, audio rows and files, export records and device-local records are gone, persons, prints and samples stay; B keeps the meeting; after a Repair the meeting is back on A without audio. Variant: the meeting's `id` is a 15-byte blob: rows and files found by raw `meeting_id` and audio rows go, local records stay (counted). Control: a meeting whose only damaged row is a segment loses only that segment.
+8. **In use is left**: a damaged speaker referenced by a segment and a damaged track referenced by an audio row are left, counted `in_use`, and the dialog and result show the in-use lines. Control: the same speaker with no referencing segment is deleted.
+9. **Biometric rows are erased from the file**: a damaged person row with prints and samples, a damaged print with samples, and a damaged sample: all deleted, the person's identity entries dropped, and the invented vector bytes are not found in the database file or WAL after `flush_erasures` (a second connection held open across, as the on-disk erasure tests do). Control: another person's voices are byte for byte unchanged, and the search finds the bytes before Remove.
+10. **Never while a meeting records or finishes**: Remove is refused `busy` and the store is byte for byte unchanged while a meeting pass is held (recording, then finishing), while a job pass is held and while an after-meeting thread is left; a meeting start while the removal pass is held is refused. Control: with no pass held the same Remove deletes the rows.
+11. **Per-row records**: after removing a damaged segment and a damaged summary, the meeting detail, word choices, unknown-line marks, summary-seen and summary-names readers work and show no stale effect. Control: the same readers with the rows readable show their entries.
+12. **Confirmation**: a Remove confirmed for fewer rows or meetings than the scan now finds is refused `changed` and writes nothing; equal or more confirmed proceeds. Control: changing only the confirmed count flips the outcome.
+13. **The notes go**: with sync set up and off and a stale `sync-status` holding `unsendable` 2, Remove leaves nothing, the status's counts read 0, `damaged-left` is 0 and `SyncView.damaged_note` is `None`; the People list reports no damage; a Dictionary edit refused with `dictionary_damaged` before succeeds after. Control: a Remove refused `busy` leaves the note.
+14. **Sync off offers Remove only**: `repair_offered` false and no Repair button with sync off or not set up; `repair_sync` refused. Control: with sync on and set up it is offered and runs.
+15. **Counts never content**: every IPC result, `TickReport`, `sync-repair` and `damaged-left` serialised after a run over rows holding invented names contains none. Control: the names are found in the store by the same search before Remove.
+16. **Cost figures**: the scan and a Repair over a generated store and vault of a stated size, timed and measured in bytes on an idle host, with the figures written into 17.3.3 and 17.4.1 (informational, gates nothing).
+17. **UI** (`SyncPage.test.tsx`, `PeoplePage.test.tsx`, the Dictionary page's tests, a `DamagedItems.test.tsx`): the button sits beside each damaged note and opens one dialog; `dialog_checking`, then the counts with the one and many forms; `dialog_try_repair` only with sync on; Remove calls the command with the shown counts; the result, `busy` and `changed` copy; Repair only with sync on, its progress line and its result. All copy from the table. Control: with no damage none of it renders.
+
+Accept: as T14.62's entry in PLAN.md.
+
+### 17.12 Open questions for the owner
+
+1. **Damaged tombstones are deleted** (17.5). The alternative keeps them as markers so a pulled live copy never brings back what was deleted here, but then they stay damaged and some rules (rule 1 over persons) count them on every page, so the note never goes. Deleting them lets a meeting, voice, person or folder deleted here come back only when that deletion never reached the relay and another computer still holds it live. Proposed: delete.
+2. **A damaged track or speaker that a transcript still uses is left** (17.5). Alternatives: remove its whole meeting on this computer, or clear the lines' speaker on this computer (a write to readable rows that would differ from the other computers until those lines change). Proposed: leave and count; Repair is the way to heal it when sync is on.
+3. **A damaged meeting row removes the whole meeting, recordings included** (17.5.1), the only copy when this computer never synced it. The alternative is to leave it, but then it cannot be opened, its rows are content the user cannot see or delete, and the meeting list fails on it today (finding below). Proposed: remove, said in the dialog.
+4. **A removed Dictionary word row is made again from the list.** `settings/vocabulary` keeps the word (16.5 item 13), so the next reconcile (a tick with Dictionary sync on, or the next Dictionary edit) gives it a new row, which is sent with Dictionary sync on and read as the same word on the other computers (`row_key`). Proposed: accept, since the user never removed the word.
+5. **Copy** (17.7) is a draft.
+
+Found while writing, outside this task: the meeting list reads every meeting row whole (`Services::live_meetings_since`, `crates/earshot-runtime/src/services.rs:715`, `db.meetings()`), so one damaged meeting row today fails the whole list with an error rather than a note. Section 16 left the meeting list out of scope (16.5, last paragraph). Remove clears it, but a lenient list belongs in a task of its own.
+
+### 17.13 Revisions
+
+- First draft (2026-11-27), not yet spec-reviewed. Written from T14.62's entry, section 16 as built (16.10a), section 4 (the relay keeps every row), 6.2 and 6.3 (the cursor, `restart_pull_tx`, `queue_everything`), `apply_page`'s handling of a local row that does not read (`guarded.rs:1683-1725`), the store's foreign keys (which decided whole-meeting removal and the in-use rule), `WorkGate` (the removal pass) and the Sync, People and Dictionary pages' notes.
