@@ -50,12 +50,20 @@ pub struct MeetingView {
     /// The earlier speaker names each summary row used (T12.82, `crate::summary_names`):
     /// empty from [`MeetingView::load`], read by [`MeetingView::load_named`].
     pub earlier_names: crate::summary_names::EarlierNames,
+    /// The speakers whose identity entry holds a legacy ignore still honoured on this device
+    /// (`crate::edit::legacy_ignores`; empty once this device's ignore copy has run): empty
+    /// from [`MeetingView::load`], read by [`MeetingView::load_named`]. The rows' own synced
+    /// flag (`Speaker::ignored`) needs nothing extra. A summary or export made on another
+    /// device does not see this device's legacy ignores until this device's ignore copy has
+    /// set the row flag (and synced it).
+    pub legacy_ignores: BTreeSet<EntityId>,
 }
 
 impl MeetingView {
     /// [`MeetingView::load`] with the lines left without a speaker
-    /// ([`MeetingView::unknown_lines`]) and the summaries that use a changed name
-    /// ([`MeetingView::earlier_names`]), for anything that shows speaker names: summaries,
+    /// ([`MeetingView::unknown_lines`]), the summaries that use a changed name
+    /// ([`MeetingView::earlier_names`]) and the legacy ignores
+    /// ([`MeetingView::legacy_ignores`]), for anything that shows speaker names: summaries,
     /// exports and the meeting detail.
     ///
     /// # Errors
@@ -69,6 +77,7 @@ impl MeetingView {
         };
         view.unknown_lines = crate::unknown_lines::read(store, meeting)?;
         view.earlier_names = crate::summary_names::read(store, meeting)?;
+        view.legacy_ignores = crate::edit::legacy_ignores(store, meeting)?;
         Ok(Some(view))
     }
 
@@ -122,6 +131,7 @@ impl MeetingView {
             summary,
             unknown_lines: BTreeSet::new(),
             earlier_names: crate::summary_names::EarlierNames::new(),
+            legacy_ignores: BTreeSet::new(),
         }))
     }
 
@@ -211,12 +221,23 @@ impl MeetingView {
             .collect()
     }
 
-    /// Attendee names: the speakers' display names, first appearance first, without
-    /// duplicates.
+    /// Attendee names, first appearance first, without duplicates: every speaker row except
+    /// those the user ignored (T14.68, `crate::edit::is_ignored`: the row's synced flag, or a
+    /// legacy ignore among [`MeetingView::legacy_ignores`]; never the user), told apart by
+    /// [`distinct_names`] among those kept only, so a named attendee whose only namesake is
+    /// ignored keeps their full name (and an export's link points at the person). The
+    /// transcript's labels ([`MeetingView::labels`]) are over every row and do not change. A
+    /// summary or export made on another device does not see this device's legacy ignores
+    /// until this device's ignore copy has set the row flag.
     #[must_use]
     pub fn attendees(&self) -> Vec<String> {
+        let kept: Vec<&Speaker> = self
+            .speakers
+            .iter()
+            .filter(|s| !crate::edit::is_ignored(s, &self.legacy_ignores))
+            .collect();
         let mut out: Vec<String> = Vec::new();
-        for (_, label) in self.labels() {
+        for label in names_of(&kept) {
             if !label.is_empty() && !out.contains(&label) {
                 out.push(label);
             }
@@ -227,15 +248,11 @@ impl MeetingView {
     /// Each speaker row's name as this meeting shows it ([`distinct_names`]), in row order.
     #[must_use]
     pub fn labels(&self) -> Vec<(EntityId, String)> {
-        let people: Vec<(EntityId, &str)> = self
-            .speakers
-            .iter()
-            .map(|s| (s.person_id.unwrap_or(s.id), s.display_name.as_str()))
-            .collect();
+        let rows: Vec<&Speaker> = self.speakers.iter().collect();
         self.speakers
             .iter()
             .map(|s| s.id)
-            .zip(distinct_names(&people))
+            .zip(names_of(&rows))
             .collect()
     }
 
@@ -252,6 +269,15 @@ impl MeetingView {
             .find(|(id, _)| *id == me.id)
             .map(|(_, label)| label)
     }
+}
+
+/// [`distinct_names`] of speaker rows, one per row (a row's person, else the row, is who).
+fn names_of(rows: &[&Speaker]) -> Vec<String> {
+    let people: Vec<(EntityId, &str)> = rows
+        .iter()
+        .map(|s| (s.person_id.unwrap_or(s.id), s.display_name.as_str()))
+        .collect();
+    distinct_names(&people)
 }
 
 /// Names that tell people apart within one meeting (T9.1h), for `people` as
@@ -359,6 +385,10 @@ pub fn cites_only(summary: &earshot_core::summary::SummaryV1, ids: &BTreeSet<Ent
         )
         .all(|id| ids.contains(id))
 }
+
+#[cfg(test)]
+#[path = "view_attendees_tests.rs"]
+mod attendees_tests;
 
 #[cfg(test)]
 mod tests {

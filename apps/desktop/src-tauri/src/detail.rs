@@ -1024,7 +1024,7 @@ fn meeting_detail_read(services: &Services, meeting: EntityId) -> Result<Meeting
         }
         let entries = SpeakerReads {
             identities: edit::identities_in(&db, meeting)?,
-            legacy: edit::legacy_ignores(&db, meeting)?,
+            legacy: view.legacy_ignores.clone(),
             legacy_on: !earshot_runtime::ignore_copy::copied(&db)?,
         };
         // Where "Not <name>" is offered (T12.77), by the runtime's own rule over this snapshot.

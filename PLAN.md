@@ -2854,7 +2854,7 @@ Second wave (after the lanes above are merged):
   - decided (the owner, 2026-11-28): cap it and never fail it; a longer summary is Claude's job.
   - do: a merge's reply budget is capped so that every group of two partials fits (merge replies are summaries, not the sum of their parts); and a merge step that still cannot be planned joins its parts (`summary::join_partials`, `report.joined_parts`), as a failed merge does, in the local writer and in `earshot_llm::summarizer`; a map step that cannot fit still fails. The format key and `accept m4` change only if a replay case's request does (say so). Test on the private copy (informational, counts only).
   - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-llm`; `cargo test -p earshot-llm-local`; `cargo xtask accept m4`
-- [ ] T14.68 Ignored voices are not attendees
+- [x] T14.68 Ignored voices are not attendees
   - found (the owner, 2026-11-27): an exported note's `attendees` listed the meeting's ignored voices ("Speaker 1", "Speaker 2").
   - do: `MeetingView::attendees` (used by the Obsidian export and the summary input) leaves out every speaker row that counts as ignored by the one rule (`identities::counts_as_ignored`, legacy flag included); the transcript and speaker names elsewhere are unchanged.
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot detail`

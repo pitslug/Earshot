@@ -118,6 +118,37 @@ pub fn replace_words<S: AsRef<str>>(
     crate::vocabulary::set_vocabulary(svc, base.words(), words)
 }
 
+/// A new speaker row of `meeting` named `name`, linked to a new person of that name when
+/// `linked`, with its synced ignore flag (`Speaker::ignored`, T12.93) as given.
+pub fn add_speaker(
+    svc: &Services,
+    meeting: EntityId,
+    role: SpeakerRole,
+    name: &str,
+    linked: bool,
+    ignored: bool,
+    seed: u64,
+) -> Speaker {
+    let clock = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let person = linked.then(|| {
+        let p = earshot_core::voiceprint::Person::new(name, false, &mut stamp);
+        earshot_core::voiceprint::VoiceprintRepo::put_person(store, p.clone()).unwrap();
+        p.id
+    });
+    let mut s = Speaker::new(meeting, role, name, person, &mut stamp);
+    s.ignored = ignored;
+    store.put_speaker(s.clone()).unwrap();
+    s
+}
+
 /// Services over a fresh store in `dir`, with a clock the test can move.
 pub fn services(dir: &TempDir) -> (Services, Arc<ManualClock>) {
     let data = DataDir::new(dir.0.join("data"));

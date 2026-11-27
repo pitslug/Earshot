@@ -596,3 +596,50 @@ fn export_reexport_copy_is_the_shared_table() {
         );
     }
 }
+
+/// The YAML frontmatter of `text` (between the first two `---` lines).
+fn frontmatter(text: &str) -> &str {
+    let rest = text
+        .strip_prefix("---\n")
+        .expect("a note opens with frontmatter");
+    &rest[..rest.find("\n---\n").expect("frontmatter closes")]
+}
+
+#[test]
+fn export_note_attendees_leave_out_an_ignored_voice() {
+    use earshot_core::diar::SpeakerRole;
+    let dir = TempDir::new("export");
+    let (svc, _) = services(&dir);
+    let vault = vault(&dir);
+    let id = meeting(&svc, "Invented planning", 1);
+    let ignored =
+        crate::testutil::add_speaker(&svc, id, SpeakerRole::Remote, "Speaker 1", false, true, 2);
+    crate::testutil::add_speaker(&svc, id, SpeakerRole::Remote, "Speaker 2", false, false, 3);
+    crate::testutil::add_speaker(&svc, id, SpeakerRole::Remote, "Rowan Pell", true, false, 4);
+    let note = |seed: u64| {
+        export_meeting(
+            &svc,
+            &vault,
+            id,
+            &ExportOptions::default(),
+            &mut ChaCha8Rng::seed_from_u64(seed),
+        )
+        .unwrap();
+        let files = notes_in(&vault);
+        assert_eq!(files.len(), 1);
+        std::fs::read_to_string(vault.join("Meetings").join(&files[0])).unwrap()
+    };
+    let text = note(5);
+    let fm = frontmatter(&text);
+    assert!(fm.contains("[[Speaker 2]]"), "{fm}");
+    assert!(fm.contains("[[Rowan Pell]]"), "{fm}");
+    assert!(fm.contains("[[Alice]]"), "{fm}");
+    assert!(!fm.contains("Speaker 1"), "{fm}");
+
+    // Control: without the flag the voice is an attendee.
+    let mut back = ignored;
+    back.ignored = false;
+    svc.store().put_speaker(back).unwrap();
+    let text = note(6);
+    assert!(frontmatter(&text).contains("[[Speaker 1]]"), "{text}");
+}
