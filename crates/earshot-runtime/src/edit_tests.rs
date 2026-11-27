@@ -1303,6 +1303,10 @@ mod samples_tests;
 #[path = "edit_lines_tests.rs"]
 mod lines_tests;
 
+/// T14.49b: P5 from a user's edit, and the writers that refuse a removed person.
+#[path = "edit_relink_tests.rs"]
+mod relink_tests;
+
 /// T12.77b5: the scan that keeps speaker person changes on `set_row_person`.
 #[path = "edit_scan_tests.rs"]
 mod scan_tests;

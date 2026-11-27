@@ -4530,3 +4530,292 @@ fn post_rerun_carries_the_frozen_marker_only_to_the_same_person() {
         "not carried to someone else"
     );
 }
+
+/// The entry of `speaker` as stored, read through a connection of its own (from disk).
+fn entry_on_disk(
+    svc: &Services,
+    meeting: EntityId,
+    speaker: EntityId,
+) -> Option<crate::identities::SpeakerIdentity> {
+    let c = rusqlite::Connection::open(svc.data.db_path()).unwrap();
+    let key = crate::identities::record_key(meeting);
+    let bytes: Vec<u8> = c
+        .query_row(
+            "SELECT value FROM local_state WHERE key = ?1",
+            [key.as_str()],
+            |r| r.get(0),
+        )
+        .ok()?;
+    match crate::identities::decode(&bytes) {
+        crate::identities::StoredIdentities::Record(r) => {
+            r.speakers.into_iter().find(|i| i.speaker == speaker)
+        }
+        crate::identities::StoredIdentities::Unreadable(why) => panic!("{why}"),
+    }
+}
+
+/// Whether `needle` is in the database file, its WAL or its journal.
+fn post_on_disk(db: &std::path::Path, needle: &[u8]) -> bool {
+    ["", "-wal", "-journal"].iter().any(|suffix| {
+        std::fs::read(format!("{}{suffix}", db.display()))
+            .is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle))
+    })
+}
+
+/// Applies a pulled tombstone of `person` from another device, then checkpoints as the client
+/// does after a page that erased (docs/sync-spec.md 7A.4).
+fn pull_person_tombstone(svc: &Services, person: EntityId) {
+    use earshot_core::identity::{DeviceId, HlcTimestamp, SyncMeta};
+    let there = DeviceId::from_bytes([0x5A; 16]);
+    let now = svc.clock.now_unix_ms();
+    let stamp = HlcTimestamp {
+        wall_ms: now + 60_000,
+        logical: 0,
+        node: there,
+    };
+    let mut db = svc.store();
+    let mut p = db.person(person).unwrap().unwrap();
+    p.display_name.clear();
+    p.meta = SyncMeta {
+        created_at: p.meta.created_at,
+        updated_at: stamp,
+        deleted: true,
+        origin_device_id: there,
+    };
+    let row = earshot_store::SyncedRow::Person(p);
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&person.as_uuid().as_bytes()[..]);
+    let page = [earshot_store::Incoming {
+        key,
+        seq: 1,
+        stamp,
+        body: vec![0xA5; 40],
+        entity: Some("person".into()),
+        row: Some(row),
+    }];
+    let rules = earshot_store::ApplyRules {
+        kinds: earshot_store::SyncKinds::ALL,
+        leased: &|_| false,
+        now_ms: now,
+        after: None,
+    };
+    let clock = Arc::clone(&svc.clock);
+    let (store, hlc) = db.parts();
+    let out = store.apply_remote(&page, &rules, hlc, &*clock).unwrap();
+    if out.erased > 0 {
+        store.flush_erasures().unwrap();
+    }
+}
+
+/// Tombstones `person` directly, with no erasure (test set-up: a removal whose side effects this
+/// device has not applied, so a row and an entry can still name the person).
+fn post_tombstone_directly(svc: &Services, person: EntityId) {
+    crate::edit::write(svc, |tx, stamp| {
+        let mut p = tx
+            .person(person)
+            .map_err(RuntimeError::Voiceprint)?
+            .unwrap();
+        p.display_name.clear();
+        p.meta.mark_deleted(stamp.hlc, stamp.clock);
+        tx.put_person(p).map_err(RuntimeError::Voiceprint)
+    })
+    .unwrap();
+}
+
+/// The frozen-marker test's run: the call scene, Alice's voice on the loopback.
+fn post_run(svc: &Services, meeting: EntityId, mic: &Track, them: &Track) -> PostOutcome {
+    let (mic_audio, them_audio) = scene();
+    let mut post = PostProcessor::new(
+        transcriber(),
+        FakeSegmenter::segmentation_3_0(),
+        embedder(),
+        config(),
+    )
+    .unwrap();
+    let input = PostInput {
+        echo_locks: Vec::new(),
+        echo_locks_unreadable: false,
+        meeting,
+        tracks: vec![track_input(mic, mic_audio), track_input(them, them_audio)],
+    };
+    let mut rng = ChaCha8Rng::seed_from_u64(3);
+    post.run(svc, input, &mut rng, &CancelToken::new()).unwrap()
+}
+
+/// docs/sync-spec.md 7A.2 N2, read back from disk after the pass's own rewrite of the record:
+/// Alice's prints go first while she is still live; the re-run no longer names her voice, writes
+/// it "Speaker N" and keeps Alice in its entry's `linked_before`; then her pulled tombstone drops
+/// the entry and the centroid leaves the disk (a second connection kept open). Control: on the
+/// code before T14.49b the entry held no `linked_before` and stayed after the tombstone.
+#[test]
+fn post_p5_a_voice_no_longer_named_keeps_its_old_person_until_the_tombstone() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = enroll_alice(&svc, 1);
+    let first = post_run(&svc, meeting, &mic, &them);
+    let voice = first.speakers[1].id;
+    assert_eq!(first.speakers[1].person, Some(alice));
+    // Her prints tombstoned as pulled print tombstones leave them (no entry is touched).
+    crate::edit::write(&svc, |tx, stamp| {
+        earshot_core::voiceprint::forget_voiceprints(tx, alice, stamp.hlc, stamp.clock)
+            .map_err(RuntimeError::Voiceprint)
+    })
+    .unwrap();
+    let again = post_run(&svc, meeting, &mic, &them);
+    assert_eq!(again.speakers[1].id, voice);
+    assert_eq!(again.speakers[1].person, None);
+    assert!(again.speakers[1].display_name.starts_with("Speaker "));
+    let e = entry_on_disk(&svc, meeting, voice).expect("the voice's entry");
+    assert_eq!(e.linked_before, vec![alice]);
+    let needle = serde_json::to_string(&e.centroid.vector[1])
+        .unwrap()
+        .into_bytes();
+    let db = svc.data.db_path();
+    svc.store().checkpoint().unwrap();
+    assert!(
+        post_on_disk(&db, &needle),
+        "sanity: the centroid is on disk"
+    );
+    let second = rusqlite::Connection::open(&db).unwrap();
+    pull_person_tombstone(&svc, alice);
+    assert!(entry_on_disk(&svc, meeting, voice).is_none(), "dropped");
+    assert!(!post_on_disk(&db, &needle), "the centroid left the disk");
+    drop(second);
+}
+
+/// The same with the old person already removed here when the pass runs: the new entry is not
+/// written (`relinked` case 1).
+#[test]
+fn post_p5_a_voice_moved_away_from_a_removed_person_gets_no_entry() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = enroll_alice(&svc, 1);
+    let first = post_run(&svc, meeting, &mic, &them);
+    let voice = first.speakers[1].id;
+    crate::edit::write(&svc, |tx, stamp| {
+        earshot_core::voiceprint::forget_voiceprints(tx, alice, stamp.hlc, stamp.clock)
+            .map_err(RuntimeError::Voiceprint)
+    })
+    .unwrap();
+    post_tombstone_directly(&svc, alice);
+    let again = post_run(&svc, meeting, &mic, &them);
+    assert_eq!(again.speakers[1].id, voice);
+    assert_eq!(again.speakers[1].person, None);
+    assert!(entry_on_disk(&svc, meeting, voice).is_none());
+    assert!(
+        entry_on_disk(&svc, meeting, again.speakers[2].id).is_some(),
+        "control: the other voice keeps its entry"
+    );
+}
+
+/// A continued voice keeps its old entry's `linked_before` when the pass names the same person.
+#[test]
+fn post_p5_a_continued_voice_keeps_its_linked_before() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = enroll_alice(&svc, 1);
+    let first = post_run(&svc, meeting, &mic, &them);
+    let voice = first.speakers[1].id;
+    let earlier = EntityId::generate(&*svc.clock, &mut ChaCha8Rng::seed_from_u64(77));
+    let key = crate::identities::record_key(meeting);
+    let mut db = svc.store();
+    let Some(crate::identities::StoredIdentities::Record(mut record)) = db
+        .local_value(key.as_str())
+        .unwrap()
+        .map(|b| crate::identities::decode(&b))
+    else {
+        panic!("a record");
+    };
+    for i in &mut record.speakers {
+        if i.speaker == voice {
+            i.linked_before = vec![earlier];
+        }
+    }
+    // Test set-up only: production writes this record through the runtime's registry.
+    db.set_local_value(key.as_str(), &crate::identities::encode(&record))
+        .unwrap();
+    drop(db);
+    let again = post_run(&svc, meeting, &mic, &them);
+    assert_eq!(again.speakers[1].person, Some(alice));
+    assert_eq!(
+        entry_on_disk(&svc, meeting, voice).unwrap().linked_before,
+        vec![earlier]
+    );
+}
+
+/// docs/sync-spec.md 7A.3: a carried edited row whose person was removed here is written as P3
+/// writes it ("Speaker N", unlinked) with no entry; an entry whose `given_person` was removed is
+/// carried with none. Control: on the code before T14.49b the row kept the removed person.
+#[test]
+fn post_p5_a_carried_row_naming_a_removed_person_is_written_as_speaker_n() {
+    let dir = TempDir::new();
+    let svc = services(&dir);
+    let (meeting, mic, them) = meeting_rows(&svc);
+    let alice = enroll_alice(&svc, 1);
+    let first = post_run(&svc, meeting, &mic, &them);
+    let voice = first.speakers[1].id;
+    let other = first.speakers[2].id;
+    // The user links both voices: `voice` to Bea, `other` to Cy; the pass named `voice` Alice.
+    let bea = crate::edit::link_speaker(
+        &svc,
+        meeting,
+        voice,
+        &crate::edit::PersonChoice::New {
+            name: "Invented Bea".into(),
+        },
+    )
+    .unwrap()
+    .person;
+    let cy = crate::edit::link_speaker(
+        &svc,
+        meeting,
+        other,
+        &crate::edit::PersonChoice::New {
+            name: "Invented Cy".into(),
+        },
+    )
+    .unwrap()
+    .person;
+    assert_eq!(
+        entry_on_disk(&svc, meeting, voice).unwrap().given_person,
+        Some(alice)
+    );
+    assert!(entry_on_disk(&svc, meeting, other).is_some());
+    // Cy removed here; Alice removed too, prints and person (the entry still names her).
+    post_tombstone_directly(&svc, cy);
+    crate::edit::write(&svc, |tx, stamp| {
+        earshot_core::voiceprint::forget_voiceprints(tx, alice, stamp.hlc, stamp.clock)
+            .map_err(RuntimeError::Voiceprint)
+    })
+    .unwrap();
+    post_tombstone_directly(&svc, alice);
+    let again = post_run(&svc, meeting, &mic, &them);
+    let row = again.speakers.iter().find(|s| s.id == other).unwrap();
+    assert_eq!(row.person, None, "unlinked from the removed person");
+    assert!(
+        row.display_name.starts_with("Speaker "),
+        "{}",
+        row.display_name
+    );
+    let stored = svc
+        .store()
+        .speakers(meeting)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == other)
+        .unwrap();
+    assert_eq!((stored.person_id, stored.ignored), (None, false));
+    assert_eq!(stored.display_name, row.display_name);
+    assert!(entry_on_disk(&svc, meeting, other).is_none(), "no entry");
+    // The voice linked to Bea, who is live, stays hers; its entry's removed `given_person` is
+    // carried as none.
+    let kept = again.speakers.iter().find(|s| s.id == voice).unwrap();
+    assert_eq!(kept.person, Some(bea));
+    assert_eq!(
+        entry_on_disk(&svc, meeting, voice).unwrap().given_person,
+        None
+    );
+}
