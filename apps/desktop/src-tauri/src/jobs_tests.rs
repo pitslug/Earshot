@@ -790,3 +790,129 @@ fn job_resummary_keeps_the_local_summary_model_in_use() {
     drop(model_use);
     assert!(host::models_in_use(&models).is_empty());
 }
+
+/// How a job of the keep-awake tests (T14.56) ends.
+#[derive(Debug, Clone, Copy)]
+enum AwakeEnd {
+    Done,
+    Fails,
+    Panics,
+    Cancelled,
+}
+
+/// Waits until `fake`'s work has begun (it logs the meeting's activity first).
+fn work_began(fake: &Fake) {
+    let until = std::time::Instant::now() + GUARD;
+    while fake.seen.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < until, "the work never began");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn jobs_keep_awake_is_held_for_the_jobs_life_and_released_on_every_way_off() {
+    let dir = TempDir::new("jobs-awake");
+    let svc = services(&dir);
+    let mut seed = 40;
+    for job in [JobKind::Retranscribe, JobKind::Resummarise] {
+        for end in [
+            AwakeEnd::Done,
+            AwakeEnd::Fails,
+            AwakeEnd::Panics,
+            AwakeEnd::Cancelled,
+        ] {
+            seed += 1;
+            let m = meeting(&svc, seed);
+            let (fake, go) = Fake::with(
+                matches!(end, AwakeEnd::Fails),
+                matches!(end, AwakeEnd::Panics),
+            );
+            let awake = earshot_runtime::keep_awake::FakeKeepAwake::new();
+            let (jobs, rx) = runner(Arc::clone(&fake));
+            let jobs = jobs.with_keep_awake(Arc::new(awake.clone()));
+            jobs.start(&svc, m, job).unwrap();
+            work_began(&fake);
+            assert_eq!(awake.alive(), 1, "{job:?} {end:?}: held while it runs");
+            if matches!(end, AwakeEnd::Cancelled) {
+                jobs.cancel(m);
+            } else {
+                go.send(()).unwrap();
+            }
+            jobs.join();
+            assert_eq!(
+                (awake.taken(), awake.alive()),
+                (1, 0),
+                "{job:?} {end:?}: released"
+            );
+            let events: Vec<JobEvent> = rx.try_iter().collect();
+            assert!(
+                !events.iter().any(|e| matches!(
+                    e,
+                    JobEvent::Warning { message, .. }
+                        if message == crate::meeting_events::KEEP_AWAKE_JOB_COPY
+                )),
+                "{events:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn jobs_keep_awake_refused_is_one_warning_after_the_note_and_the_job_runs() {
+    let dir = TempDir::new("jobs-awake-refused");
+    let svc = services(&dir);
+    let m = meeting(&svc, 60);
+    let (fake, go) = Fake::new(false);
+    let awake = earshot_runtime::keep_awake::FakeKeepAwake::refusing();
+    let (jobs, rx) = runner(fake);
+    let jobs = jobs.with_keep_awake(Arc::new(awake.clone()));
+    jobs.start_noted(&svc, m, JobKind::Resummarise, Some("Why it runs.".into()))
+        .unwrap();
+    go.send(()).unwrap();
+    jobs.join();
+    let events: Vec<JobEvent> = rx.try_iter().collect();
+    assert_eq!(awake.refused(), 1, "asked once");
+    assert_eq!(
+        events[..2],
+        [
+            JobEvent::Warning {
+                meeting: m.to_string(),
+                message: "Why it runs.".into(),
+            },
+            JobEvent::Warning {
+                meeting: m.to_string(),
+                message: crate::meeting_events::KEEP_AWAKE_JOB_COPY.into(),
+            },
+        ]
+    );
+    assert!(
+        matches!(events.last(), Some(JobEvent::Summary { .. })),
+        "{events:?}"
+    );
+    assert_eq!(events.len(), 3, "{events:?}");
+}
+
+#[test]
+fn jobs_keep_awake_two_jobs_each_hold_their_own() {
+    let dir = TempDir::new("jobs-awake-two");
+    let svc = services(&dir);
+    let (first, second) = (meeting(&svc, 70), meeting(&svc, 71));
+    let (fake_a, go_a) = Fake::new(false);
+    let (fake_b, go_b) = Fake::new(false);
+    let awake = earshot_runtime::keep_awake::FakeKeepAwake::new();
+    let (jobs_a, _rx_a) = runner(Arc::clone(&fake_a));
+    let jobs_a = jobs_a.with_keep_awake(Arc::new(awake.clone()));
+    let (jobs_b, _rx_b) = runner(Arc::clone(&fake_b));
+    let jobs_b = jobs_b.with_keep_awake(Arc::new(awake.clone()));
+    jobs_a.start(&svc, first, JobKind::Resummarise).unwrap();
+    jobs_b.start(&svc, second, JobKind::Retranscribe).unwrap();
+    work_began(&fake_a);
+    work_began(&fake_b);
+    assert_eq!(awake.alive(), 2);
+    go_a.send(()).unwrap();
+    jobs_a.join();
+    assert_eq!(awake.alive(), 1, "the other job's stays");
+    go_b.send(()).unwrap();
+    jobs_b.join();
+    assert_eq!((awake.taken(), awake.alive()), (2, 0));
+}

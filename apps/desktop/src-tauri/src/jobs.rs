@@ -224,6 +224,8 @@ struct Inner {
     sink: JobSink,
     running: Mutex<BTreeMap<EntityId, Running>>,
     gate: crate::activity::WorkGate,
+    /// Keeps the computer awake for each job's life (T14.56, [`earshot_runtime::keep_awake`]).
+    keep_awake: Arc<dyn earshot_runtime::keep_awake::KeepAwake>,
 }
 
 /// A job that runs: which, its cancel and its thread.
@@ -266,7 +268,25 @@ impl JobRunner {
             sink,
             running: Mutex::new(BTreeMap::new()),
             gate,
+            keep_awake: earshot_runtime::keep_awake::system(),
         }))
+    }
+
+    /// The same runner keeping the computer awake through `awake` (tests; call it before the
+    /// runner is shared).
+    ///
+    /// # Panics
+    /// When the runner was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_keep_awake(
+        mut self,
+        awake: Arc<dyn earshot_runtime::keep_awake::KeepAwake>,
+    ) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the runner is shared")
+            .keep_awake = awake;
+        self
     }
 
     /// Starts `job` on `meeting` and returns once it runs.
@@ -348,14 +368,25 @@ impl JobRunner {
         let thread = std::thread::Builder::new()
             .name("earshot-job".into())
             .spawn(move || {
+                // The computer stays awake for the job's life (T14.56), released when this
+                // thread ends, a panic in the work included (`run_guarded` catches it). A refusal
+                // costs nothing and is said once, after the note (why the job runs).
+                let awake = inner.keep_awake.hold();
                 if let Some(message) = note {
                     (inner.sink)(JobEvent::Warning {
                         meeting: meeting.to_string(),
                         message,
                     });
                 }
+                if awake.is_err() {
+                    (inner.sink)(JobEvent::Warning {
+                        meeting: meeting.to_string(),
+                        message: crate::meeting_events::KEEP_AWAKE_JOB_COPY.into(),
+                    });
+                }
                 run_guarded(&inner, &svc, meeting, job, &start, &token, lease);
                 drop(pass);
+                drop(awake);
             })
             .map_err(|_| IpcError::internal())?;
         running.insert(

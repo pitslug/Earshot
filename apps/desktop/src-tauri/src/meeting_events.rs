@@ -738,6 +738,33 @@ pub fn call_end_stopped_warning() -> MeetingEvent {
     }
 }
 
+/// The banner key of a power request Windows refused: the recording's
+/// ([`RuntimeWarning::SleepNotPrevented`]) and the finishing meeting's (T14.56) share it, one
+/// banner saying what the computer may do.
+pub const KEEP_AWAKE_KEY: &str = "keep-awake";
+
+/// What the user hears when Windows refused to keep the computer awake while a meeting finishes
+/// (T14.56): the work goes on, and only waits if the computer sleeps.
+pub const KEEP_AWAKE_FINISHING_COPY: &str = "Windows did not agree to keep this computer awake \
+     while Earshot finishes this meeting. If it goes to sleep, the transcript and summary wait \
+     until it wakes.";
+
+/// What a re-transcribe or re-summarise job tells the user when Windows refused to keep the
+/// computer awake for it (T14.56).
+pub const KEEP_AWAKE_JOB_COPY: &str = "Windows did not agree to keep this computer awake while \
+     this runs. If it goes to sleep, the work waits until it wakes.";
+
+/// The banner of [`KEEP_AWAKE_FINISHING_COPY`], sent after `Ended` so the screen after the
+/// meeting shows it.
+#[must_use]
+pub fn keep_awake_finishing_warning() -> MeetingEvent {
+    MeetingEvent::Warning {
+        key: KEEP_AWAKE_KEY.into(),
+        kind: WarningKind::Audio,
+        message: KEEP_AWAKE_FINISHING_COPY.into(),
+    }
+}
+
 fn warning(key: String, kind: WarningKind, message: String) -> Option<MeetingEvent> {
     Some(MeetingEvent::Warning { key, kind, message })
 }
@@ -1039,7 +1066,7 @@ pub fn warning_event(w: &RuntimeWarning) -> Option<MeetingEvent> {
             key: RAW_MIC_KEY.into(),
         }),
         RuntimeWarning::SleepNotPrevented => warning(
-            "keep-awake".into(),
+            KEEP_AWAKE_KEY.into(),
             WarningKind::Audio,
             "Windows did not agree to keep this computer awake while Earshot records. If it goes \
              to sleep, speech in that time is lost: keep it switched on until the meeting ends."

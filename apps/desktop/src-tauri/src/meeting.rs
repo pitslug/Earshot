@@ -220,6 +220,9 @@ struct Inner {
     /// the store at the first meeting's start, then kept up to date by the General page's
     /// command under the store's lock, so a recording meeting looks at it without the store.
     call_end_stop: Arc<crate::shell::OfferSetting>,
+    /// Keeps the computer awake from before the capture starts until the meeting's thread ends
+    /// (T14.56, [`earshot_runtime::keep_awake`]).
+    keep_awake: Arc<dyn earshot_runtime::keep_awake::KeepAwake>,
     /// Runs in a start that failed, after its result is known and before it takes its thread
     /// back: where a test lets another start in (T14.7).
     #[cfg(test)]
@@ -316,6 +319,7 @@ impl MeetingDriver {
             after_bounds: AfterBounds::default(),
             awake: earshot_proc::AwakeClock::system(),
             call_end_stop: Arc::default(),
+            keep_awake: earshot_runtime::keep_awake::system(),
             #[cfg(test)]
             failed_start_hook: None,
         }))
@@ -601,6 +605,23 @@ impl MeetingDriver {
         Arc::get_mut(&mut self.0)
             .expect("set before the driver is shared")
             .awake = awake;
+        self
+    }
+
+    /// The same driver keeping the computer awake through `awake` (tests; call it before the
+    /// driver is shared).
+    ///
+    /// # Panics
+    /// When the driver was cloned already.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_keep_awake(
+        mut self,
+        awake: Arc<dyn earshot_runtime::keep_awake::KeepAwake>,
+    ) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("set before the driver is shared")
+            .keep_awake = awake;
         self
     }
 
@@ -1220,6 +1241,13 @@ fn run(
             return;
         }
     };
+    // The computer stays awake until this meeting has finished (T14.56): taken before the capture
+    // starts, whose own request ends with the capture, so no moment between the end of the
+    // recording and the work after it goes without one (the two overlap while it records). It is
+    // released when this thread ends, on every way off it: finished, failed, cancelled, left after
+    // a stall (the left work goes on without it), a panic's unwind. A refusal costs nothing; it is
+    // said once, after `Ended`.
+    let awake = inner.keep_awake.hold();
     let mut session = match (prepared.start)(svc) {
         Ok(s) => s,
         Err(e) => {
@@ -1309,6 +1337,9 @@ fn run(
                     // After the end, so it shows with the work after the recording.
                     if saved && stopped_by_call_end {
                         send(crate::meeting_events::call_end_stopped_warning());
+                    }
+                    if saved && awake.is_err() {
+                        send(crate::meeting_events::keep_awake_finishing_warning());
                     }
                     if matches!(event, RuntimeEvent::Started { .. }) {
                         // `Started` is out: from here a press of the tray's item or the shortcut

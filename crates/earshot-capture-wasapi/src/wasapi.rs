@@ -3409,17 +3409,39 @@ pub fn install_ctrl_c_handler() -> Result<&'static CtrlC, CaptureError> {
 /// the request, and Windows also releases it if the process ends.
 pub struct KeepAwake(HANDLE);
 
+/// Why a [`KeepAwake`] is held: the fixed reason `powercfg /requests` shows for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AwakeReason {
+    /// Capture runs (T9.16).
+    Recording,
+    /// A meeting is finishing (its final pass and summary) or a re-transcribe or re-summarise job
+    /// runs (T14.56).
+    Finishing,
+}
+
 impl KeepAwake {
-    /// Takes the power request, shown by `powercfg /requests` with a fixed reason.
+    /// Takes the power request for a recording, shown by `powercfg /requests` with a fixed reason.
     ///
     /// # Errors
     /// [`CaptureError::Windows`] if Windows refuses. A recording never depends on it.
     pub fn hold() -> Result<Self, CaptureError> {
+        Self::hold_for(AwakeReason::Recording)
+    }
+
+    /// Takes the power request (system required, never display required) for `why`.
+    ///
+    /// # Errors
+    /// [`CaptureError::Windows`] if Windows refuses. No work depends on it.
+    pub fn hold_for(why: AwakeReason) -> Result<Self, CaptureError> {
+        let text = match why {
+            AwakeReason::Recording => w!("Earshot is recording a meeting"),
+            AwakeReason::Finishing => w!("Earshot is finishing a meeting"),
+        };
         let reason = REASON_CONTEXT {
             Version: POWER_REQUEST_CONTEXT_VERSION,
             Flags: POWER_REQUEST_CONTEXT_SIMPLE_STRING,
             Reason: REASON_CONTEXT_0 {
-                SimpleReasonString: PWSTR(w!("Earshot is recording a meeting").as_ptr().cast_mut()),
+                SimpleReasonString: PWSTR(text.as_ptr().cast_mut()),
             },
         };
         // SAFETY: `reason` is complete and alive for the call, and its string is a static that
@@ -3626,6 +3648,11 @@ mod device_tests {
         drop(first);
         drop(second);
         drop(KeepAwake::hold().unwrap());
+        // A finishing meeting's request beside a recording's (T14.56).
+        let recording = KeepAwake::hold().unwrap();
+        let finishing = KeepAwake::hold_for(AwakeReason::Finishing).unwrap();
+        drop(recording);
+        drop(finishing);
     }
 
     #[test]
