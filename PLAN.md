@@ -2842,7 +2842,7 @@ Second wave (after the lanes above are merged):
   - found (the owner, 2026-11-27, testing 0.9.0): in a narrow window the header buttons wrap onto two rows and the gone-recording Re-transcribe is a tall two-line box. Mocked and approved the same day.
   - do: when the labelled buttons do not fit on one row (measured on the header row), Speakers, Export to Obsidian and Copy summary become icon buttons with tooltips and their full accessible names (the need-names badge becomes a count); Re-transcribe and Re-summarise keep their labels. Re-transcribe with no recording is a normal greyed, focusable button with the tooltip "Recording not available".
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
-- [ ] T14.56 The computer stays awake until a meeting has finished
+- [x] T14.56 The computer stays awake until a meeting has finished
   - decided (the owner, 2026-11-27): today the power request is held only while capture runs, so an idle computer can sleep during the final pass or summary (the work resumes on wake).
   - do: hold the system-required power request (never display-required) from the end of recording until the meeting's final pass and summary end, and for a re-transcribe or re-summarise job's life; released on every way off, panics included; a refused request never costs the work and is reported as recording's is. Lid, power button and Sleep still sleep. Tests through a fake power request; the real check is a hand test.
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`
