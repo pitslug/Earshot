@@ -367,8 +367,9 @@ fn sync_replaced_the_relay_order_of_two_retranscriptions_never_blanks_a_receiver
 }
 
 /// Word choices are dropped in a pulled page's transaction (15.3) without failing it on one
-/// segment row that does not read: the page applies, the choice on the damaged line is dropped
-/// and the one on a line that still reads as recorded stays.
+/// segment row that does not read: the page applies, and while the meeting holds that damaged
+/// line its record is left as it is (T14.65, docs/sync-spec.md 17.4: a Repair from sync may heal
+/// the line, and its choice holds again then; until T14.65 the choice on it was dropped).
 #[test]
 fn sync_replaced_word_choices_beside_a_damaged_line_never_fail_a_page() {
     use crate::word_choices::{Choice, WordChoice};
@@ -437,7 +438,13 @@ fn sync_replaced_word_choices_beside_a_damaged_line_never_fail_a_page() {
         .unwrap()
         .map(|v| crate::word_choices::decode(&v))
         .unwrap_or_default();
-    assert_eq!(now, vec![choice(them.segment.id, "yes")]);
+    assert_eq!(
+        now,
+        vec![
+            choice(mic.segment.id, "shall"),
+            choice(them.segment.id, "yes")
+        ]
+    );
 }
 
 // ---- A format-4 peer with no clearing rule (15.9, 15.10) ----

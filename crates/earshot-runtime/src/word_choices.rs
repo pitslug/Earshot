@@ -152,8 +152,13 @@ pub(crate) fn drop_stale_in(
         return Ok(());
     }
     // Run in a pulled page's transaction too (docs/sync-spec.md 15.3): a row that does not read
-    // is left out, never a failed page. A choice on such a row stops holding and is dropped.
-    let rows = g.segments_or_damaged(meeting)?;
+    // never fails the page. While any line of the meeting does not read, its record is left as
+    // it is (T14.65, docs/sync-spec.md 17.4): a Repair from sync may heal that line, and the
+    // choices on it hold again then.
+    let (rows, damaged) = g.segments_and_damaged(meeting)?;
+    if damaged > 0 {
+        return Ok(());
+    }
     let lines: BTreeMap<EntityId, &str> = rows
         .iter()
         .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)

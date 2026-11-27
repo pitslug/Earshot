@@ -16,6 +16,9 @@ use crate::local::DeviceRecord;
 use crate::services::{MeetingJob, Services};
 use crate::testutil::{TempDir, meeting, services};
 
+#[path = "sync_repair_tests.rs"]
+mod repair_tests;
+
 const SECRET: &str = "an-invented-setup-secret-for-tests";
 
 /// A relay with its own data folder, serving on loopback.

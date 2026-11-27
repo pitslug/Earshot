@@ -23,6 +23,8 @@ const ROOTS: &[(&str, &str)] = &[
     // T14.49c (docs/sync-spec.md 7A.2 P5): the one-off sweep, opened only by
     // `Store::guarded_immediate` (checked in `sweep_findings`).
     ("crates/earshot-store/src/guarded.rs", "sweep_identities"),
+    // T14.65 (docs/sync-spec.md 17.2): the damage scan, the only authority on what is damaged.
+    ("crates/earshot-store/src/guarded.rs", "damage_scan"),
     ("crates/earshot-store/src/sync.rs", "converge"),
     ("crates/earshot-store/src/sync.rs", "dead_person_repair"),
     (

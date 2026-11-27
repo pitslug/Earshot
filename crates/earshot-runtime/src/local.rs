@@ -319,6 +319,12 @@ pub(crate) enum DeviceRecord {
     /// `removal-repair`: the one-off removal repair ran (T14.49e, docs/sync-spec.md 7A.2;
     /// [`crate::sync::removal_repair`]).
     RemovalRepair,
+    /// `damaged-items`: what the last damage scan found and what was showing when the banner
+    /// was last dismissed (T14.65, docs/sync-spec.md 17.2; [`crate::damaged`]).
+    DamagedItems,
+    /// `damage-repair`: a Repair from sync in progress (T14.65, docs/sync-spec.md 17.4;
+    /// [`crate::sync::repair`]).
+    DamageRepair,
     /// `identity-sweep`: the one-off sweep of speaker identity entries whose rows are gone ran
     /// (T14.49c, docs/sync-spec.md 7A.2 P5). Written only by earshot-store inside `Store::open`
     /// (`earshot_store::identities::SWEEP_KEY`, pinned to this key by a test). The runtime
@@ -388,6 +394,8 @@ impl DeviceRecord {
         DeviceRecord::IgnoreCopied,
         DeviceRecord::ReplacedTextSwept,
         DeviceRecord::RemovalRepair,
+        DeviceRecord::DamagedItems,
+        DeviceRecord::DamageRepair,
         DeviceRecord::IdentitySweep,
     ];
 
@@ -476,6 +484,8 @@ impl DeviceRecord {
                 DeviceRecord::IgnoreCopied => crate::ignore_copy::COPIED_KEY,
                 DeviceRecord::ReplacedTextSwept => crate::replaced_text::SWEPT_KEY,
                 DeviceRecord::RemovalRepair => crate::sync::REMOVAL_REPAIR_KEY,
+                DeviceRecord::DamagedItems => crate::damaged::DAMAGED_ITEMS_KEY,
+                DeviceRecord::DamageRepair => crate::sync::DAMAGE_REPAIR_KEY,
                 #[cfg(test)]
                 DeviceRecord::IdentitySweep => "identity-sweep",
             }
