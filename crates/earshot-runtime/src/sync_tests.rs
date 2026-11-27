@@ -5149,6 +5149,9 @@ mod edits;
 
 #[path = "sync_replaced_tests.rs"]
 mod replaced;
+
+#[path = "sync_removed_tests.rs"]
+mod removed;
 /// The device's database file (for damage made by SQL in a test).
 fn db_path(dev: &Device) -> std::path::PathBuf {
     earshot_store::DataDir::new(dev._dir.0.join("data")).db_path()
