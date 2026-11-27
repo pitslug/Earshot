@@ -2855,6 +2855,12 @@ Second wave (after the lanes above are merged):
   - do: a success or info banner with no action other than dismiss, and not progress of running work, hides after `BANNER_HIDE_MS` (8 s), paused while hovered or focused; errors, warnings, anything with an action, running work, waiting-for-another-computer, the meeting status and the Summary tab's notes never hide by themselves.
   - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`
 
+Ideas for after release (the owner, 2026-11-27; not tasks yet: each gets a design, and a sync spec where it touches synced rows, when it is picked up):
+
+- After 1.1: split a meeting. One continuous recording that was really two or more meetings is split at a transcript line: the audio, lines and speakers from that point move to a new meeting, each part is summarised again, and the split must sync and update an exported note.
+- Attach an email to a meeting for context (what the summary and the user see beside the transcript; where it is stored, and whether it ever reaches a remote summary writer under PLAN 3.9).
+- A notepad beside the transcript for notes during the meeting. The data model already has timestamped notes (`Note`, synced, exported as "My notes"), but no screen writes them today.
+
 Held from the review, with the reason (not done in this batch):
 
 - The final pass decodes whole tracks into memory: fixing it means a final pass that streams, which changes the bit-exact reuse rules. Its own design first.
