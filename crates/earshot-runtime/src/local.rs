@@ -926,10 +926,13 @@ pub(crate) mod tests {
     ];
 
     /// The places allowed to read a voiceprint's base: the fold, the store's rows and sync.
-    const BASE_READERS: [&str; 3] = [
+    const BASE_READERS: [&str; 4] = [
         "crates/earshot-core/src/voiceprint/",
         "crates/earshot-store/src/repo.rs",
         "crates/earshot-store/src/sync.rs",
+        // The page apply moved here from sync.rs in T14.57: it re-stamps a kept print tombstone
+        // and zeroes a pulled one, rebuilding the stored row as stored, never folding a voice.
+        "crates/earshot-store/src/guarded.rs",
     ];
 
     /// Every `.rs` file under `dir` (sources, tests, examples), leaving out build output.
