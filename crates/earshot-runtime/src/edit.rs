@@ -2144,10 +2144,9 @@ pub fn rename_person(
         }
         let identity = identity_of(&*tx, person).map_err(voiceprint_err)?;
         let mut rewritten = 0;
-        for m in tx.meetings()? {
-            if m.meta.deleted {
-                continue;
-            }
+        // A meeting row that does not read is left out (T14.64): it cannot be opened, and the
+        // rename still reaches every other meeting.
+        for m in tx.live_meetings_or_damaged()?.0 {
             for mut s in tx.speakers(m.id)? {
                 if s.meta.deleted
                     || !s.person_id.is_some_and(|id| identity.contains(&id))

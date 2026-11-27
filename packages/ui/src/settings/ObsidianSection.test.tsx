@@ -37,7 +37,7 @@ describe("Settings, Notes and storage, Obsidian", () => {
     expect(vault()).toHaveValue("");
     expect(folder()).toHaveValue("Meetings");
     expect(save()).toBeDisabled();
-    const meeting = (await s.ipc.listMeetings())[0].id;
+    const meeting = (await s.ipc.listMeetings()).meetings[0].id;
     await expect(s.ipc.exportMeeting(meeting)).rejects.toBeInstanceOf(IpcFailure);
 
     await s.user.type(vault(), "C:\\Users\\you\\Notes");
@@ -82,7 +82,7 @@ describe("Settings, Notes and storage, Obsidian", () => {
     expect(vault()).toHaveValue("C:\\Vault");
     expect(screen.getByText(exportPlace("C:\\Vault", ""))).toBeInTheDocument();
     expect(exportPlace("C:\\Vault", "")).toBe("Notes go to the top folder of C:\\Vault.");
-    const meeting = (await s.ipc.listMeetings())[0].id;
+    const meeting = (await s.ipc.listMeetings()).meetings[0].id;
     await waitFor(async () => expect((await s.ipc.exportMeeting(meeting)).note_path).not.toContain("/"));
   });
 

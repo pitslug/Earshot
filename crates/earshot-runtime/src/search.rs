@@ -67,8 +67,8 @@ pub struct SearchResults {
     /// Whether more meetings matched than `hits` holds.
     pub capped: bool,
     /// Rows of the meetings read that could not be read and were left out of the search (a
-    /// damaged row): transcript lines, and a current summary (searched as if the meeting had
-    /// none). 0 normally.
+    /// damaged row): transcript lines, a current summary (searched as if the meeting had
+    /// none), and meeting rows (the meeting is not searched, T14.64). 0 normally.
     pub unreadable: usize,
 }
 
@@ -132,8 +132,9 @@ pub fn search_meetings_unless(
     if query.is_empty() {
         return Ok(Some(results));
     }
-    let mut meetings = services.store().meetings()?;
-    meetings.retain(|m| !m.meta.deleted);
+    // A meeting row that does not read is left out and counted (T14.64), as a damaged line is.
+    let (mut meetings, damaged) = services.store().live_meetings_or_damaged()?;
+    results.unreadable += damaged;
     meetings.sort_by_key(|m| std::cmp::Reverse((m.started_unix_ms, m.id)));
     for meeting in meetings {
         if cancel.is_cancelled() {

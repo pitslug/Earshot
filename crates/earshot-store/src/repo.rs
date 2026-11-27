@@ -525,6 +525,22 @@ pub(crate) mod lenient {
         Ok(ok.pop().map(Ok).or_else(|| bad.pop().map(Err)))
     }
 
+    /// The meeting rows that are not tombstones, in [`all_meetings`]' order (T14.64: what a
+    /// list of every meeting reads). A row whose `deleted` column holds 1 is a tombstone and is
+    /// left out whether or not its other values read; any other row that does not read comes
+    /// back by its rowid.
+    pub(crate) fn live_meetings(c: &Connection) -> Result<(Vec<Meeting>, Vec<i64>), RepoError> {
+        let (ok, bad) = split_rows(
+            c,
+            "meeting",
+            synced_cols(&MEETING),
+            "WHERE deleted IS NOT 1 ORDER BY started_unix_ms, id",
+            &[],
+            meeting_row,
+        )?;
+        Ok((ok.into_iter().filter(|m| !m.meta.deleted).collect(), bad))
+    }
+
     /// `meeting`'s speaker rows in [`speakers_of`]'s order, each with its rowid.
     pub(crate) fn speakers_in_order(
         c: &Connection,

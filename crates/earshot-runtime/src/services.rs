@@ -284,6 +284,17 @@ pub enum MeetingActivity {
     Ready,
 }
 
+/// What [`Services::live_meetings`] read.
+#[derive(Debug)]
+pub struct LiveMeetings<T> {
+    /// Each live meeting that reads, in the store's order, with its activity and what the
+    /// caller read of it.
+    pub meetings: Vec<(earshot_core::model::Meeting, MeetingActivity, T)>,
+    /// Meeting rows that are not tombstones but do not read (damaged, T14.64): left out of
+    /// `meetings`. 0 normally.
+    pub damaged: usize,
+}
+
 /// The jobs that held each meeting at one moment.
 type HeldJobs = BTreeMap<EntityId, BTreeSet<MeetingJob>>;
 
@@ -691,12 +702,15 @@ impl Services {
     /// waited for the store reads as that job, never as interrupted or unprocessed. A job that
     /// ended meanwhile is still reported: the event that follows its end brings the next read.
     ///
+    /// A meeting row that does not read is left out and counted ([`LiveMeetings::damaged`],
+    /// T14.64), never failing the list.
+    ///
     /// # Errors
     /// Store errors; `each`'s error.
     pub fn live_meetings<T>(
         &self,
         each: impl FnMut(&Store, &earshot_core::model::Meeting) -> Result<T, RuntimeError>,
-    ) -> Result<Vec<(earshot_core::model::Meeting, MeetingActivity, T)>, RuntimeError> {
+    ) -> Result<LiveMeetings<T>, RuntimeError> {
         let before = self.held_jobs();
         self.live_meetings_since(&before, each)
     }
@@ -707,12 +721,14 @@ impl Services {
         &self,
         before: &HeldJobs,
         mut each: impl FnMut(&Store, &earshot_core::model::Meeting) -> Result<T, RuntimeError>,
-    ) -> Result<Vec<(earshot_core::model::Meeting, MeetingActivity, T)>, RuntimeError> {
-        use earshot_core::model::MeetingRepo;
+    ) -> Result<LiveMeetings<T>, RuntimeError> {
         let mut read = Vec::new();
+        let damaged;
         {
             let db = self.store();
-            for m in db.meetings()?.into_iter().filter(|m| !m.meta.deleted) {
+            let (meetings, bad) = db.live_meetings_or_damaged()?;
+            damaged = bad;
+            for m in meetings {
                 let busy = job_activity(before.get(&m.id));
                 let activity = match busy {
                     Some(busy) => busy,
@@ -723,15 +739,18 @@ impl Services {
             }
         }
         let after = self.held_jobs();
-        Ok(read
-            .into_iter()
-            .map(|(m, activity, more, was_busy)| {
-                let now = (!was_busy)
-                    .then(|| job_activity(after.get(&m.id)))
-                    .flatten();
-                (m, now.unwrap_or(activity), more)
-            })
-            .collect())
+        Ok(LiveMeetings {
+            meetings: read
+                .into_iter()
+                .map(|(m, activity, more, was_busy)| {
+                    let now = (!was_busy)
+                        .then(|| job_activity(after.get(&m.id)))
+                        .flatten();
+                    (m, now.unwrap_or(activity), more)
+                })
+                .collect(),
+            damaged,
+        })
     }
 
     /// The jobs holding each meeting now.
@@ -847,6 +866,7 @@ mod tests {
     fn listed(svc: &Services) -> BTreeMap<EntityId, MeetingActivity> {
         svc.live_meetings(|_, _| Ok(()))
             .unwrap()
+            .meetings
             .into_iter()
             .map(|(m, activity, ())| (m.id, activity))
             .collect()
@@ -910,8 +930,13 @@ mod tests {
             .unwrap();
         assert_eq!(seen.len(), 3);
         assert!(ids.iter().all(|id| seen.contains(id)));
-        assert_eq!(read.len(), 3);
-        assert!(read.iter().all(|(m, _, more)| *more == m.duration_ms));
+        assert_eq!(read.meetings.len(), 3);
+        assert_eq!(read.damaged, 0);
+        assert!(
+            read.meetings
+                .iter()
+                .all(|(m, _, more)| *more == m.duration_ms)
+        );
         assert!(svc.db.try_lock().is_ok(), "the store is free again");
         // A failing read of one meeting fails the list, with the store free again.
         let e = svc.live_meetings(|_, _| -> Result<(), RuntimeError> {
@@ -943,6 +968,7 @@ mod tests {
         let all: BTreeMap<EntityId, MeetingActivity> = svc
             .live_meetings_since(&before, |_, _| Ok(()))
             .unwrap()
+            .meetings
             .into_iter()
             .map(|(m, activity, ())| (m.id, activity))
             .collect();

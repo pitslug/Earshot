@@ -245,6 +245,9 @@ export interface MockIpcData {
   /** A damaged row on this computer that the People list, Remove and Forget voice leave as it
    * is (T14.57): their answers say so (default false). */
   personsDamaged?: boolean;
+  /** A damaged meeting row on this computer that the meeting list leaves out (T14.64): its
+   * answer says so (default false). */
+  meetingsDamaged?: boolean;
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
    * rejects with `no_vault`. */
   vault?: string;
@@ -880,10 +883,12 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     listFolders: async () => storeFailure() ?? foldersMock.listFolders(),
     appInfo: async () => ({ ...appInfo }),
     listMeetings: async () =>
-      storeFailure() ??
-      [...meetings]
-        .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
-        .map((m) => ({ ...m })),
+      storeFailure() ?? {
+        meetings: [...meetings]
+          .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
+          .map((m) => ({ ...m })),
+        damaged: data.meetingsDamaged === true,
+      },
     searchMeetings: async (query) =>
       searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
     startMeeting: async (mode, title, keepLocal) => {

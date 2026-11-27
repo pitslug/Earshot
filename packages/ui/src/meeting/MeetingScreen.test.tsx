@@ -74,7 +74,7 @@ describe("the offer to stop when a call ends", () => {
     advance(s.timer, 60_000);
     expect(screen.getByText("The call seems to have ended.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Stop meeting" })).toBeTruthy();
-    expect((await s.ipc.listMeetings())[0].state).toBe("Recording");
+    expect((await s.ipc.listMeetings()).meetings[0].state).toBe("Recording");
   });
 
   it("with stopping by itself off (the default), asks without promising a stop", async () => {
@@ -123,7 +123,7 @@ describe("the offer to stop when a call ends", () => {
     await s.user.click(await screen.findByRole("button", { name: "Keep recording" }));
     expect(screen.queryByText("The call seems to have ended.")).toBeNull();
     expect(kept.count).toBe(1);
-    expect((await s.ipc.listMeetings())[0].state).toBe("Recording");
+    expect((await s.ipc.listMeetings()).meetings[0].state).toBe("Recording");
   });
 
   it("Stop recording stops the meeting", async () => {
@@ -132,7 +132,7 @@ describe("the offer to stop when a call ends", () => {
     advance(s.timer, OFFER_AFTER_MS);
     await s.user.click(await screen.findByRole("button", { name: "Stop recording" }));
     await waitFor(async () => {
-      expect((await s.ipc.listMeetings())[0].state).not.toBe("Recording");
+      expect((await s.ipc.listMeetings()).meetings[0].state).not.toBe("Recording");
     });
     expect(screen.queryByText("The call seems to have ended.")).toBeNull();
   });
@@ -224,7 +224,7 @@ describe("cancelling while a meeting finishes", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
-    const listed = await s.ipc.listMeetings();
+    const listed = (await s.ipc.listMeetings()).meetings;
     expect(listed[0].state).toBe("Unprocessed");
     const list = screen.getByRole("list", { name: "Meetings" });
     await waitFor(() => expect(within(list).getByText(/Draft transcript/)).toBeInTheDocument());
@@ -249,7 +249,7 @@ describe("cancelling while a meeting finishes", () => {
       within(meetingStatus()).getByText(/The recording and transcript are saved\./),
     ).toBeInTheDocument();
     expect(within(meetingStatus()).getByRole("button", { name: "Re-summarise" })).toBeInTheDocument();
-    expect((await s.ipc.listMeetings())[0].state).toBe("Ready");
+    expect((await s.ipc.listMeetings()).meetings[0].state).toBe("Ready");
   });
 
   it("gets the button back with the reason when the press does not reach the app", async () => {
@@ -328,7 +328,7 @@ describe("a meeting started while the previous one finishes", () => {
     const first = await startMeeting(s);
     await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
     await startMeeting(s);
-    const listed = await s.ipc.listMeetings();
+    const listed = (await s.ipc.listMeetings()).meetings;
     expect(listed.map((m) => m.state).sort()).toEqual(["Processing", "Recording"]);
     await expect(s.ipc.startMeeting("Call", null, false)).rejects.toMatchObject({ error: { kind: "busy" } });
   }, 30_000);
@@ -406,7 +406,7 @@ describe("a meeting started while the previous one finishes", () => {
       await real(meeting);
     };
     const first = await startMeeting(s);
-    const olderId = (await s.ipc.listMeetings())[0].id;
+    const olderId = (await s.ipc.listMeetings()).meetings[0].id;
     await s.user.click(within(first).getByRole("button", { name: "Stop meeting" }));
     expect(await screen.findByText("Summary in progress")).toBeInTheDocument();
     await startMeeting(s);
@@ -422,7 +422,7 @@ describe("a meeting started while the previous one finishes", () => {
     await waitFor(() => expect(screen.queryByText("Your previous meeting is still finishing")).toBeNull());
     expect(screen.queryByRole("button", { name: "Cancel finishing" })).toBeNull();
     expect(screen.getByRole("button", { name: "Stop meeting" })).toBeEnabled();
-    const older = (await s.ipc.listMeetings()).find((m) => m.id === olderId);
+    const older = (await s.ipc.listMeetings()).meetings.find((m) => m.id === olderId);
     expect(older?.state).toBe("Unprocessed");
   }, 30_000);
 
@@ -449,7 +449,7 @@ describe("a meeting started while the previous one finishes", () => {
       },
     });
     await startMeeting(s);
-    const olderId = (await s.ipc.listMeetings())[0].id;
+    const olderId = (await s.ipc.listMeetings()).meetings[0].id;
     // The end and the next start reach the window before React draws in between.
     act(() => {
       for (const h of handlers) {
@@ -476,7 +476,7 @@ describe("a meeting started while the previous one finishes", () => {
       pressed.push(meeting);
     };
     await startMeeting(s);
-    const first = (await s.ipc.listMeetings())[0].id;
+    const first = (await s.ipc.listMeetings()).meetings[0].id;
     const send = (e: MeetingEvent) =>
       act(() => {
         for (const h of handlers) h(e);
@@ -513,7 +513,7 @@ describe("a meeting started while the previous one finishes", () => {
       },
     });
     await startMeeting(s);
-    const olderId = (await s.ipc.listMeetings())[0].id;
+    const olderId = (await s.ipc.listMeetings()).meetings[0].id;
     // The driver frees the next start just before the older meeting's end goes out, so a start
     // from the tray can overtake it.
     act(() => {
@@ -641,7 +641,7 @@ describe("meeting screen", () => {
     expect(screen.queryByText(/Keep the title/)).toBeNull();
     // Cancel goes back without starting anything.
     await s.user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(await s.ipc.listMeetings()).toEqual([]);
+    expect((await s.ipc.listMeetings()).meetings).toEqual([]);
   });
 
   it("shows why a meeting could not start", async () => {

@@ -1,11 +1,13 @@
-// A meeting list that could not be read keeps what was read before (T14.16).
+// A meeting list that could not be read keeps what was read before (T14.16); one that left out
+// a damaged meeting says so (T14.64).
 
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { type Ipc, IpcFailure, type MeetingListItem, type SyncEvent, createMockIpc } from "../ipc";
-import { renderApp } from "../test/app";
+import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
+import { listLoaded, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 
 const at = (hour: number) => new Date(2026, 10, 2, hour, 0).getTime();
@@ -64,6 +66,28 @@ const rowNames = () =>
     .getAllByRole("button", { name: /^(?!Delete )/ })
     .filter((b) => b.getAttribute("aria-expanded") === null)
     .map((b) => b.textContent);
+
+// T14.64: a damaged meeting row on this computer is left out of the list, which says so.
+describe("a meeting list with a damaged meeting left out", () => {
+  for (const damaged of [true, false]) {
+    it(damaged ? "lists the others and shows the fixed note" : "shows no note when nothing was left out", async () => {
+      const timer = createManualTimer(NOW);
+      const ipc = createMockIpc({ timer, now: NOW, meetings: [SHOWN, OTHER], meetingsDamaged: damaged });
+      renderApp(ipc, { timer, now: () => NOW });
+      await listLoaded();
+      expect(rowNames()).toHaveLength(2);
+      const nav = screen.getByRole("navigation", { name: "Meetings and settings" });
+      if (damaged) {
+        expect(within(nav).getByText(MEETING_LIST_COPY.list_damaged_note)).toBeInTheDocument();
+      } else {
+        expect(screen.queryByText(MEETING_LIST_COPY.list_damaged_note)).toBeNull();
+      }
+      // Never an error bar: the list read worked.
+      expect(screen.queryByText(STALE_TITLE)).toBeNull();
+      expect(screen.queryByText(FAILED_TITLE)).toBeNull();
+    });
+  }
+});
 
 describe("a meeting list that could not be read", () => {
   it("keeps the list and the open meeting, says so, and reads again on Try again", async () => {

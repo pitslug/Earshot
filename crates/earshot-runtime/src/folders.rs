@@ -143,22 +143,22 @@ pub fn folder_of(
 /// # Errors
 /// Storage errors.
 pub fn meeting_folders(services: &Services) -> Result<BTreeMap<EntityId, EntityId>, RuntimeError> {
-    meeting_folders_in(&**services.store())
+    meeting_folders_in(&services.store())
 }
 
 /// [`meeting_folders`] in a store the caller already holds (a host listing meetings under
-/// its own one lock): the one rule both use.
+/// its own one lock): the one rule both use. A meeting row that does not read is left out
+/// (T14.64: the list it serves leaves it out too and says so).
 ///
 /// # Errors
 /// Storage errors.
-pub fn meeting_folders_in<R: MeetingRepo + FolderRepo + ?Sized>(
-    repo: &R,
+pub fn meeting_folders_in(
+    store: &earshot_store::Store,
 ) -> Result<BTreeMap<EntityId, EntityId>, RuntimeError> {
-    let folders = LiveFolders::read(repo)?;
-    Ok(repo
-        .meetings()?
+    let folders = LiveFolders::read(store)?;
+    let (meetings, _damaged) = store.live_meetings_or_damaged()?;
+    Ok(meetings
         .into_iter()
-        .filter(|m| !m.meta.deleted)
         .filter_map(|m| Some((m.id, folders.resolve(m.folder_id)?.id)))
         .collect())
 }

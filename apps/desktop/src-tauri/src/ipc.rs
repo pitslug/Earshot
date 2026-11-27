@@ -409,13 +409,25 @@ impl MeetingListItem {
     }
 }
 
+/// The meeting list (T14.64): the meetings, and whether a damaged meeting row on this computer
+/// was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
+/// names a damaged row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct MeetingListView {
+    /// The live meetings, newest first.
+    pub meetings: Vec<MeetingListItem>,
+    /// Some damaged meeting row was left out.
+    pub damaged: bool,
+}
+
 /// The live meetings, newest first, each with its activity and resolved folder: one read of
 /// the store under one lock (`Services::live_meetings`, T14.13), so a long list waits for the
-/// store once and every row is from the same state of it.
+/// store once and every row is from the same state of it. A meeting row that does not read is
+/// left out and said ([`MeetingListView::damaged`], T14.64), never failing the list.
 ///
 /// # Errors
 /// Store errors.
-pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcError> {
+pub fn meeting_list(services: &Services) -> Result<MeetingListView, IpcError> {
     // Every meeting's folder, read once with the first meeting, in the same lock, by the
     // one rule (`folders::meeting_folders_in`): never the raw `Meeting::folder_id`, so a
     // deleted or unknown folder reads as none.
@@ -430,6 +442,7 @@ pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcErro
         Ok((folder, new_summary))
     })?;
     let mut items: Vec<(u64, MeetingListItem)> = read
+        .meetings
         .iter()
         .map(|(m, activity, (folder, new_summary))| {
             (
@@ -439,7 +452,10 @@ pub fn meeting_list(services: &Services) -> Result<Vec<MeetingListItem>, IpcErro
         })
         .collect();
     items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
-    Ok(items.into_iter().map(|(_, i)| i).collect())
+    Ok(MeetingListView {
+        meetings: items.into_iter().map(|(_, i)| i).collect(),
+        damaged: read.damaged > 0,
+    })
 }
 
 /// Where a search found a meeting.
@@ -477,8 +493,8 @@ pub struct SearchResultsView {
     pub items: Vec<SearchResultItem>,
     /// Whether more meetings matched than `items` holds.
     pub capped: bool,
-    /// Transcript lines and summaries left out of the search because they could not be read
-    /// (`SearchResults::unreadable`): a count only, 0 normally.
+    /// Transcript lines, summaries and meetings left out of the search because they could not
+    /// be read (`SearchResults::unreadable`): a count only, 0 normally.
     pub unreadable: u32,
 }
 
@@ -590,11 +606,12 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
-/// The live meetings, newest first, with what is happening to each. Runs off the main
-/// thread; the store lock is held only for each read.
+/// The live meetings, newest first, with what is happening to each, and whether a damaged
+/// meeting was left out (T14.64). Runs off the main thread; the store lock is held only for
+/// each read.
 #[tauri::command]
 #[specta::specta]
-async fn list_meetings(state: State<'_, AppState>) -> Result<Vec<MeetingListItem>, IpcError> {
+async fn list_meetings(state: State<'_, AppState>) -> Result<MeetingListView, IpcError> {
     let services = state.services()?;
     blocking(move || meeting_list(&services)).await
 }

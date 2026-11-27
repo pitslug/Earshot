@@ -1,0 +1,4 @@
+{
+  "about": "Fixed copy for the meeting list when a meeting row on this computer is damaged and was left out (T14.64). Draft wording, to be shown to the owner. Read by the desktop's tests and the UI's mock and tests; shipped with the app, so public copy only.",
+  "list_damaged_note": "Some meetings on this computer are damaged and are not shown."
+}

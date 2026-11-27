@@ -1,0 +1,220 @@
+//! T14.64: one meeting row that does not read never fails a reader that lists every meeting.
+//! The meeting list, search, the folder map, a rename of a person, the recovery at start and
+//! an export of every meeting each leave it out (the list and search count it). Damage is made
+//! by SQL from a second connection (a title that is not UTF-8); every name is invented; each
+//! test runs with the damage and without it (the control).
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use earshot_core::export::ExportOptions;
+use earshot_core::identity::{EntityId, SyncMeta};
+use earshot_core::model::MeetingRepo;
+use earshot_core::voiceprint::{Person, VoiceprintRepo};
+use rand_chacha::ChaCha8Rng;
+use rand_core::SeedableRng;
+
+use crate::Services;
+use crate::testutil::{TempDir, meeting, services};
+
+struct World {
+    svc: Services,
+    dir: TempDir,
+}
+
+impl World {
+    fn new(tag: &str) -> Self {
+        let dir = TempDir::new(tag);
+        let (svc, _) = services(&dir);
+        Self { svc, dir }
+    }
+
+    /// Makes `meeting`'s row unreadable: its title is no longer UTF-8.
+    fn damage(&self, meeting: EntityId) {
+        let db = earshot_store::DataDir::new(self.dir.0.join("data")).db_path();
+        let c = rusqlite::Connection::open(db).unwrap();
+        let changed = c
+            .execute(
+                "UPDATE meeting SET title = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                rusqlite::params![meeting.as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+
+    /// Three meetings; the middle one damaged when `damaged`. Returns (first, middle, last).
+    fn three(&self, damaged: bool) -> (EntityId, EntityId, EntityId) {
+        let first = meeting(&self.svc, "Invented planning", 101);
+        let middle = meeting(&self.svc, "Invented review", 102);
+        let last = meeting(&self.svc, "Invented retro", 103);
+        if damaged {
+            self.damage(middle);
+        }
+        (first, middle, last)
+    }
+}
+
+/// The meeting list lists the readable meetings and counts the damaged one; the control
+/// counts nothing and lists all three.
+#[test]
+fn meeting_list_damaged_row_is_left_out_of_the_list_and_counted() {
+    for damaged in [true, false] {
+        let w = World::new("list-damaged");
+        let (first, middle, last) = w.three(damaged);
+        let read = w.svc.live_meetings(|_, m| Ok(m.id)).unwrap();
+        assert_eq!(read.damaged, usize::from(damaged));
+        let mut ids: Vec<EntityId> = read.meetings.iter().map(|(_, _, id)| *id).collect();
+        ids.sort();
+        let mut want = vec![first, last];
+        if !damaged {
+            want.push(middle);
+        }
+        want.sort();
+        assert_eq!(ids, want);
+    }
+}
+
+/// Search finds the readable meetings and counts the damaged one as unreadable; the control
+/// finds all three with nothing unreadable.
+#[test]
+fn meeting_list_damaged_row_never_fails_a_search() {
+    for damaged in [true, false] {
+        let w = World::new("search-damaged");
+        let (_, middle, _) = w.three(damaged);
+        let found = crate::search::search_meetings(&w.svc, "release").unwrap();
+        assert_eq!(found.unreadable, usize::from(damaged));
+        assert_eq!(found.hits.len(), if damaged { 2 } else { 3 });
+        assert_eq!(
+            found.hits.iter().any(|h| h.meeting == middle),
+            !damaged,
+            "{found:?}"
+        );
+    }
+}
+
+/// The folder map holds the readable meetings' folders; the control holds all three.
+#[test]
+fn meeting_list_damaged_row_never_fails_the_folders_of_the_list() {
+    for damaged in [true, false] {
+        let w = World::new("folders-damaged");
+        let (first, middle, last) = w.three(false);
+        let folder = crate::folders::create(&w.svc, "Invented folder").unwrap();
+        for m in [first, middle, last] {
+            crate::folders::move_meeting(&w.svc, m, Some(folder)).unwrap();
+        }
+        if damaged {
+            w.damage(middle);
+        }
+        let map = crate::folders::meeting_folders(&w.svc).unwrap();
+        let mut want: BTreeMap<EntityId, EntityId> =
+            [(first, folder), (last, folder)].into_iter().collect();
+        if !damaged {
+            want.insert(middle, folder);
+        }
+        assert_eq!(map, want);
+    }
+}
+
+/// Renaming a person everywhere still renames their voice in every readable meeting.
+#[test]
+fn meeting_list_damaged_row_never_fails_a_person_rename() {
+    for damaged in [true, false] {
+        let w = World::new("rename-damaged");
+        let (first, middle, last) = w.three(false);
+        let person =
+            EntityId::from_bytes([0x01, 0x94, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 1, 7]);
+        {
+            let clock = Arc::clone(&w.svc.clock);
+            let mut db = w.svc.store();
+            let (store, hlc) = db.parts();
+            store
+                .put_person(Person {
+                    id: person,
+                    meta: SyncMeta::new(hlc, &*clock),
+                    display_name: "Invented Corvina".into(),
+                    is_me: false,
+                    merged_into: None,
+                })
+                .unwrap();
+            for m in [first, middle, last] {
+                let mut s = store
+                    .speakers(m)
+                    .unwrap()
+                    .into_iter()
+                    .find(|s| s.display_name == "Alice")
+                    .unwrap();
+                s.person_id = Some(person);
+                s.display_name = "Invented Corvina".into();
+                s.meta.touch(hlc, &*clock);
+                store.put_speaker(s).unwrap();
+            }
+        }
+        if damaged {
+            w.damage(middle);
+        }
+        let rewritten = crate::edit::rename_person(&w.svc, person, "Invented Halvard").unwrap();
+        assert_eq!(rewritten, if damaged { 2 } else { 3 });
+        for m in [first, last] {
+            let names: Vec<String> = w
+                .svc
+                .store()
+                .speakers(m)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.display_name)
+                .collect();
+            assert!(names.contains(&"Invented Halvard".to_owned()), "{names:?}");
+        }
+    }
+}
+
+/// The recovery at start still answers for the readable interrupted meeting.
+#[test]
+fn meeting_list_damaged_row_never_stops_recovery() {
+    for damaged in [true, false] {
+        let w = World::new("recover-damaged");
+        let (first, _, _) = w.three(damaged);
+        {
+            let mut db = w.svc.store();
+            let mut m = db.meeting(first).unwrap().unwrap();
+            m.duration_ms = None;
+            db.put_meeting(m).unwrap();
+        }
+        let report = crate::recover::recover_interrupted(&w.svc);
+        assert_eq!(report.list_failed, None);
+        assert_eq!(report.nothing_saved, vec![first], "{report:?}");
+    }
+}
+
+/// An export of every meeting exports the readable ones.
+#[test]
+fn meeting_list_damaged_row_never_fails_an_export_of_every_meeting() {
+    for damaged in [true, false] {
+        let w = World::new("export-damaged");
+        let (first, middle, last) = w.three(damaged);
+        let vault = w.dir.0.join("vault");
+        std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        let all = crate::export::export_meetings(
+            &w.svc,
+            &vault,
+            crate::export::ExportSelection::All,
+            &ExportOptions::default(),
+            &mut ChaCha8Rng::seed_from_u64(9),
+        )
+        .unwrap();
+        let mut ids: Vec<EntityId> = all
+            .iter()
+            .map(|(m, r)| {
+                assert!(r.is_ok(), "{r:?}");
+                *m
+            })
+            .collect();
+        ids.sort();
+        let mut want = vec![first, last];
+        if !damaged {
+            want.push(middle);
+        }
+        want.sort();
+        assert_eq!(ids, want);
+    }
+}

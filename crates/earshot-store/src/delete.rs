@@ -399,6 +399,17 @@ impl Store {
         Ok(for_deletion::meeting(&self.conn, meeting)?.map(|r| r.map_err(|_| ())))
     }
 
+    /// Every live meeting row that reads, in [`MeetingRepo::meetings`]' order, and how many
+    /// meeting rows that are not tombstones do not read (T14.64): what a list of every meeting
+    /// reads, so one damaged row is left out and counted, never failing the list.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_meetings_or_damaged(&self) -> Result<(Vec<Meeting>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_meetings(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
     /// Whether `meeting`'s row is a tombstone, read from that one column, so a row whose other
     /// values do not read still answers (T14.26: after a deletion whose checkpoint was
     /// `Busy`). `false` for an unknown meeting.
@@ -413,6 +424,15 @@ impl Store {
 }
 
 impl StoreTx<'_> {
+    /// [`Store::live_meetings_or_damaged`] inside the transaction.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_meetings_or_damaged(&self) -> Result<(Vec<Meeting>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_meetings(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
     /// [`Store::local_keys`] inside the transaction.
     ///
     /// # Errors

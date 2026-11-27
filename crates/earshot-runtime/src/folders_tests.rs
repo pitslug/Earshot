@@ -317,7 +317,7 @@ fn folders_a_dangling_or_tombstoned_folder_id_resolves_to_no_folder() {
     );
     // The same rule in a store the caller already holds (a host's meeting list).
     assert_eq!(
-        meeting_folders_in(&**svc.store()).unwrap(),
+        meeting_folders_in(&svc.store()).unwrap(),
         BTreeMap::from([(filed, live)])
     );
     assert_eq!(names(&svc), ["Live"]);

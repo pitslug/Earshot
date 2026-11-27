@@ -129,6 +129,8 @@ pub mod vocabulary;
 pub mod word_choices;
 
 #[cfg(test)]
+mod meeting_list_damaged_tests;
+#[cfg(test)]
 mod sync_damaged_scan;
 #[cfg(test)]
 mod sync_damaged_tests;
@@ -192,8 +194,8 @@ impl HardwareCache {
     }
 }
 pub use services::{
-    BoxRng, Db, MeetingActivity, MeetingJob, MeetingLease, Services, SharedClock, SystemClock,
-    os_seeded_rng,
+    BoxRng, Db, LiveMeetings, MeetingActivity, MeetingJob, MeetingLease, Services, SharedClock,
+    SystemClock, os_seeded_rng,
 };
 
 /// Runtime failures that end a job (recoverable problems are events instead).

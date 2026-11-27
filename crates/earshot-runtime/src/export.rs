@@ -57,7 +57,7 @@ use std::sync::Arc;
 
 use earshot_core::export::{ExportInput, ExportOptions, ExportUser, RenderedExport, render};
 use earshot_core::identity::{DeviceId, EntityId};
-use earshot_core::model::{ExportRepo, MeetingRepo};
+use earshot_core::model::ExportRepo;
 use earshot_store::{
     ExportDb, ExportItem, ExportReport, Store, StoreError, export_note, export_notes,
 };
@@ -251,7 +251,9 @@ fn export_meetings_observed<R: Rng + ?Sized>(
         let db = services.store();
         (
             db.device(),
-            db.meetings()?,
+            // A meeting row that does not read is left out (T14.64): it cannot be rendered,
+            // and the others are still exported.
+            db.live_meetings_or_damaged()?.0,
             crate::edit::user_name_in(&**db)?,
         )
     };

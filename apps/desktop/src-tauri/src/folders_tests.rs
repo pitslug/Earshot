@@ -49,6 +49,7 @@ fn id(text: &str) -> EntityId {
 fn filed(svc: &Services) -> Vec<(String, Option<String>)> {
     meeting_list(svc)
         .unwrap()
+        .meetings
         .into_iter()
         .map(|m| (m.title, m.folder_id))
         .collect()
