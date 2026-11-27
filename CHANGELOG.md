@@ -4,6 +4,28 @@ What each release changed, in plain words, newest first. It is written from the 
 
 [docs/compatibility.md](docs/compatibility.md) says what an update does to your data, to sync and to the relay and worker.
 
+## 0.9.2 - 2026-11-28
+
+This release changes no synced row and no database step: a computer on 0.9.2 still syncs with one on 0.9.1. The relay can stay on 0.9.1. Update the summary worker to 0.9.2 for Stop to reach it: an older worker writes on until it finishes.
+
+### Added
+
+- A summary being written on another computer can be stopped from the meeting page. The other computer stops writing it, and the page says you stopped it.
+- The taskbar button's right-click menu has Start meeting or Stop meeting, and Quit Earshot, as the tray does. If you pinned Earshot to the taskbar from its running window before this version, unpin it and pin it again once.
+
+### Changed
+
+- While a summary is written elsewhere, the meeting list says "Summarising on another computer..." and the header says where the new summary is being written. A writer that fails and hands on to the next one is said as it happens.
+- When the summary model on this computer fails, the message says why: the meeting is too long, the reply could not be used, the model could not load, and so on.
+- The meeting header's buttons are icons on their own row below the title, at every width.
+- The Summary tab's TL;DR, Decisions, Actions, Notes and Open questions headings are larger, and topics sit under Notes.
+
+### Fixed
+
+- A long meeting's summary on this computer no longer fails when its parts do not fit into one merge: the merge is shortened, or the parts are shown one after another.
+- Exported notes and summaries use the meeting's local time, not UTC.
+- Ignored voices are no longer listed as attendees, in the Obsidian note or in the summary.
+- While a new summary is being written, the earlier-name and out-of-date notes no longer ask you to re-summarise.
 ## 0.9.1 - 2026-11-27
 
 This release changes no synced row and no database step: a computer on 0.9.1 still syncs with one on 0.9.0, and the relay and worker can stay on 0.9.0.
