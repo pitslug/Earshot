@@ -38,7 +38,8 @@ describe("MeetingDetailView", () => {
     expect(toggle).toHaveTextContent(/^2$/);
     expect(toggle.getAttribute("aria-controls")).toBe(panel().id);
     expect(within(panel()).getByText(/Names flow into the summary and export/)).toBeInTheDocument();
-    expect(screen.getByText("Tick actions in the Obsidian note.")).toBeInTheDocument();
+    // A re-export replaces ticks (T14.63), so the page no longer points at the note for them (T14.70).
+    expect(screen.queryByText(/Tick actions/)).toBeNull();
     // Casey is the user here: their action is under "My actions", with no owner shown.
     const mine = screen.getByRole("list", { name: "My actions" });
     expect(within(mine).getAllByRole("listitem")[0].textContent).toContain("Confirm the revised commissioning date");

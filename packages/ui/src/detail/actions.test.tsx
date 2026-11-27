@@ -145,7 +145,7 @@ describe("the meeting page's actions", () => {
       expect.stringMatching(/^Check the drawings\[\d+\] · Tamsin Ode and Robin Vale$/),
       expect.stringMatching(/^Order the seals\[\d+\] · Robin Vale$/),
     ]);
-    expect(screen.getByText("Tick actions in the Obsidian note.")).toBeInTheDocument();
+    expect(screen.queryByText(/Tick actions/)).toBeNull();
   });
 
   it("puts an owner naming the user among others under My actions, the others after \"with\"", async () => {

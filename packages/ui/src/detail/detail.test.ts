@@ -66,11 +66,13 @@ describe("summaryMarkdown", () => {
         "- Robin: Ring the marina (by Friday)",
         "- Jules: Draft the route",
         "",
-        "## Costs",
+        "## Notes",
+        "",
+        "### Costs",
         "",
         "- Fuel is up",
         "",
-        "## Weather",
+        "### Weather",
         "",
         "- Spring is calmer",
         "",
@@ -153,7 +155,9 @@ describe("summaryMarkdown", () => {
         "",
         "- Robin Lee: Ring the marina (by next week)",
         "",
-        "## Costs and fuel",
+        "## Notes",
+        "",
+        "### Costs and fuel",
         "",
         "- Up again",
         "",
@@ -165,13 +169,30 @@ describe("summaryMarkdown", () => {
     );
   });
 
-  it("writes the bullets of a note with no heading on their own", () => {
+  it("keeps a topic with a blank heading under its own empty heading, as the export does", () => {
     expect(
       summaryMarkdown({
         ...EMPTY,
         tldr: "Short.",
-        notes: [{ heading: " ", bullets: [{ text: "A bullet", citations: [] }] }],
+        notes: [
+          { heading: "Costs", bullets: [{ text: "Fuel is up", citations: [] }] },
+          { heading: " ", bullets: [{ text: "A bullet", citations: [] }] },
+        ],
       }),
-    ).toBe("## TL;DR\n\nShort.\n\n- A bullet\n");
+    ).toBe("## TL;DR\n\nShort.\n\n## Notes\n\n### Costs\n\n- Fuel is up\n\n### \n\n- A bullet\n");
+  });
+
+  it("writes no Notes heading when no topic holds anything", () => {
+    // Pinned by "leaves out empty sections and blank items" too: topics with no real bullet.
+    expect(summaryMarkdown({ ...EMPTY, tldr: "Short.", notes: [] })).toBe("## TL;DR\n\nShort.\n");
+    const one = summaryMarkdown({
+      ...EMPTY,
+      tldr: "Short.",
+      notes: [
+        { heading: "Empty", bullets: [] },
+        { heading: "Costs", bullets: [{ text: "Fuel is up", citations: [] }] },
+      ],
+    });
+    expect(one).toBe("## TL;DR\n\nShort.\n\n## Notes\n\n### Costs\n\n- Fuel is up\n");
   });
 });

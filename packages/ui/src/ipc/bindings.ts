@@ -533,7 +533,10 @@ export const events = {
 };
 
 /* Types */
-/**  An action item (read-only: ticks live in the Obsidian note). */
+/**
+ *  An action item (read-only: the app has no ticks, and ticks made in an exported note last only
+ *  until the next export rewrites it, T14.63).
+ */
 export type ActionView = {
 	/**  Who. */
 	owner: string,

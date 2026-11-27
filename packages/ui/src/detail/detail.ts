@@ -15,7 +15,8 @@ import { clockTime } from "../shell/meetings";
 /** How long "Copy summary" says "Copied". */
 export const COPIED_MS = 2_000;
 
-/** A summary as plain Markdown (T9.8): TL;DR, Decisions, Actions, the notes, Open questions.
+/** A summary as plain Markdown (T9.8): TL;DR, Decisions, Actions, Notes (each topic `###`,
+ * T14.70), Open questions.
  * Empty sections are left out; citations, the title and the transcript are never included.
  * "" when the summary holds nothing. */
 export function summaryMarkdown(s: SummaryView): string {
@@ -37,11 +38,22 @@ export function summaryMarkdown(s: SummaryView): string {
     const due = a.due === null ? "" : line(a.due);
     return `${owner === "" ? "" : `${owner}: `}${task}${due === "" ? "" : ` (by ${due})`}`;
   };
+  // The topic sections under one "## Notes", each topic "###", as the page and the Obsidian
+  // note show them (T14.70); no Notes heading when no topic holds anything. A topic whose heading
+  // is blank keeps its own "### " with an empty title, as the export writes it, so its bullets
+  // never join the topic before it.
+  const topics = s.notes
+    .map((n) => {
+      const body = bullets(n.bullets.map((b) => b.text));
+      if (body === "") return null;
+      return `### ${line(n.heading)}\n\n${body}`;
+    })
+    .filter((t) => t !== null);
   const sections = [
     section("TL;DR", s.tldr.trim()),
     section("Decisions", bullets(s.decisions.map((d) => d.text))),
     section("Actions", bullets(s.actions.map(action))),
-    ...s.notes.map((n) => section(line(n.heading), bullets(n.bullets.map((b) => b.text)))),
+    section("Notes", topics.join("\n\n")),
     section("Open questions", bullets(s.open_questions)),
   ].filter((part) => part !== null);
   return sections.length === 0 ? "" : `${sections.join("\n\n")}\n`;
