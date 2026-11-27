@@ -492,6 +492,14 @@ fn rows_in_order<T>(
         .collect()
 }
 
+/// One page of the damage scan ([`lenient::damage_page`]).
+pub(crate) struct DamagePage {
+    /// The last rowid read; `None` when the page held no row.
+    pub(crate) last: Option<i64>,
+    /// Each row that did not read: its rowid and its raw `meeting_id`, when it has one.
+    pub(crate) damaged: Vec<(i64, Option<[u8; 16]>)>,
+}
+
 /// The readers the guarded paths use (T14.57, `crate::guarded`): each through [`split_rows`]
 /// or [`rows_in_order`], so a row that does not read is returned by its rowid, never an error.
 pub(crate) mod lenient {
@@ -507,6 +515,142 @@ pub(crate) mod lenient {
             &[],
             person_row,
         )
+    }
+
+    /// One page of the damage scan (T14.65, docs/sync-spec.md 17.2): the rows of the synced
+    /// `table` whose rowid is above `after`, at most `limit`, in rowid order, each read by the
+    /// table's own decoder. Returns the last rowid read (`None` when the page is empty) and, for
+    /// each row that does not read, its rowid and its raw `meeting_id` when that column exists
+    /// and holds 16 bytes. Any other error fails the read.
+    pub(crate) fn damage_page(
+        c: &Connection,
+        table: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<DamagePage, RepoError> {
+        fn rows<T>(
+            c: &Connection,
+            table: &str,
+            cols: &[&'static str],
+            after: i64,
+            limit: u32,
+            decode: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
+        ) -> Result<Vec<(i64, bool)>, RepoError> {
+            Ok(rows_in_order(
+                c,
+                table,
+                synced_cols(cols),
+                "WHERE rowid > ?1 ORDER BY rowid LIMIT ?2",
+                &[Value::Integer(after), Value::Integer(i64::from(limit))],
+                decode,
+            )?
+            .into_iter()
+            .map(|(rowid, row)| (rowid, row.is_some()))
+            .collect())
+        }
+        let read = match table {
+            "meeting" => rows(c, table, &MEETING, after, limit, meeting_row)?,
+            "track" => rows(c, table, &TRACK, after, limit, track_row)?,
+            "segment" => rows(c, table, &SEGMENT, after, limit, segment_row)?,
+            "speaker" => rows(c, table, &SPEAKER, after, limit, speaker_row)?,
+            "note" => rows(c, table, &NOTE, after, limit, note_row)?,
+            "summary" => rows(c, table, &SUMMARY, after, limit, summary_row)?,
+            "person" => rows(c, table, &PERSON, after, limit, person_row)?,
+            "voiceprint" => rows(c, table, &VOICEPRINT, after, limit, voiceprint_row)?,
+            "folder" => rows(c, table, &FOLDER, after, limit, folder_row)?,
+            "summary_request" => rows(
+                c,
+                table,
+                &SUMMARY_REQUEST,
+                after,
+                limit,
+                summary_request_row,
+            )?,
+            "dictionary_word" => rows(
+                c,
+                table,
+                &DICTIONARY_WORD,
+                after,
+                limit,
+                dictionary_word_row,
+            )?,
+            "voiceprint_sample" => rows(
+                c,
+                table,
+                &VOICEPRINT_SAMPLE,
+                after,
+                limit,
+                voiceprint_sample_row,
+            )?,
+            other => return Err(storage(format!("not a synced table: {other}"))),
+        };
+        let has_meeting = matches!(
+            table,
+            "track" | "segment" | "speaker" | "note" | "summary" | "summary_request"
+        );
+        let mut page = DamagePage {
+            last: read.last().map(|(rowid, _)| *rowid),
+            damaged: Vec::new(),
+        };
+        for (rowid, ok) in read {
+            if ok {
+                continue;
+            }
+            let meeting = if has_meeting {
+                query(
+                    c,
+                    &format!("SELECT meeting_id FROM {table} WHERE rowid = ?1"),
+                    &[Value::Integer(rowid)],
+                    |r| {
+                        Ok(match r.get_ref(0)? {
+                            rusqlite::types::ValueRef::Blob(b) => <[u8; 16]>::try_from(b).ok(),
+                            _ => None,
+                        })
+                    },
+                )?
+                .pop()
+                .flatten()
+            } else {
+                None
+            };
+            page.damaged.push((rowid, meeting));
+        }
+        Ok(page)
+    }
+
+    /// How many rows of `meeting`'s parts (tracks, lines, speakers, notes, summaries, summary
+    /// requests, by raw `meeting_id`) do not read: the figure the damage scan keeps per meeting
+    /// (T14.65, docs/sync-spec.md 17.3).
+    pub(crate) fn damaged_parts_of(c: &Connection, meeting: EntityId) -> Result<u64, RepoError> {
+        fn bad<T>(
+            c: &Connection,
+            table: &str,
+            cols: &[&'static str],
+            meeting: EntityId,
+            decode: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
+        ) -> Result<u64, RepoError> {
+            let rows = rows_in_order(
+                c,
+                table,
+                synced_cols(cols),
+                "WHERE meeting_id = ?1",
+                &[id_value(meeting)],
+                decode,
+            )?;
+            Ok(rows.iter().filter(|(_, r)| r.is_none()).count() as u64)
+        }
+        Ok(bad(c, "track", &TRACK, meeting, track_row)?
+            + bad(c, "segment", &SEGMENT, meeting, segment_row)?
+            + bad(c, "speaker", &SPEAKER, meeting, speaker_row)?
+            + bad(c, "note", &NOTE, meeting, note_row)?
+            + bad(c, "summary", &SUMMARY, meeting, summary_row)?
+            + bad(
+                c,
+                "summary_request",
+                &SUMMARY_REQUEST,
+                meeting,
+                summary_request_row,
+            )?)
     }
 
     /// The person row `id`: `None` when absent, else the row or the rowid of a damaged one.

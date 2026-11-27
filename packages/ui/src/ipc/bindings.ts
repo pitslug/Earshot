@@ -502,6 +502,14 @@ export const commands = {
 	 *  stored.
 	 */
 	setCallStartOffer: (on: boolean) => typedError<boolean, IpcError>(__TAURI_INVOKE("set_call_start_offer", { on })),
+	/**  Details: a scan, counts by kind, the switches and where a Repair is. */
+	damagedItems: () => typedError<DamagedView, IpcError>(__TAURI_INVOKE("damaged_items")),
+	/**  Repair from sync: reads everything from the sync server again; removes nothing. */
+	repairFromSync: () => typedError<null, IpcError>(__TAURI_INVOKE("repair_from_sync")),
+	/**  Whether the banner shows (the stored record; no scan). */
+	damageBanner: () => typedError<boolean, IpcError>(__TAURI_INVOKE("damage_banner")),
+	/**  Dismisses the banner until a scan finds more damaged items in any kind. */
+	dismissDamageBanner: () => typedError<null, IpcError>(__TAURI_INVOKE("dismiss_damage_banner")),
 };
 
 /** Events */
@@ -509,6 +517,7 @@ export const events = {
 	audioCheckEvent: makeEvent<AudioCheckEvent>("audio-check-event"),
 	benchmarkEvent: makeEvent<BenchmarkEvent>("benchmark-event"),
 	cudaEvent: makeEvent<CudaEvent>("cuda-event"),
+	damageEvent: makeEvent<DamageEvent>("damage-event"),
 	jobEvent: makeEvent<JobEvent>("job-event"),
 	meetingEvent: makeEvent<MeetingEvent>("meeting-event"),
 	modelJobEvent: makeEvent<ModelJobEvent>("model-job-event"),
@@ -1026,6 +1035,42 @@ export type CudaView = {
 	transcription_cpu_saved: string | null,
 };
 
+/**  Damaged rows by kind, for the window: counts only. */
+export type DamageCountsView = {
+	/**  Meetings that can't be opened. */
+	meetings: number,
+	/**  Parts of meetings (lines, speakers, tracks, notes, summaries, summary requests). */
+	parts: number,
+	/**  People. */
+	people: number,
+	/**  Saved voice data (voiceprints, voice samples). */
+	voice: number,
+	/**  Folders. */
+	folders: number,
+	/**  Dictionary words. */
+	words: number,
+};
+
+/**  What the banner and Repair show, after every scan and Repair step. */
+export type DamageEvent = {
+	/**  The banner shows. */
+	shown: boolean,
+	/**  Where a Repair is. */
+	repair: RepairView,
+};
+
+/**  What Details shows (docs/sync-spec.md 17.7). Counts and flags only. */
+export type DamagedView = {
+	/**  What the scan Details ran found, by kind. */
+	counts: DamageCountsView,
+	/**  Damaged kinds whose own sync switch is off. */
+	kinds_off: KindsOff,
+	/**  Sync is set up and on, so Repair is offered. */
+	sync_repairs: boolean,
+	/**  Where a Repair is. */
+	repair: RepairView,
+};
+
 /**  What deleting a meeting means now, for the delete question. */
 export type DeleteAsk = 
 /**  Nothing works on it: the plain question. */
@@ -1388,6 +1433,17 @@ export type KeptLocalView = {
 	writer: string | null,
 };
 
+/**
+ *  The damaged kinds whose own sync switch is off, so Repair cannot fix them
+ *  (`kind_off_voice`, `kind_off_words`).
+ */
+export type KindsOff = {
+	/**  Saved voice data is damaged and voiceprint sync is off. */
+	voice: boolean,
+	/**  Dictionary words are damaged and Dictionary sync is off. */
+	words: boolean,
+};
+
 /**  Who a speaker is linked to. */
 export type LinkChoice = 
 /**  An existing person. */
@@ -1649,15 +1705,13 @@ export type MeetingListItem = {
 };
 
 /**
- *  The meeting list (T14.64): the meetings, and whether a damaged meeting or folder row on this
- *  computer was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
- *  names a damaged row.
+ *  The meeting list (T14.64): the meetings. A damaged meeting or folder row on this computer is
+ *  left out and reported to the damage scans (T14.65, docs/sync-spec.md 17.3), which decide
+ *  the banner. Never names a damaged row.
  */
 export type MeetingListView = {
 	/**  The live meetings, newest first. */
 	meetings: MeetingListItem[],
-	/**  Some damaged meeting or folder row was left out. */
-	damaged: boolean,
 };
 
 /**
@@ -1944,15 +1998,13 @@ export type PersonItem = {
 };
 
 /**
- *  The People page's list (T14.57, docs/sync-spec.md 16.7): the persons, and whether a damaged
- *  row on this computer was left out (`list_damaged_note` in
- *  `fixtures/ui/people_copy_cases.json`). Never names a damaged row.
+ *  The People page's list (T14.57, docs/sync-spec.md 16.7): the persons. A damaged row on this
+ *  computer is left out and reported to the damage scans (T14.65, 17.3). Never names a damaged
+ *  row.
  */
 export type PersonListView = {
 	/**  The persons listed, by name. */
 	persons: PersonItem[],
-	/**  Some damaged row was left out. */
-	damaged: boolean,
 };
 
 /**  The person a speaker is linked to. */
@@ -2093,6 +2145,21 @@ export type RemovedView = {
 	/**  Files kept because another installed model uses them. */
 	kept_shared: string[],
 };
+
+/**  Where a Repair from sync is (docs/sync-spec.md 17.4). */
+export type RepairView = 
+/**  None runs and none ended in this run of the app. */
+{ state: "idle" } | 
+/**  Reading everything from the sync server again; the percentage once known (at most 99). */
+{ state: "reading"; 
+/**  `pull_seq * 100 / seen_seq`, at most 99; `None` while `seen_seq` is 0. */
+percent: number | null } | 
+/**  Waiting because sync has stopped on a problem. */
+{ state: "stopped" } | 
+/**  Ended: what the closing scan left. */
+{ state: "done"; 
+/**  What is still damaged. */
+left: DamageCountsView };
 
 /**  One writer the re-summarise menu offers. */
 export type ResummariseItem = {
@@ -2758,8 +2825,6 @@ export type SyncView = {
 	 *  not seal left out).
 	 */
 	waiting: number,
-	/**  [`DAMAGED_NOTE`] when the last sync skipped damaged rows (queued or pulled). */
-	damaged_note: string | null,
 	/**
 	 *  [`refused_note`] when the last sync left queued rows unsent because they cannot be sealed
 	 *  (too large, or holding an audio file's signature): fixed copy with their count (T14.43).

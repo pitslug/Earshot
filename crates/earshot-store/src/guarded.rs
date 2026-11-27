@@ -994,6 +994,30 @@ macro_rules! guarded_readers {
             Ok(ok)
         }
 
+        /// `meeting`'s segment rows that read and how many did not (counted): a caller that
+        /// must leave the meeting alone while any of its lines is damaged (T14.65,
+        /// docs/sync-spec.md 17.4).
+        ///
+        /// # Errors
+        /// Store errors.
+        pub fn segments_and_damaged(
+            &self,
+            meeting: EntityId,
+        ) -> Result<(Vec<earshot_core::model::SegmentRow>, usize), StoreError> {
+            let (ok, bad) = crate::repo::segments_or_damaged(self.c(), meeting).map_err(repo)?;
+            skip_all(&self.skipped, "segment", &bad);
+            Ok((ok, bad.len()))
+        }
+
+        /// How many of `meeting`'s parts (tracks, lines, speakers, notes, summaries, summary
+        /// requests) do not read (T14.65: a meeting page that could not be read reports them).
+        ///
+        /// # Errors
+        /// Store errors.
+        pub fn damaged_parts_of(&self, meeting: EntityId) -> Result<u64, StoreError> {
+            crate::repo::lenient::damaged_parts_of(self.c(), meeting).map_err(repo)
+        }
+
         /// Every person row that reads, by id; the others counted.
         ///
         /// # Errors
@@ -1231,6 +1255,164 @@ impl GuardedRead<'_> {
     pub fn held_count(&self, reasons: &[HoldReason]) -> Result<u64, StoreError> {
         self.store.held_count(reasons)
     }
+
+    /// One page of [`damage_scan`]: at most [`DAMAGE_SCAN_PAGE`] rows of `table` after `after`,
+    /// each damaged row counted.
+    fn damage_page(
+        &self,
+        table: &'static str,
+        after: i64,
+    ) -> Result<crate::repo::DamagePage, StoreError> {
+        let page = crate::repo::lenient::damage_page(self.c(), table, after, DAMAGE_SCAN_PAGE)
+            .map_err(repo)?;
+        for (rowid, _) in &page.damaged {
+            skip(&self.skipped, table, *rowid);
+        }
+        Ok(page)
+    }
+}
+
+// ---- the damage scan (T14.65, docs/sync-spec.md 17.2) ----
+
+/// Rows read per page of the damage scan, each page in its own short read under the store lock,
+/// so a recording meeting waits at most one page.
+pub const DAMAGE_SCAN_PAGE: u32 = 500;
+
+/// Damaged rows by the six kinds the banner and Details count (docs/sync-spec.md 17.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DamageCounts {
+    /// Meeting rows.
+    pub meetings: u64,
+    /// Parts of meetings: tracks, lines, speakers, notes, summaries and summary requests.
+    pub parts: u64,
+    /// Person rows.
+    pub people: u64,
+    /// Saved voice data: voiceprints and voice samples.
+    pub voice: u64,
+    /// Folder rows.
+    pub folders: u64,
+    /// Dictionary word rows.
+    pub words: u64,
+}
+
+impl DamageCounts {
+    /// Every damaged row.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.meetings
+            .saturating_add(self.parts)
+            .saturating_add(self.people)
+            .saturating_add(self.voice)
+            .saturating_add(self.folders)
+            .saturating_add(self.words)
+    }
+
+    /// Whether any kind holds more than in `other`.
+    #[must_use]
+    pub fn more_in_any_kind_than(&self, other: &Self) -> bool {
+        self.meetings > other.meetings
+            || self.parts > other.parts
+            || self.people > other.people
+            || self.voice > other.voice
+            || self.folders > other.folders
+            || self.words > other.words
+    }
+
+    fn add(&mut self, table: &str, n: u64) {
+        let kind = match table {
+            "meeting" => &mut self.meetings,
+            "person" => &mut self.people,
+            "voiceprint" | "voiceprint_sample" => &mut self.voice,
+            "folder" => &mut self.folders,
+            "dictionary_word" => &mut self.words,
+            _ => &mut self.parts,
+        };
+        *kind = kind.saturating_add(n);
+    }
+}
+
+/// A damage scan in progress and what it found so far: counts by kind, by table, and parts by
+/// the raw `meeting_id` they name (docs/sync-spec.md 17.2). Counts only, never content.
+#[derive(Debug, Clone, Default)]
+pub struct DamageScan {
+    table: usize,
+    /// The last rowid read in the current table; `None` at its start.
+    after: Option<i64>,
+    done: bool,
+    counts: DamageCounts,
+    by_table: std::collections::BTreeMap<&'static str, u64>,
+    by_meeting: std::collections::BTreeMap<[u8; 16], u64>,
+}
+
+impl DamageScan {
+    /// Whether every table has been read to its end.
+    #[must_use]
+    pub fn done(&self) -> bool {
+        self.done
+    }
+
+    /// The damaged rows found, by kind.
+    #[must_use]
+    pub fn counts(&self) -> DamageCounts {
+        self.counts
+    }
+
+    /// The damaged rows found in `table`.
+    #[must_use]
+    pub fn in_table(&self, table: &str) -> u64 {
+        self.by_table.get(table).copied().unwrap_or(0)
+    }
+
+    /// Each meeting (raw `meeting_id` bytes) with the damaged parts found that name it.
+    pub fn meetings(&self) -> impl Iterator<Item = ([u8; 16], u64)> + '_ {
+        self.by_meeting.iter().map(|(m, n)| (*m, *n))
+    }
+
+    /// The damaged parts found that name `meeting` (by its raw `meeting_id`).
+    #[must_use]
+    pub fn in_meeting(&self, meeting: EntityId) -> u64 {
+        self.by_meeting
+            .get(meeting.as_uuid().as_bytes())
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// One page of the damage scan, the only authority on what is damaged (docs/sync-spec.md
+/// 17.2): every row of every synced table that does not read by its table's decoder, in rowid
+/// order, [`DAMAGE_SCAN_PAGE`] rows per call. Returns whether the scan is done; the caller
+/// calls again, each time under a fresh short read, until it is. It reads only and reports no
+/// damage anywhere else, so it cannot start a scan of its own.
+///
+/// # Errors
+/// Store errors other than a row that does not read.
+pub fn damage_scan(g: &GuardedRead<'_>, scan: &mut DamageScan) -> Result<bool, StoreError> {
+    let tables = crate::schema::SYNCED_TABLES;
+    while let Some(&table) = tables.get(scan.table) {
+        let page = g.damage_page(table, scan.after.unwrap_or(i64::MIN))?;
+        let found = u64::try_from(page.damaged.len()).unwrap_or(u64::MAX);
+        if found > 0 {
+            scan.counts.add(table, found);
+            let t = scan.by_table.entry(table).or_default();
+            *t = t.saturating_add(found);
+            for meeting in page.damaged.iter().filter_map(|(_, m)| *m) {
+                let n = scan.by_meeting.entry(meeting).or_default();
+                *n = n.saturating_add(1);
+            }
+        }
+        match page.last {
+            Some(last) => {
+                scan.after = Some(last);
+                return Ok(false);
+            }
+            None => {
+                scan.table += 1;
+                scan.after = None;
+            }
+        }
+    }
+    scan.done = true;
+    Ok(true)
 }
 
 impl GuardedTx<'_, '_> {

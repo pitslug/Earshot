@@ -59,6 +59,7 @@ pub mod cpu;
 pub mod cuda;
 #[cfg(feature = "engines")]
 pub mod cuda_switch;
+pub mod damaged;
 pub mod delete;
 #[cfg(feature = "engines")]
 pub mod download;

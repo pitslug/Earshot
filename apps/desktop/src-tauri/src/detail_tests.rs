@@ -1288,10 +1288,8 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::PreviousSummaryStale, "previous_summary_stale"),
         (EditError::FolderNotFound(id), "folder_not_found"),
         (EditError::FolderNameTaken(id), "folder_name_taken"),
-        (
-            EditError::FolderBlockedByDamage(id),
-            "folder_blocked_by_damage",
-        ),
+        // T14.65: the one refusal line for every refusal a damaged row causes.
+        (EditError::FolderBlockedByDamage(id), "damaged"),
         (EditError::MeetingRecording(id), "meeting_recording"),
         // Never sent (an empty title is allowed, pinned below): no copy asks for a title.
         (EditError::InvalidTitle(TextProblem::Empty), "internal"),
@@ -2523,17 +2521,11 @@ fn detail_timing_long_meeting_prints_its_cost() {
 /// Control: the damaged name is found in the store file by the same search.
 #[test]
 fn detail_people_with_a_damaged_row_list_remove_and_forget_with_fixed_copy() {
-    let people: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../fixtures/ui/people_copy_cases.json"
-    ))
-    .unwrap();
+    // T14.65 (docs/sync-spec.md 17.5): the refusal is the one refusal line.
+    let refused = edit_error(&EditError::PersonUnreadable(EntityId::from_bytes([1; 16])));
     assert_eq!(
-        Some(REMOVE_UNREADABLE_COPY),
-        people["remove_unreadable"].as_str()
-    );
-    assert_eq!(
-        edit_error(&EditError::PersonUnreadable(EntityId::from_bytes([1; 16]))).message,
-        REMOVE_UNREADABLE_COPY
+        (refused.kind.as_str(), refused.message.as_str()),
+        (crate::damage::DAMAGED_KIND, crate::damage::REFUSAL_COPY)
     );
     let dir = TempDir::new("detail-people-damaged");
     let svc = services(&dir);
@@ -2567,8 +2559,11 @@ fn detail_people_with_a_damaged_row_list_remove_and_forget_with_fixed_copy() {
         )
         .unwrap();
     }
-    let list = persons(&svc).unwrap();
-    assert!(list.damaged, "the list says a damaged row was left out");
+    let (list, asked) = crate::damage::reports_for_test(|| persons(&svc).unwrap());
+    assert!(
+        asked,
+        "the list reports the row it left out to the damage scans"
+    );
     assert_eq!(list.persons.len(), 1);
     assert_eq!(list.persons[0].id, keep.to_string());
     let forgot =

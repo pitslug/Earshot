@@ -111,7 +111,6 @@ fn sync_copy_matches_the_shared_table_for_every_problem() {
         Some(empty.message.as_str()),
         table["secret_missing"].as_str()
     );
-    assert_eq!(Some(super::DAMAGED_NOTE), table["damaged_note"].as_str());
 }
 
 /// T14.43: the note for rows the last sync could not seal is the table's, with the count, and

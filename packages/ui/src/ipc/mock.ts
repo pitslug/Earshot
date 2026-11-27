@@ -4,7 +4,6 @@
 // summary after it stops.
 
 import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
-import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
 import { type Timer, realTimer } from "../time";
 import {
   RECOGNISED_ME_COPY,
@@ -79,6 +78,8 @@ import { type AudioMockData, createAudioMock } from "./mockAudio";
 import { type AudioCheckMockData, createAudioCheckMock } from "./mockAudioCheck";
 import { type FirstRunMockData, createFirstRunMock } from "./mockFirstRun";
 import { OFFLOAD_COPY, type SyncMockData, createSyncMock, mockDeviceId } from "./mockSync";
+import { type DamageMockData, createDamageMock } from "./mockDamage";
+import { DAMAGED_COPY, DAMAGED_KIND } from "./damagedCopy";
 import { SAMPLE_FOLDERS, createFoldersMock } from "./mockFolders";
 
 const MINUTE = 60_000;
@@ -243,13 +244,11 @@ export interface MockIpcData {
   unknownLine?: number;
   /** The persons (default: `samplePersons()`). */
   persons?: PersonItem[];
-  /** A damaged row on this computer that the People list, Remove and Forget voice leave as it
-   * is (T14.57): their answers say so (default false). */
-  personsDamaged?: boolean;
-  /** A damaged row on this computer (T14.64): the meeting list says something was left out, and
-   * deleting a folder or renaming a person everywhere is refused with the fixture's copy
-   * (default false). */
-  meetingsDamaged?: boolean;
+  /** Damaged items on this computer (T14.65; default none): the banner, Details and Repair from
+   * sync follow it; a damaged meeting stops a folder delete, a damaged meeting part a rename
+   * everywhere and a damaged Dictionary word every Dictionary edit (kind `damaged`, the one
+   * refusal line); Remove and Forget voice say a damaged person or voice row was left. */
+  damaged?: DamageMockData;
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
    * rejects with `no_vault`. */
   vault?: string;
@@ -453,8 +452,16 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     data.cleanInstall,
     data.noModels,
   );
-  const summariesMock = createSummariesMock(data.summaries, data.machine ?? "surface", () => persons);
   const syncMock = createSyncMock(data.sync);
+  const damageMock = createDamageMock(data.damaged, () => syncMock.syncView(), timer);
+  const summariesMock = createSummariesMock(
+    data.summaries,
+    data.machine ?? "surface",
+    () => persons,
+    () => damageMock.counts().words > 0,
+  );
+  // A damaged person or voice row is left by Remove and Forget voice (T14.57).
+  const personsDamaged = () => damageMock.counts().people + damageMock.counts().voice > 0;
   // T12.63b: the order of summary writers, with the old writer setting mirrored from it.
   const orderMock = createSummaryOrderMock(
     {
@@ -883,18 +890,19 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     ...foldersMock,
     listFolders: async () => storeFailure() ?? foldersMock.listFolders(),
-    // T14.64: a damaged meeting row stops a folder from being deleted (failing closed).
+    // T14.64: a damaged meeting row stops a folder from being deleted (failing closed; T14.65's
+    // one refusal line).
     deleteFolderKeepingMeetings: async (folder) => {
-      if (data.meetingsDamaged === true) {
+      if (damageMock.counts().meetings > 0) {
         call("deleteFolderKeepingMeetings", folder);
-        fail("folder_blocked_by_damage", MEETING_LIST_COPY.folder_blocked_by_damage);
+        fail(DAMAGED_KIND, DAMAGED_COPY.refusal);
       }
       return foldersMock.deleteFolderKeepingMeetings(folder);
     },
     deleteFolderWithMeetings: async (folder) => {
-      if (data.meetingsDamaged === true) {
+      if (damageMock.counts().meetings > 0) {
         call("deleteFolderWithMeetings", folder);
-        fail("folder_blocked_by_damage", MEETING_LIST_COPY.folder_blocked_by_damage);
+        fail(DAMAGED_KIND, DAMAGED_COPY.refusal);
       }
       return foldersMock.deleteFolderWithMeetings(folder);
     },
@@ -904,7 +912,6 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         meetings: [...meetings]
           .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
           .map((m) => ({ ...m })),
-        damaged: data.meetingsDamaged === true,
       },
     searchMeetings: async (query) =>
       searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
@@ -1132,6 +1139,11 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     // The only tick that changes anything in the preview brings the summary another computer
     // was asked for (T12.81).
+    damagedItems: damageMock.damagedItems,
+    repairFromSync: damageMock.repairFromSync,
+    damageBanner: damageMock.damageBanner,
+    dismissDamageBanner: damageMock.dismissDamageBanner,
+    onDamageEvent: damageMock.onDamageEvent,
     onSyncEvent: async (handler) => {
       syncListeners.add(handler);
       return () => {
@@ -1535,8 +1547,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     renamePerson: async (person, name) => {
       call("renamePerson", person, name);
       const n = checkName(name);
-      // T14.64: a damaged speaker row stops a rename everywhere (failing closed).
-      if (data.meetingsDamaged === true) fail("rename_blocked_by_damage", MEETING_LIST_COPY.rename_blocked_by_damage);
+      // T14.64: a damaged speaker row stops a rename everywhere (failing closed; T14.65).
+      if (damageMock.counts().parts > 0) fail(DAMAGED_KIND, DAMAGED_COPY.refusal);
       const p =
         persons.find((x) => x.id === person) ??
         fail("person_not_found", "This person no longer exists.");
@@ -1554,7 +1566,6 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     listPersons: async () => ({
       persons: persons.map((p) => ({ ...p })),
-      damaged: data.personsDamaged === true,
     }),
     forgetPersonVoices: async (person) => {
       call("forgetPersonVoices", person);
@@ -1571,7 +1582,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           ),
         });
       }
-      return { forgotten: had, damaged: data.personsDamaged === true, incomplete: false };
+      return { forgotten: had, damaged: personsDamaged(), incomplete: false };
     },
     removePerson: async (person) => {
       call("removePerson", person);
@@ -1598,7 +1609,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           }),
         });
       }
-      return { damaged: data.personsDamaged === true };
+      return { damaged: personsDamaged() };
     },
     speakerSample: async (meeting, speaker) => {
       speakerOf(detailOf(meeting), speaker);

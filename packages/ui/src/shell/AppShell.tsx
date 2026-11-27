@@ -81,7 +81,7 @@ import { useCollapsedGroups } from "./collapsedGroups";
 import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
 import { type Timer, realTimer } from "../time";
-import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
+import { DamageBanner, DamagedDetails, useDamageBanner } from "./DamagedDetails";
 import { MeetingSearchBox, MeetingSearchResults, useMeetingSearch } from "./MeetingSearch";
 import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "./Folders";
 import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
@@ -328,13 +328,11 @@ type Load =
   // The data folder could not be opened at the start (T9.23): Try again restarts Earshot.
   | { status: "dataFolder"; message: string }
   // `stale`: why the latest read failed, in the app's words (T14.16). The meetings and folders
-  // are then the last ones read: a read that fails takes nothing off the screen. `damaged`: the
-  // latest read left out a damaged meeting row (T14.64).
+  // are then the last ones read: a read that fails takes nothing off the screen.
   | {
       status: "loaded";
       meetings: MeetingListItem[];
       folders: FolderListItem[];
-      damaged: boolean;
       stale: string | null;
     };
 
@@ -409,6 +407,27 @@ export function AppShell({
   const [setupFromSettings, setSetupFromSettings] = useState(false);
   // The wizard ended with no transcription model: said once it is gone, until dismissed.
   const [noModelNote, setNoModelNote] = useState(false);
+  // The damaged-items banner (T14.65) and whether its Details dialog is open.
+  const [damageShown, setDamageShown] = useDamageBanner();
+  const [damageDetails, setDamageDetails] = useState(false);
+  // Details hands focus back to the banner's Details button; when the banner went while it was
+  // open (a Repair healed everything), that target is gone, so focus goes where it goes after
+  // any bar (A6 of the T14.65 review).
+  const [damageClosedBannerGone, setDamageClosedBannerGone] = useState(false);
+  const closeDamageDetails = () => {
+    setDamageDetails(false);
+    if (!damageShown) setDamageClosedBannerGone(true);
+  };
+  const focusAfterBarRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!damageClosedBannerGone) return;
+    setDamageClosedBannerGone(false);
+    // Focus is still on the closing dialog's button (it unmounts after this), or already lost.
+    const active = document.activeElement;
+    if (active === null || active === document.body || active.closest('[role="dialog"]') !== null) {
+      focusAfterBarRef.current();
+    }
+  }, [damageClosedBannerGone]);
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
@@ -764,21 +783,20 @@ export function AppShell({
     if (!syncHeard) return;
     let current = true;
     Promise.all([ipc.listMeetings(), ipc.listFolders()]).then(
-      ([{ meetings, damaged }, folders]) => {
+      ([{ meetings }, folders]) => {
         if (!current) return;
         // Rows that say what they said before stay the objects they were, and a read that
         // changed nothing changes no state: the rows are memoised on them (T9.24), and the list
         // is read again after every sync pass (T14.16).
         setLoad((was) => {
-          if (was.status !== "loaded") return { status: "loaded", meetings, folders, damaged, stale: null };
+          if (was.status !== "loaded") return { status: "loaded", meetings, folders, stale: null };
           const keptMeetings = keepUnchanged(was.meetings, meetings);
           const keptFolders = keepUnchanged(was.folders, folders);
           return keptMeetings === was.meetings &&
             keptFolders === was.folders &&
-            was.damaged === damaged &&
             was.stale === null
             ? was
-            : { status: "loaded", meetings: keptMeetings, folders: keptFolders, damaged, stale: null };
+            : { status: "loaded", meetings: keptMeetings, folders: keptFolders, stale: null };
         });
         setSelectedId((sel) =>
           sel !== null && meetings.some((m) => m.id === sel) ? sel : (meetings[0]?.id ?? null),
@@ -1322,6 +1340,8 @@ export function AppShell({
     (row ?? newMeetingButton.current)?.focus();
   };
 
+  focusAfterBarRef.current = focusAfterBar;
+
   // Why a meeting could not start, on every screen (T14.15): a start from the tray or the
   // shortcut fails wherever the user is, and one from the window can fail after they left the
   // new-meeting screen.
@@ -1339,9 +1359,24 @@ export function AppShell({
     </ErrorBar>
   );
 
+  // Damaged items (T14.65): one banner on every view while the last scan found any, and its
+  // Details dialog, which lives here so it outlives the view it was opened from.
+  const damageBar = damageShown && (
+    <DamageBanner
+      onDetails={() => setDamageDetails(true)}
+      onDismiss={() => {
+        setDamageShown(false);
+        ipc.dismissDamageBanner().catch(() => {});
+      }}
+      onGoneWithFocus={focusAfterBar}
+    />
+  );
+  const damageDialog = <DamagedDetails open={damageDetails} onClose={closeDamageDetails} />;
+
   if (view === "first-run") {
     return (
       <div className={styles.wizardFrame}>
+        {damageBar}
         {startErrorBar}
         {callStartBar}
         <div ref={screenBody} className={styles.wizardBody}>
@@ -1354,6 +1389,7 @@ export function AppShell({
           />
         </div>
         {quitDialog}
+        {damageDialog}
       </div>
     );
   }
@@ -1387,11 +1423,13 @@ export function AppShell({
     return (
       <div className={styles.wizardFrame}>
         {noModelBar}
+        {damageBar}
         {startErrorBar}
         <div ref={screenBody} className={styles.wizardBody}>
           {settings}
         </div>
         {quitDialog}
+        {damageDialog}
       </div>
     );
   }
@@ -1429,6 +1467,7 @@ export function AppShell({
   return (
     <div className={styles.root}>
       {quitDialog}
+      {damageDialog}
       <nav className={styles.pane} style={{ width: `${sidebarWidth}px` }} aria-label="Meetings and settings">
         <div className={styles.paneTop}>
           <Button
@@ -1468,9 +1507,6 @@ export function AppShell({
                 else folderButtons.current.delete(key);
               }}
             />
-          )}
-          {!search.active && load.status === "loaded" && load.damaged && (
-            <Caption1 className={styles.emptyFolder}>{MEETING_LIST_COPY.list_damaged_note}</Caption1>
           )}
           {!search.active && selectedFolder !== null && visible.length === 0 && (
             <Caption1 className={styles.emptyFolder}>No meetings in this folder.</Caption1>
@@ -1516,6 +1552,7 @@ export function AppShell({
           </Badge>
         )}
         {noModelBar}
+        {damageBar}
         {recovered.length > 0 && (
           <MessageBar intent="info">
             <MessageBarBody>

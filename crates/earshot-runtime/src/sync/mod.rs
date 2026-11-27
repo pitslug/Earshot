@@ -28,6 +28,7 @@ mod client;
 mod engine;
 mod presence;
 mod removal;
+pub mod repair;
 mod setup;
 mod thread;
 
@@ -44,8 +45,8 @@ use crate::services::Services;
 /// The vault key type, for hosts that store it ([`SyncVault`]).
 pub use earshot_sync::VaultKey;
 pub use engine::{
-    ChangeListener, Heard, LISTENER_PANICKED, Peer, PresenceListener, SyncChanges, SyncClient,
-    TickReport, TickSeen, WorkerWriter, tick_seen,
+    ChangeListener, DamageListener, Heard, LISTENER_PANICKED, Peer, PresenceListener, SyncChanges,
+    SyncClient, TickDamage, TickReport, TickSeen, WorkerWriter, tick_seen,
 };
 
 /// The push's own guard as the store's "lines go out before what they replace" reads it
@@ -60,6 +61,10 @@ pub use presence::{
     Presence, clean_name, computer_name, online,
 };
 pub use removal::{REMOVAL_REPAIR_KEY, REMOVAL_REPAIR_VERSION, RemovalRepaired, removal_repair};
+pub use repair::{
+    DAMAGE_REPAIR_KEY, DAMAGE_REPAIR_VERSION, RepairProgress, RepairStart, RepairStep,
+    repair_percent, repair_progress, repair_step, start_repair,
+};
 pub use setup::{
     PairingOffer, join_with_code, offer_pairing_code, remove_other_device, remove_this_device,
     set_up_first_device,
@@ -523,6 +528,10 @@ fn on_off_word(on: bool) -> &'static [u8] {
 pub fn set_sync_on(services: &Services, on: bool) -> Result<(), SyncProblem> {
     crate::vocabulary::with_stamp(services, |tx, stamp| -> Result<(), SyncProblem> {
         local::set_tx(tx, &DeviceRecord::SyncOn.key(), on_off_word(on))?;
+        if !on {
+            // Turning sync off ends a Repair from sync (docs/sync-spec.md 17.4).
+            repair::clear_tx(tx)?;
+        }
         if on {
             // Dictionary words changed while sync was off get rows and the list follows them
             // (T11.3e), as turning the Dictionary switch on does.
@@ -621,7 +630,7 @@ fn encode_cursor(pull_seq: u64) -> Vec<u8> {
     })
 }
 
-fn encode_cursor_record(cursor: &Cursor) -> Vec<u8> {
+pub(crate) fn encode_cursor_record(cursor: &Cursor) -> Vec<u8> {
     encode_versioned(CURSOR_VERSION, cursor).expect("a cursor serialises")
 }
 
@@ -683,7 +692,7 @@ pub(crate) fn advance_cursor(
 /// Inside `tx`: the pull starts over (a switch was turned on), keeping what the record holds of
 /// the vault's history. The epoch is not forgotten, or a relay restored meanwhile would not be
 /// noticed.
-fn restart_pull_tx(tx: &mut earshot_store::StoreTx<'_>) -> Result<(), SyncProblem> {
+pub(crate) fn restart_pull_tx(tx: &mut earshot_store::StoreTx<'_>) -> Result<(), SyncProblem> {
     let mut cursor = decode_cursor(tx.local_value(SYNC_CURSOR_KEY)?);
     cursor.pull_seq = 0;
     local::set_tx(

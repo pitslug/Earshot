@@ -400,15 +400,13 @@ impl PersonItem {
     }
 }
 
-/// The People page's list (T14.57, docs/sync-spec.md 16.7): the persons, and whether a damaged
-/// row on this computer was left out (`list_damaged_note` in
-/// `fixtures/ui/people_copy_cases.json`). Never names a damaged row.
+/// The People page's list (T14.57, docs/sync-spec.md 16.7): the persons. A damaged row on this
+/// computer is left out and reported to the damage scans (T14.65, 17.3). Never names a damaged
+/// row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct PersonListView {
     /// The persons listed, by name.
     pub persons: Vec<PersonItem>,
-    /// Some damaged row was left out.
-    pub damaged: bool,
 }
 
 /// What Remove did (T14.57): whether a damaged row was left as it is (`remove_damaged_note`).
@@ -442,19 +440,6 @@ impl VoicesForgottenView {
         }
     }
 }
-
-/// The fixed copy for a folder that a damaged meeting row stops from being deleted (T14.64,
-/// `folder_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`).
-pub const FOLDER_BLOCKED_BY_DAMAGE_COPY: &str =
-    "This folder can't be deleted because some meetings on this computer are damaged.";
-
-/// The fixed copy for a person a damaged speaker row stops from being renamed everywhere
-/// (T14.64, `rename_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`).
-pub const RENAME_BLOCKED_BY_DAMAGE_COPY: &str = "This person can't be renamed everywhere because some of their details on this computer are damaged.";
-
-/// The fixed copy for a person whose details do not read (`remove_unreadable`).
-pub const REMOVE_UNREADABLE_COPY: &str =
-    "This person can't be removed because some of their details on this computer are damaged.";
 
 /// Who a speaker is linked to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -666,7 +651,8 @@ pub fn edit_error(e: &EditError) -> IpcError {
         EditError::MeIsTheUser(_) => {
             err("me_is_the_user", "Your own row can only be linked to you.")
         }
-        EditError::PersonUnreadable(_) => err("person_unreadable", REMOVE_UNREADABLE_COPY),
+        // T14.65 (docs/sync-spec.md 17.5): every refusal a damaged row causes shares one line.
+        EditError::PersonUnreadable(_) => crate::damage::refusal(),
         EditError::PersonIsTheUser(_) => err(
             "person_is_the_user",
             "You cannot be removed. Your name and voice are set above.",
@@ -698,13 +684,9 @@ pub fn edit_error(e: &EditError) -> IpcError {
         EditError::FolderNameTaken(_) => {
             err("folder_name_taken", "Another folder already has this name.")
         }
-        // T14.64: `folder_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`.
-        // T14.64: `rename_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`.
-        EditError::RenameBlockedByDamage(_) => {
-            err("rename_blocked_by_damage", RENAME_BLOCKED_BY_DAMAGE_COPY)
-        }
-        EditError::FolderBlockedByDamage(_) => {
-            err("folder_blocked_by_damage", FOLDER_BLOCKED_BY_DAMAGE_COPY)
+        // T14.65 (docs/sync-spec.md 17.5): the one refusal line, kind `damaged`.
+        EditError::RenameBlockedByDamage(_) | EditError::FolderBlockedByDamage(_) => {
+            crate::damage::refusal()
         }
         EditError::MeetingRecording(_) => err(
             "meeting_recording",
@@ -983,6 +965,22 @@ fn speaker_cards(
 /// # Errors
 /// `meeting_not_found` for an unknown or deleted meeting; store errors.
 pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingDetail, IpcError> {
+    let read = meeting_detail_read(services, meeting);
+    if read.is_err() {
+        // A meeting page that meets rows that do not read reports them to the damage scans
+        // (T14.65, docs/sync-spec.md 17.3): every damaged part of the meeting, the figure the
+        // scan keeps for it.
+        let damaged = services
+            .guarded_read()
+            .read()
+            .damaged_parts_of(meeting)
+            .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
+        crate::damage::report(crate::damage::Scope::Meeting(meeting), damaged);
+    }
+    read
+}
+
+fn meeting_detail_read(services: &Services, meeting: EntityId) -> Result<MeetingDetail, IpcError> {
     // The activity comes from this process's job leases, read before the store lock
     // (`meeting_activity` takes the activity lock, then the store lock, never nested); a job
     // that starts or ends between the two reads shows on the next read.
@@ -1321,9 +1319,9 @@ fn token_index(token: usize) -> u32 {
 /// Store errors.
 pub fn persons(services: &Services) -> Result<PersonListView, IpcError> {
     let list = edit::list_persons(services)?;
+    crate::damage::report(crate::damage::Scope::People, list.damaged_skipped);
     Ok(PersonListView {
         persons: list.iter().map(PersonItem::of).collect(),
-        damaged: list.damaged_skipped > 0,
     })
 }
 

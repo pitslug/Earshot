@@ -163,24 +163,6 @@ describe("the Sync page", () => {
     expect(calls.filter((c) => c === "setSyncDictionary")).toHaveLength(2);
   });
 
-  it("says damaged items were skipped only when the last sync skipped some (T12.77b8)", async () => {
-    await setup({ setUp: true, unsendable: true });
-    await screen.findByRole("switch", { name: "Sync is on" });
-    expect(screen.getByText(table.damaged_note)).toBeInTheDocument();
-  });
-
-  it("shows the one damaged note when a page left damaged rows as they are (T14.57)", async () => {
-    await setup({ setUp: true, damaged: true });
-    await screen.findByRole("switch", { name: "Sync is on" });
-    expect(screen.getAllByText(table.damaged_note)).toHaveLength(1);
-  });
-
-  it("says nothing about damaged items when none were skipped", async () => {
-    await setup({ setUp: true, waiting: 2 });
-    await screen.findByRole("switch", { name: "Sync is on" });
-    expect(screen.queryByText(table.damaged_note)).toBeNull();
-  });
-
   it("says how many items could not be synced, with the count (T14.43)", async () => {
     await setup({ setUp: true, refused: 3 });
     await screen.findByRole("switch", { name: "Sync is on" });

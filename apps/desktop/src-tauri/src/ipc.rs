@@ -179,7 +179,11 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::general::call_end_stop,
             crate::general::set_call_end_stop,
             crate::general::call_start_offer,
-            crate::general::set_call_start_offer
+            crate::general::set_call_start_offer,
+            crate::damage::damaged_items,
+            crate::damage::repair_from_sync,
+            crate::damage::damage_banner,
+            crate::damage::dismiss_damage_banner
         ])
         .events(collect_events![
             MeetingEvent,
@@ -191,7 +195,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::benchmark::BenchmarkEvent,
             crate::cuda_settings::CudaEvent,
             crate::shell::ShellEvent,
-            crate::sync_settings::SyncEvent
+            crate::sync_settings::SyncEvent,
+            crate::damage::DamageEvent
         ])
         .dangerously_cast_bigints_to_number()
 }
@@ -409,21 +414,19 @@ impl MeetingListItem {
     }
 }
 
-/// The meeting list (T14.64): the meetings, and whether a damaged meeting or folder row on this
-/// computer was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
-/// names a damaged row.
+/// The meeting list (T14.64): the meetings. A damaged meeting or folder row on this computer is
+/// left out and reported to the damage scans (T14.65, docs/sync-spec.md 17.3), which decide
+/// the banner. Never names a damaged row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct MeetingListView {
     /// The live meetings, newest first.
     pub meetings: Vec<MeetingListItem>,
-    /// Some damaged meeting or folder row was left out.
-    pub damaged: bool,
 }
 
 /// The live meetings, newest first, each with its activity and resolved folder: one read of
 /// the store under one lock (`Services::live_meetings`, T14.13), so a long list waits for the
 /// store once and every row is from the same state of it. A meeting row that does not read is
-/// left out and said ([`MeetingListView::damaged`], T14.64), never failing the list.
+/// left out and reported to the damage scans (T14.64, T14.65), never failing the list.
 ///
 /// # Errors
 /// Store errors.
@@ -467,9 +470,12 @@ pub fn meeting_list(services: &Services) -> Result<MeetingListView, IpcError> {
             .map_err(earshot_runtime::RuntimeError::from)?
             .1;
     }
+    crate::damage::report(
+        crate::damage::Scope::MeetingsAndFolders,
+        read.damaged.saturating_add(damaged_folders),
+    );
     Ok(MeetingListView {
         meetings: items.into_iter().map(|(_, i)| i).collect(),
-        damaged: read.damaged > 0 || damaged_folders > 0,
     })
 }
 
@@ -534,6 +540,7 @@ pub fn meeting_search(
             "A newer search replaced this one.",
         ));
     };
+    crate::damage::report(crate::damage::Scope::Search, results.unreadable);
     Ok(SearchResultsView {
         items: results
             .hits
@@ -1152,6 +1159,10 @@ async fn remove_person(
     let person = parse_id(&person)?;
     blocking(move || {
         let removal = earshot_runtime::edit::remove_person(&services, person)?;
+        crate::damage::report(
+            crate::damage::Scope::PeopleAndVoice,
+            removal.damaged_skipped,
+        );
         Ok(detail::PersonRemovedView {
             damaged: removal.damaged_skipped > 0,
         })
@@ -1171,6 +1182,7 @@ async fn forget_person_voices(
     let person = parse_id(&person)?;
     blocking(move || {
         let n = earshot_runtime::edit::forget_person_voices(&services, person)?;
+        crate::damage::report(crate::damage::Scope::PeopleAndVoice, n.damaged);
         Ok(detail::VoicesForgottenView::of(n))
     })
     .await

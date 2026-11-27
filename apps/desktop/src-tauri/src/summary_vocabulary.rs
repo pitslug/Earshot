@@ -171,8 +171,10 @@ pub fn refusal(e: SetVocabularyError) -> IpcError {
         SetVocabularyError::Refused(_)
         | SetVocabularyError::NotAWord
         | SetVocabularyError::NotInUse
-        | SetVocabularyError::Stale
-        | SetVocabularyError::Damaged { .. } => IpcError::invalid(sentence(&e.to_string())),
+        | SetVocabularyError::Stale => IpcError::invalid(sentence(&e.to_string())),
+        // T14.65 (docs/sync-spec.md 17.5): the one refusal line, kind `damaged`; Details says
+        // when Dictionary sync is off.
+        SetVocabularyError::Damaged { .. } => crate::damage::refusal(),
     }
 }
 

@@ -10,6 +10,7 @@
 
 import table from "../../../../fixtures/ui/summary_settings_cases.json";
 import { withoutEndQuotes } from "../detail/dictionaryWord";
+import { DAMAGED_COPY, DAMAGED_KIND } from "./damagedCopy";
 import {
   type ClaudeCodeStatusView,
   type CodexStatusView,
@@ -57,19 +58,6 @@ export interface SummariesMockData {
   /** Stored Dictionary words not in use because the list joined by Dictionary sync passes a
    * limit (T11.3e; default 0). The mock runs no sync: this is fixture data. */
   notInUse?: number;
-  /** A Dictionary word row on this computer is damaged (T14.57): every Dictionary edit is refused
-   * with the app's copy, chosen by `dictionarySyncs` (default false). */
-  dictionaryDamaged?: boolean;
-  /** Whether Dictionary sync is on, for that copy (default false). */
-  dictionarySyncs?: boolean;
-}
-
-/** The app's refusal of a Dictionary edit while a word row is damaged (T14.57,
- * `SetVocabularyError::Damaged`): its words follow the Dictionary switch. */
-export function dictionaryDamagedCopy(data: SummariesMockData): string {
-  return data.dictionarySyncs === true
-    ? table.messages.dictionary_damaged.sync_on
-    : table.messages.dictionary_damaged.sync_off;
 }
 
 /** What the Dictionary page says about `n` words not in use (the app's copy,
@@ -370,6 +358,7 @@ export function createSummariesMock(
   data: SummariesMockData = {},
   machine: SampleMachine = "surface",
   persons: () => PersonItem[] = () => [],
+  wordsDamaged: () => boolean = () => false,
 ): SummariesMock {
   let settings: SummarySettingsValue = {
     writer: "OnThisComputer",
@@ -468,13 +457,13 @@ export function createSummariesMock(
       if (vocabulary.some((w) => w.toLowerCase() === word.toLowerCase())) {
         return { added: false, view: vocabularyView() };
       }
-      if (data.dictionaryDamaged === true) fail("invalid_setting", dictionaryDamagedCopy(data));
+      if (wordsDamaged()) fail(DAMAGED_KIND, DAMAGED_COPY.refusal);
       if (notInUse > 0) fail("invalid_setting", table.messages.add_not_in_use);
       vocabulary = checkVocabulary([...vocabulary, word]);
       return { added: true, view: vocabularyView() };
     },
     removeSummaryVocabularyWord: async (word) => {
-      if (data.dictionaryDamaged === true) fail("invalid_setting", dictionaryDamagedCopy(data));
+      if (wordsDamaged()) fail(DAMAGED_KIND, DAMAGED_COPY.refusal);
       const wanted = withoutEndQuotes(word).split(/\p{White_Space}+/u).filter((t) => t !== "").join(" ").toLowerCase();
       vocabulary = vocabulary.filter((w) => w.toLowerCase() !== wanted);
       return vocabularyView();

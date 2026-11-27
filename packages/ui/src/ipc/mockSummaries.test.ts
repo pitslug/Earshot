@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import table from "../../../../fixtures/ui/summary_settings_cases.json";
+import { DAMAGED_COPY, DAMAGED_KIND } from "./damagedCopy";
 import { IpcFailure, type SummarySettingsValue } from "./ipc";
 import { createMockIpc } from "./mock";
 import { createSummariesMock } from "./mockSummaries";
@@ -206,18 +207,15 @@ describe("the Summaries mock against the app's case table", () => {
     expect(await mock.addSummaryVocabularyWord("QUILLMARSH")).toMatchObject({ added: false });
   });
 
-  it("refuses Dictionary edits while a word row is damaged, with the copy of the switch (T14.57)", async () => {
-    for (const [syncs, copy] of [
-      [false, table.messages.dictionary_damaged.sync_off],
-      [true, table.messages.dictionary_damaged.sync_on],
-    ] as const) {
-      const mock = createSummariesMock({ vocabulary: ["Quillmarsh"], dictionaryDamaged: true, dictionarySyncs: syncs });
-      expect(await outcome(() => mock.addSummaryVocabularyWord("Velmora"))).toEqual({ error: copy });
-      expect(await outcome(() => mock.removeSummaryVocabularyWord("Quillmarsh"))).toEqual({ error: copy });
+  it("refuses Dictionary edits while a word row is damaged, with the one refusal line (T14.65)", async () => {
+    const mock = createSummariesMock({ vocabulary: ["Quillmarsh"] }, "surface", () => [], () => true);
+    for (const run of [() => mock.addSummaryVocabularyWord("Velmora"), () => mock.removeSummaryVocabularyWord("Quillmarsh")]) {
+      await expect(run()).rejects.toMatchObject({ error: { kind: DAMAGED_KIND, message: DAMAGED_COPY.refusal } });
     }
-    // Without the damage the same edits go ahead.
-    const mock = createSummariesMock({ vocabulary: ["Quillmarsh"] });
-    expect(await mock.addSummaryVocabularyWord("Velmora")).toMatchObject({ added: true });
+    // Control: without the damage the same edits go ahead.
+    const fine = createSummariesMock({ vocabulary: ["Quillmarsh"] });
+    expect(await fine.addSummaryVocabularyWord("Velmora")).toMatchObject({ added: true });
+    expect((await fine.removeSummaryVocabularyWord("Quillmarsh")).words).not.toContain("Quillmarsh");
   });
 
   it("refuses a token with no word as the app does (T12.15f)", async () => {

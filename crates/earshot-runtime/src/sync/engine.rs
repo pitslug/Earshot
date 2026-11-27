@@ -129,6 +129,9 @@ pub struct TickReport {
     pub(crate) refused_ids: BTreeSet<EntityId>,
     /// The rows behind [`Self::clock_ahead`], over both pushes of the tick.
     pub(crate) ahead_ids: BTreeSet<EntityId>,
+    /// A Repair from sync ended at the end of this tick (docs/sync-spec.md 17.4): the host
+    /// scans for damaged items again.
+    pub repair_ended: bool,
 }
 
 /// What the sweep of replaced text ([`crate::replaced_text`]) reads of a store's sync: whether
@@ -298,6 +301,20 @@ impl SyncChanges {
 /// never ends sync ([`SyncClient::tell_changes`]).
 pub type ChangeListener = Arc<dyn Fn(&SyncChanges) + Send + Sync>;
 
+/// What one tick says of damaged rows here (T14.65, docs/sync-spec.md 17.3): counts only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TickDamage {
+    /// Rows the tick skipped or could not send because they do not read
+    /// ([`TickReport::damaged_skipped`] plus [`TickReport::unsendable`]).
+    pub damaged: usize,
+    /// A Repair from sync ended with this tick ([`TickReport::repair_ended`]).
+    pub repair_ended: bool,
+}
+
+/// Told after every tick ([`SyncClient::with_damage`]), on the sync thread, with no store lock
+/// held. It must not block.
+pub type DamageListener = Arc<dyn Fn(&TickDamage) + Send + Sync>;
+
 /// What is printed when a change listener panics: fixed words, nothing it was told.
 pub const LISTENER_PANICKED: &str = "earshot-sync: the change listener panicked";
 
@@ -389,6 +406,8 @@ pub struct SyncClient {
     changes: Option<ChangeListener>,
     /// Told what presence says when the sync thread reads it ([`SyncClient::with_presence`]).
     presence: Option<PresenceListener>,
+    /// Told after every tick what it says of damaged rows ([`SyncClient::with_damage`]).
+    damage: Option<DamageListener>,
     /// Whether this client has applied a page with every convergence repair
     /// ([`Store::apply_remote_every_repair`]): its first page, so each start of sync goes over
     /// the whole store once; later pages run only the repairs their own rows call for (T14.50).
@@ -645,6 +664,7 @@ impl SyncClient {
             model_place: None,
             changes: None,
             presence: None,
+            damage: None,
             repaired_all: AtomicBool::new(false),
             pull_pages: MAX_PULL_PAGES,
             pull_limit: earshot_sync::wire::PULL_DEFAULT,
@@ -738,6 +758,29 @@ impl SyncClient {
     pub fn with_changes(mut self, listener: ChangeListener) -> Self {
         self.changes = Some(listener);
         self
+    }
+
+    /// After every tick, `listener` hears what it says of damaged rows here ([`TickDamage`],
+    /// T14.65): the host requests a damage scan from it (docs/sync-spec.md 17.3).
+    #[must_use]
+    pub fn with_damage(mut self, listener: DamageListener) -> Self {
+        self.damage = Some(listener);
+        self
+    }
+
+    /// Tells the damage listener ([`Self::with_damage`]) what `report` says; a panic in it is
+    /// caught.
+    fn tell_damage(&self, report: &TickReport) {
+        let Some(listener) = &self.damage else {
+            return;
+        };
+        let heard = TickDamage {
+            damaged: report.damaged_skipped.saturating_add(report.unsendable),
+            repair_ended: report.repair_ended,
+        };
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(&heard))).is_err() {
+            eprintln!("{LISTENER_PANICKED}");
+        }
     }
 
     /// Tells the listener ([`Self::with_changes`]) what a pass changed. A panic in it is caught
@@ -1011,7 +1054,19 @@ impl SyncClient {
                 Err(p) => status.problem = Some(*p),
             }
             let _ = set_sync_status_in(w, &status);
+            // A Repair from sync ends with the first tick whose pull reached the relay's last
+            // row with nothing held, as the ignore copy requires (docs/sync-spec.md 17.4).
+            if outcome.is_ok()
+                && report.pull_complete
+                && report.held == 0
+                && w.read()
+                    .held_count(&[HoldReason::Busy, HoldReason::Parent])
+                    .is_ok_and(|n| n == 0)
+            {
+                report.repair_ended = super::repair::end_after_tick(w).unwrap_or(false);
+            }
         });
+        self.tell_damage(&report);
         Some((report, outcome))
     }
 
@@ -1455,6 +1510,12 @@ impl SyncClient {
         for _ in 0..self.pull_pages {
             if self.stopping() {
                 return Ok(());
+            }
+            // A Repair from sync marks its read from row 0 before the request, never after a
+            // cursor move (docs/sync-spec.md 17.4).
+            if super::repair::repair_step(&self.services)? == Some(super::RepairStep::Armed) {
+                self.services
+                    .guarded_write(super::repair::mark_before_request)?;
             }
             // The cursor and the kind switches are read together: turning a switch on resets
             // the cursor, and the page is applied under the switches it was pulled for.

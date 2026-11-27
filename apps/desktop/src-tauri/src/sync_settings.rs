@@ -29,12 +29,6 @@ use crate::ipc::{AppState, IpcError, blocking};
 /// The IPC error kind of a sync problem.
 pub const SYNC_ERROR_KIND: &str = "sync";
 
-/// Shown when the last sync skipped rows here that do not read: queued ones it could not send
-/// (T12.77b8) or ones a page left as they are (T14.57, docs/sync-spec.md 16.7). One note for
-/// both, never two, and no count (the two counts are of different sets); names no content
-/// (`damaged_note` in `fixtures/ui/sync_copy_cases.json`).
-pub const DAMAGED_NOTE: &str = "Some items on this computer are damaged, so sync left them as they are. Everything else syncs as usual.";
-
 /// Shown when the last sync left one queued item unsent because it cannot be sealed (T14.43:
 /// over the size limit, or holding an audio file's signature); names no content
 /// (`refused_note.one` in `fixtures/ui/sync_copy_cases.json`).
@@ -165,6 +159,9 @@ pub struct SyncHost {
     /// Who hears what a tick changed here (T12.81): the window, through [`SyncEvent`]. A thread
     /// started without it tells no one.
     changes: Mutex<Option<ChangeListener>>,
+    /// Who hears what each tick says of damaged rows here (T14.65): the damage scans
+    /// ([`crate::damage::Scans`]). A thread started without it tells no one.
+    damage: Mutex<Option<earshot_runtime::sync::DamageListener>>,
     /// The threads that were turned off and may still be finishing (handing back summaries
     /// this computer asked for, for up to half an hour): each is told to stop for good the
     /// moment a new thread starts, which then owns that work (T14.45 review). Taken alone,
@@ -243,6 +240,7 @@ impl SyncHost {
             timing,
             offload: Mutex::new(None),
             changes: Mutex::new(None),
+            damage: Mutex::new(None),
             retired: Mutex::new(Vec::new()),
             spare: Mutex::new(None),
             spare_generation: std::sync::atomic::AtomicU64::new(0),
@@ -396,6 +394,12 @@ impl SyncHost {
         self.retired().clone()
     }
 
+    /// Sets who hears what each tick says of damaged rows here (T14.65); threads started from
+    /// now on tell it after every tick ([`SyncClient::with_damage`]).
+    pub fn set_damage_listener(&self, listener: earshot_runtime::sync::DamageListener) {
+        *self.damage.lock().unwrap_or_else(PoisonError::into_inner) = Some(listener);
+    }
+
     /// Sets who hears what a tick changed here; threads started from now on tell it after every
     /// tick that changed rows ([`SyncClient::with_changes`]).
     pub fn set_change_listener(&self, listener: ChangeListener) {
@@ -532,6 +536,11 @@ impl SyncHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let damage = self
+            .damage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let client = if ready {
             SyncClient::new(services.clone(), self.vault()).ok()
         } else {
@@ -551,6 +560,10 @@ impl SyncHost {
         };
         let client = match changes {
             Some(l) => client.with_changes(l),
+            None => client,
+        };
+        let client = match damage {
+            Some(l) => client.with_damage(l),
             None => client,
         };
         // The names the other computers give themselves, whenever the thread reads presence
@@ -710,8 +723,6 @@ pub struct SyncView {
     /// Rows changed here and not yet sent (damaged ones the last sync skipped and ones it could
     /// not seal left out).
     pub waiting: u64,
-    /// [`DAMAGED_NOTE`] when the last sync skipped damaged rows (queued or pulled).
-    pub damaged_note: Option<String>,
     /// [`refused_note`] when the last sync left queued rows unsent because they cannot be sealed
     /// (too large, or holding an audio file's signature): fixed copy with their count (T14.43).
     pub refused_note: Option<String>,
@@ -742,8 +753,6 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         stopped: o.status.problem.is_some_and(SyncProblem::stops),
         unreadable: o.status.unreadable,
         waiting: o.waiting,
-        damaged_note: (o.status.unsendable > 0 || o.status.damaged_skipped > 0)
-            .then(|| DAMAGED_NOTE.to_owned()),
         refused_note: refused_note(o.status.refused),
         held: o.held,
         offers_summaries: o.settings.offers_summaries,

@@ -19,6 +19,7 @@ mod credentials;
 mod credentials_win;
 mod cuda_files;
 mod cuda_settings;
+mod damage;
 mod deletion;
 mod detail;
 mod first_run;
@@ -173,14 +174,34 @@ fn main() {
             // retention runs and periodically after (T7.4k): retention's sweep must never see
             // unfinished audio before recovery has adopted it.
             let retention = storage_settings::RetentionStatus::default();
+            // Damaged items (T14.65): every scan of the store runs through one gate; the
+            // start-up scan runs once recovery has finished, off the main thread.
+            let damage_scans = state.services().ok().map(|services| {
+                let handle = app.handle().clone();
+                let scans = damage::Scans::for_app(
+                    services,
+                    Arc::new(move |e: damage::DamageEvent| {
+                        // Only to this app's own webview; counts and flags only.
+                        let _ = e.emit(&handle);
+                    }),
+                );
+                damage::set_app_scans(&scans);
+                scans
+            });
             if let Ok(services) = state.services() {
                 let handle = app.handle().clone();
+                let scans = damage_scans.clone();
                 recovery::spawn(
                     services,
                     retention.clone(),
                     storage_settings::RETENTION_PERIOD,
                     move |_| {
                         let _ = shell::ShellEvent::RecordingsRecovered.emit(&handle);
+                    },
+                    move || {
+                        if let Some(scans) = scans {
+                            scans.scan_soon();
+                        }
                     },
                 );
             }
@@ -257,6 +278,16 @@ fn main() {
                 }));
             }
             let sync_for_start = Arc::clone(&sync);
+            if let Some(scans) = &damage_scans {
+                // What each tick says of damaged rows, and the end of a Repair (T14.65).
+                let scans = Arc::clone(scans);
+                sync.set_damage_listener(Arc::new(move |t: &earshot_runtime::sync::TickDamage| {
+                    scans.heard_tick(t)
+                }));
+            }
+            if let Some(scans) = damage_scans {
+                app.manage(scans);
+            }
             app.manage(sync);
             app.manage(update_jobs);
             app.manage(state);

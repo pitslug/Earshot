@@ -1,6 +1,0 @@
-{
-  "about": "Fixed copy for the meeting list's damaged note and the refusals damaged rows cause (T14.64).",
-  "list_damaged_note": "Some meetings or folders on this computer are damaged and are not shown.",
-  "folder_blocked_by_damage": "This folder can't be deleted because some meetings on this computer are damaged.",
-  "rename_blocked_by_damage": "This person can't be renamed everywhere because some of their details on this computer are damaged."
-}

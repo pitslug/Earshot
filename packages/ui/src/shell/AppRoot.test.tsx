@@ -77,7 +77,7 @@ describe("the window's tree", () => {
     });
     const ipc: Ipc = {
       ...createMockIpc({ meetings: [GOOD] }),
-      listMeetings: async () => ({ meetings: [BROKEN, GOOD], damaged: false }),
+      listMeetings: async () => ({ meetings: [BROKEN, GOOD] }),
       meetingSnapshot,
       stopMeeting,
     };

@@ -80,6 +80,8 @@ fn keep(
         crate::vocabulary::syncing_turned_on_tx(tx, stamp)?;
         // A thread of an earlier setup may have written a status after it was stopped.
         tx.delete_local_value(SYNC_STATUS_KEY)?;
+        // Setting up or joining ends a Repair from sync (docs/sync-spec.md 17.4).
+        super::repair::clear_tx(tx)?;
         Ok(())
     })
 }
@@ -242,6 +244,8 @@ pub fn remove_this_device(
         SYNC_ON_KEY,
         SYNC_VOICEPRINTS_KEY,
         super::OFFER_SUMMARIES_KEY,
+        // Removing this device ends a Repair from sync (docs/sync-spec.md 17.4).
+        super::DAMAGE_REPAIR_KEY,
     ] {
         db.delete_local_value(key)?;
     }

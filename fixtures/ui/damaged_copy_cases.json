@@ -1,0 +1,48 @@
+{
+  "about": "Damaged items (T14.65, docs/sync-spec.md 17.8): the banner, Details, Repair from sync and the one refusal line. Approved by the owner (2026-11-27). Read by the desktop's tests (damage_tests.rs) and the UI (ipc/damagedCopy.ts). Shipped with the app: public copy only. {count} and {percent} are filled with numbers; kinds have one and many forms in the order Details lists them.",
+  "banner": "Some items on this computer are damaged.",
+  "details_button": "Details",
+  "dismiss": "Dismiss",
+  "details_title": "Damaged items",
+  "close": "Close",
+  "kinds": {
+    "meetings": {
+      "one": "1 meeting that can't be opened",
+      "many": "{count} meetings that can't be opened"
+    },
+    "parts": {
+      "one": "1 part of a meeting (a line, speaker, note or summary)",
+      "many": "{count} parts of meetings (lines, speakers, notes or summaries)"
+    },
+    "people": {
+      "one": "1 person",
+      "many": "{count} people"
+    },
+    "voice": {
+      "one": "1 piece of saved voice data",
+      "many": "{count} pieces of saved voice data"
+    },
+    "folders": {
+      "one": "1 folder",
+      "many": "{count} folders"
+    },
+    "words": {
+      "one": "1 Dictionary word",
+      "many": "{count} Dictionary words"
+    }
+  },
+  "repair_intro": "Repair reads everything from the sync server again, so damaged items can be replaced by good copies from your other computers. Nothing is removed or sent.",
+  "no_repair_sync_off": "Turn sync on to repair them from your other computers. This computer can't repair them on its own yet.",
+  "nothing_healable": "The sync server has no good copies of the rest, so they stay as they are for now.",
+  "kind_off_voice": "Saved voice data doesn't sync now. Turning on Sync voiceprints on the Sync page lets Repair fix it.",
+  "kind_off_words": "Dictionary words don't sync now. Turning on Dictionary sync on the Sync page lets Repair fix them.",
+  "result_some": "Repair fixed what it could. These are still damaged:",
+  "repair_button": "Repair",
+  "repair_reading_start": "Reading everything from the sync server again...",
+  "repair_reading": "Reading everything from the sync server again: {percent}%.",
+  "repair_stopped": "Repair is waiting because sync has stopped. The Sync page says why.",
+  "result_none": "Repaired. Nothing damaged is left on this computer.",
+  "nothing_damaged": "Nothing on this computer is damaged.",
+  "refusal": "This can't be done because some items on this computer are damaged.",
+  "busy": "Repair is already running."
+}
