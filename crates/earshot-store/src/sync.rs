@@ -808,6 +808,33 @@ pub(crate) fn unlink_removed_speakers<C: Clock + ?Sized>(
     Ok(())
 }
 
+/// The store half of the one-off removal repair (docs/sync-spec.md 7A.2, "The one-off removal
+/// repair, sync on or off"): P2 ([`merged_into_removed_repair`]) then P3
+/// ([`unlink_removed_speakers`]) with P5's entry drops, in the caller's guarded transaction and
+/// outside any page, with this device's stamp, so what it writes waits in the outbox like any
+/// edit. Counted as a page's are: [`Applied::persons_removed_with`],
+/// [`Applied::speakers_unlinked`], [`Applied::erased`] (biometrics included), the rows skipped
+/// ([`Applied::damaged_skipped`]) and [`Applied::meetings`] / [`Applied::people`] for the window.
+/// A second run finds nothing left (7A.8).
+///
+/// # Errors
+/// Store errors (the caller rolls back).
+pub fn removal_repair_tx<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<Applied, StoreError> {
+    let mut out = Applied::default();
+    merged_into_removed_repair(g, hlc, clock, &mut out)?;
+    unlink_removed_speakers(g, hlc, clock, &mut out)?;
+    out.erased += out.biometrics_forgotten;
+    out.stamped_here = g.stamped_ids();
+    out.chains_unknown = g.chains_unknown();
+    out.damaged_rows = g.damaged_rows();
+    out.damaged_skipped = out.damaged_rows.len();
+    Ok(out)
+}
+
 /// The rules that keep devices converged (docs/sync-spec.md section 7), run inside
 /// [`Store::apply_remote`]'s transaction after its writes. Each depends only on synced rows,
 /// so every device settles on the same rows whatever order pages arrive in. Each repair points

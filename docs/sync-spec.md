@@ -573,6 +573,14 @@ The second review's fixes (7A.13) change no decision above: P5 erases more, neve
 - The best-effort test injects its error with a trigger in the test's store that refuses the record's write, after every drop; shipped code has no seam for it.
 - The revived row of the accepted ignore-copy case is made live by a later live copy over the tombstone (the case *Trust boundary* names beside rule 4c).
 
+### 7A.12b As built: the removal repair (T14.49e, 2026-11-27)
+
+- The root is `earshot_runtime::sync::removal_repair_in` (`crates/earshot-runtime/src/sync/removal.rs`) behind the one-line wrapper `removal_repair`; its store half is `earshot_store::removal_repair_tx` (P2 then P3 on the caller's `GuardedTx`, counted as a page's `Applied`). Both are in 16.8's scan.
+- `names_before` (through `rows_removal_may_rename` with an empty page and every repair) is read under the services store lock just before the transaction, as `apply_page_in` reads a page's, because those readers take a `GuardedRead`; the lock is held from that read to the commit, and the record is read again inside the transaction.
+- The record's JSON holds `persons_removed_with`, `speakers_unlinked`, `erased`, `names_recorded` and `damaged_skipped` at version 1.
+- `SyncEvent.people` is a flag, so the repair returns the changed meeting ids and whether a person changed (`RemovalRepaired::changes`), not person ids.
+- In the app the `earshot-sync-start` thread runs `SyncHost::start_up` (the ignore copy, the repair, the sync thread, in that order); the order inside it is pinned by a source test, since the thread's first tick comes after the repair either way. The window's first list read does not wait for its sync subscription (`AppShell`: the subscription resolves asynchronously while the list read starts in its own effect), so the accepted start-up staleness case of 7A.2 is possible as stated.
+
 ### 7A.13 Revisions
 
 - **After the first spec review (2026-11-26).** Blocking: finality held in one direction only, and the relay could drop a tombstone whose writer then went silent. Added R1 (a relay rule) and the second case of P1 and F1 (7A.2), the blocking walk and both arrival orders (7A.6), and a format bump to 5. Advisories: writers that refuse a removed person (7A.3, with `set_row_person` and the final pass tightened); the user under an `is_me` tombstone (P4, replacing the first draft's "applied like any other"); the erasure flush for removals with no voice (7A.4); the names pin (7A.5); the owner's questions with recommendations and what the other computer shows (7A.12); the tests (7A.11).

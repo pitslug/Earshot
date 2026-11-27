@@ -313,9 +313,10 @@ fn main() {
                 let _ = std::thread::Builder::new()
                     .name("earshot-sync-start".into())
                     .spawn(move || {
-                        // The one-off copy of 0.4.2 ignores (T12.93): now only without a vault.
-                        sync_for_start.copy_ignores_without_vault(&services);
-                        sync_for_start.start_if_on(&services);
+                        // The one-off copy of 0.4.2 ignores (T12.93, now only without a vault),
+                        // the one-off removal repair whether sync is on or off (T14.49e), then
+                        // the sync thread.
+                        let _ = sync_for_start.start_up(&services);
                     });
             }
             app.manage(job_runner);

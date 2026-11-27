@@ -394,6 +394,44 @@ impl SyncHost {
         earshot_runtime::ignore_copy::copy_once(services).is_ok()
     }
 
+    /// At app start, before the sync thread, whether sync is on or off: the one-off removal
+    /// repair (docs/sync-spec.md 7A.2, `earshot_runtime::sync::removal_repair`). What it changed
+    /// reaches the window as one [`SyncEvent`], through the listener the sync thread tells
+    /// ([`Self::set_change_listener`]); a panic in it is caught, as the thread catches one.
+    /// Returns what the repair did, `None` when it failed (the next start tries again).
+    pub fn repair_removals(
+        &self,
+        services: &Services,
+    ) -> Option<earshot_runtime::sync::RemovalRepaired> {
+        let repaired = earshot_runtime::sync::removal_repair(services).ok()?;
+        if let Some(changes) = repaired.changes() {
+            let listener = self
+                .changes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if let Some(listener) = listener {
+                let told =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(&changes)));
+                if told.is_err() {
+                    eprintln!("{}", earshot_runtime::sync::LISTENER_PANICKED);
+                }
+            }
+        }
+        Some(repaired)
+    }
+
+    /// Everything the app's `earshot-sync-start` thread does, in this order: the legacy ignore
+    /// copy without a vault ([`Self::copy_ignores_without_vault`]), the removal repair whether
+    /// sync is on or off ([`Self::repair_removals`]), then the sync thread
+    /// ([`Self::start_if_on`]). Returns what the repair did.
+    pub fn start_up(&self, services: &Services) -> Option<earshot_runtime::sync::RemovalRepaired> {
+        self.copy_ignores_without_vault(services);
+        let repaired = self.repair_removals(services);
+        self.start_if_on(services);
+        repaired
+    }
+
     /// Starts the thread when sync is on and this device is set up, replacing a running one
     /// (the old one is told and stopped only once the new one exists, and joined on a thread
     /// of its own; when no thread can be started the old one stays in place). A device that

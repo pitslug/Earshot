@@ -33,6 +33,8 @@ const ROOTS: &[(&str, &str)] = &[
         "crates/earshot-store/src/sync.rs",
         "unlink_removed_speakers",
     ),
+    // T14.49e (docs/sync-spec.md 7A.2): the store half of the one-off removal repair.
+    ("crates/earshot-store/src/sync.rs", "removal_repair_tx"),
     ("crates/earshot-store/src/sync.rs", "edits_win"),
     ("crates/earshot-store/src/sync.rs", "outbox_sent_in"),
     (
@@ -101,6 +103,11 @@ const ROOTS: &[(&str, &str)] = &[
         "forget_my_voice_in",
     ),
     ("crates/earshot-runtime/src/ignore_copy.rs", "copy_once_in"),
+    // T14.49e (docs/sync-spec.md 7A.2): the one-off removal repair.
+    (
+        "crates/earshot-runtime/src/sync/removal.rs",
+        "removal_repair_in",
+    ),
     (
         "crates/earshot-runtime/src/summary_seen.rs",
         "mark_existing_once_in",
@@ -144,6 +151,11 @@ const WRAPPERS: &[(&str, &str, &str)] = &[
         "crates/earshot-runtime/src/ignore_copy.rs",
         "copy_once",
         "copy_once_in",
+    ),
+    (
+        "crates/earshot-runtime/src/sync/removal.rs",
+        "removal_repair",
+        "removal_repair_in",
     ),
     (
         "crates/earshot-runtime/src/summary_seen.rs",

@@ -57,6 +57,6 @@ pub use layout::DataDir;
 pub use replaced::{Cleared, PushGuard};
 pub use sync::{
     AfterApply, Applied, ApplyRules, HELD_REPLACED_KEY, Held, HoldReason, Incoming,
-    MAX_CLOCK_AHEAD_MS, OutboxPage, RequestsMark, SyncKinds, SyncedRow,
+    MAX_CLOCK_AHEAD_MS, OutboxPage, RequestsMark, SyncKinds, SyncedRow, removal_repair_tx,
 };
 pub use versioned::{encode_versioned, split_version};

@@ -137,6 +137,10 @@ fn run(config: Config) -> Result<(), WorkerError> {
         return Ok(());
     }
     let services = open_services(&data)?;
+    // The one-off removal repair (T14.49e, docs/sync-spec.md 7A.2), before the worker opens:
+    // best effort (a failure is tried again at the next run); its ids are for a window, and a
+    // worker has none.
+    let _ = earshot_runtime::sync::removal_repair(&services);
     let worker = Worker::open(services, config)?;
     let thread = worker.start(SyncTiming::default())?;
     // Replaced transcript text from before T14.47 is cleared once per store (docs/sync-spec.md
@@ -236,5 +240,24 @@ impl StopSignals {
         {
             std::future::pending::<()>().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// T14.49e (docs/sync-spec.md 7A.11, "The removal repair's placement"): `run` runs the
+    /// removal repair once, after the store opens and before the worker opens.
+    #[test]
+    fn worker_runs_the_removal_repair_before_it_opens() {
+        let src = include_str!("main.rs");
+        let shipped = &src[..src.rfind("#[cfg(test)]").expect("this module")];
+        let at = |s: &str| {
+            assert_eq!(shipped.matches(s).count(), 1, "{s} once");
+            shipped.find(s).unwrap()
+        };
+        let opened = at("let services = open_services(&data)?;");
+        let repaired = at("earshot_runtime::sync::removal_repair(&services)");
+        let worker = at("Worker::open(services, config)?");
+        assert!(opened < repaired && repaired < worker);
     }
 }
