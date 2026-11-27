@@ -436,8 +436,9 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
         .any(|p| matches!(p, Place::Mine | Place::Other));
     // "### My actions" without "### Other actions": the user may have deleted the Other
     // heading, leaving other people's (or ownerless) lines under My actions, so no line
-    // there is trusted to be the user's. Lost, never moved; this includes a note whose
-    // actions were all the user's (the render leaves an empty group out).
+    // there is trusted to be the user's. Lost, never moved. The render always writes both
+    // headings once a user name is set (an empty group holds "_None_", which is not a task
+    // line), so only an edited note, or one an earlier build of T14.61 wrote, loses here.
     if old_places.contains(&Place::Mine) && !old_places.contains(&Place::Other) {
         for o in &mut old {
             if o.as_ref().is_some_and(|(_, _, p)| *p == Place::Mine) {

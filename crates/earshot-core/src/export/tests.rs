@@ -970,7 +970,7 @@ fn export_actions_are_grouped_into_the_users_and_other_peoples() {
 }
 
 #[test]
-fn export_an_empty_action_group_is_left_out() {
+fn export_an_empty_action_group_says_none() {
     let mut f = fixture();
     f.summary.action_items = vec![item("Ada Lovelace", "Send numbers", None, 21)];
     let mut i = input(&f);
@@ -978,7 +978,8 @@ fn export_an_empty_action_group_is_left_out() {
     let r = render(&i, &opts()).unwrap();
     assert_eq!(
         actions_section(&r.region),
-        "## Action items\n\n### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n"
+        "## Action items\n\n### My actions\n\n_None_\n\n\
+         ### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n"
     );
     f.summary.action_items = vec![item("casey lane", "Book the room", Some("Monday"), 20)];
     let mut i = input(&f);
@@ -986,8 +987,44 @@ fn export_an_empty_action_group_is_left_out() {
     let r = render(&i, &opts()).unwrap();
     assert_eq!(
         actions_section(&r.region),
-        "## Action items\n\n### My actions\n\n- [ ] Book the room (due: Monday)\n"
+        "## Action items\n\n### My actions\n\n- [ ] Book the room (due: Monday)\n\n\
+         ### Other actions\n\n_None_\n"
     );
+}
+
+#[test]
+fn export_merge_keeps_ticks_on_a_note_whose_actions_are_all_the_users() {
+    let r = render_items(
+        vec![
+            item("Casey Lane", "Book the room", None, 20),
+            item("Casey Lane", "Send numbers", None, 21),
+        ],
+        Some(casey()),
+    );
+    let doc = r.to_file();
+    assert!(doc.contains("### Other actions\n\n_None_\n"), "{doc}");
+    let ticked = doc.replace("- [ ] Book the room\n", "- [x] Book the room\n");
+    assert_ne!(ticked, doc);
+    // Re-exported unchanged: a fixed point, the tick kept.
+    assert_eq!(merge(&ticked, &r).unwrap(), ticked);
+    // Re-exported after the summary changed: the tick still carries, and "None" is never
+    // read as an action.
+    let r2 = render_items(
+        vec![item("Casey Lane", "Book the room", None, 20)],
+        Some(casey()),
+    );
+    let merged = merge(&ticked, &r2).unwrap();
+    assert!(
+        merged.contains("### My actions\n\n- [x] Book the room\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+    assert_eq!(merged.matches("_None_").count(), 1, "{merged}");
+    // A "None" line the user ticked into a task is still not an action of the new render.
+    let both_empty = render_items(vec![item("Ada Lovelace", "None", None, 21)], Some(casey()));
+    let old = both_empty.to_file().replace("_None_\n", "- [x] _None_\n");
+    let merged = merge(&old, &both_empty).unwrap();
+    assert!(!merged.contains("- [x]"), "{merged}");
 }
 
 #[test]

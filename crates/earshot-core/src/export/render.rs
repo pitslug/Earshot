@@ -395,12 +395,17 @@ pub fn render(
     })
 }
 
+/// The line an empty action group holds (fixed text, not a task line, so the merge never
+/// reads or matches it).
+const EMPTY_GROUP: &str = "_None_\n";
+
 /// The "## Action items" section (T14.61), as the meeting page lists them: with a user
 /// name, "### My actions" (the user's own, no owner; one the user shares ends
 /// "(with <others>)") then "### Other actions" (each line ends "(<owners>)"), each in
-/// meeting order and an empty group left out; without one, a single list with the owners at
-/// the end of each line. A due date stays "(due: ...)" before the owners. Every piece of
-/// generated text goes through `gen_text` on its own.
+/// meeting order, both always written and an empty one holding [`EMPTY_GROUP`]; without
+/// one, a single list with the owners at the end of each line. A due date stays
+/// "(due: ...)" before the owners. Every piece of generated text goes through `gen_text` on
+/// its own.
 fn action_items(
     sum: &SummaryV1,
     segments: &[Segment],
@@ -444,21 +449,22 @@ fn action_items(
     };
     let mine: Vec<&ActionLine<'_>> = lines.iter().filter(|l| l.mine).collect();
     let other: Vec<&ActionLine<'_>> = lines.iter().filter(|l| !l.mine).collect();
-    if !mine.is_empty() {
-        s.push_str("### My actions\n\n");
-        for l in &mine {
-            let others: Vec<&str> = l.owners.iter().copied().filter(|o| !user.owns(o)).collect();
-            s.push_str(&line(l, &others, true));
-        }
+    // Both groups always (the owner, 2026-11-27): an empty one says so, so its absence never
+    // looks like a fault, and the merge can tell a deleted heading from an empty group.
+    s.push_str("### My actions\n\n");
+    if mine.is_empty() {
+        s.push_str(EMPTY_GROUP);
     }
-    if !other.is_empty() {
-        if !mine.is_empty() {
-            s.push('\n');
-        }
-        s.push_str("### Other actions\n\n");
-        for l in &other {
-            s.push_str(&line(l, &l.owners, false));
-        }
+    for l in &mine {
+        let others: Vec<&str> = l.owners.iter().copied().filter(|o| !user.owns(o)).collect();
+        s.push_str(&line(l, &others, true));
+    }
+    s.push_str("\n### Other actions\n\n");
+    if other.is_empty() {
+        s.push_str(EMPTY_GROUP);
+    }
+    for l in &other {
+        s.push_str(&line(l, &l.owners, false));
     }
     (s, actions)
 }
