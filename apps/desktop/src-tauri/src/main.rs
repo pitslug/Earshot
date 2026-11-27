@@ -184,6 +184,15 @@ fn main() {
                     },
                 );
             }
+            // Replaced transcript text from before T14.47 is cleared once per store, on its own
+            // thread (docs/sync-spec.md 15.6); it gives way to sync and to recordings itself. A
+            // failure is the next start's to retry.
+            if let Ok(services) = state.services() {
+                let _ = earshot_runtime::replaced_text::spawn(
+                    &services,
+                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                );
+            }
             // In-app updates (T9.1b): what an earlier update left goes first; a check only if the
             // user turned automatic checks on, at the start and then on their schedule (T12.22).
             let update_sink: update_settings::UpdateSink = emitter(app.handle());

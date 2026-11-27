@@ -453,10 +453,13 @@ pub fn edit_segment(
 ) -> Result<bool, RuntimeError> {
     let text = clean_segment_text(text)?;
     let _claim = line_edit_claim(services, meeting)?;
-    write(services, |tx, stamp| {
+    let changed = write(services, |tx, stamp| {
         let (row, _) = final_line(tx, meeting, segment)?;
         put_line_text(tx, stamp, row, text)
-    })
+    })?;
+    // The words the edit removed leave the write-ahead log too (T14.47, 15.8).
+    services.request_flush();
+    Ok(changed)
 }
 
 /// [`edit_segment`], returning the words the bar under the line offers to add to the
@@ -475,7 +478,7 @@ pub fn edit_segment_offering(
 ) -> Result<Vec<String>, RuntimeError> {
     let text = clean_segment_text(text)?;
     let _claim = line_edit_claim(services, meeting)?;
-    write(services, |tx, stamp| {
+    let offer = write(services, |tx, stamp| {
         let (row, _) = final_line(tx, meeting, segment)?;
         let before = row.segment.text.clone();
         let after = text.clone();
@@ -484,7 +487,9 @@ pub fn edit_segment_offering(
         }
         let listed = word_choices::word_list_tx(tx)?;
         Ok(crate::vocabulary::words_to_offer(&before, &after, &listed))
-    })
+    })?;
+    services.request_flush();
+    Ok(offer)
 }
 
 /// Where [`move_line`] moves a line to.
@@ -1051,6 +1056,7 @@ pub fn use_word(
         put_choices(tx, meeting, &choices)?;
         put_line_text(tx, stamp, row, text)
     })
+    .inspect(|_| services.request_flush())
 }
 
 /// "Put back" (T12.15e): token `token` of line `segment` reads the word the recogniser wrote
@@ -1083,6 +1089,7 @@ pub fn put_back_word(
         put_choices(tx, meeting, &choices)?;
         put_line_text(tx, stamp, row, text)
     })
+    .inspect(|_| services.request_flush())
 }
 
 /// "Keep" (T12.15e): token `token` of line `segment` stays as decoded and is not suggested
@@ -1306,7 +1313,11 @@ pub(crate) fn write<T>(
             hlc,
             rng: &mut *rng,
         };
-        f(tx, &mut stamp)
+        let out = f(tx, &mut stamp)?;
+        // Lines this edit wrote go out before the cleared rows they replaced, stamped with the
+        // device HLC (T14.47, docs/sync-spec.md 15.2).
+        tx.send_lines_first(stamp.hlc, stamp.clock)?;
+        Ok(out)
     })
 }
 

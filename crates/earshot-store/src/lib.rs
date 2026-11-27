@@ -22,6 +22,7 @@ mod flac;
 mod fsutil;
 pub mod identities;
 mod layout;
+mod replaced;
 mod repo;
 mod schema;
 mod sync;
@@ -47,6 +48,7 @@ pub use flac::{
 };
 pub use fsutil::total_memory;
 pub use layout::DataDir;
+pub use replaced::{Cleared, PushGuard};
 pub use sync::{
     AfterApply, Applied, ApplyRules, Held, HoldReason, Incoming, MAX_CLOCK_AHEAD_MS, OutboxPage,
     RequestsMark, SyncKinds, SyncedRow,

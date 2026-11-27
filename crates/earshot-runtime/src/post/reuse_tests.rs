@@ -1473,6 +1473,26 @@ fn speaker_rec(rec: &Recorded) -> crate::speakers::SpeakerRecord {
     }
 }
 
+/// T14.47 (docs/sync-spec.md 15.2, "Writers of draft rows"): a session with speaker work on
+/// stores only draft rows with no speaker (live speaker work keeps its windows in device-local
+/// records and never writes a segment row). The recording is mic-only, the session the tests
+/// here have; the mic is the track speaker work runs on.
+#[test]
+fn live_draft_rows_carry_no_speaker() {
+    let (rec, _, _) = record_with_speakers(Some(3), false);
+    let record = speaker_rec(&rec);
+    assert!(record.results.windows() >= 32, "speaker work ran");
+    let rows = rec.svc.store().segments(rec.outcome.meeting).unwrap();
+    let drafts: Vec<_> = rows
+        .iter()
+        .filter(|r| r.pass == TranscriptPass::Live)
+        .collect();
+    assert!(!drafts.is_empty(), "the session stored its draft");
+    for r in drafts {
+        assert_eq!(r.segment.speaker_id, None, "{r:?}");
+    }
+}
+
 #[test]
 fn post_speaker_windows_from_the_meeting_give_the_whole_track_speakers() {
     let (rec, audio, w) = record_with_speakers(Some(3), false);

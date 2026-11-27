@@ -1184,14 +1184,15 @@ fn live_record(services: &Services, view: &MeetingView) -> Result<Option<LivePar
     let Some(record) = crate::live_summaries::live_summary_record(&db, view.meeting.id)? else {
         return Ok(None);
     };
-    let mut rows: Vec<earshot_core::asr::Segment> = earshot_core::model::live_segments(
-        &**db,
-        view.meeting.id,
-        earshot_core::model::TranscriptPass::Live,
-    )?
-    .into_iter()
-    .map(|r| r.segment)
-    .collect();
+    // Every draft row, whatever `deleted` says (T14.47, docs/sync-spec.md 15.3): once the final
+    // transcript is stored its draft is cleared, and the cleared form keeps the id, track,
+    // times and speaker (none) that moving a window's citations and owners needs.
+    let mut rows: Vec<earshot_core::asr::Segment> = db
+        .segments(view.meeting.id)?
+        .into_iter()
+        .filter(|r| r.pass == earshot_core::model::TranscriptPass::Live)
+        .map(|r| r.segment)
+        .collect();
     drop(db);
     rows.sort_by_key(|s| (s.start, s.id));
     Ok(Some(LiveParts {

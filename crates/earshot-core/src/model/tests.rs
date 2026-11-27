@@ -501,3 +501,119 @@ fn model_segment_edit_order_puts_the_edit_first_then_the_stamp() {
     assert_eq!(SegmentRow::edit_order(&live, &later_tomb), None);
     assert_eq!(SegmentRow::edit_order(&later_tomb, &live), None);
 }
+
+/// A final line with invented words, for the T14.47 tests.
+fn t1447_row(
+    updated: crate::identity::HlcTimestamp,
+    edited: Option<crate::identity::HlcTimestamp>,
+    deleted: bool,
+) -> SegmentRow {
+    use crate::identity::SyncMeta;
+    let seg = Segment::from_words(
+        EntityId::from_bytes([1; 16]),
+        EntityId::from_bytes([2; 16]),
+        vec![Word::new("invented", 0, 300, 0.9)],
+        crate::asr::MeetingTime::ZERO,
+    );
+    SegmentRow {
+        meta: SyncMeta {
+            created_at: updated,
+            updated_at: updated,
+            deleted,
+            origin_device_id: updated.node,
+        },
+        meeting_id: EntityId::from_bytes([3; 16]),
+        pass: TranscriptPass::Final,
+        segment: seg,
+        text_edited_at: edited,
+        pass_run: None,
+    }
+}
+
+fn t1447_ts(wall_ms: u64, n: u8) -> crate::identity::HlcTimestamp {
+    crate::identity::HlcTimestamp {
+        wall_ms,
+        logical: 0,
+        node: DeviceId::from_bytes([n; 16]),
+    }
+}
+
+/// T14.47 (docs/sync-spec.md 15.1): a row holds text when its text or its words are not empty;
+/// a cleared row and an erasure hold none.
+#[test]
+fn model_segment_holds_text_when_its_text_or_its_words_are_not_empty() {
+    let row = t1447_row(t1447_ts(1, 1), None, false);
+    assert!(row.holds_text());
+    let mut words_only = row.clone();
+    words_only.segment.text.clear();
+    assert!(words_only.holds_text());
+    let mut text_only = row.clone();
+    text_only.segment.words.clear();
+    assert!(text_only.holds_text());
+    let cleared = row.cleared();
+    assert!(!cleared.holds_text() && cleared.is_cleared());
+    let mut erasure = cleared.clone();
+    erasure.segment.confidence = 0.0;
+    assert!(!erasure.holds_text() && erasure.is_erasure() && !erasure.is_cleared());
+    // The cleared form keeps what rule 4 compares and the row's identity.
+    assert_eq!(cleared.segment.id, row.segment.id);
+    assert_eq!(cleared.segment.track, row.segment.track);
+    assert_eq!(
+        (cleared.segment.start, cleared.segment.end),
+        (row.segment.start, row.segment.end)
+    );
+    assert_eq!(
+        (cleared.pass, cleared.text_edited_at, cleared.pass_run),
+        (row.pass, row.text_edited_at, row.pass_run)
+    );
+    assert_eq!(cleared.meta.created_at, row.meta.created_at);
+    assert!(cleared.meta.deleted && cleared.segment.speaker_id.is_none());
+}
+
+/// T14.47: a cleared row is never an erasure, whatever its own confidence was (0, -0, NaN) and
+/// with or without a speaker; an erasure is one.
+#[test]
+fn model_segment_cleared_row_is_never_an_erasure() {
+    for confidence in [0.0_f32, -0.0, f32::NAN, 0.42, 1.0] {
+        for speaker in [None, Some(EntityId::from_bytes([9; 16]))] {
+            let mut row = t1447_row(t1447_ts(5, 1), None, true);
+            row.segment.confidence = confidence;
+            row.segment.speaker_id = speaker;
+            let cleared = row.cleared();
+            assert!(!cleared.is_erasure(), "{confidence} {speaker:?}");
+            assert!(cleared.is_cleared(), "{confidence} {speaker:?}");
+            assert_eq!(cleared.segment.confidence.to_bits(), 1.0_f32.to_bits());
+        }
+    }
+    let mut erasure = t1447_row(t1447_ts(5, 1), None, true).cleared();
+    erasure.segment.confidence = 0.0;
+    assert!(erasure.is_erasure());
+}
+
+/// T14.47: rule 4a's order of a cleared tombstone against an edit, a live line, another tombstone
+/// and an erasure, both ways.
+#[test]
+fn model_segment_edit_order_of_a_cleared_tombstone() {
+    use core::cmp::Ordering::{Greater, Less};
+    let cleared = t1447_row(t1447_ts(200, 2), None, true).cleared();
+    // An edit made elsewhere that did not see the replacement wins, whatever the stamps.
+    let edit = t1447_row(t1447_ts(100, 1), Some(t1447_ts(100, 1)), false);
+    assert_eq!(SegmentRow::edit_order(&cleared, &edit), Some(Greater));
+    assert_eq!(SegmentRow::edit_order(&edit, &cleared), Some(Less));
+    // Against an unedited live copy of the line, the later stamp wins.
+    let live_older = t1447_row(t1447_ts(150, 3), None, false);
+    assert_eq!(SegmentRow::edit_order(&live_older, &cleared), Some(Greater));
+    assert_eq!(SegmentRow::edit_order(&cleared, &live_older), Some(Less));
+    let live_later = t1447_row(t1447_ts(250, 3), None, false);
+    assert_eq!(SegmentRow::edit_order(&cleared, &live_later), Some(Greater));
+    // Against another tombstone (one that kept its text), the later stamp.
+    let tomb = t1447_row(t1447_ts(120, 4), None, true);
+    assert_eq!(SegmentRow::edit_order(&tomb, &cleared), Some(Greater));
+    assert_eq!(SegmentRow::edit_order(&cleared, &tomb), Some(Less));
+    // Against an erasure there is no edit order: plain stamp order decides.
+    let mut erasure = cleared.clone();
+    erasure.segment.confidence = 0.0;
+    erasure.meta.updated_at = t1447_ts(300, 5);
+    assert_eq!(SegmentRow::edit_order(&cleared, &erasure), None);
+    assert_eq!(SegmentRow::edit_order(&erasure, &cleared), None);
+}

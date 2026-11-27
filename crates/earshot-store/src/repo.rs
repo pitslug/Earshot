@@ -1673,7 +1673,9 @@ macro_rules! impl_repos {
                 shown_lines(&self.conn, meeting)
             }
             fn put_segment(&mut self, segment: SegmentRow) -> Result<(), RepoError> {
-                put_segment(&self.conn, &segment)
+                put_segment(&self.conn, &segment)?;
+                // Lines go out before what they replace (docs/sync-spec.md 15.2).
+                self.after_put_segment(&segment)
             }
             fn speakers(&self, meeting: EntityId) -> Result<Vec<Speaker>, RepoError> {
                 speakers_of(&self.conn, meeting)

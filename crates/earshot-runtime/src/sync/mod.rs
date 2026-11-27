@@ -44,8 +44,16 @@ use crate::services::Services;
 pub use earshot_sync::VaultKey;
 pub use engine::{
     ChangeListener, Heard, LISTENER_PANICKED, Peer, PresenceListener, SyncChanges, SyncClient,
-    TickReport, WorkerWriter,
+    TickReport, TickSeen, WorkerWriter, tick_seen,
 };
+
+/// The push's own guard as the store's "lines go out before what they replace" reads it
+/// (docs/sync-spec.md 15.2, "The check"): whether a queued row would be sealed and sent. Every
+/// [`Services`] gives it to its store, so the check never copies the push's rule.
+#[must_use]
+pub fn push_guard() -> earshot_store::PushGuard {
+    earshot_store::PushGuard::new(engine::sealable)
+}
 pub use presence::{
     Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ModelPlace, ONLINE_WITHIN_S, PRESENCE_EVERY,
     Presence, clean_name, computer_name, online,

@@ -486,6 +486,8 @@ fn run(
         );
     }
     let services = client.services().clone();
+    // The sweep of replaced text gives way to a running sync (docs/sync-spec.md 15.6).
+    let _running = super::engine::Running::new(client.device());
     let steps = super::engine::step_lock(client.device());
     let mut failures: u32 = 0;
     let mut next = Instant::now();

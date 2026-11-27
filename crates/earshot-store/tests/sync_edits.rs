@@ -361,7 +361,10 @@ fn sync_edits_a_late_edit_replaces_a_retranscription_tombstone_whatever_the_stam
     e.apply(&base());
     e.apply(&pass(&[]));
     assert!(e.segment(LINE).meta.deleted);
-    assert!(!e.queued(LINE), "applied rows are not sent back");
+    // T14.47 (docs/sync-spec.md 15.4): the pulled tombstone held the line's text, so it is
+    // cleared here and goes out cleared, replacing the relay's copy; no text is sent.
+    assert!(e.segment(LINE).is_cleared(), "{:?}", e.segment(LINE));
+    assert!(e.queued(LINE), "the cleared copy goes out");
     // The edit, stamped before the tombstone, arrives after it.
     let a = e.apply(&[SyncedRow::Segment(edited("shall we sail", 100, EDITOR))]);
     let won = e.segment(LINE);
@@ -593,7 +596,21 @@ fn sync_edits_live_draft_copies_keep_plain_order() {
     later.meta.deleted = true;
     let a = e.apply(&[SyncedRow::Segment(later.clone())]);
     assert_eq!(a.written, 1, "{a:?}");
-    assert_eq!(e.segment(30), later, "the later copy wins as written");
+    // The later copy wins by plain order; T14.47 (docs/sync-spec.md 15.4): being a tombstone
+    // that holds text, it is then cleared here.
+    let won = e.segment(30);
+    assert_eq!(
+        won.meta.created_at, later.meta.created_at,
+        "the later copy wins"
+    );
+    assert!(
+        won.is_cleared() && won.meta.updated_at > later.meta.updated_at,
+        "{won:?}"
+    );
+    assert_eq!(
+        won.text_edited_at, None,
+        "the later copy's edit mark, not the draft's"
+    );
 }
 
 /// The line as a meeting deletion on `node` leaves it at `dt` (core `delete_meeting`'s erasure).
@@ -652,7 +669,15 @@ fn sync_edits_the_edit_order_needs_the_meeting_live_here() {
     tomb.meta.deleted = true;
     tomb.meta.updated_at = at(200, PASSER);
     let a = e.apply(&[SyncedRow::Segment(tomb.clone())]);
-    assert_eq!(e.segment(LINE), tomb, "plain stamp order");
+    // Plain stamp order: the later tombstone replaces the edit. T14.47 (docs/sync-spec.md
+    // 15.4): in a meeting deleted here, a pulled tombstone that holds text is written in the
+    // erasure form.
+    let got = e.segment(LINE);
+    assert!(got.is_erasure(), "{got:?}");
+    assert_eq!(
+        got.text_edited_at, None,
+        "the tombstone's edit mark, not the edit's"
+    );
     assert_eq!(a.edited_lines_kept, 0, "{a:?}");
 }
 

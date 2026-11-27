@@ -140,6 +140,12 @@ impl From<RepoError> for StoreError {
 #[derive(Debug)]
 pub struct Store {
     pub(crate) conn: Connection,
+    /// The push's own guard, for "lines go out before what they replace"
+    /// ([`Store::set_push_guard`], docs/sync-spec.md 15.2).
+    pub(crate) push_guard: Option<crate::replaced::PushGuard>,
+    /// The latest stamp this store wrote itself, when it had no HLC to stamp with
+    /// ([`Store::take_own_stamp`]).
+    pub(crate) own_stamp: Option<HlcTimestamp>,
 }
 
 /// A transaction on the [`Store`]; implements the same repository traits. Commits when
@@ -147,6 +153,27 @@ pub struct Store {
 #[derive(Debug)]
 pub struct StoreTx<'a> {
     pub(crate) conn: Transaction<'a>,
+    /// The (meeting, track) pairs of which the transaction wrote a live final row
+    /// (docs/sync-spec.md 15.2, "When it runs"): checked before it commits.
+    pub(crate) noted: std::cell::RefCell<std::collections::BTreeSet<(EntityId, EntityId)>>,
+    /// The store's push guard, for that check.
+    pub(crate) push_guard: Option<crate::replaced::PushGuard>,
+    /// The latest stamp the check wrote without the caller's HLC.
+    pub(crate) own_stamp: Option<HlcTimestamp>,
+}
+
+impl<'a> StoreTx<'a> {
+    pub(crate) fn of(
+        conn: Transaction<'a>,
+        push_guard: Option<crate::replaced::PushGuard>,
+    ) -> Self {
+        StoreTx {
+            conn,
+            noted: std::cell::RefCell::default(),
+            push_guard,
+            own_stamp: None,
+        }
+    }
 }
 
 /// A database opened read-only, for evaluation tools that read a copy of a user's store
@@ -263,7 +290,11 @@ impl Store {
             // may lose the last commits but never corrupts the database.
             conn.pragma_update(None, "synchronous", "NORMAL")?;
         }
-        let mut store = Store { conn };
+        let mut store = Store {
+            conn,
+            push_guard: None,
+            own_stamp: None,
+        };
         store.migrate()?;
         // Fold any WAL left by an earlier session (for example one whose checkpoint after
         // forgetting voiceprints was blocked) into the database. Best effort: another
@@ -349,10 +380,30 @@ impl Store {
             .conn
             .transaction()
             .map_err(|e| E::from(StoreError::from(e)))?;
-        let mut tx = StoreTx { conn: tx };
+        let mut tx = StoreTx::of(tx, self.push_guard.clone());
         let out = f(&mut tx)?;
+        // Lines go out before what they replace (docs/sync-spec.md 15.2): checked before the
+        // commit for every track the transaction wrote a live final row of.
+        tx.lines_first_without_hlc().map_err(E::from)?;
+        let own = tx.own_stamp;
         tx.conn.commit().map_err(|e| E::from(StoreError::from(e)))?;
+        self.own_stamp = self.own_stamp.max(own);
         Ok(out)
+    }
+
+    /// Sets the push's own guard (docs/sync-spec.md 15.2, "The check"): whether a queued row
+    /// would be sealed and sent (`true`) or refused before sealing. The sync client gives the
+    /// guard it seals with, so the check never copies its rule. Without one every row that
+    /// reads counts as sendable.
+    pub fn set_push_guard(&mut self, guard: crate::replaced::PushGuard) {
+        self.push_guard = Some(guard);
+    }
+
+    /// The latest stamp the store wrote without the caller's HLC (a transaction that wrote a
+    /// live final line and was committed without [`StoreTx::send_lines_first`]), taken: the
+    /// caller's HLC observes it, so its next stamp is later.
+    pub fn take_own_stamp(&mut self) -> Option<HlcTimestamp> {
+        self.own_stamp.take()
     }
 
     /// This install's device id: created from `clock` and `rng` on first use, then stable.
@@ -458,28 +509,7 @@ impl Store {
     /// # Errors
     /// SQLite errors.
     pub fn hlc(&self, node: DeviceId) -> Result<Hlc, StoreError> {
-        let mut best: Option<HlcTimestamp> = None;
-        for table in crate::schema::SYNCED_TABLES {
-            let sql = format!(
-                "SELECT updated_wall, updated_logical, updated_node FROM {table} \
-                 ORDER BY updated_wall DESC, updated_logical DESC, updated_node DESC LIMIT 1"
-            );
-            let row: Option<(i64, u32, [u8; 16])> = self
-                .conn
-                .query_row(&sql, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-                .optional()?;
-            if let Some((wall, logical, n)) = row {
-                let wall_ms = u64::try_from(wall)
-                    .map_err(|_| StoreError::Corrupt(format!("negative timestamp in {table}")))?;
-                let t = HlcTimestamp {
-                    wall_ms,
-                    logical,
-                    node: DeviceId::from_bytes(n),
-                };
-                best = best.max(Some(t));
-            }
-        }
-        Ok(best.map_or_else(|| Hlc::new(node), |hw| Hlc::resume(node, hw)))
+        Ok(high_water(&self.conn)?.map_or_else(|| Hlc::new(node), |hw| Hlc::resume(node, hw)))
     }
 
     /// [`earshot_core::voiceprint::forget_voiceprints`] in one transaction, followed by a
@@ -606,6 +636,38 @@ impl StoreTx<'_> {
     pub fn delete_local_value(&mut self, key: &str) -> Result<bool, StoreError> {
         delete_local(&self.conn, key)
     }
+}
+
+/// The greatest `updated_at` stored in any syncable table (any node).
+pub(crate) fn high_water(conn: &Connection) -> Result<Option<HlcTimestamp>, StoreError> {
+    let mut best: Option<HlcTimestamp> = None;
+    for table in crate::schema::SYNCED_TABLES {
+        let sql = format!(
+            "SELECT updated_wall, updated_logical, updated_node FROM {table} \
+             ORDER BY updated_wall DESC, updated_logical DESC, updated_node DESC LIMIT 1"
+        );
+        let row: Option<(i64, u32, [u8; 16])> = conn
+            .query_row(&sql, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        if let Some((wall, logical, n)) = row {
+            let wall_ms = u64::try_from(wall)
+                .map_err(|_| StoreError::Corrupt(format!("negative timestamp in {table}")))?;
+            let t = HlcTimestamp {
+                wall_ms,
+                logical,
+                node: DeviceId::from_bytes(n),
+            };
+            best = best.max(Some(t));
+        }
+    }
+    Ok(best)
+}
+
+/// This store's device id, when one was made ([`Store::device_id`]).
+pub(crate) fn stored_device(conn: &Connection) -> Result<Option<DeviceId>, StoreError> {
+    Ok(get_local(conn, "device_id")?
+        .and_then(|b| <[u8; 16]>::try_from(b).ok())
+        .map(DeviceId::from_bytes))
 }
 
 fn get_local(conn: &Connection, key: &str) -> Result<Option<Vec<u8>>, StoreError> {

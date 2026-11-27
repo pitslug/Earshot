@@ -5129,3 +5129,6 @@ fn sync_the_device_list_is_asked_through_a_client_beside_its_ticks() {
 
 #[path = "sync_edit_tests.rs"]
 mod edits;
+
+#[path = "sync_replaced_tests.rs"]
+mod replaced;

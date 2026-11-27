@@ -505,9 +505,13 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let mut tx = StoreTx { conn: tx };
+        let mut tx = StoreTx::of(tx, self.push_guard.clone());
         let out = f(&mut tx)?;
+        // As in `Store::transaction` (docs/sync-spec.md 15.2).
+        tx.lines_first_without_hlc()?;
+        let own = tx.own_stamp;
         tx.conn.commit()?;
+        self.own_stamp = self.own_stamp.max(own);
         Ok(out)
     }
 

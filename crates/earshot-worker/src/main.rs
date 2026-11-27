@@ -139,6 +139,13 @@ fn run(config: Config) -> Result<(), WorkerError> {
     let services = open_services(&data)?;
     let worker = Worker::open(services, config)?;
     let thread = worker.start(SyncTiming::default())?;
+    // Replaced transcript text from before T14.47 is cleared once per store (docs/sync-spec.md
+    // 15.6), on its own thread, giving way to sync; stopped with the run.
+    let sweep_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _ = earshot_runtime::replaced_text::spawn(
+        worker.services(),
+        std::sync::Arc::clone(&sweep_stop),
+    );
     println!("running");
     let stopped = runtime.block_on(async {
         let mut beat = tokio::time::interval(health::HEARTBEAT_EVERY);
@@ -157,6 +164,7 @@ fn run(config: Config) -> Result<(), WorkerError> {
         }
     });
     let _ = std::fs::remove_file(&heartbeat);
+    sweep_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     worker.cancel();
     if stopped {
         if let Some(done) = thread.say_gone() {

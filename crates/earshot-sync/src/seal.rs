@@ -154,15 +154,33 @@ pub(crate) fn open_bytes(key: &[u8; 32], sealed: &[u8], aad: &[u8]) -> Result<Ve
 /// [`SealError::Refused`] for a plaintext [`check_plaintext`] refuses; [`SealError::Json`];
 /// [`SealError::Random`].
 pub fn seal_row<T: SyncSerialize>(keys: &Keys, row: &T) -> Result<SealedRow, SealError> {
+    let plaintext = plaintext_of(row)?;
+    let key = keys.row_key(row.sync_id());
+    let stamp = row.sync_meta().updated_at;
+    seal_plaintext(keys, key, stamp, &plaintext)
+}
+
+/// The plaintext [`seal_row`] seals for `row`: its envelope as JSON with `"format"`.
+fn plaintext_of<T: SyncSerialize>(row: &T) -> Result<Vec<u8>, SealError> {
     let mut value = serde_json::to_value(sync_envelope(row)).map_err(|_| SealError::Json)?;
     value
         .as_object_mut()
         .ok_or(SealError::Json)?
         .insert("format".into(), ENVELOPE_FORMAT.into());
-    let plaintext = serde_json::to_vec(&value).map_err(|_| SealError::Json)?;
-    let key = keys.row_key(row.sync_id());
-    let stamp = row.sync_meta().updated_at;
-    seal_plaintext(keys, key, stamp, &plaintext)
+    serde_json::to_vec(&value).map_err(|_| SealError::Json)
+}
+
+/// Whether [`seal_row`] would refuse `row` before sealing it, and why (the push's own check,
+/// [`check_plaintext`], over the plaintext it would seal): the store's "lines go out before what
+/// they replace" judges queued rows by it (docs/sync-spec.md 15.2), never by a copy of the rule.
+/// `Err` when the row's JSON cannot be written (the push cannot seal it either).
+///
+/// # Errors
+/// [`SealError::Json`].
+pub fn row_refused<T: SyncSerialize>(
+    row: &T,
+) -> Result<Option<crate::PlaintextRefused>, SealError> {
+    Ok(check_plaintext(&plaintext_of(row)?).err())
 }
 
 /// Seals an envelope's JSON as filed under `key` at `stamp` (also used by tests to build
