@@ -156,7 +156,10 @@ describe("First run wizard", () => {
     cleanup();
     s.mount();
     await screen.findByRole("navigation", { name: "Meetings and settings" });
-    expect(screen.queryByRole("progressbar")).toBeNull();
+    // The wizard's own bar is named "Step N of M"; the meeting list's loading spinner is also a
+    // progressbar and may still show while the first read waits for the sync subscription (T14.49).
+    expect(screen.queryByRole("progressbar", { name: /^Step \d+ of \d+$/ })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 1, name: STEPS[0].title })).toBeNull();
   });
 
   it("Skip setup finishes from any step, and Next and Back walk the steps", async () => {
