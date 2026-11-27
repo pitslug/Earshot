@@ -367,6 +367,27 @@ pub struct Applied {
     /// The `(table, rowid)` of each row behind [`Applied::damaged_skipped`], so a caller can
     /// count the rows of several pages once (SQLite rowids only: never logged, shown or stored).
     pub damaged_rows: std::collections::BTreeSet<(&'static str, i64)>,
+    /// Tombstones the page stamped again and kept queued (docs/sync-spec.md 7A.2 C1): a meeting,
+    /// voiceprint or voice sample tombstone kept against a later live copy, and a person or folder
+    /// tombstone kept or written with this device's stamp (P1, F1). Not a skipped live child of a
+    /// deleted meeting, which is stamped nowhere ([`Applied::deletions_kept`]).
+    pub tombstones_restamped: usize,
+    /// The ids of the rows the page wrote with this device's stamp that C1's extra push sends
+    /// (docs/sync-spec.md 7A.2): the tombstones of [`Applied::tombstones_restamped`] and what P2,
+    /// P3, a pulled person tombstone's erasure, rule 3a and the voice rules wrote. Ids only.
+    pub stamped_here: std::collections::BTreeSet<EntityId>,
+    /// Items the page erased (docs/sync-spec.md 7A.4): person and folder names cleared, speaker
+    /// names P3 rewrote, and [`Applied::biometrics_forgotten`] (voices and identity entries). A
+    /// page with any is followed by `flush_erasures`.
+    pub erased: usize,
+    /// Live persons tombstoned because their `merged_into` chain ends at a person removed here
+    /// (P2).
+    pub persons_removed_with: usize,
+    /// Speaker rows unlinked from a person removed here (P3).
+    pub speakers_unlinked: usize,
+    /// Distinct chain steps a `merged_into` walk could not read (docs/sync-spec.md 7A.2 D1),
+    /// each also in [`Applied::damaged_rows`]. A loop or a person not known here counts nothing.
+    pub chains_unknown: usize,
 }
 
 impl Applied {
@@ -391,6 +412,8 @@ pub(crate) struct Wrote {
     pub(crate) prints: bool,
     /// A voice sample row (rules 3 and 3a).
     pub(crate) samples: bool,
+    /// A speaker row (P3, docs/sync-spec.md 7A.2).
+    pub(crate) speakers: bool,
 }
 
 impl Wrote {
@@ -400,6 +423,7 @@ impl Wrote {
         summaries: true,
         prints: true,
         samples: true,
+        speakers: true,
     };
 
     pub(crate) fn row(&mut self, row: &SyncedRow) {
@@ -408,10 +432,10 @@ impl Wrote {
             SyncedRow::Summary(_) => self.summaries = true,
             SyncedRow::Voiceprint(_) => self.prints = true,
             SyncedRow::VoiceprintSample(_) => self.samples = true,
+            SyncedRow::Speaker(_) => self.speakers = true,
             SyncedRow::Meeting(_)
             | SyncedRow::Track(_)
             | SyncedRow::Segment(_)
-            | SyncedRow::Speaker(_)
             | SyncedRow::Note(_)
             | SyncedRow::Folder(_)
             | SyncedRow::SummaryRequest(_)
@@ -574,7 +598,8 @@ pub(crate) fn withdrawal(
 /// prints zeroed and tombstoned by rowid, samples by id (or by rowid when their id does not
 /// read). A row whose `person_id` does not read is skipped and counted; a chain through a step
 /// that does not read is [`ChainEnd::Unknown`] and erases nothing (docs/sync-spec.md 16.5
-/// items 1 to 3).
+/// items 1 to 3), and a chain ending at the user's tombstone is [`ChainEnd::MeTombstone`],
+/// never a removal (7A.2 P4).
 pub(crate) fn dead_person_repair<C: Clock + ?Sized>(
     g: &mut GuardedTx<'_, '_>,
     hlc: &mut Hlc,
@@ -596,7 +621,7 @@ pub(crate) fn dead_person_repair<C: Clock + ?Sized>(
             }
         }
     }
-    for (rowid, person) in g.dead_person_prints()? {
+    for (rowid, id, person) in g.dead_person_prints()? {
         let Col::Read(person) = person else {
             g.count_damaged("voiceprint", &[rowid]);
             continue;
@@ -604,10 +629,113 @@ pub(crate) fn dead_person_repair<C: Clock + ?Sized>(
         if chain_end(g, person)? != ChainEnd::Removed {
             continue;
         }
-        g.erase_print_by_rowid(hlc, clock, rowid)?;
+        g.erase_print_by_rowid(hlc, clock, rowid, id.read())?;
         out.biometrics_forgotten += 1;
         out.people = true;
     }
+    Ok(())
+}
+
+/// P2 of docs/sync-spec.md 7A.2: every live person whose `merged_into` chain ends at a person
+/// tombstoned here that is not the user ([`ChainEnd::Removed`]) is tombstoned with its name
+/// cleared (`merged_into` kept), with this device's stamp, its biometrics forgotten as for a
+/// pulled person tombstone; a damaged row by rowid (16.4). A chain that ends at the user's
+/// tombstone, at a person not known here, or loops, changes nothing; the user is never
+/// tombstoned; a person whose own `is_me` does not read is skipped and counted (16.5 item 18).
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn merged_into_removed_repair<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    out: &mut Applied,
+) -> Result<(), StoreError> {
+    for l in g.person_links()? {
+        let Col::Read(person) = l.id else { continue };
+        if l.deleted != Deleted::No || l.merged_into == Col::Read(None) {
+            continue;
+        }
+        if chain_end(g, person)? != ChainEnd::Removed {
+            continue;
+        }
+        match l.is_me {
+            Col::Read(false) => {}
+            Col::Read(true) => continue,
+            Col::Unreadable => {
+                g.count_damaged("person", &[l.rowid]);
+                continue;
+            }
+        }
+        out.biometrics_forgotten += crate::identities::forget_identity_biometrics(
+            g,
+            person,
+            hlc,
+            clock,
+            crate::identities::Erasure::Pulled,
+        )?
+        .erased();
+        match g.person_or_damaged(person)? {
+            None => continue,
+            Some(Ok(mut p)) => {
+                if !p.display_name.is_empty() {
+                    out.erased += 1;
+                }
+                p.display_name.clear();
+                p.meta.mark_deleted(hlc, clock);
+                g.put_person(p)?;
+                g.note_stamped(person);
+            }
+            Some(Err(())) => {
+                // Placed by its `id` and `merged_into`, both read: tombstoned by rowid with the
+                // name cleared whatever it read as (16.4).
+                g.tombstone_person_by_rowid(hlc, clock, l.rowid, Some(person))?;
+                out.erased += 1;
+            }
+        }
+        out.persons_removed_with += 1;
+        out.people = true;
+    }
+    Ok(())
+}
+
+/// P3 of docs/sync-spec.md 7A.2: no speaker row stays linked to a person tombstoned here that
+/// is not the user. Every such row is rewritten as `Store::remove_person` rewrites it, through
+/// [`crate::delete::unlink_speakers_tx`] (a damaged row by rowid under the written-columns rule
+/// of 16.4). A row linked to the user's tombstone is left linked (P4). Run after rule 4c and
+/// before the host's `after`.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn unlink_removed_speakers<C: Clock + ?Sized>(
+    g: &mut GuardedTx<'_, '_>,
+    hlc: &mut Hlc,
+    clock: &C,
+    out: &mut Applied,
+) -> Result<(), StoreError> {
+    // After P2 a chain never ends at such a tombstone through a live person, so the direct link
+    // is the whole test.
+    let removed: Vec<EntityId> = g
+        .person_links()?
+        .into_iter()
+        .filter(|l| l.deleted == Deleted::Yes && l.is_me == Col::Read(false))
+        .filter_map(|l| l.id.read())
+        .collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let mut on_row = |_g: &mut GuardedTx<'_, '_>, row: &crate::delete::UnlinkedRow| {
+        // P5 (T14.49, a later slice) drops the row's identity entry here, at this row's write:
+        // `identities::row_relinked_guarded(_g, row.meeting, row.speaker, Some(row.from), None)`.
+        out.speakers_unlinked += 1;
+        out.meetings.insert(row.meeting);
+        out.people = true;
+        if row.name_erased {
+            out.erased += 1;
+        }
+        Ok(())
+    };
+    crate::delete::unlink_speakers_tx(g, &removed, hlc, clock, &mut on_row)?;
     Ok(())
 }
 
@@ -679,6 +807,11 @@ pub(crate) fn converge<C: Clock + ?Sized>(
             out.mes_merged += 1;
             out.people = true;
         }
+    }
+    // P2 reads persons (docs/sync-spec.md 7A.2): after rule 1, before rule 3a, so 3a and the
+    // voice rules see the persons it tombstoned.
+    if wrote.persons {
+        merged_into_removed_repair(g, hlc, clock, out)?;
     }
     // Rule 2 reads summaries.
     let crowded: Vec<EntityId> = if wrote.summaries {
@@ -826,7 +959,8 @@ pub(crate) fn edits_win<C: Clock + ?Sized>(
         let (mut speakers, damaged) = g.speakers_or_damaged(m)?;
         speakers.sort_by_key(|s| s.id);
         // A damaged row whose role may be "Me" and that may be live counts as a live "Me".
-        let maybe_me = g.speaker_links(Some(m))?.into_iter().any(|l| {
+        let links = g.speaker_links(Some(m))?;
+        let maybe_me = links.iter().any(|l| {
             damaged.contains(&l.rowid)
                 && matches!(l.role, Col::Read(SpeakerRole::Me) | Col::Unreadable)
                 && l.deleted != Deleted::Yes
@@ -835,6 +969,21 @@ pub(crate) fn edits_win<C: Clock + ?Sized>(
             || speakers
                 .iter()
                 .any(|s| !s.meta.deleted && s.role == SpeakerRole::Me);
+        // Names the meeting's live rows hold (a damaged live row's name when it reads), for a
+        // revived row whose stored name is empty (docs/sync-spec.md 7A.2, rule 4c and a
+        // nameless row).
+        let mut taken: Vec<String> = speakers
+            .iter()
+            .filter(|s| !s.meta.deleted)
+            .map(|s| s.display_name.clone())
+            .collect();
+        for l in links.iter().filter(|l| damaged.contains(&l.rowid)) {
+            if l.deleted == Deleted::No
+                && let Col::Read(name) = &l.display_name
+            {
+                taken.push(name.clone());
+            }
+        }
         for s in speakers {
             if s.meta.deleted && named.contains(&s.id) {
                 let mut back = s;
@@ -845,6 +994,10 @@ pub(crate) fn edits_win<C: Clock + ?Sized>(
                     }
                     me_live = true;
                 }
+                if back.display_name.is_empty() {
+                    back.display_name = crate::first_free_speaker_name(&taken);
+                }
+                taken.push(back.display_name.clone());
                 back.meta.touch(hlc, clock);
                 g.put_synced(&SyncedRow::Speaker(back))?;
                 out.speakers_revived += 1;

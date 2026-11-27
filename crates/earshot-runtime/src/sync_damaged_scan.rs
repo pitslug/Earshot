@@ -18,8 +18,18 @@ const ROOTS: &[(&str, &str)] = &[
     ("crates/earshot-store/src/guarded.rs", "chain_end"),
     ("crates/earshot-store/src/guarded.rs", "identity_tx"),
     ("crates/earshot-store/src/guarded.rs", "identity_in"),
+    // T14.49a (docs/sync-spec.md 7A.2): P1, P4 and F1 in the page loop, P2, P3.
+    ("crates/earshot-store/src/guarded.rs", "tombstone_final"),
     ("crates/earshot-store/src/sync.rs", "converge"),
     ("crates/earshot-store/src/sync.rs", "dead_person_repair"),
+    (
+        "crates/earshot-store/src/sync.rs",
+        "merged_into_removed_repair",
+    ),
+    (
+        "crates/earshot-store/src/sync.rs",
+        "unlink_removed_speakers",
+    ),
     ("crates/earshot-store/src/sync.rs", "edits_win"),
     ("crates/earshot-store/src/sync.rs", "outbox_sent_in"),
     (

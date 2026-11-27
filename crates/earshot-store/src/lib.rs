@@ -38,7 +38,7 @@ pub use audio::{
     run_retention, sweep_orphan_audio,
 };
 pub use db::{ReadOnlyStore, SCHEMA_VERSION, Store, StoreError, StoreTx};
-pub use delete::{MeetingDeletion, PersonRemoval, first_free_speaker_name};
+pub use delete::{MeetingDeletion, PersonRemoval, UnlinkedRow, first_free_speaker_name};
 pub use export::{
     ExportAction, ExportDb, ExportItem, ExportReport, VaultError, export_note, export_notes,
     validate_vault,

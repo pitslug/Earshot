@@ -423,6 +423,7 @@ fn store_sync_repairs_by_the_kinds_a_page_wrote_equal_every_repair_after_every_p
                 );
             }
             let page = page(&mut dice, &mut seq, base);
+            let page = with_removal_rows(&mut dice, &mut seq, base, page);
             let (g, e) = (gated.apply(&page), every.apply(&page));
             assert_eq!(g, e, "seed {seed} step {step}: what the page did");
             assert_eq!(
@@ -451,6 +452,9 @@ fn store_sync_repairs_by_the_kinds_a_page_wrote_equal_every_repair_after_every_p
                 totals.biometrics_forgotten += a.biometrics_forgotten;
                 totals.written += a.written;
                 totals.ignored += a.ignored;
+                totals.tombstones_restamped += a.tombstones_restamped;
+                totals.persons_removed_with += a.persons_removed_with;
+                totals.speakers_unlinked += a.speakers_unlinked;
             }
         }
         // The outboxes agree row for row as well (the dump holds them): what goes out is the same.
@@ -471,6 +475,50 @@ fn store_sync_repairs_by_the_kinds_a_page_wrote_equal_every_repair_after_every_p
     assert!(totals.summaries_replaced > 5, "{totals:?}");
     assert!(totals.biometrics_forgotten > 5, "{totals:?}");
     assert!(totals.written > 500 && totals.ignored > 100, "{totals:?}");
+    // T14.49a: the removal rules (docs/sync-spec.md 7A.2) ran on both stores and agreed.
+    assert!(totals.tombstones_restamped > 5, "{totals:?}");
+    assert!(totals.persons_removed_with > 0, "{totals:?}");
+    assert!(totals.speakers_unlinked > 5, "{totals:?}");
+}
+
+const FOLDERS: std::ops::Range<u8> = 70..73;
+
+/// T14.49a: `page` plus up to two speaker rows linked to the generated people (P3) and folder
+/// rows, live or tombstones (F1), so the comparison above covers the removal rules too (P1, P2
+/// and P4 act on the generated person rows). Used by that comparison only: test 12's pages stay
+/// as they were.
+fn with_removal_rows(
+    dice: &mut Dice,
+    seq: &mut u64,
+    base: u64,
+    mut page: Vec<Incoming>,
+) -> Vec<Incoming> {
+    for _ in 0..dice.roll(3) {
+        let row = if dice.one_in(3) {
+            let deleted = dice.one_in(3);
+            let meta = dice.meta(base, deleted);
+            SyncedRow::Folder(Folder {
+                id: id(dice.pick(FOLDERS)),
+                meta,
+                name: if deleted {
+                    String::new()
+                } else {
+                    "An invented folder".into()
+                },
+            })
+        } else {
+            let n = dice.pick(SPEAKERS);
+            let deleted = dice.one_in(5);
+            let person = (!dice.one_in(4)).then(|| dice.pick(PERSONS));
+            let meta = dice.meta(base, deleted);
+            // A speaker keeps its meeting: the row's id decides it.
+            let meeting = MEETINGS.start + n % (MEETINGS.end - MEETINGS.start);
+            SyncedRow::Speaker(speaker_row(n, meeting, person, meta))
+        };
+        *seq += 1;
+        page.push(incoming(*seq, row));
+    }
+    page
 }
 
 /// What the gating rests on, shown by breaking it: this computer never leaves two live "Me"
@@ -585,6 +633,15 @@ const SPEAKERS: std::ops::Range<u8> = 80..96;
 /// people, speaker rows linked to people and their identity entries) leave exactly the rows and
 /// answers they left before T14.57. The digest was captured from the commit before the change
 /// (57f0369), never from the new code.
+///
+/// Changed on purpose by T14.49a (docs/sync-spec.md 7A.11, "The deliberate change to section
+/// 16"): the digest was `9d8564a2...ed77` until then. Per-step store hashes of these runs on
+/// a77cdf1 and on T14.49a are equal up to the first page where a 7A rule acts, in every seed:
+/// P1 stamping a person tombstone again (seeds 1 and 3), P3 unlinking speaker rows from a removed
+/// person (seeds 2 and 5), P4 keeping the user's live copy (seed 0), and rule 3a no longer
+/// erasing pulled samples whose person's chain ends at a tombstoned "Me" (`MeTombstone`, seed 4,
+/// after this test's own `Store::remove_person` of `is_me` people). Each of those rules is pinned
+/// with literal expectations in `tests/sync_removed.rs`.
 #[test]
 fn store_sync_damaged_same_answers_without_damage_as_before() {
     use sha2::Digest;
@@ -687,7 +744,7 @@ fn store_sync_damaged_same_answers_without_damage_as_before() {
     );
     let digest: String = all.finalize().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
-        digest, "9d8564a2f41d1562c5e1bfb5e3e30b8113da5791c8809420729927ee995fed77",
+        digest, "abfe7d728d970db2a624301a987e31fc8371a4d17ba18e545214dc26146dee29",
         "the rows and answers of the generated stores"
     );
 }

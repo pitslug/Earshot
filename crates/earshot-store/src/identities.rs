@@ -229,7 +229,7 @@ pub(crate) fn forget_identity_voices<C: Clock + ?Sized>(
     let rows = g.voice_rows_of(&identity.members)?;
     // Prints in identity order, each member's by id (core `forget_voiceprints`' order).
     for p in rows.prints.iter().filter(|p| p.deleted != Deleted::Yes) {
-        g.erase_print_by_rowid(hlc, clock, p.rowid)?;
+        g.erase_print_by_rowid(hlc, clock, p.rowid, p.id.read())?;
         out.voiceprints += 1;
         if !p.sum_reads {
             out.zeroed += 1;
