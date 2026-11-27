@@ -1088,6 +1088,10 @@ fn offload_hearing_presence_remembers_each_computer_and_answers_only_new_names()
 fn offload_the_sync_thread_names_the_computer_a_waiting_meeting_shows_after_a_restart() {
     struct Idle;
     impl OffloadHost for Idle {
+        fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+            Vec::new()
+        }
+        fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
         fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
             panic!("nothing is handed back while the helper is online: {job:?}")
         }

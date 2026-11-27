@@ -381,8 +381,22 @@ pub enum LocalSummaryError {
         /// Fixed words.
         why: String,
     },
-    /// The run in the GPU's child process failed: its [`SummaryFailure`]'s text.
-    ChildRun(String),
+    /// The run in the GPU's child process failed: its [`SummaryFailure`]'s text, and the kind the
+    /// child said it was (T14.66; `None` for a word this build does not know).
+    ChildRun {
+        /// The child's error text (the CLI shows it; a window never does).
+        message: String,
+        /// Its kind, by the child's own [`LocalSummaryError::kind`].
+        kind: Option<LocalFailureKind>,
+    },
+    /// The GPU's child process refused the load (the summary moves to the CPU when it may): its
+    /// text, and the kind the child said it was (T14.66). Never read as a wrong backend.
+    ChildLoad {
+        /// The child's error text.
+        message: String,
+        /// Its kind, by the child's own [`LocalSummaryError::kind`].
+        kind: Option<LocalFailureKind>,
+    },
     /// The transcript could not be cut into time chunks (a zero window).
     Chunks(TimeChunkError),
     /// The run failed: no plan fits, a model error, still invalid after its repairs, or
@@ -396,6 +410,107 @@ impl LocalSummaryError {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         matches!(self, Self::Run(SummaryFailure::Cancelled))
+    }
+
+    /// What kind of failure this is, in fixed words a window can show (T14.66, docs/summary-order.md
+    /// 11.13). Every variant is matched, nested ones included: a new one needs a kind here.
+    #[must_use]
+    pub fn kind(&self) -> LocalFailureKind {
+        use LocalFailureKind as K;
+        use earshot_llm_local::LlmError as E;
+        match self {
+            Self::Run(SummaryFailure::TooLong { .. } | SummaryFailure::Plan(_)) => K::TooLong,
+            Self::Run(SummaryFailure::Model(E::ContextTooSmall { .. })) => K::TooLong,
+            Self::Run(SummaryFailure::Invalid { .. }) => K::ReplyUnusable,
+            Self::Run(SummaryFailure::Cancelled) => K::Cancelled,
+            Self::Run(SummaryFailure::Model(E::Cancelled)) => K::Cancelled,
+            Self::Run(SummaryFailure::Model(
+                E::Load(_) | E::Input(_) | E::Decode(_) | E::Utf8 | E::Backend(_) | E::LoadStuck,
+            ))
+            | Self::Run(SummaryFailure::Grammar(_))
+            | Self::Chunks(_) => K::Other,
+            Self::GpuChildDied { .. } | Self::GpuChildStalled => K::CardStopped,
+            Self::GpuStalled | Self::LoadStalled => K::Stalled,
+            Self::Load(E::Load(_)) => K::LoadFailed,
+            Self::Load(E::LoadStuck) => K::LoadStuck,
+            Self::Load(E::Backend(_)) => K::WrongBackend,
+            Self::Load(E::ContextTooSmall { .. }) => K::TooLong,
+            Self::Load(E::Cancelled) => K::Cancelled,
+            Self::Load(E::Input(_) | E::Decode(_) | E::Utf8) => K::Other,
+            // Both loads failed: the last attempt's kind.
+            Self::LoadRetried { cpu, .. } => cpu.kind(),
+            Self::CudaFilesChanged { .. } => K::CudaChanged,
+            Self::ChildRun { kind, .. } | Self::ChildLoad { kind, .. } => kind.unwrap_or(K::Other),
+        }
+    }
+}
+
+/// The kind of a local summary failure ([`LocalSummaryError::kind`], T14.66): what the window
+/// and the order's step words say, never the error's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LocalFailureKind {
+    /// The meeting is too long for the model (no plan fits the context).
+    TooLong,
+    /// The reply could not be used after the repair rounds.
+    ReplyUnusable,
+    /// The graphics card's summary process stopped (died or stalled).
+    CardStopped,
+    /// It stopped making progress (the GPU, or a load that never returned).
+    Stalled,
+    /// The model could not be loaded.
+    LoadFailed,
+    /// An earlier load is stuck.
+    LoadStuck,
+    /// The model did not load where it was asked to.
+    WrongBackend,
+    /// The CUDA files changed after the start.
+    CudaChanged,
+    /// Anything else.
+    Other,
+    /// Cancelled.
+    Cancelled,
+}
+
+impl LocalFailureKind {
+    /// Every kind.
+    pub const ALL: [Self; 10] = [
+        Self::TooLong,
+        Self::ReplyUnusable,
+        Self::CardStopped,
+        Self::Stalled,
+        Self::LoadFailed,
+        Self::LoadStuck,
+        Self::WrongBackend,
+        Self::CudaChanged,
+        Self::Other,
+        Self::Cancelled,
+    ];
+
+    /// Its fixed word (the child protocol and the copy keys).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::TooLong => "too_long",
+            Self::ReplyUnusable => "reply_unusable",
+            Self::CardStopped => "card_stopped",
+            Self::Stalled => "stalled",
+            Self::LoadFailed => "load_failed",
+            Self::LoadStuck => "load_stuck",
+            Self::WrongBackend => "wrong_backend",
+            Self::CudaChanged => "cuda_changed",
+            Self::Other => "other",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// The kind a GPU child sent (T14.66). Nothing in the child cancels (the parent kills it), so
+    /// `cancelled` is never a child's kind and reads as `None`, as does a word this build does
+    /// not know.
+    #[must_use]
+    pub fn from_child(word: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|k| k.word() == word && *k != Self::Cancelled)
     }
 }
 
@@ -417,7 +532,9 @@ impl fmt::Display for LocalSummaryError {
             Self::CudaFilesChanged { why } => {
                 write!(f, "the CUDA files changed since the start: {why}")
             }
-            Self::ChildRun(message) => f.write_str(message),
+            Self::ChildRun { message, .. } | Self::ChildLoad { message, .. } => {
+                f.write_str(message)
+            }
             Self::Chunks(e) => write!(f, "{e}"),
             Self::Run(e) => write!(f, "{e}"),
         }
@@ -1430,15 +1547,21 @@ fn run_in_child(
     };
     match crate::summary_child::run_job(attempt.child, &job, watch, cancel) {
         ChildEnd::Finished(summary) => Ok(InChild::Finished(summary)),
-        ChildEnd::RunFailed(message) => Err(RuntimeError::LocalSummary(
-            LocalSummaryError::ChildRun(message),
-        )),
+        ChildEnd::RunFailed { message, kind } => {
+            Err(RuntimeError::LocalSummary(LocalSummaryError::ChildRun {
+                message,
+                kind,
+            }))
+        }
         ChildEnd::Cancelled => Err(RuntimeError::LocalSummary(LocalSummaryError::Run(
             SummaryFailure::Cancelled,
         ))),
-        ChildEnd::LoadRefused(message) => Ok(InChild::GaveUp(LocalSummaryError::Load(
-            earshot_llm_local::LlmError::Backend(message),
-        ))),
+        ChildEnd::LoadRefused { message, kind } => {
+            Ok(InChild::GaveUp(LocalSummaryError::ChildLoad {
+                message,
+                kind,
+            }))
+        }
         ChildEnd::Died(why) => Ok(InChild::GaveUp(LocalSummaryError::GpuChildDied { why })),
         ChildEnd::Stalled { gone } => Ok(InChild::GaveUp(after_child_stall(gone, attempt.stalled))),
     }
@@ -1692,7 +1815,9 @@ impl MapChunk for LocalMapper {
             };
             match run_in_child(&attempt, work, input, cancel).map_err(|e| e.to_string())? {
                 InChild::Finished(s) => return Ok(s.summary),
-                InChild::GaveUp(LocalSummaryError::Load(_)) => {
+                InChild::GaveUp(
+                    LocalSummaryError::Load(_) | LocalSummaryError::ChildLoad { .. },
+                ) => {
                     on_cpu = Some(LocalSummaryConfig {
                         gpu: false,
                         ..self.config.clone()

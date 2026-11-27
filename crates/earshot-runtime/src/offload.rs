@@ -856,7 +856,7 @@ pub enum ContinueAnswer {
     Settled,
 }
 
-/// What the host does for [`Offload::step`]. Both calls must return quickly: the host runs the
+/// What the host does for [`Offload::step`]. Every call must return quickly: the host runs the
 /// work on a thread of its own.
 pub trait OffloadHost: Send + Sync {
     /// Go on with `job.meeting`'s summary after the computer handed its request back, as
@@ -864,8 +864,114 @@ pub trait OffloadHost: Send + Sync {
     /// decides the writers). A refusal is handed again at the next step.
     fn continue_run(&self, job: WriteHere) -> ContinueAnswer;
     /// Write the summary another device asked for: run [`write_for_request`] in this device's
-    /// meeting queue.
+    /// meeting queue, with the token of a [`Writing`] entry (T14.66). A request already being
+    /// written (a second hand, by a new sync thread) starts nothing.
     fn write_for(&self, request: SummaryRequest);
+    /// The requests being written now for other devices ([`Writing::ids`]).
+    fn writing(&self) -> Vec<EntityId>;
+    /// Stop writing `request`: its asker withdrew it ([`Writing::cancel`]).
+    fn cancel_writing(&self, request: EntityId);
+}
+
+/// The summaries a host is writing for other devices, each with its write's cancel token
+/// (T14.66, docs/summary-order.md 11.3). Owned by the host, which outlives every sync thread, so a
+/// thread replaced mid-write leaves the write's token here: the next thread's hand of the same
+/// request starts nothing, and its step cancels the running write when the withdrawal arrives.
+///
+/// Its lock is a leaf: nothing else is locked under it, and nothing is called under it.
+#[derive(Debug, Default)]
+pub struct Writing {
+    state: Mutex<WritingState>,
+}
+
+#[derive(Debug, Default)]
+struct WritingState {
+    tokens: std::collections::BTreeMap<EntityId, CancelToken>,
+    /// Set by [`Writing::cancel_all`]: no new write starts.
+    stopping: bool,
+}
+
+/// One write's place in a [`Writing`]: removed when dropped (the write ended, panicked, or its
+/// thread could not start).
+#[derive(Debug)]
+pub struct WritingEntry {
+    writing: std::sync::Arc<Writing>,
+    request: EntityId,
+}
+
+impl Drop for WritingEntry {
+    fn drop(&mut self) {
+        self.writing
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tokens
+            .remove(&self.request);
+    }
+}
+
+impl Writing {
+    /// A new registry, shared by its host and every write it starts.
+    #[must_use]
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::default())
+    }
+
+    /// Registers a write of `request`: its token and its entry, which the write's thread holds
+    /// to its end. `None` when `request` is already being written or the host is stopping.
+    #[must_use]
+    pub fn begin(
+        self: &std::sync::Arc<Self>,
+        request: EntityId,
+    ) -> Option<(CancelToken, WritingEntry)> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.stopping || state.tokens.contains_key(&request) {
+            return None;
+        }
+        let token = CancelToken::new();
+        state.tokens.insert(request, token.clone());
+        Some((
+            token,
+            WritingEntry {
+                writing: std::sync::Arc::clone(self),
+                request,
+            },
+        ))
+    }
+
+    /// The requests being written now.
+    #[must_use]
+    pub fn ids(&self) -> Vec<EntityId> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tokens
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    /// Cancels the write of `request`, if one runs.
+    pub fn cancel(&self, request: EntityId) {
+        if let Some(token) = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tokens
+            .get(&request)
+        {
+            token.cancel();
+        }
+    }
+
+    /// Cancels every write and starts no new one (the host is stopping).
+    pub fn cancel_all(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.stopping = true;
+        for token in state.tokens.values() {
+            token.cancel();
+        }
+    }
 }
 
 /// What one [`Offload::step`] did: counts, and the meetings whose requests or run records this
@@ -1109,6 +1215,10 @@ impl Offload {
         self.set_idle(None);
         #[cfg(test)]
         self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // The writes this host runs for other devices, read before the store lock (T14.66): one
+        // whose request its asker withdrew is cancelled after the lock is released.
+        let writing: BTreeSet<EntityId> = host.writing().into_iter().collect();
+        let mut cancel: Vec<EntityId> = Vec::new();
         let (seen, offers, mut times, held, mark) = {
             let db = services.store();
             // Read with the requests, under one lock: a request written after this is seen as a
@@ -1123,6 +1233,17 @@ impl Offload {
             for r in db.summary_requests()? {
                 if !r.meta.deleted {
                     held.insert(r.id.to_string());
+                }
+                // Withdrawn by its asker (authored: a withdrawal any other device wrote is
+                // ignored) while this host writes it.
+                if r.target_device == me
+                    && r.state == RequestState::Withdrawn
+                    && !r.meta.deleted
+                    && authored(&r)
+                    && writing.contains(&r.id)
+                {
+                    cancel.push(r.id);
+                    continue;
                 }
                 let mine = r.asking_device == me;
                 let wanted = if mine {
@@ -1164,6 +1285,10 @@ impl Offload {
             }
             (seen, offers, times, held, mark)
         };
+        // With the store lock released.
+        for request in cancel {
+            host.cancel_writing(request);
+        }
         let nothing_seen = seen.is_empty();
         let before = times.clone();
         // Open readings are kept for open requests only, closed ones while the store holds them.
@@ -1509,8 +1634,9 @@ pub enum HelperOutcome {
     Declined(&'static str),
     /// The request is no longer claimed here (withdrawn, or gone): nothing was stored.
     NotClaimed,
-    /// Cancelled (the app is quitting): the request stays claimed and is handed again at the
-    /// next start.
+    /// Cancelled, nothing stored and nothing written to the request: either the host is stopping
+    /// (the request stays claimed and is handed again at the next start) or its asker withdrew it
+    /// ([`Writing::cancel`], T14.66: nothing more to do).
     Cancelled,
 }
 

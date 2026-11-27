@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use earshot_core::asr::CancelToken;
-use earshot_core::identity::DeviceId;
+use earshot_core::identity::{DeviceId, EntityId};
 use earshot_core::model::SummaryRequest;
 use earshot_runtime::Services;
 use earshot_runtime::keep_local::SummaryPrivacy;
@@ -785,6 +785,9 @@ pub struct HostOffload {
     work: Arc<dyn HelperWork>,
     /// How the `earshot-offload` thread starts (a seam: tests make it fail).
     spawn: crate::slot_job::Spawn,
+    /// The writes for other computers, each with its cancel token (T14.66). The host outlives
+    /// every sync thread, so a replaced thread leaves its writes here.
+    writing: Arc<earshot_runtime::offload::Writing>,
 }
 
 impl HostOffload {
@@ -804,6 +807,7 @@ impl HostOffload {
             gate,
             work,
             spawn: crate::slot_job::spawn_named,
+            writing: earshot_runtime::offload::Writing::new(),
         }
     }
 
@@ -859,9 +863,15 @@ impl OffloadHost for HostOffload {
             Arc::clone(&self.work),
         );
         let id = request.id;
+        // A request already being written (a second hand, by a new sync thread) starts nothing.
+        let Some((cancel, entry)) = self.writing.begin(id) else {
+            return;
+        };
         let spawned = (self.spawn)(
             "earshot-offload",
             Box::new(move || {
+                // Held to the write's end, panic included.
+                let _entry = entry;
                 // One outcome whatever happens: a panic declines `failed`, so the asker writes it.
                 let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let pass = gate.enter_work();
@@ -877,7 +887,7 @@ impl OffloadHost for HostOffload {
                                 work.writer(&svc, privacy)
                             }
                         },
-                        &CancelToken::new(),
+                        &cancel,
                     );
                     drop(pass);
                 }));
@@ -886,9 +896,19 @@ impl OffloadHost for HostOffload {
                 }
             }),
         );
+        // The thread could not start: its closure, and the entry with it, is already dropped,
+        // so the decline runs with the registry's lock free.
         if spawned.is_err() {
             let _ = earshot_runtime::offload::decline(&self.services, id, reason::FAILED);
         }
+    }
+
+    fn writing(&self) -> Vec<EntityId> {
+        self.writing.ids()
+    }
+
+    fn cancel_writing(&self, request: EntityId) {
+        self.writing.cancel(request);
     }
 }
 

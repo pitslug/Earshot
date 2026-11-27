@@ -128,6 +128,10 @@ struct Recorder {
     refuse_here: std::sync::atomic::AtomicBool,
     /// Answer that nothing is left to do.
     settle_here: std::sync::atomic::AtomicBool,
+    /// What `writing()` answers (T14.66).
+    writing: Mutex<Vec<EntityId>>,
+    /// Requests the step asked to cancel.
+    cancelled: Mutex<Vec<EntityId>>,
 }
 
 impl OffloadHost for Recorder {
@@ -143,6 +147,12 @@ impl OffloadHost for Recorder {
     }
     fn write_for(&self, request: SummaryRequest) {
         self.for_others.lock().unwrap().push(request);
+    }
+    fn writing(&self) -> Vec<EntityId> {
+        self.writing.lock().unwrap().clone()
+    }
+    fn cancel_writing(&self, request: EntityId) {
+        self.cancelled.lock().unwrap().push(request);
     }
 }
 
@@ -3005,4 +3015,623 @@ mod order_steps {
         assert!(tally.scanned > 150, "{tally:?}");
         assert!(tally.acted > 40, "{tally:?}");
     }
+
+    // ---- Stop (T14.66, docs/summary-order.md 11.2) ----
+
+    use crate::summary_order::run::{StopAnswer, stop_stands, stop_waiting};
+
+    /// A summary of `m` stored here after `clock` moved on (as one arriving by sync would be).
+    fn store_a_summary(dev: &Device, m: EntityId, title: &str) {
+        dev.clock.advance_ms(1000);
+        let view = crate::view::MeetingView::load(&**dev.svc.store(), m)
+            .unwrap()
+            .unwrap();
+        crate::summary::store_summary(
+            &dev.svc,
+            &view,
+            "other".into(),
+            &SummaryV1 {
+                title: title.into(),
+                tldr: "Done.".into(),
+                enhanced_notes: vec![],
+                decisions: vec![],
+                action_items: vec![],
+                open_questions: vec![],
+                topics: vec![],
+            },
+            &mut *crate::os_seeded_rng(),
+        )
+        .unwrap();
+    }
+
+    fn asked_of_desk(dev: &Device, m: EntityId) -> EntityId {
+        offloaded(start(
+            dev,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(DESK), ENDPOINT])),
+            &Writers::default().asks(DESK),
+        ))
+    }
+
+    #[test]
+    fn offload_order_stop_withdraws_and_ends_the_run_in_one_transaction() {
+        let a = Device::new("offload-stop-one");
+        let m = meeting(&a.svc, "Invented planning", 601);
+        let request = asked_of_desk(&a, m);
+        // A fault between the withdrawal and the record leaves neither.
+        crate::summary_order::run::fault::fail_stop();
+        assert!(stop_waiting(&a.svc, m).is_err());
+        assert_eq!(a.request(request).state, RequestState::Requested);
+        assert_eq!(record(&a.svc, m).state, RunState::Waiting);
+        // Stop.
+        assert_eq!(
+            stop_waiting(&a.svc, m).unwrap(),
+            StopAnswer::Stopped { device: DESK }
+        );
+        assert_eq!(a.request(request).state, RequestState::Withdrawn);
+        assert!(authored(&a.request(request)));
+        let r = record(&a.svc, m);
+        assert_eq!(
+            (r.state, r.waiting_on, r.stopped, r.writer),
+            (RunState::Ended, None, Some(request), None)
+        );
+        assert_eq!(r.outcome_of(0), Some(OutcomeWord::Stopped));
+        assert_eq!(r.outcome_of(1), None, "no later step ran");
+        assert!(stop_stands(&a.svc.store(), m, &r).unwrap());
+        // Control: a meeting with nothing waiting.
+        let other = meeting(&a.svc, "Invented retro", 602);
+        assert_eq!(stop_waiting(&a.svc, other).unwrap(), StopAnswer::NotWaiting);
+    }
+
+    #[test]
+    fn offload_order_no_continuation_after_a_stop() {
+        let a = Device::new("offload-stop-no-continuation");
+        let m = meeting(&a.svc, "Invented planning", 603);
+        asked_of_desk(&a, m);
+        stop_waiting(&a.svc, m).unwrap();
+        let host = Recorder::default();
+        hand_back(&a, &host);
+        assert!(host.here().is_empty(), "the stopped run is not continued");
+        // Nor after a restart.
+        let restarted = Offload::new();
+        let rh = Recorder::default();
+        restarted.step(&a.svc, &mut || None, &rh).unwrap();
+        assert!(rh.here().is_empty());
+        // Control: a run withdrawn by the 90 s rule is continued.
+        let other = meeting(&a.svc, "Invented retro", 604);
+        asked_of_desk(&a, other);
+        let host = Recorder::default();
+        hand_back(&a, &host);
+        assert_eq!(host.here().len(), 1);
+        assert_eq!(host.here()[0].meeting, other);
+    }
+
+    #[test]
+    fn offload_order_stop_on_a_legacy_request_writes_an_ended_record() {
+        let a = Device::new("offload-stop-legacy");
+        let m = meeting(&a.svc, "Invented planning", 605);
+        let request = ask(&a.svc, m, DESK).unwrap().unwrap();
+        assert_eq!(
+            crate::summary_order::run::read(&a.svc.store(), m).unwrap(),
+            RunRecord::Absent
+        );
+        assert_eq!(
+            stop_waiting(&a.svc, m).unwrap(),
+            StopAnswer::Stopped { device: DESK }
+        );
+        let r = record(&a.svc, m);
+        assert_eq!(
+            (r.origin, r.steps.clone(), r.state, r.stopped),
+            (
+                RunOrigin::Named,
+                vec![OrderStep::Computer(DESK)],
+                RunState::Ended,
+                Some(request)
+            )
+        );
+        assert_eq!(r.outcome_of(0), Some(OutcomeWord::Stopped));
+        let host = Recorder::default();
+        hand_back(&a, &host);
+        assert!(host.here().is_empty(), "never written here");
+        // Control: a legacy withdrawal without Stop is written here.
+        let other = meeting(&a.svc, "Invented retro", 606);
+        ask(&a.svc, other, DESK).unwrap().unwrap();
+        let host = Recorder::default();
+        hand_back(&a, &host);
+        assert_eq!(host.here().len(), 1);
+        assert_eq!(host.here()[0].continuation, Continuation::Legacy);
+    }
+
+    #[test]
+    fn offload_order_stop_after_the_summary_arrived_is_already_written() {
+        for done in [false, true] {
+            let a = Device::new("offload-stop-written");
+            let m = meeting(&a.svc, "Invented planning", 607);
+            let request = asked_of_desk(&a, m);
+            if done {
+                // The summary row arrives before the request's Done (a different page).
+                store_a_summary(&a, m, "From the desk");
+            }
+            let answer = stop_waiting(&a.svc, m).unwrap();
+            if done {
+                assert_eq!(answer, StopAnswer::AlreadyWritten { device: DESK });
+                // Withdrawn too, so a third device's summary leaves the helper nothing to write.
+                assert_eq!(a.request(request).state, RequestState::Withdrawn);
+                let r = record(&a.svc, m);
+                assert_eq!(
+                    (r.state, r.writer, r.stopped),
+                    (RunState::Ended, Some(0), None)
+                );
+            } else {
+                // Control: no summary yet.
+                assert_eq!(answer, StopAnswer::Stopped { device: DESK });
+            }
+        }
+    }
+
+    #[test]
+    fn offload_order_a_summary_after_the_stop_is_kept_and_the_note_falls() {
+        let a = Device::new("offload-stop-later-summary");
+        let m = meeting(&a.svc, "Invented planning", 608);
+        asked_of_desk(&a, m);
+        stop_waiting(&a.svc, m).unwrap();
+        let r = record(&a.svc, m);
+        // Control: no summary, the note stands.
+        assert!(stop_stands(&a.svc.store(), m, &r).unwrap());
+        store_a_summary(&a, m, "Written anyway");
+        assert_eq!(a.live_summaries(m), 1, "kept");
+        assert!(!stop_stands(&a.svc.store(), m, &r).unwrap());
+    }
+
+    #[test]
+    fn offload_order_stop_ends_a_run_withdrawn_but_not_yet_continued() {
+        for stopped in [true, false] {
+            let a = Device::new("offload-stop-case-four");
+            let m = meeting(&a.svc, "Invented planning", 609);
+            let request = asked_of_desk(&a, m);
+            // Withdrawn by the 90 s rule and handed to the host, whose job has not begun.
+            let host = Recorder::default();
+            hand_back(&a, &host);
+            assert_eq!(host.here().len(), 1);
+            assert_eq!(record(&a.svc, m).state, RunState::Waiting);
+            if stopped {
+                assert_eq!(
+                    stop_waiting(&a.svc, m).unwrap(),
+                    StopAnswer::Stopped { device: DESK }
+                );
+                let r = record(&a.svc, m);
+                assert_eq!((r.state, r.stopped), (RunState::Ended, Some(request)));
+            }
+            // The continuation the host started now runs (or finds nothing).
+            let good = MockServer::start(vec![reply("Written by the endpoint")]).unwrap();
+            let writers = Writers::default().mock(WriterStep::Endpoint, &good);
+            let out = run_summary_order(
+                &a.svc,
+                m,
+                RunStart::Continue {
+                    request,
+                    word: OutcomeWord::NoReply,
+                },
+                &plan(&writers),
+                &CancelToken::new(),
+            );
+            if stopped {
+                assert!(out.settled, "nothing run after a stop");
+                assert!(writers.asked().is_empty());
+            } else {
+                // Control: without Stop the next step writes it.
+                assert!(matches!(out.summary, SummaryResult::Stored { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn offload_order_stop_and_a_new_run_in_either_order() {
+        // Stop, then a new run: the new run replaces the ended record and finds nothing open.
+        let a = Device::new("offload-stop-then-start");
+        let m = meeting(&a.svc, "Invented planning", 610);
+        let first = asked_of_desk(&a, m);
+        stop_waiting(&a.svc, m).unwrap();
+        let second = asked_of_desk(&a, m);
+        assert_ne!(first, second);
+        assert_eq!(a.request(first).state, RequestState::Withdrawn);
+        assert_eq!(record(&a.svc, m).waiting_on, Some(second));
+        // A new run, then Stop: Stop acts only on the new run's request.
+        let b = Device::new("offload-start-then-stop");
+        let m = meeting(&b.svc, "Invented planning", 611);
+        let first = asked_of_desk(&b, m);
+        let good = MockServer::start(vec![reply("Written by the endpoint")]).unwrap();
+        let out = run_summary_order(
+            &b.svc,
+            m,
+            RunStart::Order(order(&[ENDPOINT])),
+            &plan(&Writers::default().mock(WriterStep::Endpoint, &good)),
+            &CancelToken::new(),
+        );
+        assert!(matches!(out.summary, SummaryResult::Stored { .. }));
+        assert_eq!(b.request(first).state, RequestState::Withdrawn);
+        assert_eq!(stop_waiting(&b.svc, m).unwrap(), StopAnswer::NotWaiting);
+        assert_eq!(
+            record(&b.svc, m).writer,
+            Some(0),
+            "the new run is untouched"
+        );
+    }
+}
+
+// ---- T14.66: a withdrawal stops the helper's write (docs/summary-order.md 11.3) ----
+
+/// A host that writes for others as a real host does: one [`Writing`] entry per write, the write
+/// on a thread of its own over `writer`, its outcome sent back.
+struct WritingHost {
+    svc: Services,
+    queue: MeetingQueue,
+    writing: Arc<Writing>,
+    writer: Arc<dyn Fn(&Services) -> HelperWriter + Send + Sync>,
+    started: std::sync::atomic::AtomicUsize,
+    done: Mutex<std::sync::mpsc::Sender<HelperOutcome>>,
+}
+
+type WriterFn = Arc<dyn Fn(&Services) -> HelperWriter + Send + Sync>;
+
+impl WritingHost {
+    fn new(
+        svc: &Services,
+        writer: WriterFn,
+    ) -> (Arc<Self>, std::sync::mpsc::Receiver<HelperOutcome>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (
+            Arc::new(Self {
+                svc: svc.clone(),
+                queue: MeetingQueue::new(),
+                writing: Writing::new(),
+                writer,
+                started: std::sync::atomic::AtomicUsize::new(0),
+                done: Mutex::new(tx),
+            }),
+            rx,
+        )
+    }
+
+    fn started(&self) -> usize {
+        self.started.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl OffloadHost for WritingHost {
+    fn continue_run(&self, _job: WriteHere) -> ContinueAnswer {
+        ContinueAnswer::Refused
+    }
+    fn write_for(&self, request: SummaryRequest) {
+        let Some((token, entry)) = self.writing.begin(request.id) else {
+            return;
+        };
+        self.started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (svc, queue, writer) = (
+            self.svc.clone(),
+            self.queue.clone(),
+            Arc::clone(&self.writer),
+        );
+        let done = self.done.lock().unwrap().clone();
+        std::thread::spawn(move || {
+            let _entry = entry;
+            let out = write_for_request(&svc, &queue, &request, &|_| writer(&svc), &token);
+            let _ = done.send(out);
+        });
+    }
+    fn writing(&self) -> Vec<EntityId> {
+        self.writing.ids()
+    }
+    fn cancel_writing(&self, request: EntityId) {
+        self.writing.cancel(request);
+    }
+}
+
+/// The asker withdraws its open `request` (as Stop does), authored by the asker.
+fn withdraw(a: &Device, request: EntityId) {
+    let state = a.request(request).state;
+    assert!(move_request(&a.svc, request, state, RequestState::Withdrawn, "").unwrap());
+}
+
+/// A request asked of `b`, claimed by it and synced back: (meeting, request).
+fn claimed(a: &Device, b: &Device, ca: &SyncClient, cb: &SyncClient) -> (EntityId, EntityId) {
+    let m = meeting(&a.svc, "Invented planning", 13);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    sync(ca, cb);
+    b.step(None, &Recorder::default());
+    sync(cb, ca);
+    assert_eq!(a.request(request).state, RequestState::Claimed);
+    (m, request)
+}
+
+/// An endpoint that answers only once released (or after a 60 s guard), with a rendezvous when
+/// a summary request arrives.
+fn held_endpoint() -> (
+    Arc<MockServer>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let arrived_tx = Mutex::new(arrived_tx);
+    let release_rx = Mutex::new(release_rx);
+    let server = Arc::new(
+        MockServer::start_with(move |_| {
+            let _ = arrived_tx.lock().unwrap().send(());
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(60));
+            reply("Written by the helper")
+        })
+        .unwrap(),
+    );
+    (server, arrived_rx, release_tx)
+}
+
+const GUARD: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[test]
+fn offload_a_pulled_withdrawal_cancels_the_helpers_write_and_only_its_asker_can() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let (_, request) = claimed(&a, &b, &ca, &cb);
+    let host = Recorder::default();
+    *host.writing.lock().unwrap() = vec![request];
+
+    // Control: still claimed, nothing to cancel.
+    b.step(None, &host);
+    assert!(host.cancelled.lock().unwrap().is_empty());
+
+    // Control: a withdrawal written by a device that is not the asker (the helper itself here)
+    // is ignored.
+    let mut forged = b.request(request);
+    crate::edit::write(&b.svc, |tx, stamp| {
+        forged.state = RequestState::Withdrawn;
+        forged.meta.touch(stamp.hlc, stamp.clock);
+        tx.put_summary_request(forged.clone())?;
+        Ok(())
+    })
+    .unwrap();
+    b.step(None, &host);
+    assert!(host.cancelled.lock().unwrap().is_empty());
+
+    // The asker's withdrawal, pulled, cancels the write.
+    withdraw(&a, request);
+    sync(&ca, &cb);
+    assert_eq!(b.request(request).state, RequestState::Withdrawn);
+    b.step(None, &host);
+    assert_eq!(*host.cancelled.lock().unwrap(), vec![request]);
+}
+
+#[test]
+fn offload_no_store_lock_is_held_while_a_write_is_cancelled() {
+    struct Probe {
+        svc: Services,
+        request: EntityId,
+        free: Mutex<Option<bool>>,
+    }
+    impl OffloadHost for Probe {
+        fn continue_run(&self, _job: WriteHere) -> ContinueAnswer {
+            ContinueAnswer::Refused
+        }
+        fn write_for(&self, _request: SummaryRequest) {}
+        fn writing(&self) -> Vec<EntityId> {
+            vec![self.request]
+        }
+        fn cancel_writing(&self, _request: EntityId) {
+            // The store, taken from another thread, within a bounded wait.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let svc = self.svc.clone();
+            std::thread::spawn(move || {
+                let _store = svc.store();
+                let _ = tx.send(());
+            });
+            let free = rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok();
+            *self.free.lock().unwrap() = Some(free);
+        }
+    }
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let (_, request) = claimed(&a, &b, &ca, &cb);
+    withdraw(&a, request);
+    sync(&ca, &cb);
+    let probe = Probe {
+        svc: b.svc.clone(),
+        request,
+        free: Mutex::new(None),
+    };
+    b.offload.step(&b.svc, &mut || None, &probe).unwrap();
+    assert_eq!(*probe.free.lock().unwrap(), Some(true));
+}
+
+#[test]
+fn offload_a_withdrawal_reaching_a_running_write_cancels_it_and_nothing_is_stored() {
+    for withdrawn in [true, false] {
+        let relay = relay();
+        let (a, b) = pair(&relay);
+        let (ca, cb) = (a.client(), b.client());
+        let m = meeting(&a.svc, "Invented roadmap", 15);
+        let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+        sync(&ca, &cb);
+        let (server, arrived, release) = held_endpoint();
+        let s = Arc::clone(&server);
+        let (host, outcomes) =
+            WritingHost::new(&b.svc, Arc::new(move |svc| remote_writer(svc, &s)));
+        let helper = Offload::new();
+        helper.step(&b.svc, &mut || None, &*host).unwrap();
+        assert_eq!(host.writing.ids(), vec![request]);
+        // The rendezvous: the endpoint has the summary request and holds its answer.
+        arrived.recv_timeout(GUARD).expect("the endpoint is asked");
+        if withdrawn {
+            withdraw(&a, request);
+            ca.tick().unwrap();
+            cb.tick().unwrap();
+            helper.step(&b.svc, &mut || None, &*host).unwrap();
+            let out = outcomes
+                .recv_timeout(GUARD)
+                .expect("the write ends without the endpoint answering");
+            assert_eq!(out, HelperOutcome::Cancelled);
+            let _ = release.send(());
+            assert_eq!(b.live_summaries(m), 0, "nothing stored");
+            assert_eq!(
+                b.request(request).state,
+                RequestState::Withdrawn,
+                "no decline"
+            );
+        } else {
+            // Control: the write has not ended while the endpoint holds its answer, and ends
+            // Done once released.
+            assert!(host.writing.ids() == vec![request]);
+            let _ = release.send(());
+            let out = outcomes.recv_timeout(GUARD).unwrap();
+            assert!(matches!(out, HelperOutcome::Done { .. }), "{out:?}");
+        }
+        // The entry goes when the write ends (bounded wait).
+        let until = std::time::Instant::now() + GUARD;
+        while !host.writing.ids().is_empty() && std::time::Instant::now() < until {
+            std::thread::yield_now();
+        }
+        assert!(host.writing.ids().is_empty());
+    }
+}
+
+#[test]
+fn offload_a_new_sync_threads_second_hand_starts_no_second_write_and_still_cancels_it() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let m = meeting(&a.svc, "Invented hiring", 16);
+    let request = ask(&a.svc, m, b.id()).unwrap().unwrap();
+    sync(&ca, &cb);
+    let (server, arrived, release) = held_endpoint();
+    let s = Arc::clone(&server);
+    let (host, outcomes) = WritingHost::new(&b.svc, Arc::new(move |svc| remote_writer(svc, &s)));
+    // The first thread's step starts the write.
+    Offload::new().step(&b.svc, &mut || None, &*host).unwrap();
+    arrived.recv_timeout(GUARD).unwrap();
+    assert_eq!(host.started(), 1);
+    // A replaced thread's new Offload hands the same request again: nothing new starts.
+    let second = Offload::new();
+    second.step(&b.svc, &mut || None, &*host).unwrap();
+    assert_eq!(host.started(), 1);
+    assert_eq!(host.writing.ids(), vec![request]);
+    // The withdrawal, heard by the new thread, cancels the running write.
+    withdraw(&a, request);
+    sync(&ca, &cb);
+    second.step(&b.svc, &mut || None, &*host).unwrap();
+    let out = outcomes.recv_timeout(GUARD).unwrap();
+    assert_eq!(out, HelperOutcome::Cancelled);
+    assert_eq!(b.live_summaries(m), 0);
+    let _ = release.send(());
+    // Control: another request handed by the new thread starts its own write.
+    let other_m = meeting(&a.svc, "Invented offsite", 17);
+    let other = ask(&a.svc, other_m, b.id()).unwrap().unwrap();
+    sync(&ca, &cb);
+    second.step(&b.svc, &mut || None, &*host).unwrap();
+    assert_eq!(host.started(), 2);
+    arrived.recv_timeout(GUARD).unwrap();
+    let _ = release.send(());
+    let out = outcomes.recv_timeout(GUARD).unwrap();
+    assert!(matches!(out, HelperOutcome::Done { .. }), "{out:?}");
+    assert_eq!(b.request(other).state, RequestState::Done);
+}
+
+#[test]
+fn offload_a_restarted_helper_never_writes_a_request_withdrawn_before_its_first_step() {
+    // (a) The withdrawal is pulled before the first step: never handed, nothing written.
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let (m, request) = claimed(&a, &b, &ca, &cb);
+    withdraw(&a, request);
+    sync(&ca, &cb);
+    let host = Recorder::default();
+    let restarted = Offload::new();
+    restarted.step(&b.svc, &mut || None, &host).unwrap();
+    assert!(host.for_others().is_empty());
+    assert!(host.cancelled.lock().unwrap().is_empty());
+    assert_eq!(b.live_summaries(m), 0);
+}
+
+#[test]
+fn offload_a_restarted_helper_whose_first_tick_failed_is_cancelled_at_the_next_one() {
+    for withdrawn in [true, false] {
+        let relay = relay();
+        let (a, b) = pair(&relay);
+        let (ca, cb) = (a.client(), b.client());
+        let (m, request) = claimed(&a, &b, &ca, &cb);
+        let (server, arrived, release) = held_endpoint();
+        let s = Arc::clone(&server);
+        let (host, outcomes) =
+            WritingHost::new(&b.svc, Arc::new(move |svc| remote_writer(svc, &s)));
+        // (b) A fresh process: its first tick failed (no pull), the step runs anyway and hands
+        // the request it holds claimed.
+        let restarted = Offload::new();
+        restarted.step(&b.svc, &mut || None, &*host).unwrap();
+        assert_eq!(host.writing.ids(), vec![request]);
+        arrived.recv_timeout(GUARD).unwrap();
+        if withdrawn {
+            withdraw(&a, request);
+            ca.tick().unwrap();
+            cb.tick().unwrap();
+            restarted.step(&b.svc, &mut || None, &*host).unwrap();
+            let out = outcomes.recv_timeout(GUARD).unwrap();
+            assert_eq!(out, HelperOutcome::Cancelled);
+            let _ = release.send(());
+            assert_eq!(b.live_summaries(m), 0);
+        } else {
+            // Control: with no withdrawal the write runs to Done.
+            let _ = release.send(());
+            let out = outcomes.recv_timeout(GUARD).unwrap();
+            assert!(matches!(out, HelperOutcome::Done { .. }), "{out:?}");
+        }
+    }
+}
+
+#[test]
+fn offload_writing_starts_each_request_once_and_stopping_refuses_new_writes() {
+    let w = Writing::new();
+    let (r1, r2) = (EntityId::from_bytes([1; 16]), EntityId::from_bytes([2; 16]));
+    let (t1, e1) = w.begin(r1).unwrap();
+    assert!(w.begin(r1).is_none(), "a second hand starts nothing");
+    let (t2, e2) = w.begin(r2).unwrap();
+    // A withdrawal cancels only its own write.
+    w.cancel(r1);
+    assert!(t1.is_cancelled());
+    assert!(!t2.is_cancelled());
+    // The entry goes with its write.
+    drop(e1);
+    assert_eq!(w.ids(), vec![r2]);
+    // Stopping cancels the rest and starts nothing new.
+    w.cancel_all();
+    assert!(t2.is_cancelled());
+    assert!(w.begin(r1).is_none());
+    drop(e2);
+    assert!(w.ids().is_empty());
+}
+
+#[test]
+fn offload_writings_lock_is_a_leaf_taken_with_the_store_locked_elsewhere() {
+    // Every Writing call completes while this thread holds the store: none of them waits for the
+    // store (or anything else) under its own lock.
+    let dir = TempDir::new("offload-writing-leaf");
+    let (svc, _) = services(&dir);
+    let store = svc.store();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let w = Writing::new();
+        let r = EntityId::from_bytes([3; 16]);
+        let entry = w.begin(r);
+        w.cancel(r);
+        let _ = w.ids();
+        drop(entry);
+        w.cancel_all();
+        let _ = tx.send(());
+    });
+    assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok());
+    drop(store);
 }

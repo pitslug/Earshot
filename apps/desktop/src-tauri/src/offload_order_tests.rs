@@ -301,6 +301,10 @@ fn offload_resummarise_on_a_computer_is_a_named_run_that_a_hand_back_ends() {
     ca.tick().unwrap();
     struct NoJobs;
     impl OffloadHost for NoJobs {
+        fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+            Vec::new()
+        }
+        fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
         fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
             panic!("a named run is never continued: {job:?}")
         }
@@ -506,6 +510,10 @@ fn offload_named_run_never_asks_a_device_it_was_not_decided_for() {
 struct Continues(Mutex<Vec<WriteHere>>);
 
 impl OffloadHost for Continues {
+    fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+        Vec::new()
+    }
+    fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
     fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
         self.0.lock().unwrap().push(job);
         ContinueAnswer::Started

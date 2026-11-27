@@ -71,7 +71,11 @@ static LOADS: LoadLock = LoadLock::new();
 pub const LOAD_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(600 + 60);
 
 /// What a load says when the load before it is stuck.
-const STUCK_MESSAGE: &str = "an earlier model load is stuck; restart Earshot";
+pub(crate) const STUCK_MESSAGE: &str = "an earlier model load is stuck; restart Earshot";
+
+/// An earlier load never finished ([`load_window`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LoadStuck;
 
 /// A lock that knows when its holder took it, in time awake ([`earshot_proc::AwakeClock`]: the
 /// runtime's load limits are time awake, so a holder going through a sleep is not older for it).
@@ -142,16 +146,16 @@ impl LoadLock {
 /// Runs `load` with the log to itself among loads: no other `load_window` runs at the same
 /// time, so the lines logged meanwhile are this load's alone (`LocalLlm::load` reads its
 /// backend from them). Returns `load`'s result and those lines, or `None` when some were
-/// already dropped from the ring; `Err` when an earlier load never finished. `on_turn` runs once
+/// already dropped from the ring; [`LoadStuck`] when an earlier load never finished. `on_turn` runs once
 /// the lock is taken, before `load`: a caller that watches its load for a stall starts the watch
 /// there, so time spent queued behind another load is not counted against it.
 pub(crate) fn load_window<T>(
     on_turn: impl FnOnce(),
     load: impl FnOnce() -> T,
-) -> Result<(T, Option<Vec<String>>), &'static str> {
+) -> Result<(T, Option<Vec<String>>), LoadStuck> {
     static CLOCK: std::sync::OnceLock<earshot_proc::AwakeClock> = std::sync::OnceLock::new();
     let clock = CLOCK.get_or_init(earshot_proc::AwakeClock::system);
-    let _one_load = LOADS.take(LOAD_LOCK_WAIT, clock).ok_or(STUCK_MESSAGE)?;
+    let _one_load = LOADS.take(LOAD_LOCK_WAIT, clock).ok_or(LoadStuck)?;
     on_turn();
     let m = mark();
     let r = load();

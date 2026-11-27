@@ -89,6 +89,8 @@ struct Signal {
     /// Started held ([`SyncThread::start_held`]): the thread exists and does nothing until
     /// [`SyncThread::begin`] or a stop.
     held: bool,
+    /// Tick once now, even while ticks are failing ([`SyncThread::tick_now`], T14.66).
+    urgent: bool,
 }
 
 /// Ends a sync thread from the moment another takes its place, without waiting for it (T14.45
@@ -320,7 +322,18 @@ impl SyncThread {
         }
     }
 
+    /// Asks for one tick now, even while ticks are failing and the thread is backing off
+    /// (T14.66: a Stop's withdrawal must not wait the back-off). A failed urgent attempt leaves
+    /// the failure count and the next regular tick as they were ([`after_tick`]).
+    pub fn tick_now(&self) {
+        let (lock, cv) = &*self.signal;
+        lock.lock().unwrap_or_else(PoisonError::into_inner).urgent = true;
+        cv.notify_all();
+    }
+
     /// Asks for a tick soon (after a local change a host knows of; polling finds the rest).
+    /// Ignored while ticks are failing: the back-off decides then ([`SyncThread::tick_now`] does
+    /// not wait for it).
     pub fn nudge(&self) {
         let (lock, cv) = &*self.signal;
         lock.lock().unwrap_or_else(PoisonError::into_inner).soon = true;
@@ -495,6 +508,8 @@ fn run(
     let mut changed = false;
     // Presence goes out after the first tick without a problem, then every `presence`.
     let mut next_presence: Option<Instant> = None;
+    // The regular tick an urgent attempt was brought forward from (T14.66).
+    let mut urgent_from: Option<Instant> = None;
     loop {
         // Wait until the next tick, a poll, a nudge or a stop. Lock order: the signal lock is a
         // leaf. It is never held while another lock is waited for (the presence lock can be
@@ -507,7 +522,7 @@ fn run(
             let wait = due
                 .saturating_duration_since(Instant::now())
                 .min(timing.poll);
-            if !s.stop && !s.soon && !s.back && !wait.is_zero() {
+            if !s.stop && !s.soon && !s.back && !s.urgent && !wait.is_zero() {
                 s = cv
                     .wait_timeout(s, wait)
                     .unwrap_or_else(PoisonError::into_inner)
@@ -543,6 +558,13 @@ fn run(
             }
             if std::mem::take(&mut s.soon) && failures == 0 {
                 next = next.min(Instant::now());
+            }
+            if std::mem::take(&mut s.urgent) {
+                let now = Instant::now();
+                if next > now {
+                    urgent_from.get_or_insert(next);
+                    next = now;
+                }
             }
             std::mem::take(&mut s.back)
         };
@@ -674,18 +696,17 @@ fn run(
         if let Some(changes) = super::SyncChanges::after(tick_report.as_ref(), Some(&step_report)) {
             client.tell_changes(&changes);
         }
+        let urgent = urgent_from.take();
         match ticked {
             Ok(Ok(_)) => {
-                failures = 0;
-                next = Instant::now() + timing.tick;
+                (failures, next) = after_tick(true, urgent, failures, Instant::now(), timing.tick);
                 if next_presence.is_none() {
                     next_presence = Some(Instant::now());
                 }
             }
             Ok(Err(p)) if p.stops() => return,
             Ok(Err(_)) => {
-                failures = failures.saturating_add(1);
-                next = Instant::now() + scaled(backoff(failures), timing.tick);
+                (failures, next) = after_tick(false, urgent, failures, Instant::now(), timing.tick);
             }
             Err(_) => {
                 record_problem(&services, SyncProblem::Internal);
@@ -699,6 +720,27 @@ fn run(
 
 /// `wait` scaled by `tick / TICK`: the back-off as production has it, shortened with the
 /// tick in tests.
+/// The failure count and the next tick after a tick that `ok` or not, at `now`. An urgent
+/// attempt ([`SyncThread::tick_now`], brought forward from the regular tick `urgent`) that fails
+/// leaves both as they were: the count unchanged and the next tick the one it was brought forward
+/// from (T14.66). Any tick that succeeds starts the regular cadence again.
+pub(crate) fn after_tick(
+    ok: bool,
+    urgent: Option<Instant>,
+    failures: u32,
+    now: Instant,
+    tick: Duration,
+) -> (u32, Instant) {
+    match (ok, urgent) {
+        (true, _) => (0, now + tick),
+        (false, Some(regular)) => (failures, regular),
+        (false, None) => {
+            let failures = failures.saturating_add(1);
+            (failures, now + scaled(backoff(failures), tick))
+        }
+    }
+}
+
 fn scaled(wait: Duration, tick: Duration) -> Duration {
     let nanos = wait.as_nanos() * tick.as_nanos() / TICK.as_nanos();
     Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))

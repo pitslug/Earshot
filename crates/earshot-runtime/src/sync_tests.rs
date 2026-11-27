@@ -440,6 +440,10 @@ impl Answers {
 }
 
 impl crate::offload::OffloadHost for Answers {
+    fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+        Vec::new()
+    }
+    fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
     fn continue_run(&self, job: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
         self.handed.lock().unwrap().push(job.meeting);
         self.answer
@@ -511,6 +515,10 @@ fn sync_thread_tells_the_window_what_the_offload_step_wrote_once() {
 fn sync_a_step_that_panics_after_writing_keeps_its_report() {
     struct Panics;
     impl crate::offload::OffloadHost for Panics {
+        fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+            Vec::new()
+        }
+        fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
         fn continue_run(&self, _: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
             panic!("an invented host failure")
         }
@@ -4134,6 +4142,10 @@ fn sync_a_stopped_client_does_no_tick() {
 struct RefusesAndTells(std::sync::Mutex<std::sync::mpsc::Sender<()>>);
 
 impl crate::offload::OffloadHost for RefusesAndTells {
+    fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+        Vec::new()
+    }
+    fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
     fn continue_run(&self, _: crate::offload::WriteHere) -> crate::offload::ContinueAnswer {
         let _ = self.0.lock().unwrap().send(());
         crate::offload::ContinueAnswer::Refused
@@ -5297,4 +5309,61 @@ fn sync_damaged_a_row_heals_from_the_other_device() {
             .iter()
             .any(|s| s.display_name == "Alicia")
     );
+}
+
+// ---- T14.66: a tick now, even while ticks are failing ----
+
+#[test]
+fn sync_thread_an_urgent_attempt_that_fails_changes_nothing() {
+    use crate::sync::thread::after_tick;
+    let now = Instant::now();
+    let tick = Duration::from_secs(30);
+    let regular = now + Duration::from_secs(120);
+    // A failed urgent attempt: the count and the regular tick as they were.
+    assert_eq!(after_tick(false, Some(regular), 3, now, tick), (3, regular));
+    // Control: a failed ordinary tick counts and backs off further.
+    let (failures, next) = after_tick(false, None, 3, now, tick);
+    assert_eq!(failures, 4);
+    assert!(next > now + Duration::from_secs(120), "{:?}", next - now);
+    // Any success starts the regular cadence.
+    assert_eq!(
+        after_tick(true, Some(regular), 3, now, tick),
+        (0, now + tick)
+    );
+    assert_eq!(after_tick(true, None, 3, now, tick), (0, now + tick));
+}
+
+#[test]
+fn sync_thread_tick_now_reaches_the_server_during_a_back_off() {
+    let dir = TempDir::new("sync-tick-now");
+    let server = RelayServer::open(&relay_config(&dir)).unwrap();
+    let first = LocalRelay::start(server).unwrap();
+    let port = first.addr().port();
+    let url = first.url();
+    let a = Device::new("sync-tick-now");
+    set_up_first_device(&a.svc, &*a.vault, &url, SECRET).unwrap();
+    meeting(&a.svc, "Waits for the server", 12);
+    drop(first);
+    // A back-off far longer than the wait below: only `tick_now` can make the next attempt.
+    let timing = SyncTiming {
+        tick: Duration::from_secs(600),
+        poll: Duration::from_millis(10),
+        presence: Duration::from_secs(600),
+    };
+    let thread = SyncThread::start(a.client(), timing).unwrap();
+    wait_for("no unreachable status", || {
+        sync_status(&a.svc.store()).unwrap().problem == Some(SyncProblem::Unreachable)
+    });
+    let again =
+        LocalRelay::start_on(RelayServer::open(&relay_config(&dir)).unwrap(), port).unwrap();
+    // `nudge` is ignored while failing (the outbox is not empty, so a successful tick would
+    // empty it): the control is that nothing was sent before `tick_now`.
+    thread.nudge();
+    assert!(a.svc.store().outbox_len().unwrap() > 0);
+    thread.tick_now();
+    wait_for("tick_now never reached the server", || {
+        a.svc.store().outbox_len().unwrap() == 0
+    });
+    thread.stop();
+    drop(again);
 }

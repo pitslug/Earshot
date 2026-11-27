@@ -206,7 +206,10 @@ fn summary_order_run_move_on_table_lists_each_result_and_stops_on_the_rest() {
         local(LocalSummaryError::GpuChildStalled),
         local(LocalSummaryError::GpuChildDied { why: "x".into() }),
         local(LocalSummaryError::CudaFilesChanged { why: "x".into() }),
-        local(LocalSummaryError::ChildRun("x".into())),
+        local(LocalSummaryError::ChildRun {
+            message: "x".into(),
+            kind: None,
+        }),
         local(LocalSummaryError::Run(SummaryFailure::Invalid {
             step: "single",
             attempts: 3,
@@ -216,11 +219,9 @@ fn summary_order_run_move_on_table_lists_each_result_and_stops_on_the_rest() {
         invalid(),
         prompt(),
     ] {
-        assert_eq!(
-            failure_word(WriterStep::Local, &e),
-            Some(OutcomeWord::Failed),
-            "{e}"
-        );
+        // Every one moves on; which word it moves on with is its kind (T14.66), pinned by
+        // `summary_order_run_local_failures_move_on_with_their_kind`.
+        assert!(failure_word(WriterStep::Local, &e).is_some(), "{e}");
     }
     // Endpoint: HTTP, transport, refused, format, invalid, too long; a key that cannot be read.
     for e in [
@@ -393,6 +394,7 @@ fn summary_order_run_record_bytes_are_pinned() {
         waiting_on: None,
         state: RunState::Continuing,
         writer: None,
+        stopped: None,
     };
     let mut want = 1u32.to_le_bytes().to_vec();
     want.extend_from_slice(
@@ -1275,4 +1277,421 @@ fn summary_order_run_a_failed_ask_stops_except_when_the_request_was_not_written(
         out.summary
     );
     assert_eq!(writers.asked(), vec![OrderStep::Computer(DESK)]);
+}
+
+// ---- T14.66: Stop's record, and each move recorded as it happens ----
+
+#[test]
+fn summary_order_run_stopped_record_bytes_are_pinned() {
+    let request = EntityId::from_bytes([9; 16]);
+    let run = SummaryRun {
+        run: 43,
+        origin: RunOrigin::Named,
+        steps: vec![OrderStep::Computer(DESK)],
+        cursor: 1,
+        outcomes: vec![StepOutcome {
+            step: 0,
+            word: OutcomeWord::Stopped,
+        }],
+        waiting_on: None,
+        state: RunState::Ended,
+        writer: None,
+        stopped: Some(request),
+    };
+    let mut want = 1u32.to_le_bytes().to_vec();
+    want.extend_from_slice(
+        br#"{"run":43,"origin":"named","steps":[{"computer":"07070707-0707-0707-0707-070707070707"}],"cursor":1,"outcomes":[{"step":0,"word":"stopped"}],"waiting_on":null,"state":"ended","writer":null,"stopped":"09090909-0909-0909-0909-090909090909"}"#,
+    );
+    assert_eq!(encode(&run), want);
+    assert_eq!(decode(Some(&want)), RunRecord::Read(run));
+}
+
+#[test]
+fn summary_order_run_a_record_with_an_unknown_word_is_unreadable() {
+    let with = |json: &str| {
+        let mut b = 1u32.to_le_bytes().to_vec();
+        b.extend_from_slice(json.as_bytes());
+        decode(Some(&b))
+    };
+    assert_eq!(
+        with(
+            r#"{"run":1,"origin":"order","steps":[{"writer":"local"}],"cursor":1,"outcomes":[{"step":0,"word":"a-word-from-later"}],"state":"ended"}"#
+        ),
+        RunRecord::Unreadable
+    );
+    // Control: a word this build knows reads.
+    assert!(matches!(
+        with(
+            r#"{"run":1,"origin":"order","steps":[{"writer":"local"}],"cursor":1,"outcomes":[{"step":0,"word":"too_long"}],"state":"ended"}"#
+        ),
+        RunRecord::Read(_)
+    ));
+}
+
+/// Writers that look at the run record whenever a step is built.
+struct Peek<'a> {
+    inner: &'a Writers,
+    seen: Mutex<Vec<SummaryRun>>,
+    /// Replaces the record (a new run) while the first step is built.
+    replace_first: bool,
+    meeting: EntityId,
+}
+
+impl StepWriters for Peek<'_> {
+    fn writer(&self, services: &Services, step: WriterStep) -> Built {
+        let RunRecord::Read(run) = read(&services.store(), self.meeting).unwrap() else {
+            panic!("no record");
+        };
+        let first = self.seen.lock().unwrap().is_empty();
+        self.seen.lock().unwrap().push(run.clone());
+        if first && self.replace_first {
+            let mut other = run;
+            other.run = other.run.wrapping_add(1);
+            crate::local::set(
+                &mut services.store(),
+                &record_key(self.meeting),
+                &encode(&other),
+            )
+            .unwrap();
+        }
+        self.inner.writer(services, step)
+    }
+
+    fn computer(&self, services: &Services, device: DeviceId) -> OffloadChoice {
+        self.inner.computer(services, device)
+    }
+}
+
+fn reporting(
+    svc: &Services,
+    m: EntityId,
+    steps: &[OrderStep],
+    writers: &dyn StepWriters,
+) -> (RunOutcome, usize) {
+    let mut changes = 0;
+    let out = run_summary_order_reporting(
+        svc,
+        m,
+        RunStart::Order(order(steps)),
+        &RunPlan {
+            writers,
+            local_not_now: &|| false,
+            order: None,
+        },
+        &CancelToken::new(),
+        &mut || changes += 1,
+    );
+    (out, changes)
+}
+
+#[test]
+fn summary_order_run_each_move_is_recorded_before_the_next_step() {
+    let dir = TempDir::new("order-run-move-recorded");
+    let (svc, _) = services(&dir);
+    let m = meeting(&svc, "Planning", 21);
+    let bad = failing();
+    let good = MockServer::start(vec![reply("Written by the third step")]).unwrap();
+    let inner = Writers::default()
+        .with(WriterStep::Local, Fake::Skip(not_installed()))
+        .mock(WriterStep::Endpoint, &bad)
+        .mock(WriterStep::ClaudeCode, &good);
+    let peek = Peek {
+        inner: &inner,
+        seen: Mutex::new(Vec::new()),
+        replace_first: false,
+        meeting: m,
+    };
+    let (out, changes) = reporting(&svc, m, &[LOCAL, ENDPOINT, CLAUDE], &peek);
+    assert!(matches!(out.summary, SummaryResult::Stored { .. }));
+    assert_eq!(changes, 2, "one change per step left with a later step");
+    let seen = peek.seen.lock().unwrap().clone();
+    // When the endpoint is built the local step's move is recorded, cursor advanced; when Claude
+    // is, the endpoint's too.
+    assert_eq!(seen[1].outcome_of(0), Some(OutcomeWord::NotInstalled));
+    assert_eq!((seen[1].cursor, seen[1].state), (1, RunState::Running));
+    assert_eq!(seen[2].outcome_of(1), Some(OutcomeWord::Failed));
+    assert_eq!(seen[2].cursor, 2);
+    // The outcome is the plain run's on the same writers.
+    let m2 = meeting(&svc, "Planning again", 22);
+    let bad2 = failing();
+    let good2 = MockServer::start(vec![reply("Written by the third step")]).unwrap();
+    let plain = Writers::default()
+        .with(WriterStep::Local, Fake::Skip(not_installed()))
+        .mock(WriterStep::Endpoint, &bad2)
+        .mock(WriterStep::ClaudeCode, &good2);
+    let p = run_summary_order(
+        &svc,
+        m2,
+        RunStart::Order(order(&[LOCAL, ENDPOINT, CLAUDE])),
+        &plan(&plain),
+        &CancelToken::new(),
+    );
+    assert_eq!(results(&p), results(&out));
+}
+
+#[test]
+fn summary_order_run_no_change_for_dropped_steps_or_a_failing_last_step() {
+    let dir = TempDir::new("order-run-no-change");
+    let (svc, _) = services(&dir);
+    // A kept-local meeting: Claude is dropped before the run, the local step fails last.
+    let m = meeting(&svc, "Planning", 23);
+    kept_local(&svc, m);
+    let writers = Writers::default().with(WriterStep::Local, Fake::Skip(not_installed()));
+    let (out, changes) = reporting(&svc, m, &[CLAUDE, LOCAL], &writers);
+    assert!(!matches!(out.summary, SummaryResult::Stored { .. }));
+    assert_eq!(changes, 0);
+}
+
+#[test]
+fn summary_order_run_a_replaced_record_stops_the_run_and_a_failed_write_does_not() {
+    let dir = TempDir::new("order-run-replaced");
+    let (svc, _) = services(&dir);
+    // The record is replaced (a new run) while the first step runs: the move write finds
+    // another run's record and the run stops.
+    let m = meeting(&svc, "Planning", 24);
+    let inner = Writers::default().with(WriterStep::Local, Fake::Skip(not_installed()));
+    let peek = Peek {
+        inner: &inner,
+        seen: Mutex::new(Vec::new()),
+        replace_first: true,
+        meeting: m,
+    };
+    let (out, changes) = reporting(&svc, m, &[LOCAL, ENDPOINT], &peek);
+    assert!(
+        matches!(
+            &out.summary,
+            SummaryResult::Failed {
+                error: RuntimeError::Conflict(RUN_REPLACED),
+                ..
+            }
+        ),
+        "{:?}",
+        out.summary
+    );
+    assert_eq!(changes, 0);
+    assert_eq!(inner.asked(), vec![LOCAL], "the endpoint never ran");
+    // A failed move write only loses the account: the run goes on.
+    let m2 = meeting(&svc, "Planning again", 25);
+    let good = MockServer::start(vec![reply("Written by the second step")]).unwrap();
+    let writers = Writers::default()
+        .with(WriterStep::Local, Fake::Skip(not_installed()))
+        .mock(WriterStep::Endpoint, &good);
+    fault::fail_move();
+    let (out, changes) = reporting(&svc, m2, &[LOCAL, ENDPOINT], &writers);
+    assert!(matches!(out.summary, SummaryResult::Stored { .. }));
+    assert_eq!(changes, 0);
+}
+
+#[test]
+fn summary_order_run_local_failures_move_on_with_their_kind() {
+    use crate::summary::{LocalFailureKind as K, LocalSummaryError as L};
+    use earshot_llm_local::LlmError as E;
+    use earshot_llm_local::summarize::SummaryFailure as F;
+    let local = |e: L| failure_word(WriterStep::Local, &RuntimeError::LocalSummary(e));
+    assert_eq!(
+        local(L::Run(F::TooLong {
+            prompt: 9,
+            available: 1
+        })),
+        Some(OutcomeWord::TooLong)
+    );
+    assert_eq!(
+        local(L::Load(E::Load("x".into()))),
+        Some(OutcomeWord::LoadFailed)
+    );
+    assert_eq!(local(L::Load(E::LoadStuck)), Some(OutcomeWord::LoadStuck));
+    assert_eq!(
+        local(L::Load(E::Backend("x".into()))),
+        Some(OutcomeWord::WrongBackend)
+    );
+    assert_eq!(local(L::GpuStalled), Some(OutcomeWord::Stalled));
+    assert_eq!(local(L::GpuChildStalled), Some(OutcomeWord::CardStopped));
+    assert_eq!(
+        local(L::CudaFilesChanged { why: "x".into() }),
+        Some(OutcomeWord::CudaChanged)
+    );
+    assert_eq!(
+        local(L::ChildRun {
+            message: "x".into(),
+            kind: Some(K::ReplyUnusable)
+        }),
+        Some(OutcomeWord::ReplyUnusable)
+    );
+    assert_eq!(
+        local(L::ChildRun {
+            message: "x".into(),
+            kind: None
+        }),
+        Some(OutcomeWord::Failed),
+        "Other keeps failed"
+    );
+    assert_eq!(local(L::Run(F::Cancelled)), None, "a cancel stops");
+    // Control: endpoint and agent-CLI failures keep `failed`.
+    let http = || {
+        RuntimeError::Llm(earshot_llm::LlmError::Http {
+            status: 500,
+            message: String::new(),
+        })
+    };
+    assert_eq!(
+        failure_word(WriterStep::Endpoint, &http()),
+        Some(OutcomeWord::Failed)
+    );
+}
+
+#[test]
+fn summary_order_local_failure_kind_of_every_variant() {
+    use crate::summary::{LocalFailureKind as K, LocalSummaryError as L};
+    use earshot_llm_local::LlmError as E;
+    use earshot_llm_local::summarize::SummaryFailure as F;
+    // Every variant, nested ones included, each built with two different texts: the kind never
+    // depends on the text.
+    let cases = |w: &str| -> Vec<(L, K)> {
+        let llm = |e: E| {
+            vec![
+                (L::Load(e.clone()), load_kind(&e)),
+                (L::Run(F::Model(e.clone())), run_kind(&e)),
+            ]
+        };
+        let mut v = vec![
+            (
+                L::Run(F::TooLong {
+                    prompt: w.len(),
+                    available: 1,
+                }),
+                K::TooLong,
+            ),
+            (
+                L::Run(F::Plan(
+                    earshot_core::prompt::PromptError::ContextTooSmall {
+                        needed: w.len(),
+                        available: 1,
+                    },
+                )),
+                K::TooLong,
+            ),
+            (
+                L::Run(F::Invalid {
+                    step: "single",
+                    attempts: 3,
+                    errors: vec![],
+                    last_reply_tail: w.into(),
+                }),
+                K::ReplyUnusable,
+            ),
+            (L::Run(F::Cancelled), K::Cancelled),
+            (
+                L::Run(F::Grammar(earshot_llm_local::grammar::GrammarError(
+                    w.into(),
+                ))),
+                K::Other,
+            ),
+            (
+                L::Chunks(earshot_core::prompt::TimeChunkError::ZeroWindow),
+                K::Other,
+            ),
+            (L::GpuChildDied { why: w.into() }, K::CardStopped),
+            (L::GpuChildStalled, K::CardStopped),
+            (L::GpuStalled, K::Stalled),
+            (L::LoadStalled, K::Stalled),
+            (L::CudaFilesChanged { why: w.into() }, K::CudaChanged),
+            (
+                L::LoadRetried {
+                    gpu: Box::new(L::GpuStalled),
+                    cpu: Box::new(L::Load(E::LoadStuck)),
+                },
+                K::LoadStuck,
+            ),
+            (
+                L::LoadRetried {
+                    gpu: Box::new(L::Load(E::Backend(w.into()))),
+                    cpu: Box::new(L::Load(E::Load(w.into()))),
+                },
+                K::LoadFailed,
+            ),
+            (
+                L::ChildRun {
+                    message: w.into(),
+                    kind: None,
+                },
+                K::Other,
+            ),
+            (
+                L::ChildLoad {
+                    message: w.into(),
+                    kind: None,
+                },
+                K::Other,
+            ),
+        ];
+        for k in K::ALL {
+            v.push((
+                L::ChildRun {
+                    message: w.into(),
+                    kind: Some(k),
+                },
+                k,
+            ));
+            v.push((
+                L::ChildLoad {
+                    message: w.into(),
+                    kind: Some(k),
+                },
+                k,
+            ));
+        }
+        for e in [
+            E::Load(w.into()),
+            E::Input(w.into()),
+            E::ContextTooSmall {
+                prompt: w.len(),
+                max_tokens: 1,
+                context: 1,
+            },
+            E::Decode(7),
+            E::Utf8,
+            E::Backend(w.into()),
+            E::LoadStuck,
+            E::Cancelled,
+        ] {
+            v.extend(llm(e));
+        }
+        v
+    };
+    fn load_kind(e: &earshot_llm_local::LlmError) -> crate::summary::LocalFailureKind {
+        use crate::summary::LocalFailureKind as K;
+        use earshot_llm_local::LlmError as E;
+        match e {
+            E::Load(_) => K::LoadFailed,
+            E::LoadStuck => K::LoadStuck,
+            E::Backend(_) => K::WrongBackend,
+            E::ContextTooSmall { .. } => K::TooLong,
+            E::Cancelled => K::Cancelled,
+            E::Input(_) | E::Decode(_) | E::Utf8 => K::Other,
+        }
+    }
+    fn run_kind(e: &earshot_llm_local::LlmError) -> crate::summary::LocalFailureKind {
+        use crate::summary::LocalFailureKind as K;
+        use earshot_llm_local::LlmError as E;
+        match e {
+            E::ContextTooSmall { .. } => K::TooLong,
+            E::Cancelled => K::Cancelled,
+            _ => K::Other,
+        }
+    }
+    for (a, b) in cases("first words")
+        .into_iter()
+        .zip(cases("other words, longer"))
+    {
+        assert_eq!(a.0.kind(), a.1, "{:?}", a.0);
+        assert_eq!(b.0.kind(), a.0.kind(), "{:?}", b.0);
+    }
+    // Control: a cancel is the cancel kind, which keeps the cancelled copy.
+    assert_eq!(L::Run(F::Cancelled).kind(), K::Cancelled);
+    // A child's words: every kind but `cancelled` reads back; anything else is none.
+    for k in K::ALL {
+        let back = K::from_child(k.word());
+        assert_eq!(back, (k != K::Cancelled).then_some(k));
+    }
+    assert_eq!(K::from_child("a-word-from-later"), None);
 }
