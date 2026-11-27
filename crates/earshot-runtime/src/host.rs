@@ -2050,6 +2050,9 @@ pub enum HostStep<'a> {
     PostFinished(&'a Result<HostPost, RuntimeError>),
     /// The summary is about to run.
     SummaryStarting,
+    /// A summary step was left for the next one and recorded in the meeting's run record
+    /// (T14.66): the host reads the record again (ids only, nothing of the meeting).
+    SummaryRunChanged,
 }
 
 /// What the post pass did.
@@ -2287,12 +2290,13 @@ where
                 None => crate::summary_order::summary_order(&services.store()),
             };
             match order {
-                Ok((order, _)) => crate::summary_order::run::run_summary_order(
+                Ok((order, _)) => crate::summary_order::run::run_summary_order_reporting(
                     services,
                     meeting,
                     crate::summary_order::run::RunStart::Order(order),
                     plan,
                     run.summary_cancel,
+                    &mut || progress(HostStep::SummaryRunChanged),
                 ),
                 Err(e) => crate::summary_order::run::RunOutcome::from_error(e),
             }

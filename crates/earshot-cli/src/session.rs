@@ -1765,6 +1765,10 @@ impl PostPrinter<'_> {
                 }
             }
             HostStep::SummaryStarting => {}
+            // T14.66: a writer was left for the next one (the end lines say which and why).
+            HostStep::SummaryRunChanged => {
+                writeln!(out, "summary: a writer could not write it; trying the next")?;
+            }
         }
         Ok(())
     }

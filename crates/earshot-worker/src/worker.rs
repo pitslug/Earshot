@@ -17,13 +17,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use earshot_core::asr::CancelToken;
+use earshot_core::identity::EntityId;
 use earshot_core::model::SummaryRequest;
 use earshot_net::Url;
 use earshot_runtime::keep_local::SummaryPrivacy;
 use earshot_runtime::meeting_queue::{MeetingQueue, SummaryHold};
 use earshot_runtime::offload::{
-    ContinueAnswer, HelperWriter, OffloadHost, WriteHere, WriterKind, reason,
+    ContinueAnswer, HelperWriter, OffloadHost, WriteHere, WriterKind, Writing, reason,
 };
 use earshot_runtime::summary::{LOCAL_MAX_OUTPUT_TOKENS, SummaryConfig, SummaryService};
 use earshot_runtime::sync::{SyncClient, SyncProblem, SyncThread, SyncTiming, SyncVault};
@@ -295,7 +295,9 @@ pub struct Worker {
     config: Arc<Config>,
     vault: Arc<FileVault>,
     locate: Arc<Locate>,
-    cancel: CancelToken,
+    /// The one host every sync thread hands requests to (T14.66): its registry of writes
+    /// outlives the threads.
+    host: Arc<WorkerHost>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -341,12 +343,20 @@ impl Worker {
         }
         vault.check_private()?;
         present_as_worker(&services, &config)?;
+        let config = Arc::new(config);
+        let host = Arc::new(WorkerHost {
+            services: services.clone(),
+            config: Arc::clone(&config),
+            locate: Arc::clone(&locate),
+            queue: MeetingQueue::new(),
+            writing: Writing::new(),
+        });
         Ok(Self {
             services,
-            config: Arc::new(config),
+            config,
             vault,
             locate,
-            cancel: CancelToken::new(),
+            host,
         })
     }
 
@@ -376,13 +386,7 @@ impl Worker {
     /// The host the sync thread hands requests to.
     #[must_use]
     pub fn host(&self) -> Arc<WorkerHost> {
-        Arc::new(WorkerHost {
-            services: self.services.clone(),
-            config: Arc::clone(&self.config),
-            locate: Arc::clone(&self.locate),
-            queue: MeetingQueue::new(),
-            cancel: self.cancel.clone(),
-        })
+        Arc::clone(&self.host)
     }
 
     /// Starts the sync thread with summary offload.
@@ -394,10 +398,11 @@ impl Worker {
         SyncThread::start_offloading(self.client()?, timing, host).map_err(|_| WorkerError::Spawn)
     }
 
-    /// Cancels summaries in progress (the worker is stopping): a cancelled request stays
-    /// claimed and is handed again at the next start, or withdrawn by its asker.
+    /// Cancels summaries in progress and starts no new one (the worker is stopping): a
+    /// cancelled request stays claimed and is handed again at the next start, or withdrawn by
+    /// its asker.
     pub fn cancel(&self) {
-        self.cancel.cancel();
+        self.host.writing.cancel_all();
     }
 }
 
@@ -408,7 +413,8 @@ pub struct WorkerHost {
     config: Arc<Config>,
     locate: Arc<Locate>,
     queue: MeetingQueue,
-    cancel: CancelToken,
+    /// The writes in progress, each with its cancel token (T14.66).
+    writing: Arc<Writing>,
 }
 
 impl WorkerHost {
@@ -455,17 +461,23 @@ impl OffloadHost for WorkerHost {
     }
 
     fn write_for(&self, request: SummaryRequest) {
+        let id = request.id;
+        // A request already being written (a second hand) or a stopping worker starts nothing.
+        let Some((cancel, entry)) = self.writing.begin(id) else {
+            return;
+        };
         let host = Self {
             services: self.services.clone(),
             config: Arc::clone(&self.config),
             locate: Arc::clone(&self.locate),
             queue: self.queue.clone(),
-            cancel: self.cancel.clone(),
+            writing: Arc::clone(&self.writing),
         };
-        let id = request.id;
         let spawned = std::thread::Builder::new()
             .name("earshot-worker-offload".into())
             .spawn(move || {
+                // Held to the write's end, panic included.
+                let _entry = entry;
                 // One outcome whatever happens: a panic declines `failed`, so the asker writes it.
                 let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     earshot_runtime::offload::write_for_request(
@@ -473,16 +485,26 @@ impl OffloadHost for WorkerHost {
                         &host.queue,
                         &request,
                         &|privacy| host.writer(privacy),
-                        &host.cancel,
+                        &cancel,
                     )
                 }));
                 if ran.is_err() {
                     let _ = earshot_runtime::offload::decline(&host.services, id, reason::FAILED);
                 }
             });
+        // The closure (and the entry with it) is dropped by a failed spawn: the decline runs with
+        // the registry's lock free.
         if spawned.is_err() {
             let _ = earshot_runtime::offload::decline(&self.services, id, reason::FAILED);
         }
+    }
+
+    fn writing(&self) -> Vec<EntityId> {
+        self.writing.ids()
+    }
+
+    fn cancel_writing(&self, request: EntityId) {
+        self.writing.cancel(request);
     }
 }
 
@@ -524,7 +546,7 @@ mod tests {
             config: Arc::new(config),
             locate,
             queue: MeetingQueue::new(),
-            cancel: CancelToken::new(),
+            writing: Writing::new(),
         };
         (host, dir)
     }

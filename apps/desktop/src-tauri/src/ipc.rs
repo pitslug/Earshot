@@ -5,7 +5,7 @@
 //! `packages/ui/src/ipc/bindings.ts`, which `bindings_are_up_to_date` keeps in step
 //! (`EARSHOT_UPDATE_BINDINGS=1 cargo test -p earshot-desktop bindings` rewrites it).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use earshot_core::asr::CancelToken;
@@ -161,6 +161,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::offload::summary_helpers,
             crate::offload::set_summary_helper,
             crate::offload::ask_summary_helper,
+            crate::offload::stop_waiting_summary,
             crate::summary_order::summary_order,
             crate::summary_order::set_summary_order,
             crate::summary_order::resummarise_writers,
@@ -398,10 +399,19 @@ pub struct MeetingListItem {
     /// It has a current summary this device has not opened (T12.76,
     /// `earshot_runtime::summary_seen`).
     pub new_summary: bool,
+    /// Its summary is being written on another computer: this device asked and the request is
+    /// open, with no summary since (T14.66, `offload::meetings_waiting_shown`).
+    pub summary_elsewhere: bool,
 }
 
 impl MeetingListItem {
-    fn of(m: &Meeting, state: MeetingState, folder: Option<EntityId>, new_summary: bool) -> Self {
+    fn of(
+        m: &Meeting,
+        state: MeetingState,
+        folder: Option<EntityId>,
+        new_summary: bool,
+        summary_elsewhere: bool,
+    ) -> Self {
         Self {
             id: m.id.to_string(),
             title: m.title.clone(),
@@ -410,6 +420,7 @@ impl MeetingListItem {
             state,
             folder_id: folder.map(|f| f.to_string()),
             new_summary,
+            summary_elsewhere,
         }
     }
 }
@@ -438,7 +449,19 @@ pub fn meeting_list(services: &Services) -> Result<MeetingListView, IpcError> {
     // as in no folder and the list says something was left out.
     let mut folders: Option<BTreeMap<EntityId, EntityId>> = None;
     let mut damaged_folders = 0;
+    // The meetings written on another computer (T14.66), read once with the first meeting
+    // through guarded readers: its damaged rows never fail the list.
+    let mut elsewhere: Option<BTreeSet<EntityId>> = None;
+    let mut damaged_requests = 0;
+    let me = services.store().device();
     let read = services.live_meetings(|store, m| {
+        let elsewhere = elsewhere.get_or_insert_with(|| {
+            let (set, damaged) =
+                earshot_runtime::offload::meetings_waiting_shown(&store.guarded_read(), me);
+            damaged_requests = damaged;
+            set
+        });
+        let away = elsewhere.contains(&m.id);
         let folders = match &mut folders {
             Some(read) => read,
             None => {
@@ -449,15 +472,15 @@ pub fn meeting_list(services: &Services) -> Result<MeetingListView, IpcError> {
         };
         let folder = folders.get(&m.id).copied();
         let new_summary = earshot_runtime::summary_seen::has_new_summary(store, m.id)?;
-        Ok((folder, new_summary))
+        Ok((folder, new_summary, away))
     })?;
     let mut items: Vec<(u64, MeetingListItem)> = read
         .meetings
         .iter()
-        .map(|(m, activity, (folder, new_summary))| {
+        .map(|(m, activity, (folder, new_summary, away))| {
             (
                 m.started_unix_ms,
-                MeetingListItem::of(m, MeetingState::of(*activity), *folder, *new_summary),
+                MeetingListItem::of(m, MeetingState::of(*activity), *folder, *new_summary, *away),
             )
         })
         .collect();
@@ -474,6 +497,9 @@ pub fn meeting_list(services: &Services) -> Result<MeetingListView, IpcError> {
         crate::damage::Scope::MeetingsAndFolders,
         read.damaged.saturating_add(damaged_folders),
     );
+    // Request and summary rows are not meeting or folder rows: against the total, so a damaged
+    // row the last scan already counted asks for no new scan at every list read (T14.66).
+    crate::damage::report(crate::damage::Scope::Total, damaged_requests);
     Ok(MeetingListView {
         meetings: items.into_iter().map(|(_, i)| i).collect(),
     })

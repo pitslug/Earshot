@@ -228,6 +228,7 @@ fn offload_continuation_tries_the_copied_steps_not_the_order_now() {
         (&vault, &NeverClaude, &NeverCodex),
         None,
         &mut |_| {},
+        &mut || {},
     )
     .unwrap();
     // The copied local step was tried (not installed here); Claude Code never was.
@@ -301,6 +302,10 @@ fn offload_resummarise_on_a_computer_is_a_named_run_that_a_hand_back_ends() {
     ca.tick().unwrap();
     struct NoJobs;
     impl OffloadHost for NoJobs {
+        fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+            Vec::new()
+        }
+        fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
         fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
             panic!("a named run is never continued: {job:?}")
         }
@@ -348,6 +353,7 @@ fn offload_continuation_that_finds_nothing_to_go_on_with_ends_quietly() {
         (&vault, &NeverClaude, &NeverCodex),
         None,
         &mut |w| panic!("nothing to tell: {w}"),
+        &mut || {},
     )
     .unwrap();
     assert!(done.settled);
@@ -506,6 +512,10 @@ fn offload_named_run_never_asks_a_device_it_was_not_decided_for() {
 struct Continues(Mutex<Vec<WriteHere>>);
 
 impl OffloadHost for Continues {
+    fn writing(&self) -> Vec<earshot_core::identity::EntityId> {
+        Vec::new()
+    }
+    fn cancel_writing(&self, _request: earshot_core::identity::EntityId) {}
     fn continue_run(&self, job: WriteHere) -> ContinueAnswer {
         self.0.lock().unwrap().push(job);
         ContinueAnswer::Started

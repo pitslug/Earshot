@@ -189,6 +189,7 @@ export function createTauriIpc(): Ipc {
     summaryHelpers: async () => unwrap(await commands.summaryHelpers()),
     setSummaryHelper: async (device) => unwrap(await commands.setSummaryHelper(device)),
     askSummaryHelper: async (meeting, device) => unwrap(await commands.askSummaryHelper(meeting, device)),
+    stopWaitingSummary: async (meeting) => unwrap(await commands.stopWaitingSummary(meeting)),
     summaryOrder: async () => unwrap(await commands.summaryOrder()),
     setSummaryOrder: async (steps, settings) => unwrap(await commands.setSummaryOrder(steps, settings)),
     resummariseWriters: async (meeting) => unwrap(await commands.resummariseWriters(meeting)),

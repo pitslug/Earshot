@@ -8,6 +8,7 @@ import {
   type SummaryView,
   errorText,
 } from "../ipc";
+import { ORDER_COPY, fillCopy } from "../ipc/summaryOrder";
 import { clock } from "../meeting/liveMeeting";
 import { clockTime } from "../shell/meetings";
 
@@ -46,10 +47,17 @@ export function summaryMarkdown(s: SummaryView): string {
   return sections.length === 0 ? "" : `${sections.join("\n\n")}\n`;
 }
 
+/** A new summary being written while the page shows (T14.66): here (`on` null) or on another
+ * computer (`on` its name). */
+export interface SummaryWriting {
+  on: string | null;
+}
+
 /** The header's second line: "Mon 2 Nov 09:30 · 42 min · Call · Final transcript · Summary by
  * Qwen 3.5 9B · Transcribed on GPU (CUDA)"; after the user edited the summary "Summary by
- * Qwen 3.5 9B (edited)" (T12.43). The writer comes named by Rust (`summary::writer_name`). */
-export function headerLine(d: MeetingDetail): string {
+ * Qwen 3.5 9B (edited)" (T12.43). The writer comes named by Rust (`summary::writer_name`).
+ * While a new summary is written (`writing`), it says so after the summary's writer (T14.66). */
+export function headerLine(d: MeetingDetail, writing: SummaryWriting | null = null): string {
   const h = d.header;
   const date = new Date(h.started_at_ms).toLocaleDateString(undefined, {
     weekday: "short",
@@ -63,6 +71,13 @@ export function headerLine(d: MeetingDetail): string {
   if (h.transcript === "Draft") parts.push("Draft transcript");
   if (h.summary_writer !== null) {
     parts.push(`Summary by ${h.summary_writer}${h.summary_edited ? " (edited)" : ""}`);
+  }
+  if (writing !== null) {
+    parts.push(
+      writing.on === null
+        ? ORDER_COPY.in_progress.here
+        : fillCopy(ORDER_COPY.in_progress.on, { device: writing.on }),
+    );
   }
   if (h.transcript_backend !== null) parts.push(`Transcribed on ${h.transcript_backend}`);
   return parts.join(" · ");

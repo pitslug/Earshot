@@ -13,10 +13,10 @@ import { AppRoot } from "./AppRoot";
 import { AppShell } from "./AppShell";
 import { CRASH_COPY, RootErrorBoundary } from "./RootErrorBoundary";
 
-const GOOD: MeetingListItem = { id: "m-good", title: "Compost bays", started_at_ms: 2_000, duration_ms: 60_000, state: "Ready", folder_id: null, new_summary: false };
+const GOOD: MeetingListItem = { id: "m-good", title: "Compost bays", started_at_ms: 2_000, duration_ms: 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false };
 /** A row the app could never send: its missing title makes the meeting list throw while it
  * renders. It is also the meeting that records. */
-const BROKEN = { id: "m-broken", title: null, started_at_ms: 3_000, duration_ms: null, state: "Recording", folder_id: null, new_summary: false } as unknown as MeetingListItem;
+const BROKEN = { id: "m-broken", title: null, started_at_ms: 3_000, duration_ms: null, state: "Recording", folder_id: null, new_summary: false, summary_elsewhere: false } as unknown as MeetingListItem;
 
 /** The one child of `element`, which must be an element. */
 function onlyChild(element: ReactElement): ReactElement {

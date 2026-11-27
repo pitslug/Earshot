@@ -36,8 +36,8 @@ describe("mock IPC", () => {
 
   it("serves the meetings it was given, sorted, as copies", async () => {
     const meetings = [
-      { id: "1", title: "Old", started_at_ms: 10, duration_ms: 5, state: "Ready" as const, folder_id: null, new_summary: false },
-      { id: "2", title: "New", started_at_ms: 20, duration_ms: null, state: "Recording" as const, folder_id: null, new_summary: false },
+      { id: "1", title: "Old", started_at_ms: 10, duration_ms: 5, state: "Ready" as const, folder_id: null, new_summary: false, summary_elsewhere: false },
+      { id: "2", title: "New", started_at_ms: 20, duration_ms: null, state: "Recording" as const, folder_id: null, new_summary: false, summary_elsewhere: false },
     ];
     const ipc = createMockIpc({ meetings });
     const listed = (await ipc.listMeetings()).meetings;
@@ -448,7 +448,7 @@ describe("mock speech helpers (T9.1f)", () => {
       duration_ms: 60_000,
       state: "Ready" as const,
       folder_id: folder,
-      new_summary: false,
+      new_summary: false, summary_elsewhere: false,
     });
     const folders = [{ id: "f1", name: "One" }, { id: "f2", name: "Two" }];
     const ipc = createMockIpc({
@@ -532,12 +532,12 @@ describe("mock IPC, the offer to record a call (T12.86)", () => {
 
 describe("mock summary seen (T14.51)", () => {
   it("says a summary the list does not call new changed nothing, as the app does", async () => {
-    const plain = sampleMeetings(1_000).map((m) => ({ ...m, new_summary: false }));
+    const plain = sampleMeetings(1_000).map((m) => ({ ...m, new_summary: false, summary_elsewhere: false }));
     const probe = createMockIpc({ meetings: plain, now: 1_000 });
     const summarised: string[] = [];
     for (const m of plain) if ((await probe.getMeeting(m.id)).summary !== null) summarised.push(m.id);
     // The first meeting with a summary has a new one; the others' were seen.
-    const meetings = plain.map((m) => ({ ...m, new_summary: m.id === summarised[0] }));
+    const meetings = plain.map((m) => ({ ...m, new_summary: m.id === summarised[0], summary_elsewhere: false }));
     const ipc = createMockIpc({ meetings, now: 1_000 });
     const withSummary = [];
     for (const m of meetings) {

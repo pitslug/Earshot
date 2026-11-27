@@ -16,9 +16,10 @@ import {
   MenuPopover,
   MenuTrigger,
   SplitButton,
+  Tooltip,
   type MenuButtonProps,
 } from "@fluentui/react-components";
-import { useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 
 import {
   ORDER_COPY,
@@ -49,8 +50,11 @@ export const COMPUTERS_UNREAD = "Your other computers could not be checked";
 export interface ResummariseControlProps {
   /** The meeting. */
   meeting: string;
-  /** The button's words ("Re-summarise" or "Summarise"). */
+  /** The button's words ("Re-summarise" or "Summarise"): its accessible name, and its tooltip
+   * when it shows only `icon`. */
   label: string;
+  /** Shown in place of the words (every header button shows only its icon, T14.66). */
+  icon?: ReactElement;
   disabled: boolean;
   /** Runs the order of summary writers ("Use my order"). */
   onOrder(): void;
@@ -61,7 +65,7 @@ export interface ResummariseControlProps {
 }
 
 /** The header's Re-summarise: "Use my order", or one writer chosen from its menu. */
-export function ResummariseControl({ meeting, label, disabled, onOrder, onWriter, onAsk }: ResummariseControlProps) {
+export function ResummariseControl({ meeting, label, icon, disabled, onOrder, onWriter, onAsk }: ResummariseControlProps) {
   const ipc = useIpc();
   const [writers, setWriters] = useState<ResummariseView | null>(null);
   const [helpers, setHelpers] = useState<SummaryHelpersView | null>(null);
@@ -103,13 +107,17 @@ export function ResummariseControl({ meeting, label, disabled, onOrder, onWriter
     >
       <MenuTrigger disableButtonEnhancement>
         {(triggerProps: MenuButtonProps) => (
-          <SplitButton
-            disabled={disabled}
-            menuButton={{ ...triggerProps, "aria-label": fillCopy(ORDER_COPY.resummarise.choose, { label }) }}
-            primaryActionButton={{ onClick: onOrder }}
-          >
-            {label}
-          </SplitButton>
+          // An icon-only button shows its label on hover and focus (the button names itself).
+          <Tooltip content={label} relationship="inaccessible" visible={icon === undefined ? false : undefined}>
+            <SplitButton
+              disabled={disabled}
+              icon={icon}
+              menuButton={{ ...triggerProps, "aria-label": fillCopy(ORDER_COPY.resummarise.choose, { label }) }}
+              primaryActionButton={{ onClick: onOrder, "aria-label": icon === undefined ? undefined : label }}
+            >
+              {icon === undefined ? label : undefined}
+            </SplitButton>
+          </Tooltip>
         )}
       </MenuTrigger>
       <MenuPopover>

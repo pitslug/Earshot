@@ -4226,3 +4226,34 @@ fn meeting_keep_awake_a_finishing_meeting_and_a_job_each_hold_their_own() {
     jobs.join();
     assert_eq!((awake.taken(), awake.alive()), (2, 0));
 }
+
+/// T14.66: a summary step change of an older meeting (one finishing behind a newer recording)
+/// still reaches the window, as its `PostProgress` and `Summary` do, so its page reads the run
+/// record. Control: a warning of the older meeting is not sent.
+#[test]
+fn meeting_an_older_meetings_summary_step_change_reaches_the_window() {
+    let (d, rx) = driver(FakePrepare::new(Script::UntilStopped));
+    // The screen follows meeting number 2; meeting number 1 finishes behind it.
+    d.0.shown.store(2, Ordering::SeqCst);
+    d.0.send(
+        1,
+        MeetingEvent::Warning {
+            key: "invented".into(),
+            kind: WarningKind::Backend,
+            message: "An invented warning.".into(),
+        },
+    );
+    d.0.send(
+        1,
+        MeetingEvent::SummaryRunChanged {
+            meeting: "an-invented-meeting".into(),
+        },
+    );
+    let heard: Vec<MeetingEvent> = rx.try_iter().collect();
+    assert_eq!(
+        heard,
+        vec![MeetingEvent::SummaryRunChanged {
+            meeting: "an-invented-meeting".into()
+        }]
+    );
+}

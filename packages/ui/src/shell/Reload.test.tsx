@@ -31,7 +31,7 @@ const OLDER: MeetingListItem = {
   duration_ms: 30 * 60_000,
   state: "Processing",
   folder_id: null,
-  new_summary: false,
+  new_summary: false, summary_elsewhere: false,
 };
 const NEWER: MeetingListItem = {
   id: "m-newer",
@@ -40,7 +40,7 @@ const NEWER: MeetingListItem = {
   duration_ms: null,
   state: "Recording",
   folder_id: null,
-  new_summary: false,
+  new_summary: false, summary_elsewhere: false,
 };
 
 function followed(meeting: string, over: Partial<FollowedSnapshot> = {}): FollowedSnapshot {

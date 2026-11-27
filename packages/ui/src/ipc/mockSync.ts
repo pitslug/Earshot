@@ -396,6 +396,10 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
       helper = found?.short_id ?? null;
       return helpers();
     },
+    stopWaitingSummary: async () => {
+      call("stopWaitingSummary");
+      return null;
+    },
     askSummaryHelper: async (_meeting, device) => {
       call("askSummaryHelper");
       const d = devices.find((x) => mockDeviceId(x.short_id) === device);

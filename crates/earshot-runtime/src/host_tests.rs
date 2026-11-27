@@ -141,6 +141,7 @@ fn step_name(step: &HostStep<'_>) -> String {
         },
         HostStep::PostFinished(r) => format!("finished ok={}", r.is_ok()),
         HostStep::SummaryStarting => "summary".into(),
+        HostStep::SummaryRunChanged => "summary step left".into(),
     }
 }
 

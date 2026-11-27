@@ -2831,7 +2831,8 @@ Second wave (after the lanes above are merged):
   - deps: T14.57, T14.64
   - do: a short spec first (docs/sync-spec.md section 17 rewritten, spec-reviewed); then the build with tests for each rule above, each with a control; the per-page notes and their fixtures removed in favour of the one banner and the one refusal line (copy for the owner to approve).
   - accept: `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
-- [ ] T14.66 A summary written elsewhere can be stopped, and a failing writer is said at once
+- [x] T14.66 A summary written elsewhere can be stopped, and a failing writer is said at once
+  - status (2026-11-28): built to docs/summary-order.md section 11 (spec reviewed twice; lane review blocked once, fixed with eight advisories, re-review clear). The new copy in `fixtures/ui/summary_order_cases.json` (stop, moves, kinds, list word, header line, `finishing_tip`) is a draft for the owner to approve before 0.9.2; the Summary-tab confirmations that stayed did not reproduce in the preview (suspected `useWindowWatched` on the owner's machine, to check there).
   - decided (the owner, 2026-11-27, after a re-summarise on 0.9.1 moved from this computer's GPU through Claude to the summary worker with nothing on screen saying why, and the worker could not be stopped): build before 1.0.
   - do: a short design first (docs/summary-order.md, a new section; spec-reviewed), then:
     - (1) a Stop control while a summary waits on another computer, which withdraws this computer's request and ends the run, and the helper (the desktop helper and the summary worker) stops writing within a bounded time once it hears the withdrawal, storing nothing;

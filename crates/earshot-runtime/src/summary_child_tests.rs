@@ -182,12 +182,15 @@ fn summary_child_fake_child_for_the_tests() {
             &out,
             &ChildLine::LoadRefused {
                 message: "asked for the GPU, the load log shows the CPU".to_owned(),
+                kind: None,
             },
         ),
         "failed" => emit(
             &out,
             &ChildLine::Failed {
                 message: "reduce step invalid after 3 requests".to_owned(),
+                // T14.66: the child says which kind its failure was.
+                kind: Some("reply_unusable".to_owned()),
             },
         ),
         other => panic!("no such fake child: {other}"),
@@ -593,7 +596,8 @@ fn summary_child_refused_load_moves_to_the_cpu_with_the_refusal() {
     let out = f.summarize().unwrap();
     let why = assert_moved_to_the_cpu(&f, &out);
     assert!(
-        matches!(why, LocalSummaryError::Load(LlmError::Backend(ref m)) if m.contains("GPU")),
+        // T14.66: a child's refused load is its own variant, never read as a wrong backend.
+        matches!(why, LocalSummaryError::ChildLoad { ref message, kind: None } if message.contains("GPU")),
         "{why:?}"
     );
 }
@@ -636,7 +640,10 @@ fn summary_child_run_failure_is_the_error_and_no_second_run() {
     assert!(
         matches!(
             &err,
-            RuntimeError::LocalSummary(LocalSummaryError::ChildRun(m)) if m.contains("reduce step")
+            RuntimeError::LocalSummary(LocalSummaryError::ChildRun {
+                message,
+                kind: Some(crate::summary::LocalFailureKind::ReplyUnusable),
+            }) if message.contains("reduce step")
         ),
         "{err:?}"
     );
@@ -1141,7 +1148,7 @@ fn summary_child_serves_a_refused_load_as_its_one_line() {
     assert!(
         matches!(
             &heard[0],
-            Heard::Line(ChildLine::LoadRefused { message }) if message.contains("no card")
+            Heard::Line(ChildLine::LoadRefused { message, .. }) if message.contains("no card")
         ),
         "{heard:?}"
     );
@@ -1172,7 +1179,7 @@ fn summary_child_loads_the_parents_dll_folder_before_the_model() {
     assert!(
         matches!(
             &heard[0],
-            Heard::Line(ChildLine::LoadRefused { message }) if message.contains("126")
+            Heard::Line(ChildLine::LoadRefused { message, .. }) if message.contains("126")
         ),
         "{heard:?}"
     );
@@ -1229,6 +1236,7 @@ fn summary_child_lines_are_read_only_with_their_prefix() {
     let beat = line(&ChildLine::Beat);
     let done = line(&ChildLine::Failed {
         message: "x".to_owned(),
+        kind: None,
     });
     let read = |text: String| -> Vec<Heard> {
         let (to, from) = std::sync::mpsc::channel();

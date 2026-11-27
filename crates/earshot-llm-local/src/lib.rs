@@ -66,6 +66,9 @@ pub enum LlmError {
     Utf8,
     /// The backend that ran is not the one asked for, or the evidence is unclear.
     Backend(String),
+    /// An earlier load never finished, so this one could not start (T14.66: told apart from
+    /// [`LlmError::Backend`] so the user is told to restart, never to download again).
+    LoadStuck,
     /// The generation's [`CancelToken`] was cancelled.
     Cancelled,
 }
@@ -86,6 +89,7 @@ impl fmt::Display for LlmError {
             LlmError::Decode(c) => write!(f, "llama_decode failed with {c}"),
             LlmError::Utf8 => f.write_str("the reply is not valid UTF-8"),
             LlmError::Backend(e) => write!(f, "backend: {e}"),
+            LlmError::LoadStuck => f.write_str(log::STUCK_MESSAGE),
             LlmError::Cancelled => f.write_str("generation cancelled"),
         }
     }
@@ -463,7 +467,7 @@ impl LocalLlm {
                 },
             )
         })
-        .map_err(|e| LlmError::Backend(e.to_owned()))?;
+        .map_err(|log::LoadStuck| LlmError::LoadStuck)?;
         let load_time = started.elapsed();
         let lines =
             lines.ok_or_else(|| LlmError::Backend("the load log overflowed the capture".into()))?;

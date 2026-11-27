@@ -53,4 +53,7 @@ export interface SyncCommands {
   /** Asks another computer to write a meeting's summary now; resolves with the meeting's waiting
    * line. */
   askSummaryHelper(meeting: string, device: string): Promise<string>;
+  /** Stops a meeting's summary waiting on another computer (T14.66): null when it stopped (read
+   * the meeting again), else fixed copy saying why nothing was stopped. */
+  stopWaitingSummary(meeting: string): Promise<string | null>;
 }

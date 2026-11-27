@@ -1098,6 +1098,7 @@ But many readers on the same paths still decode whole rows through `query` (`rep
 - **New store readers** (earshot-store, on `Store` and `StoreTx`, all through `split_rows` or lenient reads, all counting what they skip):
   - `speaker_links(filter)`: per speaker row `rowid`, `id`, `meeting_id`, `person_id`, `deleted`, `display_name`, each a `Col`; the filter is a fixed SQL condition (a meeting, or `person_id` in a temporary id table, as 7A.2 C1's `temp.push_only`).
   - `person_links()`: per person row `rowid`, `id`, `deleted`, `is_me`, `merged_into`, each a `Col`.
+  - `summary_requests_or_damaged()` (T14.66): every summary request row through `split_rows`, the rowids that do not read counted; read by `offload::meetings_waiting_shown` (a root in `sync_damaged_scan.rs`) for the meeting list.
   - `speakers_or_damaged(meeting)` (today's `for_deletion::speakers`, `repo.rs:667-680`, made available beside the plain reader) and `summaries_or_damaged(meeting)`.
   - `current_summary_or_damaged(meeting) -> Option<Result<Summary, ()>>`: the row `CURRENT_SUMMARY_ROWID_SQL` chooses (`repo.rs:954-957`), read by `split_rows`, as `shown_summary` does (`repo.rs:962-`); a current row that does not read is `Err(())`, never an older summary.
   - `person_or_damaged(id)` and `meeting_or_damaged(id)` (the latter exists, `delete.rs:234-239`); `meetings_lenient()`: `rowid`, `id`, `deleted` of every meeting row.
@@ -1385,6 +1386,7 @@ At start-up (after recovery, off the main thread), when Details opens, at the en
 | `PersonRemoval.damaged_skipped`, `Forgot.damaged` | the `remove_person`, `forget_person_voices`, `forget_my_voice` commands | people plus voice data |
 | `PersonList.damaged_skipped` | `detail::persons` | people |
 | `LiveMeetings::damaged`, `live_folders_or_damaged` | the meeting list command (`ipc.rs`) | meetings, folders |
+| `offload::meetings_waiting_shown`'s damaged request and summary rows (T14.66) | the meeting list command (`ipc.rs`) | the total |
 | a search's `unreadable` (`search.rs:72`, from `ShownLines.unreadable`) | the search command | the last scan's count of damaged `segment` and `summary` rows (in memory, 17.2) |
 | a meeting page with unreadable lines (T14.24's marker) | `detail::meeting_detail` | the last scan's count of damaged parts of that meeting (in memory, 17.2) |
 | an IPC error of kind `damaged` (no count: counts as 1) | `detail::edit_error`, the Dictionary IPC | the total |

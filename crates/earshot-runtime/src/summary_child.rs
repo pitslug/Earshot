@@ -72,7 +72,9 @@ use earshot_llm_local::summarize::{
 use earshot_llm_local::{Heartbeat, LlamaBackend};
 use serde::{Deserialize, Serialize};
 
-use crate::summary::{LlamaLoader, LoadLocal, LoadedModel, LocalSummaryConfig, options_of};
+use crate::summary::{
+    LlamaLoader, LoadLocal, LoadedModel, LocalFailureKind, LocalSummaryConfig, options_of,
+};
 
 #[cfg(all(test, windows))]
 #[path = "summary_child_tests.rs"]
@@ -364,11 +366,17 @@ pub(crate) enum ChildLine {
     LoadRefused {
         /// The load's error.
         message: String,
+        /// Its kind word ([`LocalFailureKind::word`], T14.66); absent from older children.
+        #[serde(default)]
+        kind: Option<String>,
     },
     /// The run itself failed (final line): another processor would fail alike.
     Failed {
         /// The run's error.
         message: String,
+        /// Its kind word ([`LocalFailureKind::word`], T14.66); absent from older children.
+        #[serde(default)]
+        kind: Option<String>,
     },
 }
 
@@ -432,7 +440,13 @@ fn serve(
         && let Err(why) = load_folder(folder)
     {
         let message = format!("llama.cpp's folder could not load: {why}");
-        emit(&out, &ChildLine::LoadRefused { message });
+        emit(
+            &out,
+            &ChildLine::LoadRefused {
+                message,
+                kind: None,
+            },
+        );
         return 0;
     }
     let config = job.config();
@@ -440,7 +454,8 @@ fn serve(
         Ok(loaded) => loaded,
         Err(e) => {
             let message = e.to_string();
-            emit(&out, &ChildLine::LoadRefused { message });
+            let kind = child_kind_of(&e);
+            emit(&out, &ChildLine::LoadRefused { message, kind });
             return 0;
         }
     };
@@ -481,10 +496,28 @@ fn serve(
             },
             Err(e) => ChildLine::Failed {
                 message: e.to_string(),
+                kind: Some(
+                    crate::summary::LocalSummaryError::Run(e)
+                        .kind()
+                        .word()
+                        .to_owned(),
+                )
+                .filter(|w| w != LocalFailureKind::Cancelled.word()),
             },
         },
     );
     0
+}
+
+/// The kind word a child sends for a refused load (T14.66): a local summary error's kind, never
+/// `cancelled` (nothing in the child cancels); `None` for any other error.
+fn child_kind_of(e: &crate::RuntimeError) -> Option<String> {
+    match e {
+        crate::RuntimeError::LocalSummary(l) => Some(l.kind())
+            .filter(|k| *k != LocalFailureKind::Cancelled)
+            .map(|k| k.word().to_owned()),
+        _ => None,
+    }
 }
 
 /// Writes a `beat` whenever `heartbeat` moved, until `stop`; progress made before this thread
@@ -582,10 +615,20 @@ pub(crate) struct ChildSummary {
 pub(crate) enum ChildEnd {
     /// The summary.
     Finished(Box<ChildSummary>),
-    /// The GPU load was refused.
-    LoadRefused(String),
-    /// The run failed.
-    RunFailed(String),
+    /// The GPU load was refused, with the kind the child sent.
+    LoadRefused {
+        /// The child's error text.
+        message: String,
+        /// Its kind ([`LocalFailureKind::from_child`]).
+        kind: Option<LocalFailureKind>,
+    },
+    /// The run failed, with the kind the child sent.
+    RunFailed {
+        /// The child's error text.
+        message: String,
+        /// Its kind ([`LocalFailureKind::from_child`]).
+        kind: Option<LocalFailureKind>,
+    },
     /// The child did not finish: fixed words and at most an exit code.
     Died(String),
     /// No progress for the limit: the child was killed.
@@ -630,8 +673,14 @@ fn judge_end(watched: Watched) -> ChildEnd {
             load_time,
             report: report.report(),
         })),
-        Some(ChildLine::LoadRefused { message }) => ChildEnd::LoadRefused(message),
-        Some(ChildLine::Failed { message }) => ChildEnd::RunFailed(message),
+        Some(ChildLine::LoadRefused { message, kind }) => ChildEnd::LoadRefused {
+            message,
+            kind: kind.as_deref().and_then(LocalFailureKind::from_child),
+        },
+        Some(ChildLine::Failed { message, kind }) => ChildEnd::RunFailed {
+            message,
+            kind: kind.as_deref().and_then(LocalFailureKind::from_child),
+        },
         Some(ChildLine::Loaded { .. } | ChildLine::Beat) | None => {
             ChildEnd::Died("it stopped before it finished".to_owned())
         }

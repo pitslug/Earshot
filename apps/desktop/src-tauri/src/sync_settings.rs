@@ -633,6 +633,15 @@ impl SyncHost {
         }
     }
 
+    /// Asks the running thread for one tick now, even while it backs off after failures (T14.66:
+    /// a Stop's withdrawal). With no thread running it does nothing: the withdrawal waits in the
+    /// outbox.
+    pub fn tick_now(&self) {
+        if let Some(t) = self.slot().as_ref() {
+            t.tick_now();
+        }
+    }
+
     /// Asks the running thread for a tick now.
     pub fn nudge(&self) {
         if let Some(t) = self.slot().as_ref() {

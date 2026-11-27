@@ -23,7 +23,7 @@ const row = (id: string, title: string, started: number, folder: string | null):
   duration_ms: 30 * 60_000,
   state: "Ready",
   folder_id: folder,
-  new_summary: false,
+  new_summary: false, summary_elsewhere: false,
 });
 
 const MEETINGS: MeetingListItem[] = [

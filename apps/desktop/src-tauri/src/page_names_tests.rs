@@ -240,3 +240,31 @@ fn page_names_details_kind_off_sentences_name_the_sync_page_with_its_switches() 
     assert!(sync.contains("label=\"Sync voiceprints\""));
     assert!(sync.contains("label=\"Sync Dictionary words\""));
 }
+
+/// The local summary failures that name "Settings, Summaries" (T14.66): that page exists, holds
+/// the list of writers and the summary model's download.
+#[test]
+fn page_names_local_failure_copy_names_the_summaries_page_with_writers_and_its_model() {
+    let copy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/summary_order_cases.json"
+    ))
+    .unwrap();
+    for key in ["too_long", "load_failed"] {
+        let text = copy["local_failures"][key].as_str().unwrap();
+        assert!(text.contains("in Settings, Summaries"), "{key}: {text}");
+        assert!(stale_page_names(text).is_empty(), "{key}: {text}");
+    }
+    let settings = include_str!("../../../../packages/ui/src/settings/SettingsView.tsx");
+    let sections = settings
+        .split_once("export const SETTINGS_SECTIONS = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .unwrap()
+        .0;
+    assert!(sections.contains("\"Summaries\""), "{sections}");
+    let page = include_str!("../../../../packages/ui/src/settings/SummariesPage.tsx");
+    assert!(page.contains("<OrderSection"), "the writers' list");
+    assert!(
+        page.contains("<SummaryModelChoices"),
+        "the summary model's download"
+    );
+}

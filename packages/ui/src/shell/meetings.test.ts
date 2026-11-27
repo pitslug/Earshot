@@ -18,7 +18,7 @@ const at = (day: number, hour: number, minute = 0) =>
   new Date(2026, 10, day, hour, minute).getTime();
 
 function meeting(id: string, started: number, duration: number | null = 30 * 60_000): MeetingListItem {
-  return { id, title: `Meeting ${id}`, started_at_ms: started, duration_ms: duration, state: "Ready", folder_id: null, new_summary: false };
+  return { id, title: `Meeting ${id}`, started_at_ms: started, duration_ms: duration, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false };
 }
 
 describe("groupByDay", () => {
@@ -140,7 +140,7 @@ describe("secondaryLine", () => {
     expect(secondaryLine(processing, "Summarising")).toBe("2 Nov 2026 07:00 · 47 min · Summarising...");
     // A waiting meeting whose turn started, and a job on a ready meeting, say what runs.
     expect(secondaryLine(waiting, "Transcribing")).toBe("2 Nov 2026 07:00 · 47 min · Transcribing...");
-    expect(secondaryLine({ ...m, new_summary: true }, "Summarising")).toBe(
+    expect(secondaryLine({ ...m, new_summary: true, summary_elsewhere: false }, "Summarising")).toBe(
       "2 Nov 2026 07:00 · 47 min · Summarising...",
     );
     for (const [item, work] of [
@@ -174,7 +174,7 @@ describe("secondaryLine", () => {
   });
 
   it("marks a summary this computer has not opened (T12.76)", () => {
-    const m = { ...meeting("a", at(2, 7, 0), 47 * 60_000), new_summary: true };
+    const m = { ...meeting("a", at(2, 7, 0), 47 * 60_000), new_summary: true, summary_elsewhere: false };
     expect(secondaryLine(m)).toBe("2 Nov 2026 07:00 · 47 min · New summary");
     expect(rowDot(m)).toBe("newSummary");
     expect(secondaryLine({ ...m, state: "Unprocessed" })).toBe(
@@ -183,8 +183,8 @@ describe("secondaryLine", () => {
     // Recording and running work come first; a read summary has no dot and no word.
     expect(rowDot({ ...m, state: "Recording" })).toBe("recording");
     expect(rowDot({ ...m, state: "Processing" })).toBe("working");
-    expect(rowDot({ ...m, new_summary: false })).toBeNull();
-    expect(secondaryLine({ ...m, new_summary: false })).toBe("2 Nov 2026 07:00 · 47 min");
+    expect(rowDot({ ...m, new_summary: false, summary_elsewhere: false })).toBeNull();
+    expect(secondaryLine({ ...m, new_summary: false, summary_elsewhere: false })).toBe("2 Nov 2026 07:00 · 47 min");
     expect(rowDot({ ...m, duration_ms: null, state: "Recording" })).toBe("recording");
   });
 
@@ -236,7 +236,7 @@ describe("keepUnchanged (T14.16)", () => {
       { duration_ms: null },
       { state: "Processing" },
       { folder_id: "f1" },
-      { new_summary: true },
+      { new_summary: true, summary_elsewhere: false },
     ];
     for (const change of changes) {
       const next = { ...a, ...change };
@@ -291,3 +291,18 @@ describe("recoveredText", () => {
     expect(recoveredText(12 * 60_000 + 59_000)).toBe(`${head} 12 minutes were saved.`);
   });
 });
+
+describe("a summary written on another computer (T14.66)", () => {
+  const away = { ...meeting("a", at(18, 8)), summary_elsewhere: true };
+  it("shows the working dot and says so", () => {
+    expect(rowDot(away)).toBe("working");
+    expect(secondaryLine(away)).toContain("Summarising on another computer...");
+  });
+
+  it("gives way to local work the window heard (control)", () => {
+    expect(secondaryLine(away, "Transcribing")).toContain("Transcribing...");
+    expect(secondaryLine(away, "Transcribing")).not.toContain("another computer");
+    expect(rowDot({ ...away, summary_elsewhere: false })).toBeNull();
+  });
+});
+

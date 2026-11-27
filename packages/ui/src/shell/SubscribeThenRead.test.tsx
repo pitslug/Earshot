@@ -11,8 +11,8 @@ import { createManualTimer } from "../time";
 const at = (hour: number) => new Date(2026, 10, 2, hour, 0).getTime();
 const NOW = at(16);
 
-const FIRST: MeetingListItem = { id: "m-first", title: "Gravel path quote", started_at_ms: at(14), duration_ms: 30 * 60_000, state: "Ready", folder_id: null, new_summary: false };
-const SECOND: MeetingListItem = { id: "m-second", title: "Hedge trimming", started_at_ms: at(11), duration_ms: 20 * 60_000, state: "Ready", folder_id: null, new_summary: false };
+const FIRST: MeetingListItem = { id: "m-first", title: "Gravel path quote", started_at_ms: at(14), duration_ms: 30 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false };
+const SECOND: MeetingListItem = { id: "m-second", title: "Hedge trimming", started_at_ms: at(11), duration_ms: 20 * 60_000, state: "Ready", folder_id: null, new_summary: false, summary_elsewhere: false };
 
 /** An app whose sync subscription resolves (or fails) only when the test says so. */
 function open() {

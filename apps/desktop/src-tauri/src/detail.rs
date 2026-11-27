@@ -354,6 +354,9 @@ pub struct MeetingDetail {
     /// name and what happens if it does not answer; T12.81). `None` once the summary arrived or
     /// the request settled, by whatever route.
     pub waiting_for: Option<String>,
+    /// The computer `waiting_for` waits on, by name (or "your other computer"; T14.66): the
+    /// header's "being written on" line. `None` exactly when `waiting_for` is.
+    pub waiting_device: Option<String>,
     /// The last run of the order of summary writers, when it has something to say (T12.63b,
     /// `summary_order::run_note`): interrupted, a named computer's hand-back, or what became of
     /// each step. Fixed copy, computer names and the endpoint's host only.
@@ -1004,6 +1007,7 @@ fn meeting_detail_read(services: &Services, meeting: EntityId) -> Result<Meeting
         summary_edited,
         waiting_for,
         run_view,
+        stop_stands,
         exported,
     ) = {
         let db = services.store();
@@ -1073,6 +1077,13 @@ fn meeting_detail_read(services: &Services, meeting: EntityId) -> Result<Meeting
         // A summary that arrived before the request's own row ends the waiting (T12.81).
         let waiting_for = earshot_runtime::offload::waiting_shown(&db, db.device(), meeting)?;
         let run_view = earshot_runtime::summary_order::run::run_view(&db, meeting)?;
+        // A stopped run's note holds only while no summary came after the stopped request.
+        let stop_stands = match &run_view {
+            earshot_runtime::summary_order::run::RunView::Ended(run) => {
+                earshot_runtime::summary_order::run::stop_stands(&db, meeting, run)?
+            }
+            _ => false,
+        };
         let exported =
             earshot_runtime::export::was_exported(&db, meeting).map_err(RuntimeError::from)?;
         (
@@ -1089,9 +1100,12 @@ fn meeting_detail_read(services: &Services, meeting: EntityId) -> Result<Meeting
             summary_edited,
             waiting_for,
             run_view,
+            stop_stands,
             exported,
         )
     };
+    // Names of the user's computers and the endpoint, read with the store lock free.
+    let cx = crate::summary_order::StepContext::read(services);
     // The final pass's own rule, as the Speakers panel's offers use it.
     let in_room = earshot_runtime::edit::records_in_room(&view.tracks);
     let track_of = |segment: &Segment| match view
@@ -1241,16 +1255,26 @@ fn meeting_detail_read(services: &Services, meeting: EntityId) -> Result<Meeting
             let name = crate::offload::known_computers()
                 .get(&device)
                 .and_then(|n| n.name.clone());
-            crate::offload::waiting_banner(name.as_deref(), crate::offload::if_no_answer(&run_view))
+            let banner = crate::offload::waiting_banner(
+                name.as_deref(),
+                crate::offload::if_no_answer(&run_view),
+            );
+            // The steps the run already left (T14.66), read from its record.
+            match crate::summary_order::earlier_text(&run_view, &cx) {
+                Some(earlier) => format!("{banner} {earlier}"),
+                None => banner,
+            }
         }),
+        waiting_device: waiting_for.map(crate::offload::waiting_device_name),
         // A run not ended while the meeting's work or a job still holds it is not interrupted.
-        summary_run: crate::summary_order::run_note(
+        summary_run: crate::summary_order::run_note_stopped(
             &run_view,
             matches!(
                 state,
                 MeetingState::Recording | MeetingState::Processing | MeetingState::Waiting
             ),
-            &crate::summary_order::StepContext::read(services),
+            stop_stands,
+            &cx,
         ),
     })
 }

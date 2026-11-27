@@ -14,7 +14,11 @@
 //!   request ([`crate::offload::ask_for_run`]);
 //! - `state: ended` is written in the summary's own write transaction
 //!   ([`crate::summary::SummaryService::summarize_in_run`]), when the run stops, when every step
-//!   failed, or when the computer's `Done` arrives ([`end_after_done`]).
+//!   failed, or when the computer's `Done` arrives ([`end_after_done`]);
+//! - each step left for the next is recorded as it happens (T14.66,
+//!   [`run_summary_order_reporting`]), so the record is the run's one account;
+//! - the user's Stop withdraws the request a waiting run waits on and ends the run
+//!   ([`stop_waiting`], T14.66).
 //!
 //! # Moving on
 //!
@@ -104,11 +108,29 @@ pub enum OutcomeWord {
     NotNow,
     /// Dropped for a meeting kept on this computer.
     SkippedKeptLocal,
+    /// The user stopped the run while it waited on a computer (T14.66, [`stop_waiting`]).
+    Stopped,
+    /// The local model: the meeting is too long for it (T14.66, 11.13).
+    TooLong,
+    /// The local model: its reply could not be used after the repair rounds.
+    ReplyUnusable,
+    /// The local model: the graphics card's summary process stopped.
+    CardStopped,
+    /// The local model: it stopped making progress.
+    Stalled,
+    /// The local model could not load.
+    LoadFailed,
+    /// The local model: an earlier load is stuck.
+    LoadStuck,
+    /// The local model did not load where it was asked to.
+    WrongBackend,
+    /// The local model: the CUDA files changed after the start.
+    CudaChanged,
 }
 
 impl OutcomeWord {
     /// Every word.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 21] = [
         Self::Offline,
         Self::Recording,
         Self::NotOffering,
@@ -121,6 +143,15 @@ impl OutcomeWord {
         Self::Failed,
         Self::NotNow,
         Self::SkippedKeptLocal,
+        Self::Stopped,
+        Self::TooLong,
+        Self::ReplyUnusable,
+        Self::CardStopped,
+        Self::Stalled,
+        Self::LoadFailed,
+        Self::LoadStuck,
+        Self::WrongBackend,
+        Self::CudaChanged,
     ];
 
     /// The words the user reads.
@@ -139,6 +170,15 @@ impl OutcomeWord {
             Self::Failed => "failed",
             Self::NotNow => "not now",
             Self::SkippedKeptLocal => "skipped (kept on this computer)",
+            Self::Stopped => "stopped",
+            Self::TooLong => "too long",
+            Self::ReplyUnusable => "reply could not be used",
+            Self::CardStopped => "graphics card process stopped",
+            Self::Stalled => "stopped making progress",
+            Self::LoadFailed => "could not load",
+            Self::LoadStuck => "an earlier load is stuck",
+            Self::WrongBackend => "loaded on the wrong device",
+            Self::CudaChanged => "CUDA files changed",
         }
     }
 }
@@ -177,6 +217,11 @@ pub struct SummaryRun {
     /// The step that wrote the summary, once one did.
     #[serde(default)]
     pub writer: Option<usize>,
+    /// The request the user stopped this run on ([`stop_waiting`], T14.66): the stop note shows
+    /// only while no summary was created after it. Left out of the JSON when `None`, so a record
+    /// that was not stopped is byte for byte what earlier builds write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<EntityId>,
 }
 
 impl SummaryRun {
@@ -190,6 +235,7 @@ impl SummaryRun {
             waiting_on: None,
             state: RunState::Running,
             writer: None,
+            stopped: None,
         }
     }
 
@@ -334,6 +380,35 @@ pub(crate) mod fault {
         ASK.with(|f| f.set(2));
     }
 
+    thread_local! {
+        /// Fails the next stop on this thread after its withdrawal is written.
+        static STOP: Cell<bool> = const { Cell::new(false) };
+    }
+
+    thread_local! {
+        /// The next move write on this thread fails as a store error would.
+        static MOVE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Makes the next per-move record write on this thread fail (as a store error does).
+    pub(crate) fn fail_move() {
+        MOVE.with(|f| f.set(true));
+    }
+
+    pub(crate) fn take_move_error() -> bool {
+        MOVE.with(|f| f.replace(false))
+    }
+
+    /// Fails the next [`super::stop_waiting`] on this thread between its two writes.
+    pub(crate) fn fail_stop() {
+        STOP.with(|f| f.set(true));
+    }
+
+    pub(crate) fn take_stop() -> Option<RuntimeError> {
+        STOP.with(|f| f.replace(false))
+            .then_some(RuntimeError::Internal("an injected fault"))
+    }
+
     pub(crate) fn take_ask() -> Option<RuntimeError> {
         match ASK.with(|f| f.replace(0)) {
             1 => Some(RuntimeError::Internal("an injected fault")),
@@ -406,25 +481,22 @@ pub fn failure_word(step: WriterStep, error: &RuntimeError) -> Option<OutcomeWor
 }
 
 /// The local model's failures: every one moves on (each after its own CPU retry) except a
-/// cancellation.
+/// cancellation, with the word of its kind (T14.66, docs/summary-order.md 11.13): the record, the
+/// moving note and the end banner say which kind it was.
 #[cfg(feature = "engines")]
 fn local_word(e: &crate::summary::LocalSummaryError) -> Option<OutcomeWord> {
-    use crate::summary::LocalSummaryError as L;
-    use earshot_llm_local::summarize::SummaryFailure as F;
-    match e {
-        L::Run(F::Cancelled) => None,
-        L::Run(
-            F::Plan(_) | F::TooLong { .. } | F::Grammar(_) | F::Model(_) | F::Invalid { .. },
-        )
-        | L::Load(_)
-        | L::LoadRetried { .. }
-        | L::GpuStalled
-        | L::LoadStalled
-        | L::GpuChildStalled
-        | L::GpuChildDied { .. }
-        | L::CudaFilesChanged { .. }
-        | L::ChildRun(_)
-        | L::Chunks(_) => Some(OutcomeWord::Failed),
+    use crate::summary::LocalFailureKind as K;
+    match e.kind() {
+        K::Cancelled => None,
+        K::TooLong => Some(OutcomeWord::TooLong),
+        K::ReplyUnusable => Some(OutcomeWord::ReplyUnusable),
+        K::CardStopped => Some(OutcomeWord::CardStopped),
+        K::Stalled => Some(OutcomeWord::Stalled),
+        K::LoadFailed => Some(OutcomeWord::LoadFailed),
+        K::LoadStuck => Some(OutcomeWord::LoadStuck),
+        K::WrongBackend => Some(OutcomeWord::WrongBackend),
+        K::CudaChanged => Some(OutcomeWord::CudaChanged),
+        K::Other => Some(OutcomeWord::Failed),
     }
 }
 
@@ -747,6 +819,21 @@ pub fn run_summary_order(
     plan: &RunPlan<'_>,
     cancel: &CancelToken,
 ) -> RunOutcome {
+    run_summary_order_reporting(services, meeting, start_as, plan, cancel, &mut || {})
+}
+
+/// [`run_summary_order`], calling `on_change` after each step left for the next is recorded in
+/// the run record (T14.66, docs/summary-order.md 11.5): the host reads the record again. The
+/// callback only observes: the outcome is [`run_summary_order`]'s.
+#[must_use]
+pub fn run_summary_order_reporting(
+    services: &Services,
+    meeting: EntityId,
+    start_as: RunStart,
+    plan: &RunPlan<'_>,
+    cancel: &CancelToken,
+    on_change: &mut dyn FnMut(),
+) -> RunOutcome {
     let privacy = crate::keep_local::summary_privacy(&services.store(), meeting);
     let mut run = match start_as {
         RunStart::Order(order) => {
@@ -808,8 +895,38 @@ pub fn run_summary_order(
             .with_steps(&run);
         }
     }
-    run_steps(services, meeting, run, privacy, plan, cancel)
+    run_steps(services, meeting, run, privacy, plan, cancel, on_change)
 }
+
+/// What a run's record says when a step was left for the next one (T14.66): written as it
+/// happens, so the record is the one account every surface reads. Only while a later step is
+/// still to try. `false` when the record was replaced meanwhile (the run stops). A store error is
+/// ignored: the write only records the account and never costs the summary.
+fn record_move(
+    services: &Services,
+    meeting: EntityId,
+    run: &SummaryRun,
+    on_change: &mut dyn FnMut(),
+) -> bool {
+    if run.next_step(run.cursor).is_none() {
+        return true;
+    }
+    #[cfg(test)]
+    if fault::take_move_error() {
+        return true;
+    }
+    match put_own(services, meeting, run) {
+        Ok(true) => {
+            on_change();
+            true
+        }
+        Ok(false) => false,
+        Err(_) => true,
+    }
+}
+
+/// The run's record was replaced while it ran (a new run started).
+pub const RUN_REPLACED: &str = "the summary run was replaced";
 
 /// Ends `run` (no summary written by it) and returns `out` with its steps.
 fn ended(
@@ -852,7 +969,12 @@ fn run_steps(
     privacy: SummaryPrivacy,
     plan: &RunPlan<'_>,
     cancel: &CancelToken,
+    on_change: &mut dyn FnMut(),
 ) -> RunOutcome {
+    let replaced = || SummaryResult::Failed {
+        retryable: RuntimeError::Conflict(RUN_REPLACED).is_retryable(),
+        error: RuntimeError::Conflict(RUN_REPLACED),
+    };
     let mut out = RunOutcome::new(SummaryResult::Skipped {
         reason: SkipReason::NotRequested,
     });
@@ -880,6 +1002,9 @@ fn run_steps(
                         reason: SkipReason::NotNow,
                     });
                     run.cursor = i + 1;
+                    if !record_move(services, meeting, &run, on_change) {
+                        return stop(services, meeting, run, out, replaced());
+                    }
                     continue;
                 }
                 match plan.writers.writer(services, w) {
@@ -1012,6 +1137,10 @@ fn run_steps(
             }
         }
         run.cursor = i + 1;
+        // Step `i` was left for the next one: recorded as it happens.
+        if run.outcome_of(i).is_some() && !record_move(services, meeting, &run, on_change) {
+            return stop(services, meeting, run, out, replaced());
+        }
     }
     // Every step failed, or none was left.
     let dropped = run
@@ -1130,6 +1259,132 @@ pub fn end_after_done(
             put_tx(tx, meeting, &run)?;
             Ok(true)
         })
+}
+
+// ---- Stop (T14.66, docs/summary-order.md 11.2) ----
+
+/// What [`stop_waiting`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopAnswer {
+    /// The request was withdrawn (or already was) and the run ended `stopped`: `device` was asked
+    /// to stop writing.
+    Stopped {
+        /// The computer that was asked.
+        device: DeviceId,
+    },
+    /// A summary had already arrived: the run ended with the asked computer as the writer.
+    AlreadyWritten {
+        /// The computer that wrote it, when that is known: the asked computer's request reads
+        /// `Done`. `None` when only a summary created after the request was found, which another
+        /// device may have written.
+        device: Option<DeviceId>,
+    },
+    /// Nothing waits on another computer for this meeting.
+    NotWaiting,
+}
+
+/// The user's Stop on a meeting whose summary waits on another computer, in one transaction
+/// re-reading everything (docs/summary-order.md 11.2): this device's request is withdrawn (the
+/// asker is its only allowed writer) and the run waiting on it ends `stopped`; no later step runs.
+/// A legacy request (no record) gets an ended record, so its withdrawal is never read as a
+/// legacy hand-back. A summary already created after the request (or a `Done` the record waits
+/// on) is [`StopAnswer::AlreadyWritten`]; an open request is withdrawn then too.
+///
+/// # Errors
+/// A deleted meeting; store errors.
+pub fn stop_waiting(services: &Services, meeting: EntityId) -> Result<StopAnswer, RuntimeError> {
+    let me = services.store().device();
+    crate::edit::write(services, |tx, stamp| {
+        crate::edit::live_meeting(&*tx, meeting)?;
+        let record = read_tx(tx, meeting)?;
+        let waited = match &record {
+            RunRecord::Read(run) if run.state == RunState::Waiting => run.waiting_on,
+            _ => None,
+        };
+        // This device's newest request for the meeting that is open, or that the record still
+        // waits on whatever its state (withdrawn by the 90 s or stale rule, not yet continued).
+        let Some(mut request) = tx.summary_requests()?.into_iter().rev().find(|r| {
+            r.meeting_id == meeting
+                && r.asking_device == me
+                && !r.meta.deleted
+                && crate::offload::authored(r)
+                && (r.state.is_open() || Some(r.id) == waited)
+        }) else {
+            return Ok(StopAnswer::NotWaiting);
+        };
+        let device = request.target_device;
+        let done = request.state == RequestState::Done;
+        let written = done || crate::offload::summarised_since(&*tx, &request)?;
+        let open = request.state.is_open();
+        if open {
+            request.state = RequestState::Withdrawn;
+            request.reason = String::new();
+            request.meta.touch(stamp.hlc, stamp.clock);
+            tx.put_summary_request(request.clone())?;
+        }
+        #[cfg(test)]
+        if let Some(e) = fault::take_stop() {
+            return Err(e);
+        }
+        let waits =
+            |run: &SummaryRun| run.waiting_on == Some(request.id) && run.state == RunState::Waiting;
+        if written {
+            if let RunRecord::Read(mut run) = record
+                && waits(&run)
+            {
+                run.writer = Some(run.cursor.saturating_sub(1));
+                run.waiting_on = None;
+                run.state = RunState::Ended;
+                put_tx(tx, meeting, &run)?;
+            }
+            return Ok(StopAnswer::AlreadyWritten {
+                device: done.then_some(device),
+            });
+        }
+        match record {
+            RunRecord::Read(mut run) if waits(&run) => {
+                run.push(run.cursor.saturating_sub(1), OutcomeWord::Stopped);
+                run.stopped = Some(request.id);
+                run.waiting_on = None;
+                run.state = RunState::Ended;
+                put_tx(tx, meeting, &run)?;
+                Ok(StopAnswer::Stopped { device })
+            }
+            // A legacy request: an ended record of its own, written only while none exists.
+            RunRecord::Absent => {
+                let mut run = SummaryRun::new(RunOrigin::Named);
+                run.steps.push(OrderStep::Computer(device));
+                run.cursor = 1;
+                run.push(0, OutcomeWord::Stopped);
+                run.stopped = Some(request.id);
+                run.state = RunState::Ended;
+                put_tx(tx, meeting, &run)?;
+                Ok(StopAnswer::Stopped { device })
+            }
+            // Unreadable, or a record naming another request or none: the hand-back settles it.
+            _ if open => Ok(StopAnswer::Stopped { device }),
+            _ => Ok(StopAnswer::NotWaiting),
+        }
+    })
+}
+
+/// Whether the stop note of `run` still holds: it was stopped, and no summary of `meeting` was
+/// created after the request it was stopped on (docs/summary-order.md 11.7).
+///
+/// # Errors
+/// Store errors.
+pub fn stop_stands(
+    store: &Store,
+    meeting: EntityId,
+    run: &SummaryRun,
+) -> Result<bool, RuntimeError> {
+    let Some(id) = run.stopped else {
+        return Ok(false);
+    };
+    let Some(request) = store.summary_request(id)? else {
+        return Ok(true);
+    };
+    Ok(!crate::offload::summarised_since(store, &request)? && request.meeting_id == meeting)
 }
 
 // ---- readers ----

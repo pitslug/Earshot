@@ -37,7 +37,7 @@ const ITEM: MeetingListItem = {
   duration_ms: 60_000,
   state: "Ready",
   folder_id: null,
-  new_summary: false,
+  new_summary: false, summary_elsewhere: false,
 };
 
 /** The card a speaker row of role `role` shows (`detail::meeting_detail`): the user's row is Me,
@@ -102,7 +102,7 @@ function detailOf(c: Case): MeetingDetail {
     summary_stale_names: false,
     audio_kept: true,
     exported: false,
-    waiting_for: null,
+    waiting_for: null, waiting_device: null,
     summary_run: null,
     handovers: [],
     kept_local: null,

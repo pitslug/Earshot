@@ -95,6 +95,13 @@ pub enum JobEvent {
         /// The meeting's waiting line (fixed copy, `offload::waiting_copy`).
         message: String,
     },
+    /// A re-summary's step was left for the next one and recorded in the meeting's run record
+    /// (T14.66): the page reads the meeting again. Never a job's `last` event in the window, and
+    /// it holds the meeting id only.
+    SummaryRunChanged {
+        /// Meeting id.
+        meeting: String,
+    },
     /// Something the user may need to know while the job runs (a backend fallback).
     Warning {
         /// Meeting id.
@@ -172,6 +179,24 @@ pub trait JobWork: Send + Sync {
         let _ = start;
         self.summarise(services, meeting, cancel, warn)
             .map(JobSummary::from)
+    }
+
+    /// [`JobWork::summarise_run`], calling `changed` after each step left for the next is
+    /// recorded in the run record (T14.66). The default ignores it (test fakes).
+    ///
+    /// # Errors
+    /// As [`JobWork::summarise`].
+    fn summarise_run_reporting(
+        &self,
+        services: &Services,
+        meeting: EntityId,
+        start: &SummaryStart,
+        cancel: &CancelToken,
+        warn: &mut dyn FnMut(String),
+        changed: &mut dyn FnMut(),
+    ) -> Result<JobSummary, IpcError> {
+        let _ = changed;
+        self.summarise_run(services, meeting, start, cancel, warn)
     }
 }
 
@@ -578,14 +603,23 @@ fn run(
             });
         }
         JobKind::Resummarise => {
-            let result = inner
-                .work
-                .summarise_run(svc, meeting, start, cancel, &mut |message| {
+            let result = inner.work.summarise_run_reporting(
+                svc,
+                meeting,
+                start,
+                cancel,
+                &mut |message| {
                     sink(JobEvent::Warning {
                         meeting: id.clone(),
                         message,
                     });
-                });
+                },
+                &mut || {
+                    sink(JobEvent::SummaryRunChanged {
+                        meeting: id.clone(),
+                    });
+                },
+            );
             drop(lease);
             if let Some(message) = result
                 .as_ref()
@@ -694,6 +728,18 @@ impl JobWork for HostJobs {
         cancel: &CancelToken,
         warn: &mut dyn FnMut(String),
     ) -> Result<JobSummary, IpcError> {
+        self.summarise_run_reporting(svc, meeting, start, cancel, warn, &mut || {})
+    }
+
+    fn summarise_run_reporting(
+        &self,
+        svc: &Services,
+        meeting: EntityId,
+        start: &SummaryStart,
+        cancel: &CancelToken,
+        warn: &mut dyn FnMut(String),
+        changed: &mut dyn FnMut(),
+    ) -> Result<JobSummary, IpcError> {
         let models = earshot_runtime::host::model_dir(&svc.data);
         // The local summary model is in use until the job ends (T14.12).
         let _model_use = summary_model_use(svc, &models);
@@ -712,6 +758,7 @@ impl JobWork for HostJobs {
             (&*probes.keys, &*probes.claude, &*probes.codex),
             Some(&ask),
             warn,
+            changed,
         )
     }
 }
@@ -789,6 +836,7 @@ pub(crate) fn summarise_with(
         (keys, claude, codex),
         None,
         warn,
+        &mut || {},
     )
     .map(|s| s.result)
 }
@@ -828,9 +876,10 @@ pub(crate) fn summarise_run_with(
         &dyn Fn(earshot_core::identity::DeviceId) -> earshot_runtime::offload::OffloadChoice,
     >,
     warn: &mut dyn FnMut(String),
+    changed: &mut dyn FnMut(),
 ) -> Result<JobSummary, IpcError> {
     use earshot_runtime::host::SkipReason;
-    use earshot_runtime::summary_order::run::{RunPlan, RunStart, run_summary_order};
+    use earshot_runtime::summary_order::run::{RunPlan, RunStart, run_summary_order_reporting};
 
     // Cancelled during the setup: nothing is read, loaded or sent.
     if cancel.is_cancelled() {
@@ -858,7 +907,7 @@ pub(crate) fn summarise_run_with(
     };
     let (keys, claude, codex) = probes;
     let out = crate::summary_order::with_writers(models, keys, claude, codex, computers, |w| {
-        run_summary_order(
+        run_summary_order_reporting(
             svc,
             meeting,
             run_start,
@@ -868,6 +917,7 @@ pub(crate) fn summarise_run_with(
                 order: None,
             },
             cancel,
+            changed,
         )
     });
     // A continuation whose run no longer waits on the request: nothing was run or sent.

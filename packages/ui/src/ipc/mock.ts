@@ -70,7 +70,7 @@ import { createSentRecord } from "./mockSnapshot";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
 import { LIVE_NEEDS_LOCAL, NOT_A_WORD, type SummariesMockData, createSummariesMock } from "./mockSummaries";
 import { createSummaryOrderMock, liveAllowed } from "./mockSummaryOrder";
-import { ORDER_COPY, type StepChoice, isRemoteWriter } from "./summaryOrder";
+import { ORDER_COPY, type StepChoice, fillCopy, isRemoteWriter } from "./summaryOrder";
 import { type StorageMockData, createStorageMock } from "./mockStorage";
 import { type BenchmarkMockData, createBenchmarkMock } from "./mockBenchmark";
 import { type CudaMockData, createCudaMock } from "./mockCuda";
@@ -100,7 +100,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       duration_ms: 34 * MINUTE,
       state: "Processing",
       folder_id: null,
-      new_summary: false,
+      new_summary: false, summary_elsewhere: false,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000003",
@@ -110,7 +110,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       state: "Ready",
       folder_id: null,
       // An unread summary (T12.76).
-      new_summary: true,
+      new_summary: true, summary_elsewhere: false,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000002",
@@ -119,7 +119,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       duration_ms: 22 * MINUTE,
       state: "Ready",
       folder_id: SAMPLE_FOLDERS[1].id,
-      new_summary: false,
+      new_summary: false, summary_elsewhere: false,
     },
     {
       id: "0190f1a2-0000-7000-8000-000000000001",
@@ -128,7 +128,7 @@ export function sampleMeetings(now: number = SAMPLE_NOW): MeetingListItem[] {
       duration_ms: 95 * MINUTE,
       state: "Ready",
       folder_id: SAMPLE_FOLDERS[0].id,
-      new_summary: false,
+      new_summary: false, summary_elsewhere: false,
     },
   ];
 }
@@ -190,6 +190,9 @@ export const POST_STEP_MS = 400;
 /** How long after a meeting's summary was handed to another computer its summary arrives by
  * sync in the preview (T12.81). */
 export const MOCK_OFFLOAD_ANSWER_MS = 8_000;
+
+/** The computer a mock meeting waits for, by name (T14.66: the header's "being written on"). */
+export const MOCK_WAITING_DEVICE = "Invented desk";
 
 /** The refusals of a meeting deletion (T12.38): the UI's one copy of `deletion.rs`'s words. */
 export const MOCK_DELETE_COPY = DELETE_COPY;
@@ -477,6 +480,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const seenSummaries = new Map<string, string>();
   // Meetings asked of another computer, with their waiting line (T11.3db).
   const waitingFor = new Map<string, string>(Object.entries(data.waitingFor ?? {}));
+  // The computer each waiting meeting asked, by name (T14.66: the header's "being written on").
+  const waitingDevice = new Map<string, string>();
   // The window's sync subscriptions (T12.81): told when the other computer's summary arrives.
   const syncListeners = new Set<(event: SyncEvent) => void>();
   const { exportTarget, ...settingsMock } = createSettingsMock(
@@ -769,6 +774,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     }
     jobs.set(meeting, kind);
     jobTimers.set(meeting, []);
+    // A new run replaces the last run's account (T14.66: a stop's note goes with it).
+    if (kind === "Resummarising") summaryRuns.delete(meeting);
   };
   // A job's timer, cancelled with the job (T12.41).
   const jobTimer = (meeting: string, fn: () => void, ms: number) => {
@@ -881,11 +888,22 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     ...createCudaMock(data.machine ?? "surface", timer, data.cuda),
     ...createFirstRunMock(data.firstRun),
     ...syncMock,
+    // T14.66: Stop withdraws the request; the page's run note says so.
+    stopWaitingSummary: async (meeting) => {
+      if (!waitingFor.has(meeting)) return ORDER_COPY.stop.not_waiting;
+      waitingFor.delete(meeting);
+      const device = waitingDevice.get(meeting) ?? MOCK_WAITING_DEVICE;
+      waitingDevice.delete(meeting);
+      summaryRuns.set(meeting, fillCopy(ORDER_COPY.stopped_note, { device }));
+      return null;
+    },
     // T11.3db: a meeting asked of another computer shows that it waits.
     askSummaryHelper: async (meeting, device) => {
       const line = await syncMock.askSummaryHelper(meeting, device);
       // A named run: nothing follows if the computer does not answer (T12.81).
       waitingFor.set(meeting, `${line} ${OFFLOAD_COPY.if_no_answer.nothing}`);
+      const asked = (await syncMock.summaryHelpers()).helpers.find((h) => h.id === device);
+      if (asked?.name) waitingDevice.set(meeting, asked.name);
       return line;
     },
     ...foldersMock,
@@ -911,7 +929,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       storeFailure() ?? {
         meetings: [...meetings]
           .sort((a, b) => b.started_at_ms - a.started_at_ms || b.id.localeCompare(a.id))
-          .map((m) => ({ ...m })),
+          // T14.66: a summary being written on another computer, as the page shows it.
+          .map((m) => ({ ...m, summary_elsewhere: m.summary_elsewhere || waitingFor.has(m.id) })),
       },
     searchMeetings: async (query) =>
       searchSample(meetings, (row) => details.get(row.id) ?? sampleDetail(row), query),
@@ -929,7 +948,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         duration_ms: null,
         state: "Recording",
         folder_id: null,
-        new_summary: false,
+        new_summary: false, summary_elsewhere: false,
       };
       meetings.push(row);
       if (keepLocal) keptLocal.add(row.id);
@@ -1016,7 +1035,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
           waitingFor.set(row.id, `${result.message} ${OFFLOAD_COPY.if_no_answer.writes_here}`);
           update(row.id, (d) => ({ ...d, summary: null }));
           timer.setTimeout(() => {
-            if (!meetings.includes(row)) return;
+            // Stopped meanwhile (T14.66): the other computer stops writing.
+            if (!meetings.includes(row) || !waitingFor.has(row.id)) return;
             waitingFor.delete(row.id);
             details.delete(row.id);
             row.new_summary = true;
@@ -1165,6 +1185,9 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
         word_list,
         dictionary,
         waiting_for: waitingFor.get(meeting) ?? d.waiting_for,
+        waiting_device: waitingFor.has(meeting)
+          ? (waitingDevice.get(meeting) ?? MOCK_WAITING_DEVICE)
+          : d.waiting_device,
         summary_run: summaryRuns.get(meeting) ?? d.summary_run,
         state: row?.state ?? d.state,
         header: { ...d.header, title: row?.title ?? d.header.title },
