@@ -626,6 +626,60 @@ fn export_golden_with_only_the_users_actions() {
     assert_snapshot("all_mine", &r.to_file());
 }
 
+/// Every Markdown heading line of a rendered region, in order (callout lines are not headings).
+fn heading_lines(region: &str) -> Vec<&str> {
+    region.lines().filter(|l| l.starts_with('#')).collect()
+}
+
+#[test]
+fn export_heading_levels_follow_the_summary_tab() {
+    // T14.70: TL;DR, Decisions, Action items and Notes at one level, each topic under Notes
+    // one level down, as the Summary tab shows them.
+    let mut f = fixture();
+    f.summary.enhanced_notes.push(NoteSection {
+        heading: "Venue".into(),
+        bullets: vec![NoteBullet {
+            text: "The hall is booked until noon".into(),
+            source_segment_ids: vec![],
+        }],
+    });
+    let r = render(&input(&f), &opts()).unwrap();
+    assert_eq!(
+        heading_lines(&r.region),
+        [
+            "## TL;DR",
+            "## Decisions",
+            "## Action items",
+            "## Notes",
+            "### Budget",
+            "### Venue",
+            "## Open questions",
+            "## My notes",
+        ],
+        "{}",
+        r.region
+    );
+}
+
+#[test]
+fn export_without_topic_sections_has_no_notes_heading() {
+    let mut f = fixture();
+    f.summary.enhanced_notes.clear();
+    let r = render(&input(&f), &opts()).unwrap();
+    assert_eq!(
+        heading_lines(&r.region),
+        [
+            "## TL;DR",
+            "## Decisions",
+            "## Action items",
+            "## Open questions",
+            "## My notes",
+        ],
+        "{}",
+        r.region
+    );
+}
+
 #[test]
 fn export_region_follows_the_meeting_page_order() {
     let f = fixture();

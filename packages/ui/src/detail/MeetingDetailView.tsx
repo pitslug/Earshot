@@ -11,6 +11,7 @@ import {
   type ButtonProps,
   Caption1,
   CounterBadge,
+  Divider,
   Input,
   Label,
   Link,
@@ -357,6 +358,16 @@ const useStyles = makeStyles({
   },
   sectionHeading: {
     margin: 0,
+  },
+  // The "Notes" section (T14.70): its heading, then each topic with its sub-heading.
+  notes: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalS,
+  },
+  // The thin line above "Notes": the main column's own gap keeps it apart from both sides.
+  notesDivider: {
+    flexGrow: 0,
   },
   list: {
     margin: 0,
@@ -1976,34 +1987,48 @@ function SummaryBody({
           ) : (
             actionList("Actions", groups.all, "owners", false)
           )}
-          <Caption1 className={styles.muted}>Tick actions in the Obsidian note.</Caption1>
         </div>
       )}
-      {summary.notes.map((n, i) => (
-        <div className={styles.section} key={`notes-${i}`}>
-          <Subtitle2 as="h2" className={styles.sectionHeading}>
-            <Editable fields={edit({ kind: "NoteHeading", section: i }, `heading ${n.heading}`, n.heading)}>
-              {n.heading}
-            </Editable>
-          </Subtitle2>
-          <ul className={styles.list}>
-            {n.bullets.map((b, j) => (
-              <li key={j}>
-                <Editable
-                  fields={edit(
-                    { kind: "NoteBullet", section: i, bullet: j },
-                    `note ${j + 1} under ${n.heading}`,
-                    b.text,
-                  )}
-                >
-                  <Body1>{b.text}</Body1>
-                  <Citations citations={b.citations} onCite={onCite} />
-                </Editable>
-              </li>
+      {/* The topic sections (T14.70): under one "Notes" heading after a thin divider, each a
+          sub-heading like "My actions"; no Notes heading when there is no topic. The Obsidian
+          note follows ("## Notes", each topic "###"). */}
+      {summary.notes.length > 0 && (
+        <>
+          <Divider className={styles.notesDivider} />
+          <div className={styles.notes}>
+            <Subtitle2 as="h2" className={styles.sectionHeading}>
+              Notes
+            </Subtitle2>
+            {summary.notes.map((n, i) => (
+              <div className={styles.actionGroup} key={`notes-${i}`}>
+                <Body1Strong as="h3" className={styles.sectionHeading}>
+                  <Editable
+                    fields={edit({ kind: "NoteHeading", section: i }, `heading ${n.heading}`, n.heading)}
+                  >
+                    {n.heading}
+                  </Editable>
+                </Body1Strong>
+                <ul className={styles.list}>
+                  {n.bullets.map((b, j) => (
+                    <li key={j}>
+                      <Editable
+                        fields={edit(
+                          { kind: "NoteBullet", section: i, bullet: j },
+                          `note ${j + 1} under ${n.heading}`,
+                          b.text,
+                        )}
+                      >
+                        <Body1>{b.text}</Body1>
+                        <Citations citations={b.citations} onCite={onCite} />
+                      </Editable>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
-        </div>
-      ))}
+          </div>
+        </>
+      )}
       {summary.open_questions.length > 0 && (
         <div className={styles.section}>
           <Subtitle2 as="h2" className={styles.sectionHeading}>
