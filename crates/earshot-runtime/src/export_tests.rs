@@ -344,3 +344,132 @@ fn export_all_leaves_the_store_free_during_its_vault_walk() {
     // Fingerprints were recorded after the writes: nothing is changed now.
     assert!(export_changed(&svc, &vault, 33).is_empty());
 }
+
+// ---- T14.61: the note's action groups follow the meeting page ----
+
+#[derive(serde::Deserialize)]
+struct OwnerCases {
+    cases: Vec<OwnerCase>,
+}
+
+#[derive(serde::Deserialize)]
+struct OwnerCase {
+    note: String,
+    owner: String,
+    /// `None`: no user name set.
+    user: Option<String>,
+    group: String,
+    shown: Vec<String>,
+}
+
+/// `fixtures/ui/action_owner_cases.json`, which the meeting page's tests read too.
+#[test]
+fn export_action_owners_match_the_shared_cases() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/ui/action_owner_cases.json");
+    let cases: OwnerCases = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert!(cases.cases.len() >= 6);
+    for c in &cases.cases {
+        let (group, shown) =
+            earshot_core::export::owner_group(&c.owner, note_user(c.user.as_deref()));
+        let group = match group {
+            earshot_core::export::OwnerGroup::Mine => "mine",
+            earshot_core::export::OwnerGroup::Other => "others",
+            earshot_core::export::OwnerGroup::NoGroups => "single",
+        };
+        let want: Vec<&str> = c.shown.iter().map(String::as_str).collect();
+        assert_eq!((group, shown), (c.group.as_str(), want), "{}", c.note);
+    }
+}
+
+#[test]
+fn export_note_user_is_none_for_the_default_or_a_blank_name() {
+    assert!(note_user(None).is_none());
+    assert!(note_user(Some("Me")).is_none());
+    // The default in any case or spacing, as the meeting page compares it.
+    assert!(note_user(Some("me")).is_none());
+    assert!(note_user(Some(" ME ")).is_none());
+    assert!(crate::edit::is_set_user_name("Mei"));
+    assert!(!crate::edit::is_set_user_name("mE"));
+    assert!(note_user(Some("  ")).is_none());
+    assert_eq!(
+        note_user(Some(" Casey Lane ")).map(|u| u.name),
+        Some("Casey Lane")
+    );
+}
+
+#[test]
+fn export_note_groups_actions_once_the_user_has_a_name() {
+    let dir = TempDir::new("export");
+    let (svc, _) = services(&dir);
+    let vault = vault(&dir);
+    let id = meeting(&svc, "Planning", 30);
+    let svc_clock = std::sync::Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(31);
+    let item = |owner: &str, task: &str| earshot_core::summary::ActionItem {
+        owner: owner.into(),
+        task: task.into(),
+        due: None,
+        source_segment_ids: vec![],
+    };
+    {
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        let mut stamp = Stamp {
+            clock: &*svc_clock,
+            hlc,
+            rng: &mut rng,
+        };
+        let summary = earshot_core::summary::SummaryV1 {
+            title: "Planning".into(),
+            tldr: "Planned.".into(),
+            enhanced_notes: vec![],
+            decisions: vec![],
+            action_items: vec![
+                item("Zoë Brontë and casey lane", "Book the room"),
+                item("Robin Vale", "Send the slides"),
+            ],
+            open_questions: vec![],
+            topics: vec![],
+        };
+        let row = earshot_core::model::Summary::new(
+            id,
+            earshot_core::prompt::Template::General,
+            Some("m".into()),
+            summary,
+            &mut stamp,
+        );
+        store.put_summary(row).unwrap();
+    }
+    let note = |seed| {
+        export_meeting(
+            &svc,
+            &vault,
+            id,
+            &ExportOptions::default(),
+            &mut ChaCha8Rng::seed_from_u64(seed),
+        )
+        .unwrap();
+        let file = notes_in(&vault).remove(0);
+        std::fs::read_to_string(vault.join("Meetings").join(file)).unwrap()
+    };
+    // No name yet: one list, owners at the end.
+    let before = note(1);
+    assert!(
+        before.contains(
+            "## Action items\n\n- [ ] Book the room (Zoë Brontë, casey lane)\n\
+             - [ ] Send the slides (Robin Vale)\n"
+        ),
+        "{before}"
+    );
+    // The user's name, matched as the meeting page matches it; the batch export agrees.
+    crate::my_voice::set_my_name(&svc, "Casey Lane").unwrap();
+    let after = note(2);
+    let groups = "## Action items\n\n### My actions\n\n- [ ] Book the room (with Zoë Brontë)\n\n\
+                  ### Other actions\n\n- [ ] Send the slides (Robin Vale)\n";
+    assert!(after.contains(groups), "{after}");
+    assert!(
+        export_changed(&svc, &vault, 3).is_empty(),
+        "the batch renders the same note"
+    );
+}

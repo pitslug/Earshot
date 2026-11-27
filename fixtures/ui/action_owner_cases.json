@@ -69,6 +69,34 @@
       "user": null,
       "group": "single",
       "shown": ["Casey", "Robin Vale"]
+    },
+    {
+      "note": "All three separators in one owner, the user last and in lower case.",
+      "owner": "Robin Vale & Zoë Brontë and casey",
+      "user": "Casey",
+      "group": "mine",
+      "shown": ["Robin Vale", "Zoë Brontë"]
+    },
+    {
+      "note": "Spellings that differ by case, spacing or accents are one name, the first spelling shown.",
+      "owner": "Robin Vale, robin  vale, Zoe Bronte, Zoë Brontë",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["Robin Vale", "Zoe Bronte"]
+    },
+    {
+      "note": "Padding around names and an empty piece between separators are dropped.",
+      "owner": " Robin Vale ,  and Tamsin Ode",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["Robin Vale", "Tamsin Ode"]
+    },
+    {
+      "note": "A group word stays whole, trimmed, in any case.",
+      "owner": "  ALL ",
+      "user": "Casey",
+      "group": "others",
+      "shown": ["ALL"]
     }
   ]
 }

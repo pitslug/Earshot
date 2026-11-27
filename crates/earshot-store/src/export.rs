@@ -1283,6 +1283,7 @@ mod tests {
                     notes: &[],
                     summary: None,
                     unknown_speaker_lines: &[],
+                    user: None,
                 },
                 &ExportOptions::default(),
             )
@@ -1527,6 +1528,7 @@ mod tests {
                 notes: &[],
                 summary: None,
                 unknown_speaker_lines: &[],
+                user: None,
             },
             &ExportOptions::default(),
         )
@@ -2252,6 +2254,7 @@ mod tests {
                 notes: &[],
                 summary: None,
                 unknown_speaker_lines: &[],
+                user: None,
             },
             &ExportOptions::default(),
         )

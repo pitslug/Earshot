@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use earshot_core::asr::Segment;
 use earshot_core::export::{
-    BEGIN_MARKER, END_MARKER, ExportInput, ExportOptions, RenderedExport, render,
+    BEGIN_MARKER, END_MARKER, ExportInput, ExportOptions, ExportUser, RenderedExport, render,
 };
 use earshot_core::identity::{DeviceId, ManualClock};
 use earshot_core::model::{ExportRepo, Meeting, MeetingRepo, Note, Speaker, TranscriptPass};
@@ -73,6 +73,19 @@ pub struct CaseInput {
     summary: Option<SummaryV1>,
     /// Which pass the segments are (`"final"`, `"live"`) or null without a transcript.
     transcript: Option<TranscriptPass>,
+    /// The user's name as the meeting shows it (T14.61), absent without one.
+    #[serde(default)]
+    user_name: Option<String>,
+}
+
+/// The name key for a case's user. xtask does not depend on earshot-runtime, whose
+/// `edit::person_name_key` the app passes (it also folds diacritics); the cases' owners
+/// equal the user's name but for case and white space, so this stand-in groups them alike.
+fn case_name_key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// One golden case.
@@ -105,6 +118,10 @@ impl ExportCase {
                 summary: i.summary.as_ref(),
                 transcript: i.transcript,
                 unknown_speaker_lines: &[],
+                user: i.user_name.as_deref().map(|name| ExportUser {
+                    name,
+                    key: case_name_key,
+                }),
             },
             &o,
         )

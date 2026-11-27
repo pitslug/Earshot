@@ -79,6 +79,7 @@ impl World {
                 notes: &[],
                 summary: Some(&summary),
                 unknown_speaker_lines: &[],
+                user: None,
             },
             &ExportOptions::default(),
         )

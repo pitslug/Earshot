@@ -61,6 +61,161 @@ pub struct ExportInput<'a> {
     /// [`crate::diar::UNKNOWN_SPEAKER`]. Any other segment without a speaker name is
     /// "Unknown", as before.
     pub unknown_speaker_lines: &'a [EntityId],
+    /// The user, once they have given a name (T14.61): action items they own are listed
+    /// under "My actions". `None` without a name.
+    pub user: Option<ExportUser<'a>>,
+}
+
+/// The user as the note's action groups know them (T14.61).
+#[derive(Debug, Clone, Copy)]
+pub struct ExportUser<'a> {
+    /// The user's name: in the app the `is_me` person's name, never the default "Me".
+    pub name: &'a str,
+    /// How names are compared: an owner is the user when `key(owner) == key(name)`. The app
+    /// passes the runtime's `edit::person_name_key`, the rule the meeting page uses, so page
+    /// and note group alike; core has no copy of it.
+    pub key: fn(&str) -> String,
+}
+
+impl ExportUser<'_> {
+    /// Whether an action item's `owner` names the user.
+    #[must_use]
+    pub fn owns(&self, owner: &str) -> bool {
+        let user = (self.key)(self.name);
+        !user.trim().is_empty() && (self.key)(owner) == user
+    }
+}
+
+/// A name as one line's owners are told apart, and as the merge compares old and new
+/// owners: white space trimmed and collapsed, lower case. Not the user rule
+/// ([`ExportUser::key`]).
+pub(super) fn name_key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Owners that name no one person, lower case (T14.60: `GROUP_OWNERS` in
+/// `packages/ui/src/detail/actionGroups.ts`, changed together).
+pub const GROUP_OWNERS: [&str; 3] = ["everyone", "all", "team"];
+
+/// The names in an action item's owner text (the meeting page's rule, T14.60, pinned by
+/// `fixtures/ui/action_owner_cases.json`): split on ", ", " and " and " & ", each trimmed,
+/// empty ones dropped. An owner that is one of [`GROUP_OWNERS`] (any case) names no one
+/// person and stays whole, as written (the UI's `GROUP_OWNERS`).
+#[must_use]
+pub fn owner_names(owner: &str) -> Vec<&str> {
+    let whole = owner.trim();
+    if GROUP_OWNERS.contains(&whole.to_lowercase().as_str()) {
+        return vec![whole];
+    }
+    let mut names = vec![whole];
+    for sep in [", ", " and ", " & "] {
+        names = names.into_iter().flat_map(|n| n.split(sep)).collect();
+    }
+    names
+        .into_iter()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// Which group one action item's `owner` text puts it in, and the names shown on its line
+/// (T14.61, the meeting page's rule): with a user who is among the names, "My actions" and
+/// the other names (shown as "(with ...)"); with a user who is not, "Other actions" and every
+/// name; without a user, no groups and every name. Names the key makes equal are one name,
+/// first spelling shown (without a user, told apart by white space and case only).
+#[must_use]
+pub fn owner_group<'o>(owner: &'o str, user: Option<ExportUser<'_>>) -> (OwnerGroup, Vec<&'o str>) {
+    let key = |s: &str| user.map_or_else(|| name_key(s), |u| (u.key)(s));
+    let mut names: Vec<&str> = Vec::new();
+    for n in owner_names(owner) {
+        if !names.iter().any(|o| key(o) == key(n)) {
+            names.push(n);
+        }
+    }
+    let Some(user) = user.filter(|u| !(u.key)(u.name).trim().is_empty()) else {
+        return (OwnerGroup::NoGroups, names);
+    };
+    if names.iter().any(|n| user.owns(n)) {
+        names.retain(|n| !user.owns(n));
+        (OwnerGroup::Mine, names)
+    } else {
+        (OwnerGroup::Other, names)
+    }
+}
+
+/// An action item's group in the note ([`owner_group`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerGroup {
+    /// "### My actions".
+    Mine,
+    /// "### Other actions".
+    Other,
+    /// No user name: one list.
+    NoGroups,
+}
+
+/// One action-item line: items with the same task text, due date and citations, owners in
+/// summary order.
+struct ActionLine<'a> {
+    task: &'a str,
+    due: Option<&'a str>,
+    owners: Vec<&'a str>,
+    mine: bool,
+}
+
+/// The action items as lines (T14.61), with the meeting page's rules (T14.60): items with
+/// the same task text, due date and citations are one line, with each owner once (told
+/// apart by `name_key`, written trimmed as first given); a line is the user's when any of
+/// its owners is the user. Lines are in meeting order: by each line's earliest cited
+/// segment (its place in `segments`, which are in meeting order), a stable sort, and lines
+/// citing no segment of the transcript last, in summary order.
+fn action_lines<'a>(
+    sum: &'a SummaryV1,
+    segments: &[Segment],
+    user: Option<ExportUser<'_>>,
+) -> Vec<ActionLine<'a>> {
+    let mut lines: Vec<(ActionLine<'a>, &'a [EntityId])> = Vec::new();
+    let key = |s: &str| user.map_or_else(|| name_key(s), |u| (u.key)(s));
+    for a in &sum.action_items {
+        let names = owner_names(&a.owner);
+        let due = a.due.as_deref().filter(|d| !d.trim().is_empty());
+        let mine = user.is_some_and(|u| names.iter().any(|n| u.owns(n)));
+        let at = lines.iter().position(|(l, ids)| {
+            l.task == a.task && l.due == due && *ids == a.source_segment_ids.as_slice()
+        });
+        let i = at.unwrap_or_else(|| {
+            lines.push((
+                ActionLine {
+                    task: &a.task,
+                    due,
+                    owners: Vec::new(),
+                    mine: false,
+                },
+                &a.source_segment_ids,
+            ));
+            lines.len() - 1
+        });
+        let l = &mut lines[i].0;
+        for n in names {
+            if !l.owners.iter().any(|o| key(o) == key(n)) {
+                l.owners.push(n);
+            }
+        }
+        l.mine |= mine;
+    }
+    let place: BTreeMap<EntityId, usize> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.id, i))
+        .rev()
+        .collect();
+    let first_cited = |ids: &[EntityId]| ids.iter().filter_map(|id| place.get(id)).min().copied();
+    // `sort_by_key` is stable; `None` (nothing cited) sorts after every `Some`.
+    lines.sort_by_key(|(_, ids)| first_cited(ids).map_or((1, 0), |i| (0, i)));
+    lines.into_iter().map(|(l, _)| l).collect()
 }
 
 /// A rendered note.
@@ -75,6 +230,25 @@ pub struct RenderedExport {
     pub tags: Vec<String>,
     /// The managed region, from [`BEGIN_MARKER`] to [`END_MARKER`] and a final `\n`.
     pub region: String,
+    /// The action-item lines of `region`, in order, as the render built them (T14.61): what
+    /// the merge needs to carry a tick to the same action in another form.
+    pub actions: Vec<RenderedAction>,
+}
+
+/// One action-item line of a rendered region (T14.61). All text is as written (generated
+/// text escaped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedAction {
+    /// The line's text after `- [ ] `.
+    pub text: String,
+    /// The task and its " (due: ...)", without owners.
+    pub task: String,
+    /// Under "### My actions".
+    pub mine: bool,
+    /// Every owner name, the user's included.
+    pub owners: Vec<String>,
+    /// The names shown after "with" on a line of the user's own; empty otherwise.
+    pub others: Vec<String>,
 }
 
 impl RenderedExport {
@@ -211,16 +385,92 @@ pub fn render(
         );
     }
 
+    let (region, actions) = region(input, opts);
     Ok(RenderedExport {
         path,
         frontmatter,
         tags,
-        region: region(input, opts),
+        region,
+        actions,
     })
 }
 
-/// The managed region.
-fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
+/// The line an empty action group holds (fixed text, not a task line, so the merge never
+/// reads or matches it).
+const EMPTY_GROUP: &str = "_None_\n";
+
+/// The "## Action items" section (T14.61), as the meeting page lists them: with a user
+/// name, "### My actions" (the user's own, no owner; one the user shares ends
+/// "(with <others>)") then "### Other actions" (each line ends "(<owners>)"), each in
+/// meeting order, both always written and an empty one holding [`EMPTY_GROUP`]; without
+/// one, a single list with the owners at the end of each line. A due date stays
+/// "(due: ...)" before the owners. Every piece of generated text goes through `gen_text` on
+/// its own.
+fn action_items(
+    sum: &SummaryV1,
+    segments: &[Segment],
+    user: Option<ExportUser<'_>>,
+    gen_text: &dyn Fn(&str) -> String,
+) -> (String, Vec<RenderedAction>) {
+    let user = user.filter(|u| !(u.key)(u.name).trim().is_empty());
+    let lines = action_lines(sum, segments, user);
+    let mut actions = Vec::new();
+    let mut line = |l: &ActionLine<'_>, shown: &[&str], mine: bool| {
+        let mut task = gen_text(l.task);
+        if let Some(due) = l.due {
+            let _ = write!(task, " (due: {})", gen_text(due));
+        }
+        let names: Vec<String> = shown.iter().map(|o| gen_text(o)).collect();
+        let mut text = task.clone();
+        if !names.is_empty() {
+            let _ = write!(
+                text,
+                " ({}{})",
+                if mine { "with " } else { "" },
+                names.join(", ")
+            );
+        }
+        let s = format!("- [ ] {text}\n");
+        actions.push(RenderedAction {
+            text,
+            task,
+            mine,
+            owners: l.owners.iter().map(|o| gen_text(o)).collect(),
+            others: if mine { names } else { Vec::new() },
+        });
+        s
+    };
+    let mut s = String::from("## Action items\n\n");
+    let Some(user) = user else {
+        for l in &lines {
+            s.push_str(&line(l, &l.owners, false));
+        }
+        return (s, actions);
+    };
+    let mine: Vec<&ActionLine<'_>> = lines.iter().filter(|l| l.mine).collect();
+    let other: Vec<&ActionLine<'_>> = lines.iter().filter(|l| !l.mine).collect();
+    // Both groups always (the owner, 2026-11-27): an empty one says so, so its absence never
+    // looks like a fault, and the merge can tell a deleted heading from an empty group.
+    s.push_str("### My actions\n\n");
+    if mine.is_empty() {
+        s.push_str(EMPTY_GROUP);
+    }
+    for l in &mine {
+        let others: Vec<&str> = l.owners.iter().copied().filter(|o| !user.owns(o)).collect();
+        s.push_str(&line(l, &others, true));
+    }
+    s.push_str("\n### Other actions\n\n");
+    if other.is_empty() {
+        s.push_str(EMPTY_GROUP);
+    }
+    for l in &other {
+        s.push_str(&line(l, &l.owners, false));
+    }
+    (s, actions)
+}
+
+/// The managed region and its action-item lines.
+fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> (String, Vec<RenderedAction>) {
     // Generated text: one line, em dashes per the option, no markers, images, embeds or
     // HTML.
     let gen_text = |s: &str| {
@@ -232,21 +482,13 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
         }
     };
     let mut sections: Vec<String> = Vec::new();
+    let mut actions = Vec::new();
 
     if let Some(sum) = input.summary {
         if !sum.tldr.trim().is_empty() {
             sections.push(format!("## TL;DR\n\n{}\n", gen_text(&sum.tldr)));
         }
-        if !sum.enhanced_notes.is_empty() {
-            let mut s = String::from("## Notes\n");
-            for sec in &sum.enhanced_notes {
-                let _ = write!(s, "\n### {}\n\n", gen_text(&sec.heading));
-                for b in &sec.bullets {
-                    let _ = writeln!(s, "- {}", gen_text(&b.text));
-                }
-            }
-            sections.push(s);
-        }
+        // The meeting page's order (T14.61): decisions and actions before the note sections.
         if !sum.decisions.is_empty() {
             let mut s = String::from("## Decisions\n\n");
             for dcs in &sum.decisions {
@@ -255,13 +497,17 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
             sections.push(s);
         }
         if !sum.action_items.is_empty() {
-            let mut s = String::from("## Action items\n\n");
-            for a in &sum.action_items {
-                let _ = write!(s, "- [ ] **{}**: {}", gen_text(&a.owner), gen_text(&a.task));
-                if let Some(due) = a.due.as_deref().filter(|d| !d.trim().is_empty()) {
-                    let _ = write!(s, " (due: {})", gen_text(due));
+            let (s, a) = action_items(sum, input.segments, input.user, &gen_text);
+            sections.push(s);
+            actions = a;
+        }
+        if !sum.enhanced_notes.is_empty() {
+            let mut s = String::from("## Notes\n");
+            for sec in &sum.enhanced_notes {
+                let _ = write!(s, "\n### {}\n\n", gen_text(&sec.heading));
+                for b in &sec.bullets {
+                    let _ = writeln!(s, "- {}", gen_text(&b.text));
                 }
-                s.push('\n');
             }
             sections.push(s);
         }
@@ -326,5 +572,5 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
     out.push_str(&sections.join("\n"));
     out.push_str(END_MARKER);
     out.push('\n');
-    out
+    (out, actions)
 }
