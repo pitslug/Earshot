@@ -310,7 +310,7 @@ Recording a meeting is never blocked.
 - **Requests.** Read with a new `GuardedRead::summary_requests_or_damaged()`, built like `summaries_or_damaged`. It keeps open requests that I asked, `authored` and not deleted, and counts the damaged rows.
 - **Summaries.** Then one `summaries_or_damaged(meeting)` per meeting in that set, which is usually none or one, to apply `summarised_since`.
 - **When it is read.** Once in `ipc::meeting_list`, inside `Services::live_meetings`' single lock, with the first meeting, as the folders are. There is no loop over every meeting.
-- **Damage.** Damaged rows count as "no meeting waits" for them, and their number is added to the list's existing `damage::report(Scope::MeetingsAndFolders, ..)`.
+- **Damage.** Damaged rows count as "no meeting waits" for them. Their number is reported against `damage::Scope::Total` in its own `damage::report` call, never added to `MeetingsAndFolders`: that figure counts only meeting and folder rows, so request and summary rows would make every list read ask for a scan (round 2, A1).
 - **Errors.** A store error from these reads also gives an empty set: the list's own reads surface a real store failure. It never fails the list.
 
 **Display.**
@@ -595,3 +595,34 @@ So the comment is wrong, but it is not what kept the banners. Narrowing it alone
    - **Hide:** a Summary-tab banner that is success or info, offers only Dismiss and is not progress hides after `BANNER_HIDE_MS`.
    - **Stay:** its notes (out of date, stale names, run note, kept-local, waiting for another computer), every warning and error, and every banner with an action.
 3. **Tests.** On the Summary tab, "New summary ready." and "Exported to" hide after the delay under the repro's condition. Controls: each kept note stays (the stale bar, the run note, kept-local, waiting), and the existing tests are kept.
+
+### 11.15 Spec review round 2 (CLEAR, advisories folded)
+
+These rules join, and where they differ override, the sections above.
+
+1. **11.4: damage figure and scan roots.**
+   - The list's damaged request and summary rows go to `Scope::Total`.
+   - A test checks that a second list read after the scan asks for none.
+   - `meetings_waiting_shown` joins `ROOTS` in `sync_damaged_scan.rs`, the reader list of sync-spec 16.3, and the table of 17.3.
+2. **11.2: the `stopped` field and the summarised-since case.**
+   - `SummaryRun::stopped` is `skip_serializing_if = "Option::is_none"`, so a record that is not stopped serialises byte for byte as today's (test 8 pins it).
+   - In step 2, an open request with `summarised_since` is also withdrawn, in the same transaction. A summary written by a third device must not leave the helper writing with no Stop. The answer is still `AlreadyWritten`.
+3. **11.5: the per-move write.**
+   - "Now trying" names `next_step(cursor)`, the first step at or after the cursor with no outcome, and the write carries the advanced cursor.
+   - `put_own` returning `Ok(false)` means the record was replaced, and stops the run as `ask_for_run`'s `Conflict` does.
+   - A store error on this write, which only records the account, is ignored, as handover-record failures are: it never costs the summary.
+   - Test 19 covers all three, with a kept-local run in its control.
+4. **11.8: the title's flex basis and the measuring key.**
+   - The title's `flexBasis` is the computed reserve, set as an inline style and floored at 240 px.
+   - The measuring key includes the title text and whether the title editor shows.
+   - Test 25 gains a short title in the icon band.
+5. **11.3: the `Writing` registry.**
+   - `writing()` and `cancel_writing()` are required trait methods, with no default bodies.
+   - `Writing`'s lock is a leaf: a failed spawn's `decline` runs after the lock is released.
+   - Hosts hold an `Arc<Writing>`.
+   - A test pins the order: no store lock is taken under `Writing`'s lock.
+6. **11.5: AppShell and `JobEvent::SummaryRunChanged`.** AppShell never stores the event as a job's `last` and never bumps `seq`; it only triggers the detail refresh. A test checks that a warning on the job bar survives a move.
+7. **11.2: `tick_now` after a failed attempt.** It leaves `failures` and the time of the next regular tick unchanged. Test 9 checks it.
+8. **11.13: two kind fixes.**
+   - `ChildEnd::LoadRefused` maps to `Other` unless the child sent a kind word, never to WrongBackend.
+   - `Run(Model(ContextTooSmall))` maps to TooLong.
