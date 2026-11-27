@@ -123,7 +123,9 @@ describe("Settings, People, people", () => {
     await s.user.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Remove Bo Example" })).toBeNull());
     expect((await s.ipc.listPersons()).persons.some((p) => p.id === "b")).toBe(false);
-    expect(screen.getByRole("button", { name: "Remove Alex Sample" })).toBeTruthy();
+    // Right after a Fluent Dialog closes, tabster's deferred aria-hidden pass can hide the page
+    // briefly (AGENTS.md): wait for the role query rather than read it at once.
+    expect(await screen.findByRole("button", { name: "Remove Alex Sample" })).toBeTruthy();
   });
 
   it("says in fixed copy when damaged rows were left out or left as they are (T14.57)", async () => {
