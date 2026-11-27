@@ -1366,6 +1366,154 @@ fn export_merge_carries_ticks_across_a_user_name_change_or_loses_them() {
     assert!(!merged.contains("- [x]"), "{merged}");
 }
 
+/// `doc` re-merged with its action items replaced by `old` (lines after "## Action items").
+fn merged_from(r: &RenderedExport, old: &str) -> String {
+    let doc = r.to_file();
+    merge(
+        &with_old_actions(&doc, &r.region, &format!("## Action items\n\n{old}")),
+        r,
+    )
+    .unwrap()
+}
+
+fn render_items(items: Vec<ActionItem>, user: Option<ExportUser<'static>>) -> RenderedExport {
+    let mut f = fixture();
+    f.summary.action_items = items;
+    let mut i = input(&f);
+    i.user = user;
+    render(&i, &opts()).unwrap()
+}
+
+#[test]
+fn export_merge_appended_text_never_hides_an_owner_list() {
+    // An ownerless item in the one list, and Ada's longer item, ticked.
+    let r = render_items(vec![item("", "Send numbers", None, 21)], None);
+    assert!(r.region.contains("- [ ] Send numbers\n"), "{}", r.region);
+    let merged = merged_from(&r, "- [x] Send numbers tomorrow (Ada Lovelace)\n");
+    assert!(!merged.contains("- [x]"), "{merged}");
+    // The control: a plugin's date with no owner group still carries.
+    let merged = merged_from(&r, "- [x] Send numbers \u{2705} 2026-11-20\n");
+    assert!(merged.contains("- [x] Send numbers\n"), "{merged}");
+
+    // The user's own "Book", and the user's longer item shared with Ada, ticked.
+    let r = render_items(vec![item("Casey Lane", "Book", None, 20)], Some(casey()));
+    let merged = merged_from(
+        &r,
+        "### My actions\n\n- [x] Book the room (with Ada Lovelace)\n",
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
+    let merged = merged_from(&r, "### My actions\n\n- [x] Book \u{2705} 2026-11-20\n");
+    assert!(merged.contains("- [x] Book\n"), "{merged}");
+
+    // A Tasks plugin date after an owner group: another owner set, never moved.
+    let r = render_items(
+        vec![item("Casey Lane", "Send numbers", None, 21)],
+        Some(casey()),
+    );
+    let merged = merged_from(
+        &r,
+        "### My actions\n\n- [x] Send numbers (with Ada Lovelace) \u{2705} 2026-11-20\n",
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
+    // The control: the same owner set with the date after it carries.
+    let r = render_items(
+        vec![item("Ada Lovelace", "Send numbers", None, 21)],
+        Some(casey()),
+    );
+    let merged = merged_from(
+        &r,
+        "### Other actions\n\n- [x] Send numbers (Ada Lovelace) \u{2705} 2026-11-20\n",
+    );
+    assert!(
+        merged.contains("- [x] Send numbers (Ada Lovelace)\n"),
+        "{merged}"
+    );
+}
+
+#[test]
+fn export_merge_takes_old_owner_lines_only_when_together_they_name_every_owner() {
+    let r = render_items(
+        vec![
+            item("Casey Lane", "Draft the plan", None, 22),
+            item("Ada Lovelace", "Draft the plan", None, 22),
+        ],
+        Some(casey()),
+    );
+    assert!(
+        r.region
+            .contains("- [ ] Draft the plan (with Ada Lovelace)\n"),
+        "{}",
+        r.region
+    );
+    // Ada's line alone names {Ada}, not {Ada, the user}.
+    let merged = merged_from(&r, "- [x] **Ada Lovelace**: Draft the plan\n");
+    assert!(!merged.contains("- [x]"), "{merged}");
+    // The control: both owners' lines, one ticked.
+    let merged = merged_from(
+        &r,
+        "- [x] **Ada Lovelace**: Draft the plan\n- [ ] **Casey Lane**: Draft the plan\n",
+    );
+    assert!(
+        merged.contains("- [x] Draft the plan (with Ada Lovelace)\n"),
+        "{merged}"
+    );
+}
+
+#[test]
+fn export_merge_reads_one_list_lines_as_one_list_only_without_subheadings() {
+    let r = render_items(
+        vec![
+            item("Casey Lane", "Book the room", None, 20),
+            item("Ada Lovelace", "Send numbers", None, 21),
+        ],
+        Some(casey()),
+    );
+    // "### My actions" deleted: its lines now sit above "### Other actions" and could be
+    // anyone's, so nothing carries from them.
+    for old in [
+        "- [x] Book the room\n\n### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n",
+        "- [x] Send numbers (Ada Lovelace)\n\n### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n",
+    ] {
+        let merged = merged_from(&r, old);
+        assert!(!merged.contains("- [x]"), "{old:?}: {merged}");
+    }
+    // Both deleted: a one list again. An owner list carries; a line with none is not the
+    // user's own.
+    let merged = merged_from(
+        &r,
+        "- [x] Book the room\n- [x] Send numbers (Ada Lovelace)\n",
+    );
+    assert!(
+        merged.contains("- [x] Send numbers (Ada Lovelace)\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+}
+
+#[test]
+fn export_merge_carries_nothing_by_owners_when_the_action_list_disagrees() {
+    let r = render_items(
+        vec![
+            item("Casey Lane", "Book the room", None, 20),
+            item("Ada Lovelace", "Send numbers", None, 21),
+        ],
+        Some(casey()),
+    );
+    let old = "- [x] **Casey Lane**: Book the room\n- [ ] **Ada Lovelace**: Send numbers\n";
+    // The control: with the render's own list the old form carries.
+    assert!(merged_from(&r, old).contains("- [x] Book the room\n"));
+    let mut short = r.clone();
+    short.actions.pop();
+    let mut changed = r.clone();
+    changed.actions[0].text = "Book a room".into();
+    let mut longer = r.clone();
+    longer.actions.push(r.actions[0].clone());
+    for (what, bad) in [("short", short), ("changed", changed), ("longer", longer)] {
+        let merged = merged_from(&bad, old);
+        assert!(!merged.contains("- [x]"), "{what}: {merged}");
+    }
+}
+
 // ---- T14.28: generated text cannot embed or fetch ----
 
 /// Text that would make Obsidian fetch or embed something, or hide text, if written raw.

@@ -209,13 +209,18 @@ enum Place {
 }
 
 impl Place {
-    /// Whether two places can hold the same action: the user's own lines only match the
-    /// user's own, and action lines never match lines from other sections.
-    fn compatible(self, other: Place) -> bool {
-        match (self, other) {
-            (Place::Elsewhere, Place::Elsewhere) => true,
+    /// Whether an old line at `self` and a new line at `new` can be the same action: the
+    /// user's own lines only match the user's own, action lines never match lines from other
+    /// sections, and a one-list line only when the old region has no "### My actions" or
+    /// "### Other actions" at all (a line left above a subheading the user deleted could be
+    /// anyone's).
+    fn compatible(self, new: Place, old_has_subheadings: bool) -> bool {
+        match (self, new) {
+            (Place::Elsewhere, Place::Elsewhere) | (Place::Mine, Place::Mine) => true,
             (Place::Elsewhere, _) | (_, Place::Elsewhere) => false,
-            (a, b) => (a == Place::Mine) == (b == Place::Mine),
+            (Place::Mine, _) | (_, Place::Mine) => false,
+            (Place::Other, _) => true,
+            (Place::Single, _) => !old_has_subheadings,
         }
     }
 }
@@ -241,9 +246,12 @@ fn places(region: &str) -> Vec<Place> {
         .collect()
 }
 
-/// Whether `text` starts with a balanced "(...)" group.
-fn starts_with_group(text: &str) -> bool {
-    text.starts_with('(') && group_end(text).is_some()
+/// Whether `text` holds a balanced "(...)" group starting it or after a space, anywhere:
+/// an owner list, which a task plugin may have followed with more text.
+fn contains_group(text: &str) -> bool {
+    text.char_indices().any(|(i, c)| {
+        c == '(' && (i == 0 || text[..i].ends_with(' ')) && group_end(&text[i..]).is_some()
+    })
 }
 
 /// The byte index just past the ")" closing the "(" that starts `text`.
@@ -313,7 +321,8 @@ impl NewAction {
     /// action's own task as rendered, never by stripping an arbitrary trailing bracket:
     /// - "**X**: <task>" (the form before T14.61, one line per owner text): matches when
     ///   <task> is this task exactly and every name in X is an owner here
-    ///   ([`OldMatch::PerOwner`]; a shared action takes each such line);
+    ///   ([`OldMatch::PerOwner`]; a shared action takes such lines only when together
+    ///   they name exactly its owners);
     /// - under "### My actions": "<task>" (the user alone) or "<task> (with <names>)"
     ///   matches a line of the user's own with exactly those others;
     /// - elsewhere in the action items: "<task>" (no owner) or "<task> (<names>)" matches
@@ -334,7 +343,7 @@ impl NewAction {
                 && !names.is_empty()
                 && names.iter().all(|n| self.owners.contains(n));
             return if fits {
-                OldMatch::PerOwner
+                OldMatch::PerOwner(names)
             } else {
                 OldMatch::No
             };
@@ -375,8 +384,9 @@ enum OldMatch {
     No,
     /// The same action in the form since T14.61 (one line).
     Whole,
-    /// One owner's line of it in the form before T14.61 (several may match).
-    PerOwner,
+    /// One owner's line of it in the form before T14.61, with the names it holds (several
+    /// may match; together they must name exactly the action's owners).
+    PerOwner(Vec<String>),
 }
 
 /// The new managed region with the task marks the user set in the old one (T14.27).
@@ -394,13 +404,16 @@ enum OldMatch {
 ///    output stays the identity.
 /// 2. Appended: a new unticked line still unmatched takes the first unused old line
 ///    whose text starts with the new text and a space (a task plugin added a done date
-///    or a tag after the text), unless what follows starts with a balanced "(...)": that
-///    is an owner list, so another person's action. Only that direction: an old line that
-///    is a prefix of the new text is another, longer item and does not match.
+///    or a tag after the text). On an action line the rest must hold no balanced "(...)"
+///    anywhere: that is an owner list (perhaps followed by a plugin's date), so another
+///    owner set; a Dataview `(key:: value)` field loses its tick the same way, which is
+///    accepted (lost, never moved). Only that direction: an old line that is a prefix of the
+///    new text is another, longer item and does not match.
 /// 3. Owners (T14.61): a new unticked action line still unmatched takes the old lines
 ///    that are the same action in another form ([`NewAction::matches`]): one line written
-///    since T14.61, or every owner's line written before. A shared action is ticked if any
-///    line it took was ticked, with the mark of the first ticked one in the old order.
+///    since T14.61, or the owners' lines written before when together they name exactly
+///    its owners. A shared action is ticked if any line it took was ticked, with the mark of
+///    the first ticked one in the old order.
 ///
 /// Only an unticked new line (`[ ]`) is rewritten, to the matched line's mark exactly as
 /// the user left it (`x`, `X` or another plugin's character); appended text is not
@@ -416,6 +429,9 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
         .filter_map(|(l, p)| task_line(l).map(|(m, t)| Some((m, plain_form(t), *p))))
         .collect();
     let old_marks: Vec<char> = old.iter().flatten().map(|(m, _, _)| *m).collect();
+    let subheadings = old_places
+        .iter()
+        .any(|p| matches!(p, Place::Mine | Place::Other));
     if old_marks.iter().all(|m| *m == ' ') {
         // Nothing marked: the new region as rendered.
         return new_region.to_owned();
@@ -457,7 +473,7 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
     };
     for (i, n) in new.iter().enumerate() {
         if let Some((_, text, place)) = n {
-            taken[i] = take(&|t: &str, p: Place| t == text && p.compatible(*place));
+            taken[i] = take(&|t: &str, p: Place| t == text && p.compatible(*place, subheadings));
         }
     }
     for (i, n) in new.iter().enumerate() {
@@ -465,10 +481,10 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
             && taken[i].is_none()
         {
             taken[i] = take(&|t: &str, p: Place| {
-                p.compatible(*place)
+                p.compatible(*place, subheadings)
                     && t.strip_prefix(text.as_str())
                         .and_then(|rest| rest.strip_prefix(' '))
-                        .is_some_and(|rest| !starts_with_group(rest))
+                        .is_some_and(|rest| *place == Place::Elsewhere || !contains_group(rest))
             });
         }
     }
@@ -477,21 +493,28 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
             continue;
         };
         let mut collected: Vec<usize> = Vec::new();
-        let mut whole = false;
+        let mut per_owner: Vec<usize> = Vec::new();
+        let mut named: Vec<String> = Vec::new();
         for (j, o) in old.iter().enumerate() {
             let Some((_, text, place)) = o else { continue };
-            if *place == Place::Elsewhere {
+            if *place == Place::Elsewhere || (*place == Place::Single && subheadings) {
                 continue;
             }
             match action.matches(text, *place) {
-                OldMatch::Whole if !whole => {
-                    whole = true;
-                    collected.push(j);
+                OldMatch::Whole if collected.is_empty() => collected.push(j),
+                OldMatch::PerOwner(names) => {
+                    per_owner.push(j);
+                    named.extend(names);
                 }
-                OldMatch::PerOwner => collected.push(j),
                 _ => {}
             }
         }
+        named.sort();
+        named.dedup();
+        if named == action.owners {
+            collected.extend(per_owner);
+        }
+        collected.sort_unstable();
         if collected.is_empty() {
             continue;
         }
