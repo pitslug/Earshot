@@ -1239,6 +1239,15 @@ Accept: as T14.57's entry in PLAN.md (`cargo test -p earshot-store sync`; `cargo
 - 7A's removal repair and identity sweep are start-up repairs under R1, and their roots join the scan test.
 - 7A's P5 drops an entry when a row's `person_id` does not read (`relinked`, `from` unreadable), and 16.5 item 20 does the same in `forget_identity` (16.12 b), so the two agree.
 
+### 16.10a As built (T14.57, 2026-11-27)
+
+- The store's tables are STRICT, so some damage this section imagined cannot be stored: an unreadable `person.is_me` (an `INTEGER NOT NULL`, every integer reads as a bool) and a TEXT print `sum`. `PersonUnreadable` keeps its code path and copy but has no test; rule g's trigger is reached through an unreadable `id`.
+- Statements a guarded path runs that T14.47 placed in `replaced.rs` and `sync.rs` stay there as named constants registered in `EXTERNAL_SQL_OWNERS` (in `guarded.rs`), held by the scan to the same owner rules.
+- Runtime code calls `StoreTx::guarded` only in `name_changed_tx`, `drop_stale_tx` and `syncing_turned_on_tx` (`GUARDED_FROM_STORE_TX` in `sync_damaged_scan.rs`), each with its reason.
+- A sample whose `person_id` and `voiceprint_id` both do not read, and a print whose `person_id` does not read, are counted and left on this device (whose they are cannot be known); the "left as they are" notes say so.
+- `dictionary_damaged` has two forms, by whether Dictionary sync is on; the copy was approved by the owner.
+- Clearing a damaged row today needs a good copy from another device (test 11) or the deletion of its meeting; a way for the user to clear the rest is a later task.
+
 ### 16.11 Formats and other builds
 
 - No row changes shape and no new row is written: `ENVELOPE_FORMAT` stays 4, no migration, no relay change, no wire field, no `sync_pending` reason.
