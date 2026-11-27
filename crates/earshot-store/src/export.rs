@@ -498,7 +498,10 @@ impl ExportLease {
 impl Store {
     /// Runs `f` in one `IMMEDIATE` transaction (the write lock taken at the start, so
     /// what `f` reads cannot change before what it writes): committed if `f` returns `Ok`.
-    pub(crate) fn immediate<T>(
+    ///
+    /// # Errors
+    /// `f`'s error; SQLite errors.
+    pub fn immediate<T>(
         &mut self,
         f: impl FnOnce(&mut StoreTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
@@ -508,10 +511,8 @@ impl Store {
         let mut tx = StoreTx::of(tx, self.push_guard.clone());
         let out = f(&mut tx)?;
         // As in `Store::transaction` (docs/sync-spec.md 15.2).
-        tx.lines_first_without_hlc()?;
-        let own = tx.own_stamp;
+        tx.assert_lines_checked()?;
         tx.conn.commit()?;
-        self.own_stamp = self.own_stamp.max(own);
         Ok(out)
     }
 

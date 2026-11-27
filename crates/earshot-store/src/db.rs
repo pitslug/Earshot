@@ -143,9 +143,6 @@ pub struct Store {
     /// The push's own guard, for "lines go out before what they replace"
     /// ([`Store::set_push_guard`], docs/sync-spec.md 15.2).
     pub(crate) push_guard: Option<crate::replaced::PushGuard>,
-    /// The latest stamp this store wrote itself, when it had no HLC to stamp with
-    /// ([`Store::take_own_stamp`]).
-    pub(crate) own_stamp: Option<HlcTimestamp>,
 }
 
 /// A transaction on the [`Store`]; implements the same repository traits. Commits when
@@ -158,8 +155,6 @@ pub struct StoreTx<'a> {
     pub(crate) noted: std::cell::RefCell<std::collections::BTreeSet<(EntityId, EntityId)>>,
     /// The store's push guard, for that check.
     pub(crate) push_guard: Option<crate::replaced::PushGuard>,
-    /// The latest stamp the check wrote without the caller's HLC.
-    pub(crate) own_stamp: Option<HlcTimestamp>,
 }
 
 impl<'a> StoreTx<'a> {
@@ -171,7 +166,6 @@ impl<'a> StoreTx<'a> {
             conn,
             noted: std::cell::RefCell::default(),
             push_guard,
-            own_stamp: None,
         }
     }
 }
@@ -293,7 +287,6 @@ impl Store {
         let mut store = Store {
             conn,
             push_guard: None,
-            own_stamp: None,
         };
         store.migrate()?;
         // Fold any WAL left by an earlier session (for example one whose checkpoint after
@@ -382,12 +375,10 @@ impl Store {
             .map_err(|e| E::from(StoreError::from(e)))?;
         let mut tx = StoreTx::of(tx, self.push_guard.clone());
         let out = f(&mut tx)?;
-        // Lines go out before what they replace (docs/sync-spec.md 15.2): checked before the
-        // commit for every track the transaction wrote a live final row of.
-        tx.lines_first_without_hlc().map_err(E::from)?;
-        let own = tx.own_stamp;
+        // Lines go out before what they replace (docs/sync-spec.md 15.2): a writer that wrote a
+        // live final row ran `send_lines_first` with the device HLC before this commit.
+        tx.assert_lines_checked().map_err(E::from)?;
         tx.conn.commit().map_err(|e| E::from(StoreError::from(e)))?;
-        self.own_stamp = self.own_stamp.max(own);
         Ok(out)
     }
 
@@ -397,13 +388,6 @@ impl Store {
     /// reads counts as sendable.
     pub fn set_push_guard(&mut self, guard: crate::replaced::PushGuard) {
         self.push_guard = Some(guard);
-    }
-
-    /// The latest stamp the store wrote without the caller's HLC (a transaction that wrote a
-    /// live final line and was committed without [`StoreTx::send_lines_first`]), taken: the
-    /// caller's HLC observes it, so its next stamp is later.
-    pub fn take_own_stamp(&mut self) -> Option<HlcTimestamp> {
-        self.own_stamp.take()
     }
 
     /// This install's device id: created from `clock` and `rng` on first use, then stable.

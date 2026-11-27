@@ -750,8 +750,10 @@ pub(crate) fn judge_vault(stored: &Cursor, seen: VaultSeen<'_>, now_ms: u64) -> 
 /// [`SyncProblem::Server`] when the history changed too often; [`SyncProblem::Store`].
 pub(crate) fn observe_vault(services: &Services, seen: VaultSeen<'_>) -> Result<bool, SyncProblem> {
     let now_ms = services.clock.now_unix_ms();
+    let clock = std::sync::Arc::clone(&services.clock);
     let mut db = services.store();
-    db.transaction(|tx| -> Result<bool, SyncProblem> {
+    let (store, hlc) = db.parts();
+    store.transaction(|tx| -> Result<bool, SyncProblem> {
         let stored = decode_cursor(tx.local_value(SYNC_CURSOR_KEY)?);
         match judge_vault(&stored, seen, now_ms) {
             VaultVerdict::Same(None) => Ok(false),
@@ -770,6 +772,8 @@ pub(crate) fn observe_vault(services: &Services, seen: VaultSeen<'_>) -> Result<
                     &encode_cursor_record(&next),
                 )?;
                 tx.queue_every_row()?;
+                // Re-queued cleared rows go out after a line of their track (15.2).
+                tx.send_lines_first(hlc, &*clock)?;
                 Ok(true)
             }
             VaultVerdict::TooOften => Err(SyncProblem::Server),

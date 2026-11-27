@@ -62,7 +62,12 @@ fn keep(
     token: &DeviceToken,
 ) -> Result<(), SyncProblem> {
     vault.save(key, token)?;
-    services.store().queue_everything()?;
+    {
+        let clock = std::sync::Arc::clone(&services.clock);
+        let mut db = services.store();
+        let (store, hlc) = db.parts();
+        store.queue_everything(hlc, &*clock)?;
+    }
     crate::vocabulary::with_stamp(services, |tx, stamp| -> Result<(), SyncProblem> {
         local::set_tx(
             tx,

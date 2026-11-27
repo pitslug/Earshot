@@ -393,6 +393,56 @@ fn sync_sweep_waits_for_recordings_and_does_leased_meetings_later() {
     assert!(row(&svc, b.meeting, b.tombstone).is_cleared());
 }
 
+/// A meeting leased after the sweep first looked at it, while it waited, is looked at again
+/// under the store lock before its batch: nothing is written while the lease is held, and it is
+/// done later.
+#[test]
+fn sync_sweep_looks_at_the_lease_again_before_each_batch() {
+    let dir = TempDir::new("sweep-lease-again");
+    let (svc, _clock) = services(&dir);
+    let a = old_form(&svc, 15, None);
+    let b = old_form(&svc, 16, None);
+    let recording = Arc::new(Mutex::new(Some(
+        svc.lease_meeting_for(a.meeting, MeetingJob::Recording)
+            .unwrap(),
+    )));
+    let lease_b: Arc<Mutex<Option<crate::services::MeetingLease>>> = Arc::default();
+    let written_while_leased = Arc::new(AtomicBool::new(false));
+    let (rec, lb, seen, svc2, bm) = (
+        Arc::clone(&recording),
+        Arc::clone(&lease_b),
+        Arc::clone(&written_while_leased),
+        svc.clone(),
+        b.meeting,
+    );
+    let wait = FakeWait::with(Box::new(move |n, d| {
+        if lb.lock().unwrap().is_some() {
+            let cleared = svc2
+                .store()
+                .segments(bm)
+                .unwrap()
+                .iter()
+                .any(SegmentRow::is_cleared);
+            seen.fetch_or(cleared, Ordering::Relaxed);
+        }
+        // While the sweep waits for the recording, a job takes `b`; then the recording ends.
+        if n == 1 {
+            *lb.lock().unwrap() = Some(svc2.lease_meeting_for(bm, MeetingJob::Processing).unwrap());
+        }
+        if n == 2 {
+            rec.lock().unwrap().take();
+        }
+        if d == LEASED_RETRY && n > 2 {
+            lb.lock().unwrap().take();
+        }
+    }));
+    let r = sweep(&svc, &sync_off(), &wait).unwrap();
+    assert!(r.done, "{r:?}");
+    assert!(!written_while_leased.load(Ordering::Relaxed));
+    assert!(row(&svc, a.meeting, a.tombstone).is_cleared());
+    assert!(row(&svc, b.meeting, b.tombstone).is_cleared());
+}
+
 /// Both waits: while sync runs and its last tick succeeded, the sweep waits while its last tick
 /// emptied text or more than [`OUTBOX_WAIT`] rows wait to send; it goes on when the tick fails
 /// or sync stops.
@@ -638,6 +688,35 @@ fn call_args(src: &str, open: usize) -> &str {
     &src[open..]
 }
 
+/// The named sites that give a segment a speaker (15.2): the final pass's labelling of its own
+/// Final rows, `move_line` (after `final_line`) and `merge_speakers` (behind its guard).
+const GIVE_SITES: &[(&str, &str)] = &[
+    ("crates/earshot-runtime/src/post/mod.rs", "run_reporting"),
+    ("crates/earshot-core/src/diar/assign.rs", "label_segments"),
+    ("crates/earshot-runtime/src/edit.rs", "move_line"),
+    ("crates/earshot-runtime/src/edit.rs", "merge_speakers"),
+];
+
+/// The functions that rebuild a segment from another and keep its speaker
+/// (`x.speaker_id = y.speaker_id`): echo cleaning, the split of a segment by speaker turns and
+/// the drop of words under edits.
+const COPY_SITES: &[(&str, &str)] = &[
+    (
+        "crates/earshot-core/src/asr/echo.rs",
+        "dedupe_echo_segments",
+    ),
+    ("crates/earshot-core/src/asr/edit_span.rs", "drop_masked"),
+    (
+        "crates/earshot-core/src/diar/assign.rs",
+        "label_segment_speakers_keeping",
+    ),
+    ("crates/earshot-runtime/src/live/echo.rs", "mic_partial"),
+    (
+        "crates/earshot-runtime/src/post/mod.rs",
+        "text_and_speaker_rules",
+    ),
+];
+
 /// What the scan of 15.2 finds wrong in `sources` (path, text): constructions of a
 /// `pass = Live` segment row outside `store_live`, assignments to a segment's `speaker_id`
 /// with a value other than `None` (or a copy of a segment's own speaker) outside the named
@@ -680,24 +759,33 @@ fn draft_writer_findings(sources: &[(String, String)]) -> Vec<String> {
                 ));
             }
         }
-        // (b) a speaker given to a segment.
-        for (at, _) in code.match_indices(".speaker_id = ") {
-            let value_start = at + ".speaker_id = ".len();
-            let value = code[value_start..].split(';').next().unwrap_or("").trim();
+        // (b) a speaker given to a segment: an assignment, or a struct literal's field.
+        let mut sites: Vec<(usize, &str)> = code.match_indices(".speaker_id = ").collect();
+        sites.extend(code.match_indices("speaker_id: Some("));
+        for (at, pattern) in sites {
+            let value_start = at + pattern.len();
+            let value = if pattern.ends_with('(') {
+                "Some(..)"
+            } else {
+                code[value_start..].split(';').next().unwrap_or("").trim()
+            };
+            if value == "None" {
+                continue;
+            }
+            // `x.speaker_id = y.speaker_id`: a rebuilt segment keeping its source's speaker.
             let copy = value.ends_with(".speaker_id")
                 && value
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '.');
-            if value == "None" || copy {
-                continue;
-            }
             let f = enclosing_fn(&code, at);
-            let named = path.starts_with("crates/earshot-runtime/src/post/")
-                || path == "crates/earshot-core/src/diar/assign.rs"
-                || (path == "crates/earshot-runtime/src/edit.rs"
-                    && matches!(f, "move_line" | "merge_speakers"));
+            let named = if copy {
+                COPY_SITES.contains(&(path.as_str(), f))
+            } else {
+                GIVE_SITES.contains(&(path.as_str(), f))
+            };
             if !named {
-                found.push(format!("{path}: a speaker given to a segment in {f}"));
+                let what = if copy { "copied onto" } else { "given to" };
+                found.push(format!("{path}: a speaker {what} a segment in {f}"));
             }
         }
         if path == "crates/earshot-runtime/src/edit.rs" {
@@ -742,6 +830,17 @@ fn edit_draft_rows_are_written_only_by_the_live_session() {
         ),
     ));
     assert_eq!(draft_writer_findings(&added).len(), 1);
+    // Mutation control 3: a struct literal giving a segment a speaker, and a copy outside the
+    // named rebuild functions.
+    let mut literal = sources.clone();
+    literal.push((
+        "crates/earshot-runtime/src/somewhere.rs".into(),
+        "fn sneaky() {\n    let s = Segment { speaker_id: Some(x), ..s };\n    \
+         t.speaker_id = s.speaker_id;\n}\n"
+            .into(),
+    ));
+    let found = draft_writer_findings(&literal);
+    assert_eq!(found.len(), 2, "{found:#?}");
     // Mutation control 2: `merge_speakers` without its guard.
     let unguarded: Vec<(String, String)> = sources
         .iter()

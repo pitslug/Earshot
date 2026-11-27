@@ -238,24 +238,33 @@ fn sync_busy(sync: &dyn SweepSync) -> Result<bool, RuntimeError> {
     Ok(seen.text_emptied > 0 || sync.waiting_to_send()? > OUTBOX_WAIT)
 }
 
-/// Clears what one meeting holds of replaced text, batch by batch. `Ok(None)`: stopped.
+/// Clears what one meeting holds of replaced text, batch by batch.
 fn sweep_meeting(
     services: &Services,
     meeting: EntityId,
     sync: &dyn SweepSync,
     wait: &dyn SweepWait,
-) -> Result<Option<usize>, RuntimeError> {
+) -> Result<MeetingSwept, RuntimeError> {
     let clock = std::sync::Arc::clone(&services.clock);
     let mut rows = 0;
     loop {
         // Nothing is written while any meeting records.
         while !services.recording_meetings().is_empty() || sync_busy(sync)? {
             if !wait.pause(WAIT_STEP) {
-                return Ok(None);
+                return Ok(MeetingSwept::Stopped);
             }
         }
         let done = {
             let mut db = services.store();
+            // Looked at again under the store lock, for every batch: a recording or a job that
+            // started since the look above (the activity lock is a leaf, so this is no nesting).
+            if !services.recording_meetings().is_empty() {
+                drop(db);
+                continue;
+            }
+            if services.leased_meetings().contains(&meeting) {
+                return Ok(MeetingSwept::Leased(rows));
+            }
             let (store, hlc) = db.parts();
             let done = store.clear_replaced_text(meeting, BATCH, hlc, &*clock)?;
             if done.rows > 0 {
@@ -265,12 +274,22 @@ fn sweep_meeting(
         };
         rows += done.rows;
         if done.rows > 0 && !wait.pause(PAUSE) {
-            return Ok(None);
+            return Ok(MeetingSwept::Stopped);
         }
         if !done.more {
-            return Ok(Some(rows));
+            return Ok(MeetingSwept::Done(rows));
         }
     }
+}
+
+/// How one meeting's sweep ended.
+enum MeetingSwept {
+    /// Nothing left: the rows written.
+    Done(usize),
+    /// Stopped at a pause.
+    Stopped,
+    /// Leased here meanwhile, after the rows written: tried again later.
+    Leased(usize),
 }
 
 /// The sweep (module docs). Returns at once when the record says it ran.
@@ -314,8 +333,12 @@ pub fn sweep(
         }
         report.meetings += 1;
         match sweep_meeting(services, meeting, sync, wait) {
-            Ok(Some(rows)) => report.rows += rows,
-            Ok(None) => {
+            Ok(MeetingSwept::Done(rows)) => report.rows += rows,
+            Ok(MeetingSwept::Leased(rows)) => {
+                report.rows += rows;
+                later.push(meeting);
+            }
+            Ok(MeetingSwept::Stopped) => {
                 report.stopped = true;
                 return Ok(report);
             }
@@ -336,8 +359,12 @@ pub fn sweep(
             }
             report.meetings += 1;
             match sweep_meeting(services, meeting, sync, wait) {
-                Ok(Some(rows)) => report.rows += rows,
-                Ok(None) => {
+                Ok(MeetingSwept::Done(rows)) => report.rows += rows,
+                Ok(MeetingSwept::Leased(rows)) => {
+                    report.rows += rows;
+                    still.push(meeting);
+                }
+                Ok(MeetingSwept::Stopped) => {
                     report.stopped = true;
                     return Ok(report);
                 }
@@ -347,7 +374,8 @@ pub fn sweep(
         later = still;
     }
     if report.failed == 0 {
-        services.store().transaction(|tx| {
+        // In its own IMMEDIATE transaction (15.6).
+        services.store().immediate(|tx| {
             crate::local::set_tx(tx, &DeviceRecord::ReplacedTextSwept.key(), &record_bytes())
         })?;
         report.done = true;

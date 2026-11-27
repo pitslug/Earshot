@@ -499,7 +499,9 @@ fn sync_replaced_deleted_meeting_gets_the_erasure_form_and_the_limit_holds() {
     for n in 10..15 {
         assert!(e.get(n).is_cleared());
     }
-    // A meeting deleted here: the erasure form, to rows that hold text.
+    // A meeting deleted here: the erasure form, to rows that hold text. (The cleared rows are
+    // pushed first: a line written alone, without the check, must not follow queued ones.)
+    e.push_all();
     let live = e.row(16, MIC, TranscriptPass::Final, &["still", "here"]);
     e.put(live);
     e.exec(&format!(
@@ -628,8 +630,13 @@ fn rewrite_row(e: &mut Env, mut r: SegmentRow, text: &str) {
     let at = e.now();
     r.meta.updated_at = at;
     r.text_edited_at = Some(at);
-    e.store
-        .transaction(|tx| tx.put_segment(r).map_err(StoreError::Repo))
+    let (store, hlc, clock) = (&mut e.store, &mut e.hlc, &e.clock);
+    store
+        .transaction(|tx| -> Result<(), StoreError> {
+            tx.put_segment(r).map_err(StoreError::Repo)?;
+            tx.send_lines_first(hlc, clock)?;
+            Ok(())
+        })
         .unwrap();
 }
 
@@ -677,20 +684,25 @@ fn sync_replaced_a_hundred_writes_on_one_line_stamp_at_most_once() {
     assert_eq!(cleared_stamps(&e), before);
 }
 
-/// Without the caller's HLC (a transaction that never asks) the commit still keeps the
-/// invariant, and the store's own stamp is kept for the caller's HLC.
+/// The store has no stamp source of its own: a writer that commits a live final line without
+/// `send_lines_first`, leaving the track's cleared rows to go out first, is a programming error
+/// (a debug assertion). Its control: the same writes through `send_lines_first` commit.
 #[test]
-fn sync_replaced_a_commit_without_the_hlc_keeps_the_invariant() {
+#[cfg(debug_assertions)]
+#[should_panic(expected = "without `send_lines_first`")]
+fn sync_replaced_a_commit_without_the_check_is_a_debug_assertion() {
     let mut e = env("lines-first-commit");
     let _ = after_a_pass(&mut e);
-    for n in 20..24 {
+    for n in 20..23 {
         rewrite(&mut e, n, "edited line");
     }
-    assert!(e.store.lines_go_first(id(MEETING), id(MIC)).unwrap());
-    let own = e.store.take_own_stamp().expect("the store stamped");
-    assert!(own > e.get(23).meta.updated_at);
-    // A second take finds nothing.
-    assert!(e.store.take_own_stamp().is_none());
+    let mut r = e.get(23);
+    r.segment.text = "edited line".into();
+    r.segment.words.clear();
+    r.meta.updated_at = e.now();
+    e.store
+        .transaction(|tx| tx.put_segment(r).map_err(StoreError::Repo))
+        .unwrap();
 }
 
 /// Re-queueing (an epoch reset or a join) after such edits leaves it holding.
@@ -706,11 +718,16 @@ fn sync_replaced_requeueing_keeps_the_invariant() {
             rewrite(&mut e, n, "edited line");
         }
         assert!(!e.queued(10));
+        let (store, hlc, clock) = (&mut e.store, &mut e.hlc, &e.clock);
         if join {
-            e.store.queue_everything().unwrap();
+            store.queue_everything(hlc, clock).unwrap();
         } else {
-            e.store
-                .transaction(|tx| tx.queue_every_row().map(|_| ()))
+            store
+                .transaction(|tx| -> Result<(), StoreError> {
+                    tx.queue_every_row()?;
+                    tx.send_lines_first(hlc, clock)?;
+                    Ok(())
+                })
                 .unwrap();
         }
         assert!(e.queued(10) && e.queued(20));
@@ -934,6 +951,33 @@ fn sync_replaced_h2_holds_the_last_line_and_the_release_lets_it_go() {
     );
     assert!(e.get(10).is_cleared());
     assert_eq!(e.held(), 0);
+}
+
+/// The store keeps which `parent` rows are H1's and H2's, so the release retries only those: a
+/// segment tombstone held because its speaker is missing is not among them; an applied row
+/// leaves the list.
+#[test]
+fn sync_replaced_only_the_two_holds_rows_are_the_releases() {
+    let mut e = env("apply-theirs");
+    e.apply_page(&base_rows(PEER));
+    let line = peer_row(10, MIC, TranscriptPass::Final, &["only", "line"], 10);
+    e.apply_page(&[seg(line.clone())]);
+    let tomb = tomb_at(&line, 50);
+    e.apply_page(&[seg(tomb.clone())]);
+    // A tombstone naming a speaker that is not here: held for its parent, not by H1 or H2.
+    let mut orphan = peer_row(11, MIC, TranscriptPass::Final, &["orphan"], 20);
+    orphan.segment.speaker_id = Some(id(77));
+    let orphan = tomb_at(&orphan, 51);
+    e.apply_page(&[seg(orphan.clone())]);
+    assert_eq!(e.held(), 2);
+    let theirs = e.store.held_by_replaced_text().unwrap();
+    assert_eq!(theirs.len(), 1);
+    assert!(theirs.contains(&incoming(0, &seg(tomb.clone())).key));
+    assert!(!theirs.contains(&incoming(0, &seg(orphan)).key));
+    // Released: it leaves the list.
+    e.release(&[seg(tomb)], &|_, _| false);
+    assert!(e.store.held_by_replaced_text().unwrap().is_empty());
+    assert_eq!(e.held(), 1, "the orphan still waits for its speaker");
 }
 
 /// A tombstone over a local row that does not read is applied without a hold.

@@ -1000,8 +1000,8 @@ impl SyncClient {
         pulled.and(retried).and(released)
     }
 
-    /// The release (docs/sync-spec.md 15.4): every row held for a parent that opens as a segment
-    /// tombstone is applied whatever its track then shows, unless a row that could still give
+    /// The release (docs/sync-spec.md 15.4): every row H1 or H2 holds
+    /// ([`Store::held_by_replaced_text`]) is applied whatever its track then shows, unless a row that could still give
     /// its track a live final row is held too (a live final row of that meeting and track held
     /// as busy, parent or clock). Held rows are read [`MAX_RETRY`] at a time; the segment
     /// tombstones among those held for a parent are kept and applied [`MAX_RETRY`] a page.
@@ -1015,6 +1015,12 @@ impl SyncClient {
         // The tracks a held row could still give a line.
         let mut blocked: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
         let mut candidates: Vec<Incoming> = Vec::new();
+        // Only the rows H1 and H2 hold are released; any other row held for a parent waits for
+        // its parent as before.
+        let theirs = self.services.store().held_by_replaced_text()?;
+        if theirs.is_empty() {
+            return Ok(());
+        }
         let mut after: Option<[u8; ROW_KEY_LEN]> = None;
         loop {
             if self.stopping() {
@@ -1036,7 +1042,10 @@ impl SyncClient {
                 if let Some(SyncedRow::Segment(s)) = &inc.row {
                     if s.pass == TranscriptPass::Final && !s.meta.deleted {
                         blocked.insert((s.meeting_id, s.segment.track));
-                    } else if s.meta.deleted && reason == HoldReason::Parent {
+                    } else if s.meta.deleted
+                        && reason == HoldReason::Parent
+                        && theirs.contains(&inc.key)
+                    {
                         candidates.push(inc);
                     }
                 }

@@ -68,21 +68,8 @@ impl Db {
         self.device
     }
 
-    /// The store and the HLC, borrowed together (to stamp rows while writing them). A stamp the
-    /// store wrote itself since (a transaction that kept "lines go out before what they
-    /// replace" without the HLC, docs/sync-spec.md 15.2) is observed first, so every stamp the
-    /// HLC gives from here is later.
+    /// The store and the HLC, borrowed together (to stamp rows while writing them).
     pub fn parts(&mut self) -> (&mut Store, &mut Hlc) {
-        if let Some(own) = self.store.take_own_stamp() {
-            /// A clock that adds nothing to what the HLC has seen.
-            struct Unset;
-            impl earshot_core::identity::Clock for Unset {
-                fn now_unix_ms(&self) -> u64 {
-                    0
-                }
-            }
-            let _ = self.hlc.observe(own, &Unset);
-        }
         (&mut self.store, &mut self.hlc)
     }
 }

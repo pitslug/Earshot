@@ -366,6 +366,80 @@ fn sync_replaced_the_relay_order_of_two_retranscriptions_never_blanks_a_receiver
     assert!(holds_replaced_text(&b, m).is_empty());
 }
 
+/// Word choices are dropped in a pulled page's transaction (15.3) without failing it on one
+/// segment row that does not read: the page applies, the choice on the damaged line is dropped
+/// and the one on a line that still reads as recorded stays.
+#[test]
+fn sync_replaced_word_choices_beside_a_damaged_line_never_fail_a_page() {
+    use crate::word_choices::{Choice, WordChoice};
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let m = crate::testutil::meeting(&a.svc, "Invented planning", 111);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    let lines: Vec<SegmentRow> = b
+        .svc
+        .store()
+        .segments(m)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
+        .collect();
+    let mic = lines
+        .iter()
+        .find(|r| r.segment.text.starts_with("shall"))
+        .unwrap();
+    let them = lines
+        .iter()
+        .find(|r| r.segment.text.starts_with("yes"))
+        .unwrap();
+    let choice = |segment: EntityId, decoded: &str| WordChoice {
+        segment,
+        token: 0,
+        decoded: decoded.into(),
+        choice: Choice::Kept,
+    };
+    let record = crate::word_choices::encode(&[
+        choice(mic.segment.id, "shall"),
+        choice(them.segment.id, "yes"),
+    ])
+    .unwrap();
+    b.svc
+        .store()
+        .set_local_value(crate::word_choices::record_key(m).as_str(), &record)
+        .unwrap();
+    // The mic line does not read on B.
+    let hex: String = mic
+        .segment
+        .id
+        .as_uuid()
+        .as_bytes()
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect();
+    rusqlite::Connection::open(b.svc.data.db_path())
+        .unwrap()
+        .execute_batch(&format!(
+            "UPDATE segment SET created_logical = -1 WHERE id = x'{hex}'"
+        ))
+        .unwrap();
+    // A edits the far end's line; B pulls it.
+    a.clock.advance_ms(1_000);
+    crate::edit::edit_segment(&a.svc, m, them.segment.id, "yes indeed").unwrap();
+    ca.tick().unwrap();
+    let got = cb.tick().unwrap();
+    assert!(got.written >= 1, "{got:?}");
+    let now = b
+        .svc
+        .store()
+        .local_value(crate::word_choices::record_key(m).as_str())
+        .unwrap()
+        .map(|v| crate::word_choices::decode(&v))
+        .unwrap_or_default();
+    assert_eq!(now, vec![choice(them.segment.id, "yes")]);
+}
+
 // ---- A format-4 peer with no clearing rule (15.9, 15.10) ----
 //
 // The peer is a device whose own writes are made as 0.9.0 makes them: its passes tombstone every

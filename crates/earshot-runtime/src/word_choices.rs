@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 
 use earshot_core::identity::EntityId;
-use earshot_core::model::{MeetingRepo, TranscriptPass};
+use earshot_core::model::TranscriptPass;
 use earshot_core::prompt::{People, Vocabulary};
 use earshot_core::vocabulary::names::listed_words;
 use earshot_core::vocabulary::suggest::{Suggester, split_punctuation};
@@ -140,7 +140,9 @@ pub(crate) fn drop_stale_tx(
     if choices.is_empty() {
         return Ok(());
     }
-    let rows = tx.segments(meeting)?;
+    // Run in a pulled page's transaction too (docs/sync-spec.md 15.3): a row that does not read
+    // is left out, never a failed page. A choice on such a row stops holding and is dropped.
+    let (rows, _damaged) = tx.segments_that_read(meeting)?;
     let lines: BTreeMap<EntityId, &str> = rows
         .iter()
         .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)

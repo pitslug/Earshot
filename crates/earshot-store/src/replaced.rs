@@ -281,6 +281,19 @@ impl StoreTx<'_> {
         clear_in(&self.conn, meeting, limit, hlc, clock)
     }
 
+    /// `meeting`'s segment rows that read, in the order of `segments`, and how many do not read
+    /// (T14.26): for readers on the apply path, where one damaged row must not fail the page.
+    ///
+    /// # Errors
+    /// Store errors other than a row that does not read.
+    pub fn segments_that_read(
+        &self,
+        meeting: EntityId,
+    ) -> Result<(Vec<earshot_core::model::SegmentRow>, usize), StoreError> {
+        let (rows, damaged) = crate::repo::segments_or_damaged(&self.conn, meeting)?;
+        Ok((rows, damaged.len()))
+    }
+
     /// What `put_segment` does after writing `row` in the transaction: [`StoreTx::note_line`].
     #[allow(clippy::unnecessary_wraps)]
     pub(crate) fn after_put_segment(
@@ -322,8 +335,9 @@ impl StoreTx<'_> {
     /// "Lines go out before what they replace" (15.2) for every track noted so far, with the
     /// caller's HLC: where it does not hold, the track's queued cleared rows are stamped again
     /// with `hlc`, above every row the transaction wrote. Returns how many rows were stamped
-    /// again. Run by the writers that hold an HLC before their commit; the commit runs it again
-    /// for anything noted after ([`StoreTx::lines_first_without_hlc`]).
+    /// again. Run by every writer of a live final row before its commit, with the device HLC
+    /// (`Db::parts()` in the runtime): the store has no stamp source of its own, and the commit
+    /// only checks that nothing was left to stamp ([`StoreTx::assert_lines_checked`]).
     ///
     /// # Errors
     /// Store errors.
@@ -342,43 +356,22 @@ impl StoreTx<'_> {
         Ok(stamped)
     }
 
-    /// [`StoreTx::send_lines_first`] with the store's own stamps, for a transaction committed
-    /// without the caller's HLC: a clock resumed after the greatest stamp stored (the rows the
-    /// transaction wrote included) under this device's id, advanced by its counter alone. The
-    /// last stamp is kept for the caller's HLC to observe ([`Store::take_own_stamp`]).
-    pub(crate) fn lines_first_without_hlc(&mut self) -> Result<(), StoreError> {
-        if self.noted.borrow().is_empty() {
-            return Ok(());
-        }
-        let Some(hw) = crate::db::high_water(&self.conn)? else {
-            self.noted.borrow_mut().clear();
-            return Ok(());
-        };
-        let node = crate::db::stored_device(&self.conn)?.unwrap_or(hw.node);
-        let mut hlc = Hlc::resume(node, hw);
-        let stopped = StoppedClock(hw.wall_ms);
-        let mut last = None;
+    /// Run at every commit: a track noted and not checked by [`StoreTx::send_lines_first`] whose
+    /// cleared rows would need stamping again is a writer that forgot the check, a programming
+    /// error: a debug assertion. In a release build the rows stay as they are (the next
+    /// writer of a line of the track, or a re-queue, runs the check). A noted track that already
+    /// meets the invariant needs nothing.
+    pub(crate) fn assert_lines_checked(&mut self) -> Result<(), StoreError> {
         let noted = std::mem::take(&mut *self.noted.borrow_mut());
         for (meeting, track) in noted {
-            if !lines_go_first(&self.conn, self.push_guard.as_ref(), meeting, track)? {
-                restamp_cleared(&self.conn, meeting, track, &mut || {
-                    let at = hlc.now(&stopped);
-                    last = Some(at);
-                    at
-                })?;
-            }
+            let holds = lines_go_first(&self.conn, self.push_guard.as_ref(), meeting, track)?;
+            debug_assert!(
+                holds,
+                "a live final line was written without `send_lines_first` and its track's \
+                 cleared rows now go out before it (docs/sync-spec.md 15.2)"
+            );
         }
-        self.own_stamp = self.own_stamp.max(last);
         Ok(())
-    }
-}
-
-/// A clock that stays at one reading, so a resumed HLC advances by its counter alone.
-struct StoppedClock(u64);
-
-impl Clock for StoppedClock {
-    fn now_unix_ms(&self) -> u64 {
-        self.0
     }
 }
 
@@ -562,8 +555,8 @@ impl Store {
             .map_err(|e| earshot_core::model::RepoError::Storage(e.to_string()))
     }
 
-    /// Runs the check of [`StoreTx::send_lines_first`] for a single row this store wrote outside
-    /// a transaction (an autocommit `put_segment`).
+    /// [`StoreTx::assert_lines_checked`] for a single row this store wrote outside a transaction
+    /// (an autocommit `put_segment`, which has no HLC to stamp with).
     pub(crate) fn line_written_alone(
         &mut self,
         row: &earshot_core::model::SegmentRow,
@@ -571,13 +564,17 @@ impl Store {
         if row.pass != earshot_core::model::TranscriptPass::Final || row.meta.deleted {
             return Ok(());
         }
-        let tx = self.conn.transaction()?;
-        let mut tx = StoreTx::of(tx, self.push_guard.clone());
-        tx.note_line(row);
-        tx.lines_first_without_hlc()?;
-        let own = tx.own_stamp;
-        tx.conn.commit()?;
-        self.own_stamp = self.own_stamp.max(own);
+        let holds = lines_go_first(
+            &self.conn,
+            self.push_guard.as_ref(),
+            row.meeting_id,
+            row.segment.track,
+        )?;
+        debug_assert!(
+            holds,
+            "a live final line was written outside a transaction and its track's cleared rows \
+             now go out before it (docs/sync-spec.md 15.2)"
+        );
         Ok(())
     }
 }

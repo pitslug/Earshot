@@ -478,6 +478,64 @@ fn hold(tx: &StoreTx<'_>, inc: &Incoming, reason: HoldReason) -> Result<(), Stor
     Ok(())
 }
 
+/// `local_state` key of the row keys held by H1 or H2 (docs/sync-spec.md 15.4): the release
+/// retries only those. A list of 16-byte row keys. The hold word stays `parent` (0.9.0 refuses
+/// a word it does not know), so which `parent` rows are the two holds' is kept here.
+pub const HELD_REPLACED_KEY: &str = "sync-held-replaced";
+
+fn held_replaced_keys(
+    c: &rusqlite::Connection,
+) -> Result<std::collections::BTreeSet<[u8; 16]>, StoreError> {
+    let bytes: Option<Vec<u8>> = c
+        .query_row(
+            "SELECT value FROM local_state WHERE key = ?1",
+            params![HELD_REPLACED_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(bytes
+        .unwrap_or_default()
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .copied()
+        .collect())
+}
+
+/// Writes the set, keeping only keys still held for a parent.
+fn put_held_replaced_keys(
+    c: &rusqlite::Connection,
+    keys: &std::collections::BTreeSet<[u8; 16]>,
+) -> Result<(), StoreError> {
+    let mut value = Vec::with_capacity(keys.len() * 16);
+    for k in keys {
+        let held: bool = c
+            .query_row(
+                "SELECT 1 FROM sync_pending WHERE key = ?1 AND reason = ?2",
+                params![&k[..], HoldReason::Parent.word()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if held {
+            value.extend_from_slice(k);
+        }
+    }
+    if value.is_empty() {
+        c.execute(
+            "DELETE FROM local_state WHERE key = ?1",
+            params![HELD_REPLACED_KEY],
+        )?;
+    } else {
+        c.execute(
+            "INSERT INTO local_state (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![HELD_REPLACED_KEY, value],
+        )?;
+    }
+    Ok(())
+}
+
 /// Removes a held copy of `inc`'s row key that is not later than `inc` (a newer held copy
 /// stays, whatever order rows arrive in; the relay keeps one row per key and only ever a later
 /// one, so today a held copy is never newer).
@@ -798,7 +856,9 @@ fn edits_win<C: Clock + ?Sized>(
         {
             continue;
         }
-        let rows = crate::repo::segments_of(&tx.conn, m)?;
+        // A row that does not read takes no part (T14.26): it is never shown, and one damaged
+        // row must not fail the page.
+        let rows = crate::repo::segments_or_damaged(&tx.conn, m)?.0;
         let finals: Vec<&SegmentRow> = rows
             .iter()
             .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
@@ -1105,10 +1165,21 @@ impl Store {
     ///
     /// # Errors
     /// Store errors; nothing changes then.
-    pub fn queue_everything(&mut self) -> Result<u64, StoreError> {
+    pub fn queue_everything<C: Clock + ?Sized>(
+        &mut self,
+        hlc: &mut Hlc,
+        clock: &C,
+    ) -> Result<u64, StoreError> {
         self.immediate(|tx| {
             let queued = tx.queue_every_row()?;
             tx.conn.execute("DELETE FROM sync_pending", [])?;
+            tx.conn.execute(
+                "DELETE FROM local_state WHERE key = ?1",
+                params![HELD_REPLACED_KEY],
+            )?;
+            // Re-queued cleared rows go out after a line of their track (docs/sync-spec.md
+            // 15.2), stamped with the device HLC.
+            tx.send_lines_first(hlc, clock)?;
             Ok(queued)
         })
     }
@@ -1349,6 +1420,8 @@ impl Store {
             // they replace applies both, as the end-of-tick retry would.
             let mut rows: std::collections::VecDeque<(&Incoming, bool)> =
                 page.iter().map(|inc| (inc, false)).collect();
+            // The row keys H1 and H2 hold (`HELD_REPLACED_KEY`).
+            let mut h_held = held_replaced_keys(&tx.conn)?;
             while let Some((inc, deferred)) = rows.pop_front() {
                 let Some(row) = &inc.row else {
                     // A kind switched off is skipped before anything is held, whether or not
@@ -1603,6 +1676,7 @@ impl Store {
                         }
                         if plan.hold {
                             hold(tx, inc, HoldReason::Parent)?;
+                            h_held.insert(inc.key);
                             out.hold(HoldReason::Parent);
                             continue;
                         }
@@ -1731,6 +1805,10 @@ impl Store {
                     wrote.samples = true;
                 }
             }
+            // Kept to the rows still held for a parent: an applied or re-held row leaves it.
+            if !h_held.is_empty() {
+                put_held_replaced_keys(&tx.conn, &h_held)?;
+            }
             converge(tx, hlc, clock, &mut out, wrote)?;
             edits_win(tx, hlc, clock, rules.leased, &mut out)?;
             // Lines this page stamped here (rule 4a's re-stamps, rule 4b's rewrites) go out
@@ -1779,6 +1857,33 @@ impl Store {
             rows: u64::try_from(rows).unwrap_or(0),
             latest,
         })
+    }
+
+    /// The row keys held for a parent by H1 or H2 (docs/sync-spec.md 15.4), the rows the
+    /// release retries.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn held_by_replaced_text(
+        &self,
+    ) -> Result<std::collections::BTreeSet<[u8; 16]>, StoreError> {
+        let keys = held_replaced_keys(&self.conn)?;
+        let mut out = std::collections::BTreeSet::new();
+        for k in keys {
+            if self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM sync_pending WHERE key = ?1 AND reason = ?2",
+                    params![&k[..], HoldReason::Parent.word()],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some()
+            {
+                out.insert(k);
+            }
+        }
+        Ok(out)
     }
 
     /// Whether a held row with `key` exists (tests and status lines).

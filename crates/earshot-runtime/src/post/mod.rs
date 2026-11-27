@@ -2791,11 +2791,8 @@ struct Labelled {
     unknown: Vec<PostWarning>,
 }
 
-/// Labels each track's segments with `diar`'s speakers after dropping the new words under the
-/// user's `edited` lines (module docs, steps 4 and 5). Reads no store: the final pass runs it
-/// before its write transaction (T14.48).
 /// The conflict when what decided the kept tracks changed before the write (T14.47,
-/// docs/sync-spec.md 15.2, "The decision is made once").
+/// docs/sync-spec.md 15.2, "The decision is made once"): the pass writes nothing.
 pub const KEPT_DECISION_CHANGED: &str =
     "the transcript's earlier lines changed while it was being processed";
 
@@ -2889,6 +2886,9 @@ impl TrackLines {
     }
 }
 
+/// Labels each track's segments with `diar`'s speakers after dropping the new words under the
+/// user's `edited` lines (module docs, steps 4 and 5). Reads no store: the final pass runs it
+/// before its write transaction (T14.48).
 fn label_tracks(
     transcripts: Vec<(TrackId, Vec<Segment>)>,
     edited: Vec<Segment>,
