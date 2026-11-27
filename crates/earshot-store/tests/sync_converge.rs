@@ -641,13 +641,22 @@ const SPEAKERS: std::ops::Range<u8> = 80..96;
 /// (57f0369), never from the new code.
 ///
 /// Changed on purpose by T14.49a (docs/sync-spec.md 7A.11, "The deliberate change to section
-/// 16"): the digest was `9d8564a2...ed77` until then. Per-step store hashes of these runs on
-/// a77cdf1 and on T14.49a are equal up to the first page where a 7A rule acts, in every seed:
-/// P1 stamping a person tombstone again (seeds 1 and 3), P3 unlinking speaker rows from a removed
-/// person (seeds 2 and 5), P4 keeping the user's live copy (seed 0), and rule 3a no longer
-/// erasing pulled samples whose person's chain ends at a tombstoned "Me" (`MeTombstone`, seed 4,
-/// after this test's own `Store::remove_person` of `is_me` people). Each of those rules is pinned
-/// with literal expectations in `tests/sync_removed.rs`.
+/// 16"): the digest was `9d8564a2...ed77` until then. Per-step store dumps of these runs before
+/// 7A and with it (T14.49f, compared table by table) are equal up to the first page where a 7A
+/// rule acts, in every seed:
+/// - seed 0: P4, a pulled live copy of a person written over the user's tombstone here;
+/// - seed 1: `MeTombstone`, after this test's own `Store::remove_person` of an `is_me` person:
+///   of two voice samples the page pulls, the one of that "Me" is no longer erased by rule 3a
+///   but by rule 3 (its print is tombstoned) right after it, so the two erasures swap their
+///   logical stamps; no other column changes;
+/// - seed 2 and seed 5: P3 unlinking speaker rows from a removed person; in the same page the
+///   prints and samples rule 3a erases take stamps one logical tick later, because P1's decision
+///   (`tombstone_final`) observes a pulled person row's stamp once more before writing it;
+/// - seed 3: P1 writing a pulled person tombstone over a later live copy here, stamped again;
+/// - seed 4: `MeTombstone` again (after this test's `remove_person` of an `is_me` person): a
+///   pulled sample of that "Me" stays live.
+///
+/// Each of those rules is pinned with literal expectations in `tests/sync_removed.rs`.
 #[test]
 fn store_sync_damaged_same_answers_without_damage_as_before() {
     use sha2::Digest;

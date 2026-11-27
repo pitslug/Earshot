@@ -918,6 +918,59 @@ fn sync_host_start_up_runs_the_removal_repair_before_the_thread_with_sync_off_an
     a.host.stop_and_wait();
 }
 
+/// T14.49f: a panic in the ignore copy or the removal repair never stops sync starting. Each
+/// step panicking alone, then both, still starts the thread; a repair that panicked reads as not
+/// run (`None`) and runs at the next start that lets it.
+#[test]
+fn sync_host_start_up_starts_sync_after_a_start_step_panics() {
+    use crate::sync_settings::{START_COPY_PANICS, START_REPAIR_PANICS};
+    let env = relay();
+    let a = computer("sync-start-step-panics");
+    set_up(&a.svc, &a.host, &env.relay.url(), SECRET).unwrap();
+    a.host.stop_and_wait();
+    let (m, s) = removal_leftover(&a.svc);
+    for steps in [
+        START_COPY_PANICS,
+        START_REPAIR_PANICS,
+        START_COPY_PANICS | START_REPAIR_PANICS,
+    ] {
+        a.host.panic_in_start_steps_for_test(steps);
+        let repaired = a.host.start_up(&a.svc);
+        assert!(a.host.running(), "steps {steps}: the thread still started");
+        a.host.stop_and_wait();
+        if steps & START_REPAIR_PANICS != 0 {
+            assert!(repaired.is_none(), "steps {steps}: {repaired:?}");
+        } else {
+            assert!(repaired.is_some(), "steps {steps}: the repair ran");
+        }
+    }
+    // The copy-only round ran the repair and mended the row; the control: with nothing
+    // panicking a start runs and reports the repair as before.
+    assert_eq!(linked_person(&a.svc, m, s), None);
+    a.host.panic_in_start_steps_for_test(0);
+    assert!(a.host.start_up(&a.svc).is_some());
+    assert!(a.host.running());
+    a.host.stop_and_wait();
+}
+
+/// T14.49f: with sync off, a repair that panicked is tried again at the next start, which mends
+/// the row and tells the window.
+#[test]
+fn sync_host_a_repair_that_panicked_runs_at_the_next_start() {
+    use crate::sync_settings::START_REPAIR_PANICS;
+    let lone = computer("sync-repair-panics");
+    let heard = listen(&lone.host);
+    let (m, s) = removal_leftover(&lone.svc);
+    lone.host.panic_in_start_steps_for_test(START_REPAIR_PANICS);
+    assert!(lone.host.start_up(&lone.svc).is_none());
+    assert_eq!(heard.lock().unwrap().len(), 0, "nothing told");
+    lone.host.panic_in_start_steps_for_test(0);
+    let r = lone.host.start_up(&lone.svc).expect("the repair ran");
+    assert_eq!(r.speakers_unlinked, 1, "{r:?}");
+    assert_eq!(linked_person(&lone.svc, m, s), None);
+    assert_eq!(heard.lock().unwrap().len(), 1);
+}
+
 /// T14.49e: the app's `earshot-sync-start` thread runs exactly [`SyncHost::start_up`] (the
 /// ignore copy, the removal repair, then the sync thread), unconditionally; nothing else in
 /// `main.rs` starts sync or runs the repair.

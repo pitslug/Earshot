@@ -127,12 +127,16 @@ describe("First run wizard", () => {
   });
 
   it("does not show when the app says it is done, or when its state cannot be read", async () => {
+    // The list is read once the window's sync subscription is in place (T14.49f): one flush
+    // after the navigation lets that read land, so the only spinner left would be the wizard's.
     setup({ firstRun: { show: false } });
     await screen.findByRole("navigation", { name: "Meetings and settings" });
+    await act(async () => {});
     expect(screen.queryByRole("progressbar")).toBeNull();
     cleanup();
     setup({ firstRun: { show: true, stateFails: true } });
     await screen.findByRole("navigation", { name: "Meetings and settings" });
+    await act(async () => {});
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
 

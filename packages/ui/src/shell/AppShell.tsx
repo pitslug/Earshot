@@ -56,6 +56,7 @@ import {
   DATA_FOLDER_KIND,
   type DeleteAsk,
   type FolderListItem,
+  type Ipc,
   IpcFailure,
   type JobKind,
   type MeetingEvent,
@@ -450,6 +451,10 @@ export function AppShell({
   // How many sync passes changed a person (T12.81): names in every meeting resolve through
   // persons, so the open page reads itself again whatever meeting was named.
   const [peopleSynced, setPeopleSynced] = useState(0);
+  // The `Ipc` whose sync subscription is in place (or could not be made): the list is first read
+  // only after it, so what sync or the start-up removal repair changes before that read is in it,
+  // and anything changed after it is heard (T14.49f, subscribe then read).
+  const [syncHeardOn, setSyncHeardOn] = useState<Ipc | null>(null);
   const [nameVoices, setNameVoices] = useState(0);
   // The meeting the delete dialog asks about, and why a delete was refused.
   // With what deleting it means now (T12.38), asked before the dialog opens.
@@ -581,10 +586,20 @@ export function AppShell({
           return next;
         });
       })
-      .then((s) => {
-        if (live) stop = s;
-        else s();
-      });
+      .then(
+        (s) => {
+          if (!live) {
+            s();
+            return;
+          }
+          stop = s;
+          setSyncHeardOn(ipc);
+        },
+        // A subscription that could not be made never keeps anyone from their meetings.
+        () => {
+          if (live) setSyncHeardOn(ipc);
+        },
+      );
     return () => {
       live = false;
       stop?.();
@@ -736,7 +751,9 @@ export function AppShell({
     ipc.setWindowTheme(themeChoice === "system" ? null : themeChoice).catch(noop);
   }, [ipc, themeChoice]);
 
+  const syncHeard = syncHeardOn === ipc;
   useEffect(() => {
+    if (!syncHeard) return;
     let current = true;
     Promise.all([ipc.listMeetings(), ipc.listFolders()]).then(
       ([meetings, folders]) => {
@@ -777,7 +794,7 @@ export function AppShell({
     return () => {
       current = false;
     };
-  }, [ipc, reload]);
+  }, [ipc, reload, syncHeard]);
 
   // The compact card is for recording only: once the recording ends, the full window
   // returns to show the progress and the summary.

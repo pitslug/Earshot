@@ -128,6 +128,28 @@ fn address_error(refused: AddressRefused) -> IpcError {
     IpcError::invalid(refused.copy())
 }
 
+/// Printed when a start-up step before the sync thread (the ignore copy or the removal repair)
+/// panicked; fixed words, and the steps after it still run.
+pub const START_STEP_PANICKED: &str = "earshot-sync: a start-up step panicked";
+
+/// Tests: the bit of [`SyncHost::panic_in_start_steps_for_test`] that makes the ignore copy panic.
+#[cfg(test)]
+pub const START_COPY_PANICS: u8 = 1;
+
+/// Tests: the bit of [`SyncHost::panic_in_start_steps_for_test`] that makes the repair panic.
+#[cfg(test)]
+pub const START_REPAIR_PANICS: u8 = 2;
+
+/// Runs one start-up step, catching a panic in it (printed as [`START_STEP_PANICKED`]) so the
+/// steps after it still run; `None` when it panicked.
+fn start_step<T>(step: impl FnOnce() -> T) -> Option<T> {
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(step));
+    if ran.is_err() {
+        eprintln!("{START_STEP_PANICKED}");
+    }
+    ran.ok()
+}
+
 /// The app's sync thread and the vault it reads.
 pub struct SyncHost {
     vault: Arc<dyn SyncVault>,
@@ -160,6 +182,9 @@ pub struct SyncHost {
     /// Tests: the next threads cannot be started, as when the system has no thread to give.
     #[cfg(test)]
     refuse_start: std::sync::atomic::AtomicBool,
+    /// Tests: start-up steps made to panic ([`START_COPY_PANICS`], [`START_REPAIR_PANICS`]).
+    #[cfg(test)]
+    start_panics: std::sync::atomic::AtomicU8,
     /// Tests: how many clients were made for the pages' asks.
     #[cfg(test)]
     spares_made: std::sync::atomic::AtomicUsize,
@@ -223,6 +248,8 @@ impl SyncHost {
             spare_generation: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             refuse_start: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            start_panics: std::sync::atomic::AtomicU8::new(0),
             #[cfg(test)]
             spares_made: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
@@ -347,6 +374,22 @@ impl SyncHost {
             .store(refuse, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Makes the start-up steps named by `steps` panic (a mask of [`START_COPY_PANICS`] and
+    /// [`START_REPAIR_PANICS`]; tests).
+    #[cfg(test)]
+    pub fn panic_in_start_steps_for_test(&self, steps: u8) {
+        self.start_panics
+            .store(steps, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Panics when a test asked this start-up step to (tests only).
+    #[cfg(test)]
+    fn panic_if_asked(&self, step: u8) {
+        if self.start_panics.load(std::sync::atomic::Ordering::SeqCst) & step != 0 {
+            panic!("a start-up step made to panic by a test");
+        }
+    }
+
     /// The threads turned off and not yet replaced (tests).
     #[cfg(test)]
     pub fn retired_for_test(&self) -> Vec<Superseder> {
@@ -388,6 +431,8 @@ impl SyncHost {
     /// Returns whether the copy ran here. A store failure only means it is tried again at the
     /// next start.
     pub fn copy_ignores_without_vault(&self, services: &Services) -> bool {
+        #[cfg(test)]
+        self.panic_if_asked(START_COPY_PANICS);
         if self.vault.has().unwrap_or(true) {
             return false;
         }
@@ -403,6 +448,8 @@ impl SyncHost {
         &self,
         services: &Services,
     ) -> Option<earshot_runtime::sync::RemovalRepaired> {
+        #[cfg(test)]
+        self.panic_if_asked(START_REPAIR_PANICS);
         let repaired = earshot_runtime::sync::removal_repair(services).ok()?;
         if let Some(changes) = repaired.changes() {
             let listener = self
@@ -424,10 +471,12 @@ impl SyncHost {
     /// Everything the app's `earshot-sync-start` thread does, in this order: the legacy ignore
     /// copy without a vault ([`Self::copy_ignores_without_vault`]), the removal repair whether
     /// sync is on or off ([`Self::repair_removals`]), then the sync thread
-    /// ([`Self::start_if_on`]). Returns what the repair did.
+    /// ([`Self::start_if_on`]). A panic in the copy or the repair is caught and printed as
+    /// [`START_STEP_PANICKED`], so sync still starts at every start; a repair that panicked
+    /// counts as failed (`None`) and runs again at the next start. Returns what the repair did.
     pub fn start_up(&self, services: &Services) -> Option<earshot_runtime::sync::RemovalRepaired> {
-        self.copy_ignores_without_vault(services);
-        let repaired = self.repair_removals(services);
+        start_step(|| self.copy_ignores_without_vault(services));
+        let repaired = start_step(|| self.repair_removals(services)).flatten();
         self.start_if_on(services);
         repaired
     }
