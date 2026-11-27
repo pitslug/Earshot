@@ -2488,6 +2488,64 @@ mod local {
         assert!(!live_record_of(&svc, id));
     }
 
+    /// T14.47 (docs/sync-spec.md 15.3): once the final transcript is stored the draft is cleared,
+    /// and live summary reuse still finds every draft row it needs (id, track, times, the speaker
+    /// it never had): the same partial is reused, with the same citations and owners as a run
+    /// over the draft before the clearing.
+    #[test]
+    fn summary_local_reuses_a_live_summary_partial_after_the_draft_is_cleared() {
+        let run = |clear: bool| {
+            let dir = TempDir::new("summary");
+            let (svc, _) = services(&dir);
+            let id = meeting(&svc, "Weekly", 140);
+            let live = live_draft(&svc, id, 141);
+            store_live_record(&svc, id, "fake-local-model", &live[..1]);
+            if clear {
+                let clock = Arc::clone(&svc.clock);
+                let mut db = svc.store();
+                let (store, hlc) = db.parts();
+                let done = store.clear_replaced_text(id, 500, hlc, &*clock).unwrap();
+                assert_eq!(done.rows, live.len(), "the whole draft is cleared");
+                drop(db);
+                for r in svc.store().segments(id).unwrap() {
+                    if r.pass == earshot_core::model::TranscriptPass::Live {
+                        assert!(r.is_cleared(), "{r:?}");
+                    }
+                }
+            }
+            let mut cfg = config();
+            cfg.chunk_seconds = 3;
+            let (service, shared) = fake_service(&cfg);
+            let out = service
+                .summarize(
+                    &svc,
+                    id,
+                    &mut ChaCha8Rng::seed_from_u64(142),
+                    &CancelToken::new(),
+                )
+                .unwrap();
+            let r = local_report(&out);
+            assert_eq!(
+                *r.live,
+                crate::live_summaries::LiveReuse {
+                    recorded: 1,
+                    reused: 1,
+                    ..Default::default()
+                },
+                "clear={clear}"
+            );
+            let requests = shared.requests.lock().unwrap().clone();
+            let reduce = requests.last().unwrap()[1].content.clone();
+            let stored = svc.store().summaries(id).unwrap().remove(0).summary;
+            (reduce, stored)
+        };
+        let (before, stored_before) = run(false);
+        let (after, stored_after) = run(true);
+        assert!(after.contains("Recited decision"));
+        assert_eq!(after, before, "the reduce sees the same re-cited partial");
+        assert_eq!(stored_after, stored_before, "same citations and owners");
+    }
+
     #[test]
     fn summary_local_redoes_a_live_summary_partial_that_cannot_be_recited() {
         let dir = TempDir::new("summary");

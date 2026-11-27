@@ -1473,21 +1473,51 @@ fn speaker_rec(rec: &Recorded) -> crate::speakers::SpeakerRecord {
     }
 }
 
-/// T14.47 (docs/sync-spec.md 15.2, "Writers of draft rows"): a session with speaker work on
-/// stores only draft rows with no speaker (live speaker work keeps its windows in device-local
-/// records and never writes a segment row). The recording is mic-only, the session the tests
-/// here have; the mic is the track speaker work runs on.
+/// T14.47 (docs/sync-spec.md 15.2, "Writers of draft rows"): a two-track session with speaker
+/// work on both tracks stores only draft rows with no speaker (live speaker work keeps its
+/// windows in device-local records and never writes a segment row).
 #[test]
 fn live_draft_rows_carry_no_speaker() {
-    let (rec, _, _) = record_with_speakers(Some(3), false);
-    let record = speaker_rec(&rec);
-    assert!(record.results.windows() >= 32, "speaker work ran");
+    let (mic_audio, mic_words) = two_voices();
+    let them_words: Vec<Word> = (0..12u64)
+        .flat_map(|k| turn(&format!("c{k}x"), 2_000 + k * 7_000, 5))
+        .collect();
+    let them_audio = speech(&them_words, 96_000, 900);
+    // The mic's live worker hears the canceller's output.
+    let mic_stream = crate::live::tests::cleaned(&mic_audio, &them_audio);
+    let windows = Arc::new(AtomicUsize::new(0));
+    let done = Arc::new(AtomicUsize::new(0));
+    let factory = with_speakers(
+        oracle_asr(
+            Some(Oracle::new(vec![(mic_stream, mic_words)])),
+            Some(Oracle::new(vec![(them_audio.clone(), them_words)])),
+        ),
+        Some(2),
+        Arc::clone(&windows),
+        Arc::clone(&done),
+        None,
+    );
+    let source = ReplayBuilder::new(ORIGIN, MonoBuffer::new(PIPELINE_RATE, mic_audio))
+        .reference(MonoBuffer::new(PIPELINE_RATE, them_audio))
+        .build()
+        .unwrap();
+    let rec = record(source, LiveTranscription::Stretches(pieces()), factory);
+    // Speaker work ran on both tracks: each left its record.
+    for kind in [TrackId::Mic, TrackId::Reference] {
+        assert!(
+            crate::speakers::speaker_record(&rec.svc.store(), rec.outcome.meeting, kind)
+                .unwrap()
+                .is_some(),
+            "{kind:?}"
+        );
+    }
     let rows = rec.svc.store().segments(rec.outcome.meeting).unwrap();
     let drafts: Vec<_> = rows
         .iter()
         .filter(|r| r.pass == TranscriptPass::Live)
         .collect();
-    assert!(!drafts.is_empty(), "the session stored its draft");
+    let tracks: BTreeSet<EntityId> = drafts.iter().map(|r| r.segment.track).collect();
+    assert_eq!(tracks.len(), 2, "both tracks stored their draft");
     for r in drafts {
         assert_eq!(r.segment.speaker_id, None, "{r:?}");
     }

@@ -318,3 +318,389 @@ fn sync_replaced_the_check_and_the_push_judge_the_same_rows_refused() {
         assert_eq!(super::engine::seal_for_test(&keys, &r).is_ok(), sendable);
     }
 }
+
+/// The relay order of two re-transcriptions (15.4): the owner re-transcribes twice while the
+/// receiver, holding the first pass's lines F0 live, is away. The relay then serves cleared F0,
+/// F2 and cleared F1, in that order. Pulled a row at a time the receiver shows F0 or F2 at each
+/// step, never nothing: H2 holds the last F0 line of each track until F2 applies.
+#[test]
+fn sync_replaced_the_relay_order_of_two_retranscriptions_never_blanks_a_receiver() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let ca = a.client();
+    let cb = b.client().with_pull_pages(1, 1);
+    let (m, mic, them, me) = recorded(&a, 101);
+    a.clock.advance_ms(1_000);
+    pass(&a, m, &mic, &them, me, 102);
+    ca.tick().unwrap();
+    for _ in 0..60 {
+        cb.tick().unwrap();
+    }
+    assert_eq!(shown(&b, m, &mic, &them), (2, 2), "the receiver holds F0");
+    a.clock.advance_ms(1_000);
+    pass(&a, m, &mic, &them, me, 103);
+    ca.tick().unwrap();
+    a.clock.advance_ms(1_000);
+    pass(&a, m, &mic, &them, me, 104);
+    ca.tick().unwrap();
+    let mut held_once = false;
+    for tick in 0..80 {
+        let r = cb.tick().unwrap();
+        held_once |= b
+            .svc
+            .store()
+            .held_count(&[earshot_store::HoldReason::Parent])
+            .unwrap()
+            > 0;
+        let (on_mic, on_them) = shown(&b, m, &mic, &them);
+        assert!(
+            on_mic + on_them > 0,
+            "tick {tick}: the receiver shows nothing"
+        );
+        if r.pull_complete && holds_replaced_text(&b, m).is_empty() && (on_mic, on_them) == (2, 2) {
+            break;
+        }
+    }
+    assert!(held_once, "H2 held a row on the way");
+    assert_eq!(shown(&b, m, &mic, &them), (2, 2));
+    assert!(holds_replaced_text(&b, m).is_empty());
+}
+
+// ---- A format-4 peer with no clearing rule (15.9, 15.10) ----
+//
+// The peer is a device whose own writes are made as 0.9.0 makes them: its passes tombstone every
+// unedited final line of a processed track with its text and leave its draft live, and it never
+// runs the clearing, the sweep or a re-stamp. It needs no test switch in shipped code: in what it
+// pulls here (only cleared copies of its own tombstones, which hold no text) this build's apply
+// does what 0.9.0's does, whole-row last writer wins, no hold (H1 and H2 need a live copy here)
+// and no clearing (there is no text to clear); the tests assert that it holds nothing and sends
+// nothing back. It never runs `clear_replaced_text`, and it holds no queued cleared row, so the
+// commit's "lines go out first" check finds nothing to stamp again.
+
+/// A meeting recorded on `dev` with tracks of `kinds`, a speaker and three draft rows a track.
+fn recorded_with(dev: &Device, kinds: &[TrackId], seed: u64) -> (EntityId, Vec<Track>, EntityId) {
+    let clock = Arc::clone(&dev.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+    let mut db = dev.svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let m = Meeting::new("Invented review", 0, 600, Template::General, &mut stamp);
+    store.put_meeting(m.clone()).unwrap();
+    let tracks: Vec<Track> = kinds
+        .iter()
+        .map(|k| {
+            let t = Track::new(m.id, *k, None, ClockDomain::Replay, &mut stamp);
+            store.put_track(t.clone()).unwrap();
+            t
+        })
+        .collect();
+    let me = Speaker::new(m.id, SpeakerRole::Me, "Me", None, &mut stamp);
+    store.put_speaker(me.clone()).unwrap();
+    for (k, t) in tracks.iter().enumerate() {
+        for j in 0..3u64 {
+            let start = 1_000 + 5_000 * j + 500 * k as u64;
+            let s = seg(t.id, "draft words here", start, stamp.rng, &clock);
+            let row = SegmentRow::new(m.id, TranscriptPass::Live, s, stamp.hlc, stamp.clock);
+            store.put_segment(row).unwrap();
+        }
+    }
+    (m.id, tracks, me.id)
+}
+
+/// A pass as 0.9.0 writes it on the peer: each track in `found` (by index into `tracks`) gets
+/// two new final lines; every track processed (all of them) has its unedited live final lines
+/// tombstoned with their text, before the new lines; drafts stay live; nothing is cleared.
+fn pass_as_0_9_0(
+    dev: &Device,
+    m: EntityId,
+    tracks: &[Track],
+    found: &[usize],
+    me: EntityId,
+    seed: u64,
+) {
+    use earshot_core::model::MeetingRepo as _;
+    let clock = Arc::clone(&dev.clock);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+    let mut db = dev.svc.store();
+    let (store, hlc) = db.parts();
+    store
+        .transaction(|tx| -> Result<(), earshot_store::StoreError> {
+            for r in tx.segments(m).map_err(earshot_store::StoreError::Repo)? {
+                if r.pass == TranscriptPass::Final && !r.meta.deleted && r.text_edited_at.is_none()
+                {
+                    let mut old = r;
+                    old.meta.mark_deleted(hlc, &*clock);
+                    tx.put_segment(old)
+                        .map_err(earshot_store::StoreError::Repo)?;
+                }
+            }
+            for &k in found {
+                for j in 0..2u64 {
+                    let start = 1_000 + 6_000 * j + 500 * k as u64;
+                    let mut s = seg(tracks[k].id, "final words", start, &mut rng, &clock);
+                    s.speaker_id = Some(me);
+                    let row = SegmentRow::new(m, TranscriptPass::Final, s, hlc, &*clock);
+                    tx.put_segment(row)
+                        .map_err(earshot_store::StoreError::Repo)?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// What `dev` shows of `m`: the pass shown and the number of lines per track of `tracks`.
+fn showing(dev: &Device, m: EntityId, tracks: &[Track]) -> (Option<TranscriptPass>, Vec<usize>) {
+    let shown = dev.svc.store().shown_lines(m).unwrap();
+    let ids: std::collections::BTreeSet<EntityId> = shown.lines.iter().map(|l| l.id).collect();
+    let rows = dev.svc.store().segments(m).unwrap();
+    let per = tracks
+        .iter()
+        .map(|t| {
+            rows.iter()
+                .filter(|r| ids.contains(&r.segment.id) && r.segment.track == t.id)
+                .count()
+        })
+        .collect();
+    (shown.pass, per)
+}
+
+/// Drafts of `m` on `dev` that still hold their text.
+fn live_drafts(dev: &Device, m: EntityId) -> usize {
+    dev.svc
+        .store()
+        .segments(m)
+        .unwrap()
+        .iter()
+        .filter(|r| r.pass == TranscriptPass::Live && !r.meta.deleted && r.holds_text())
+        .count()
+}
+
+/// Tombstones of `m` on `dev` that still hold text.
+fn text_tombstones(dev: &Device, m: EntityId) -> usize {
+    dev.svc
+        .store()
+        .segments(m)
+        .unwrap()
+        .iter()
+        .filter(|r| r.meta.deleted && r.holds_text())
+        .count()
+}
+
+/// The peer and two updated devices joined to its vault.
+fn peer_and_two(relay: &TestRelay) -> (Device, Device, Device) {
+    let (p, a) = pair(relay);
+    let b = Device::new("sync-replaced-b");
+    let offer = offer_pairing_code(&p.svc, p.vault()).unwrap();
+    join_with_code(&b.svc, &*b.vault, &relay.relay.url(), offer.code()).unwrap();
+    (p, a, b)
+}
+
+/// Ticks the peer, then each updated device a row at a time until a whole round brings nothing,
+/// checking after every tick that no device shows nothing for `m`.
+fn settle_watching(
+    peer: &SyncClient,
+    others: &[(&Device, &SyncClient)],
+    m: EntityId,
+    tracks: &[Track],
+) {
+    for round in 0..200 {
+        let mut busy = false;
+        let r = peer.tick().unwrap();
+        assert_eq!(r.held, 0, "the peer holds nothing: {r:?}");
+        busy |= r.pushed > 0 || r.written > 0;
+        for (dev, c) in others {
+            let r = c.tick().unwrap();
+            busy |= r.pushed > 0 || r.written > 0 || r.held > 0 || !r.pull_complete;
+            let (pass, per) = showing(dev, m, tracks);
+            assert!(
+                pass.is_some() && per.iter().sum::<usize>() > 0,
+                "round {round}: a device shows nothing ({pass:?}, {per:?})"
+            );
+        }
+        if !busy {
+            return;
+        }
+    }
+    panic!("the devices did not settle");
+}
+
+/// Runs each updated device's sweep (after a quiet tick, so the sweep does not wait on it).
+fn sweep_updated(devices: &[(&Device, &SyncClient)]) {
+    for (dev, c) in devices {
+        c.tick().unwrap();
+        let sync = crate::replaced_text::StoreSync::of(&dev.svc);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let r = crate::replaced_text::sweep(
+            &dev.svc,
+            &sync,
+            &crate::replaced_text::RealWait::new(stop),
+        )
+        .unwrap();
+        assert!(r.done, "{r:?}");
+    }
+}
+
+/// The two-track case: the updated devices clear the text of the peer's tombstones and never its
+/// draft, also in their sweeps; a re-transcription that finds nothing for one track leaves every
+/// device, the peer included, showing the other track's final lines and nothing for that track
+/// once the release has run, and so after further ticks; the peer applies the cleared rows and
+/// sends nothing back for them.
+#[test]
+fn sync_replaced_a_peer_with_no_clearing_rule_two_tracks() {
+    let relay = relay();
+    let (p, a, b) = peer_and_two(&relay);
+    let cp = p.client();
+    let (ca, cb) = (
+        a.client().with_pull_pages(1, 1),
+        b.client().with_pull_pages(1, 1),
+    );
+    let (m, tracks, me) = recorded_with(&p, &[TrackId::Mic, TrackId::Reference], 71);
+    cp.tick().unwrap();
+    for _ in 0..40 {
+        ca.tick().unwrap();
+        cb.tick().unwrap();
+    }
+    let others = [(&a, &ca), (&b, &cb)];
+    // The first pass, as 0.9.0: lines on both tracks, the drafts left live.
+    p.clock.advance_ms(1_000);
+    pass_as_0_9_0(&p, m, &tracks, &[0, 1], me, 72);
+    settle_watching(&cp, &others, m, &tracks);
+    for d in [&a, &b] {
+        assert_eq!(
+            live_drafts(d, m),
+            6,
+            "the peer's draft is never cleared elsewhere"
+        );
+        assert_eq!(showing(d, m, &tracks).1, vec![2, 2]);
+    }
+    sweep_updated(&others);
+    for d in [&a, &b] {
+        assert_eq!(live_drafts(d, m), 6, "nor by a sweep");
+    }
+    // A re-transcription that finds nothing for the reference: its lines tombstoned with text.
+    p.clock.advance_ms(1_000);
+    pass_as_0_9_0(&p, m, &tracks, &[0], me, 73);
+    assert!(text_tombstones(&p, m) >= 4);
+    settle_watching(&cp, &others, m, &tracks);
+    for d in [&p, &a, &b] {
+        assert_eq!(
+            showing(d, m, &tracks),
+            (Some(TranscriptPass::Final), vec![2, 0]),
+            "the other track's lines, nothing for the emptied one"
+        );
+    }
+    for d in [&a, &b] {
+        assert_eq!(
+            text_tombstones(d, m),
+            0,
+            "the updated devices hold no replaced text"
+        );
+        assert_eq!(live_drafts(d, m), 6);
+    }
+    // The peer took the cleared copies and sends nothing back for them.
+    assert_eq!(text_tombstones(&p, m), 0);
+    let queued: Vec<_> = p
+        .svc
+        .store()
+        .outbox(10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.meeting() == Some(m))
+        .collect();
+    assert!(queued.is_empty(), "{queued:?}");
+    // And so it stays.
+    settle_watching(&cp, &others, m, &tracks);
+    for d in [&p, &a, &b] {
+        assert_eq!(showing(d, m, &tracks).1, vec![2, 0]);
+    }
+}
+
+/// The one-track case: a re-transcription that finds nothing tombstones every line; after the
+/// release every device shows the meeting's draft, never nothing.
+#[test]
+fn sync_replaced_a_peer_with_no_clearing_rule_one_track() {
+    let relay = relay();
+    let (p, a, b) = peer_and_two(&relay);
+    let cp = p.client();
+    let (ca, cb) = (
+        a.client().with_pull_pages(1, 1),
+        b.client().with_pull_pages(1, 1),
+    );
+    let (m, tracks, me) = recorded_with(&p, &[TrackId::Mic], 81);
+    cp.tick().unwrap();
+    for _ in 0..40 {
+        ca.tick().unwrap();
+        cb.tick().unwrap();
+    }
+    let others = [(&a, &ca), (&b, &cb)];
+    p.clock.advance_ms(1_000);
+    pass_as_0_9_0(&p, m, &tracks, &[0], me, 82);
+    settle_watching(&cp, &others, m, &tracks);
+    p.clock.advance_ms(1_000);
+    pass_as_0_9_0(&p, m, &tracks, &[], me, 83);
+    settle_watching(&cp, &others, m, &tracks);
+    for d in [&p, &a, &b] {
+        assert_eq!(
+            showing(d, m, &tracks),
+            (Some(TranscriptPass::Live), vec![3]),
+            "the draft, which nobody cleared"
+        );
+    }
+    for d in [&a, &b] {
+        assert_eq!(text_tombstones(d, m), 0);
+    }
+}
+
+/// The peer's push cut between its tombstones and its lines: it does not stamp its tombstones
+/// again when a line is written, so after an edit of every new line its tombstones go out first;
+/// the updated devices, pulling a row at a time, show the draft or the lines, never nothing, and
+/// the lines once everything is in.
+#[test]
+fn sync_replaced_a_peer_push_cut_between_its_tombstones_and_its_lines() {
+    let relay = relay();
+    let (p, a, b) = peer_and_two(&relay);
+    let cp = p.client();
+    let (ca, cb) = (
+        a.client().with_pull_pages(1, 1),
+        b.client().with_pull_pages(1, 1),
+    );
+    let (m, tracks, me) = recorded_with(&p, &[TrackId::Mic, TrackId::Reference], 91);
+    cp.tick().unwrap();
+    for _ in 0..40 {
+        ca.tick().unwrap();
+        cb.tick().unwrap();
+    }
+    let others = [(&a, &ca), (&b, &cb)];
+    p.clock.advance_ms(1_000);
+    pass_as_0_9_0(&p, m, &tracks, &[0, 1], me, 92);
+    settle_watching(&cp, &others, m, &tracks);
+    p.clock.advance_ms(1_000);
+    pass_as_0_9_0(&p, m, &tracks, &[0, 1], me, 93);
+    // Every new line edited before the push: lines now stamped after the tombstones.
+    let new_lines: Vec<EntityId> = p
+        .svc
+        .store()
+        .segments(m)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
+        .map(|r| r.segment.id)
+        .collect();
+    for id in &new_lines {
+        p.clock.advance_ms(10);
+        crate::edit::edit_segment(&p.svc, m, *id, "edited final words").unwrap();
+    }
+    settle_watching(&cp, &others, m, &tracks);
+    for d in [&a, &b] {
+        assert_eq!(
+            showing(d, m, &tracks),
+            (Some(TranscriptPass::Final), vec![2, 2])
+        );
+        assert_eq!(text_tombstones(d, m), 0);
+    }
+}
