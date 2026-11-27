@@ -19,21 +19,21 @@ source: earshot
 
 Budget is 10% over—travel is the cause. Travel gets cut.
 
-## Notes
-
-### Budget
-
-- Over by ten percent — mostly travel
-- Check travel with Ada
-
 ## Decisions
 
 - Cut travel
 
 ## Action items
 
-- [ ] **Ada Lovelace**: Send revised travel numbers (due: Friday)
-- [ ] **Me**: Update the forecast
+- [ ] Send revised travel numbers (due: Friday) (Ada Lovelace)
+- [ ] Update the forecast (Me)
+
+## Notes
+
+### Budget
+
+- Over by ten percent — mostly travel
+- Check travel with Ada
 
 ## Open questions
 

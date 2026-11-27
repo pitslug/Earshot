@@ -54,7 +54,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use earshot_core::export::{ExportInput, ExportOptions, RenderedExport, render};
+use earshot_core::export::{ExportInput, ExportOptions, ExportUser, RenderedExport, render};
 use earshot_core::identity::{DeviceId, EntityId};
 use earshot_core::model::MeetingRepo;
 use earshot_store::{
@@ -81,7 +81,23 @@ pub enum ExportSelection {
     Changed,
 }
 
-fn rendered(view: &MeetingView, options: &ExportOptions) -> Result<RenderedExport, RuntimeError> {
+/// The user for the note's action groups (T14.61): `user_name` as
+/// [`crate::edit::user_name_in`] reads it (`None` while it is the default "Me"), names
+/// compared by [`crate::edit::person_name_key`], the meeting page's rule.
+#[must_use]
+pub fn note_user(user_name: Option<&str>) -> Option<ExportUser<'_>> {
+    let name = user_name?.trim();
+    (!name.is_empty() && name != earshot_core::voiceprint::DEFAULT_ME_NAME).then_some(ExportUser {
+        name,
+        key: crate::edit::person_name_key,
+    })
+}
+
+fn rendered(
+    view: &MeetingView,
+    user_name: Option<&str>,
+    options: &ExportOptions,
+) -> Result<RenderedExport, RuntimeError> {
     let attendees = view.attendees();
     let unknown = view.unknown_speaker_lines();
     render(
@@ -94,6 +110,7 @@ fn rendered(view: &MeetingView, options: &ExportOptions) -> Result<RenderedExpor
             summary: view.summary.as_ref().map(|s| &s.summary),
             transcript: view.pass,
             unknown_speaker_lines: &unknown,
+            user: note_user(user_name),
         },
         options,
     )
@@ -161,12 +178,16 @@ pub fn export_meeting<R: Rng + ?Sized>(
 ) -> Result<ExportReport, RuntimeError> {
     let clock = Arc::clone(&services.clock);
     let _lease = services.lease_meeting(meeting)?;
-    let (view, device) = {
+    let (view, device, user_name) = {
         let db = services.store();
-        (MeetingView::load_named(&db, meeting)?, db.device())
+        (
+            MeetingView::load_named(&db, meeting)?,
+            db.device(),
+            crate::edit::user_name_in(&**db)?,
+        )
     };
     let view = view.ok_or(RuntimeError::Internal("no such meeting"))?;
-    let note = rendered(&view, options)?;
+    let note = rendered(&view, user_name.as_deref(), options)?;
     let mut locked = LockedStore {
         services,
         on_search: &mut || {},
@@ -206,9 +227,13 @@ fn export_meetings_observed<R: Rng + ?Sized>(
     on_search: &mut dyn FnMut(),
 ) -> Result<Vec<(EntityId, Result<ExportReport, StoreError>)>, RuntimeError> {
     let clock = Arc::clone(&services.clock);
-    let (device, meetings) = {
+    let (device, meetings, user_name) = {
         let db = services.store();
-        (db.device(), db.meetings()?)
+        (
+            db.device(),
+            db.meetings()?,
+            crate::edit::user_name_in(&**db)?,
+        )
     };
     let mut chosen = Vec::new();
     let mut leases = Vec::new();
@@ -221,7 +246,7 @@ fn export_meetings_observed<R: Rng + ?Sized>(
         let Some(view) = MeetingView::load_named(&services.store(), m.id)? else {
             continue;
         };
-        let note = rendered(&view, options)?;
+        let note = rendered(&view, user_name.as_deref(), options)?;
         let wanted = match selection {
             ExportSelection::All => true,
             ExportSelection::Changed => {

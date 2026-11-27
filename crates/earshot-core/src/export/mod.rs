@@ -5,13 +5,15 @@
 //!   the meeting's recorded UTC offset; title sanitised with hyphens, never em dashes),
 //!   YAML frontmatter (`earshot_id`, `date`, `start`, `duration`, `attendees`, `tags`,
 //!   `source`), and the Earshot-managed body between [`BEGIN_MARKER`] and [`END_MARKER`]:
-//!   TL;DR, enhanced notes, decisions, action items as `- [ ]` tasks, open questions, the
-//!   user's raw notes, and the transcript in a collapsed `> [!note]- Transcript` callout.
+//!   TL;DR, decisions, action items as `- [ ]` tasks (grouped into the user's and other
+//!   people's, T14.61), enhanced notes, open questions, the user's raw notes, and the
+//!   transcript in a collapsed `> [!note]- Transcript` callout.
 //! - [`merge`]: replaces only the managed region and the Earshot-owned frontmatter keys
 //!   ([`OWNED_KEYS`], updated in place), keeps every other key and all text outside the
 //!   region byte for byte, and merges `tags` as a union. A task line in the new region
 //!   whose text after the checkbox is unchanged keeps the mark the user set on it (`x`,
-//!   `X` or a plugin's own character), so ticked action items survive a re-export.
+//!   `X` or a plugin's own character), so ticked action items survive a re-export,
+//!   including across T14.61's change of the action-item format.
 //!   Merging a render into its own output is the identity, so re-export is
 //!   byte-identical.
 //! - [`earshot_id_of`]: the `earshot_id` in a note's frontmatter (finding a renamed or
@@ -44,7 +46,10 @@ mod render;
 mod text;
 
 pub use merge::{earshot_id_of, merge};
-pub use render::{ExportInput, ExportOptions, RenderedExport, render};
+pub use render::{
+    ExportInput, ExportOptions, ExportUser, OwnerGroup, RenderedExport, owner_group, owner_names,
+    render,
+};
 pub use text::{MAX_TITLE_BYTES, MAX_TITLE_CHARS, replace_em_dash, sanitize_file_name};
 
 use core::fmt;

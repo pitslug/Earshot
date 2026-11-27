@@ -5,7 +5,7 @@
 //! mix) and a leading UTF-8 byte-order mark. Generated text (owned keys, tags, the region,
 //! separators) uses the note's dominant line ending.
 
-use super::render::{RenderedExport, tags_block, union_tags};
+use super::render::{RenderedExport, name_key, owner_names, tags_block, union_tags};
 use super::{BEGIN_MARKER, END_MARKER, ExportError, OWNED_KEYS};
 use crate::identity::EntityId;
 
@@ -195,11 +195,90 @@ fn task_line(line: &str) -> Option<(char, &str)> {
     (!matches!(mark, '\n' | '\r')).then_some((mark, text))
 }
 
+/// An action-item line's task with its owners taken off (T14.61), for matching a line
+/// across the change of format: a leading "**Owner**: " (the form before T14.61) and a
+/// trailing "(<owners>)" or "(with <owners>)" (the form since) are removed, a trailing
+/// "(due: ...)" is kept. Owner names are compared by `render::name_key` (old and new
+/// lines hold the same summary's owner text, so no user rule is needed). A text that has neither is its own task with no owners.
+#[derive(Debug, Default)]
+struct TaskKey {
+    task: String,
+    owners: Vec<String>,
+    /// The owners were listed as "(with ...)": a line of the user's own, shared.
+    with: bool,
+}
+
+impl TaskKey {
+    fn of(text: &str) -> TaskKey {
+        let name = name_key;
+        let mut owners = Vec::new();
+        let mut rest = text;
+        if let Some(after) = text.strip_prefix("**")
+            && let Some(end) = after.find("**: ")
+            && end > 0
+        {
+            owners = owner_names(&after[..end]).into_iter().map(name).collect();
+            rest = &after[end + 4..];
+        }
+        let mut with = false;
+        if let Some(open) = trailing_group(rest) {
+            let inner = &rest[open + 1..rest.len() - 1];
+            if !inner.starts_with("due: ") {
+                let (listed, w) = match inner.strip_prefix("with ") {
+                    Some(l) => (l, true),
+                    None => (inner, false),
+                };
+                if owners.is_empty() {
+                    owners = listed.split(", ").map(name).collect();
+                    with = w;
+                }
+                rest = &rest[..open - 1];
+            }
+        }
+        TaskKey {
+            task: rest.to_owned(),
+            owners,
+            with,
+        }
+    }
+}
+
+/// [`TaskKey::of`] as (task, owners, with), for the tests.
+#[cfg(test)]
+pub(super) fn task_key_parts(text: &str) -> (String, Vec<String>, bool) {
+    let k = TaskKey::of(text);
+    (k.task, k.owners, k.with)
+}
+
+/// The byte index of the `(` that opens a balanced "(...)" ending `text`, when a space
+/// comes before it.
+fn trailing_group(text: &str) -> Option<usize> {
+    if !text.ends_with(')') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (i > 0 && text[..i].ends_with(' ')).then_some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The new managed region with the task marks the user set in the old one (T14.27).
 ///
 /// Earshot renders action items as unticked `- [ ]` tasks inside the region, which a
-/// re-export replaces whole. Matching runs in two passes over the task lines of the new
-/// region, each old task line used at most once, first come first served:
+/// re-export replaces whole. Matching runs in three passes over the task lines of the new
+/// region, each old task line used at most once, first come first served (the third, for
+/// notes written before T14.61's change of the action-item format, is described where it
+/// runs):
 ///
 /// 1. Exact: every new task line, whatever its own mark, takes the first unused old line
 ///    with the same text after the checkbox. Repeated identical lines pair up in order,
@@ -223,7 +302,8 @@ fn carry_task_marks(old_region: &str, new_region: &str) -> String {
         .filter_map(task_line)
         .map(|(m, t)| Some((m, plain_form(t))))
         .collect();
-    if old.iter().flatten().all(|(m, _)| *m == ' ') {
+    let old_marks: Vec<char> = old.iter().flatten().map(|(m, _)| *m).collect();
+    if old_marks.iter().all(|m| *m == ' ') {
         // Nothing marked: the new region as rendered.
         return new_region.to_owned();
     }
@@ -254,6 +334,71 @@ fn carry_task_marks(old_region: &str, new_region: &str) -> String {
                     .is_some_and(|rest| rest.starts_with(' '))
             });
         }
+    }
+    // Pass 3 (T14.61): the action-item format changed from "**Owner**: task" once per
+    // owner to grouped lines with the owners in a trailing "(...)". A new unticked line still
+    // unmatched collects the unused old lines with the same task (`TaskKey`):
+    // a. every one whose owner is among the new line's listed owners (a shared item takes
+    //    each per-owner line it replaces);
+    // b. then, for a line of the user's own (no owners listed, or "(with ...)"), the first
+    //    remaining one whose owners are not listed: the user's own old line, whose name the
+    //    merge does not know.
+    // The merged line is ticked if any line it collected was ticked: it takes the mark of
+    // the first ticked one in the old region's order. Each old line is still used once.
+    let keys: Vec<Option<TaskKey>> = new
+        .iter()
+        .zip(&taken)
+        .map(|(n, t)| match (n, t) {
+            (Some((' ', text)), None) => Some(TaskKey::of(text)),
+            _ => None,
+        })
+        .collect();
+    let old_keys: Vec<TaskKey> = old
+        .iter()
+        .map(|o| {
+            o.as_ref()
+                .map_or_else(TaskKey::default, |(_, t)| TaskKey::of(t))
+        })
+        .collect();
+    let mut collected: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
+    for (i, k) in keys.iter().enumerate() {
+        let Some(k) = k.as_ref().filter(|k| !k.owners.is_empty()) else {
+            continue;
+        };
+        for (j, ok) in old_keys.iter().enumerate() {
+            if old[j].is_some()
+                && ok.task == k.task
+                && ok.owners.iter().any(|o| k.owners.contains(o))
+            {
+                collected[i].push(j);
+                old[j] = None;
+            }
+        }
+    }
+    for (i, k) in keys.iter().enumerate() {
+        let Some(k) = k.as_ref().filter(|k| k.with || k.owners.is_empty()) else {
+            continue;
+        };
+        if let Some(j) = (0..old.len()).find(|&j| {
+            old[j].is_some()
+                && old_keys[j].task == k.task
+                && !old_keys[j].owners.iter().any(|o| k.owners.contains(o))
+        }) {
+            collected[i].push(j);
+            old[j] = None;
+        }
+    }
+    for (i, mut js) in collected.into_iter().enumerate() {
+        if js.is_empty() {
+            continue;
+        }
+        js.sort_unstable();
+        taken[i] = Some(
+            js.iter()
+                .map(|&j| old_marks[j])
+                .find(|m| *m != ' ')
+                .unwrap_or(' '),
+        );
     }
     let mut out = String::with_capacity(new_region.len());
     for ((line, n), mark) in lines.iter().zip(&new).zip(taken) {

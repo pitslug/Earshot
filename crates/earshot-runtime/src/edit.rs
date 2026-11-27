@@ -1842,11 +1842,21 @@ pub fn named_after_me_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>,
 
 /// The user's name as [`named_after_me`] compares it, `None` without a user or a name.
 fn user_name_key<R: VoiceprintRepo + ?Sized>(repo: &R) -> Result<Option<String>, RuntimeError> {
+    Ok(user_name_in(repo)?.map(|name| name_key(&name)))
+}
+
+/// The user's name as they set it (the `is_me` person's name, trimmed), `None` without a
+/// user or while it is still the default [`DEFAULT_ME_NAME`] (T14.61: the note's action
+/// groups, as the meeting page's).
+///
+/// # Errors
+/// Store errors.
+pub fn user_name_in<R: VoiceprintRepo + ?Sized>(repo: &R) -> Result<Option<String>, RuntimeError> {
     let Some(me) = existing_me(repo).map_err(voiceprint_err)? else {
         return Ok(None);
     };
     let name = me.display_name.trim();
-    Ok((name != DEFAULT_ME_NAME && !name.is_empty()).then(|| name_key(name)))
+    Ok((name != DEFAULT_ME_NAME && !name.is_empty()).then(|| name.to_owned()))
 }
 
 fn name_key(name: &str) -> String {

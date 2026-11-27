@@ -231,6 +231,7 @@ fn input(f: &Fixture) -> ExportInput<'_> {
         summary: Some(&f.summary),
         transcript: Some(TranscriptPass::Final),
         unknown_speaker_lines: &[],
+        user: None,
     }
 }
 
@@ -648,8 +649,8 @@ fn export_merge_keeps_crlf_line_endings() {
 
 // ---- T14.27: ticked action items survive a re-export ----
 
-const ADA_TASK: &str = "**Ada Lovelace**: Send revised travel numbers (due: Friday)";
-const ME_TASK: &str = "**Me**: Update the forecast";
+const ADA_TASK: &str = "Send revised travel numbers (due: Friday) (Ada Lovelace)";
+const ME_TASK: &str = "Update the forecast (Me)";
 
 #[test]
 fn export_merge_keeps_ticked_action_items_whose_text_is_unchanged() {
@@ -673,7 +674,7 @@ fn export_merge_keeps_ticked_action_items_whose_text_is_unchanged() {
     let merged = merge(&ticked, &r2).unwrap();
     assert!(merged.contains(&format!("- [x] {ADA_TASK}\n")), "{merged}");
     assert!(
-        merged.contains("- [ ] **Me**: Update the forecast by Monday\n"),
+        merged.contains("- [ ] Update the forecast by Monday (Me)\n"),
         "{merged}"
     );
     assert!(!merged.contains("- [/]"), "{merged}");
@@ -704,9 +705,12 @@ fn export_merge_keeps_the_users_own_marker_character_and_crlf() {
 #[test]
 fn export_merge_carries_marks_of_repeated_task_lines_in_order() {
     let mut f = fixture();
-    // Two identical items, then a third with other text.
+    // Two items with identical lines (other citations, so not one item, T14.61), then a
+    // third with other text.
     let item = f.summary.action_items[1].clone();
-    f.summary.action_items = vec![item.clone(), item, f.summary.action_items[0].clone()];
+    let mut again = item.clone();
+    again.source_segment_ids = vec![id(20)];
+    f.summary.action_items = vec![item, again, f.summary.action_items[0].clone()];
     let r = render(&input(&f), &opts()).unwrap();
     let doc = r.to_file();
     let first = doc.find(&format!("- [ ] {ME_TASK}")).unwrap();
@@ -734,7 +738,7 @@ fn export_merge_keeps_a_tick_on_a_line_written_before_the_escaping_rule() {
     f.summary.action_items[1].task = "Check the <b>bold</b> ![chart] text".into();
     let r = render(&input(&f), &opts()).unwrap();
     let doc = r.to_file();
-    let escaped = "**Me**: Check the &lt;b>bold&lt;/b> !&#91;chart] text";
+    let escaped = "Check the &lt;b>bold&lt;/b> !&#91;chart] text (Me)";
     assert!(doc.contains(&format!("- [ ] {escaped}\n")), "{doc}");
     // As a version from before T14.28 wrote it, raw, and the user ticked it.
     let old = doc.replace(
@@ -800,15 +804,15 @@ fn export_merge_does_not_carry_a_tick_to_a_longer_item_sharing_its_start() {
     let r2 = render(&input(&f), &opts()).unwrap();
     let merged = merge(&ticked, &r2).unwrap();
     assert!(
-        merged.contains("- [ ] **Me**: Update the forecast numbers\n"),
+        merged.contains("- [ ] Update the forecast numbers (Me)\n"),
         "{merged}"
     );
-    assert!(!merged.contains("- [x] **Me**"), "{merged}");
+    assert!(!merged.contains("- [x]"), "{merged}");
     // A prefix that ends mid-word does not match either.
     let partial = r
         .to_file()
         .replace(&format!("- [ ] {ME_TASK}"), &format!("- [x] {ME_TASK}s"));
-    assert!(!merge(&partial, &r).unwrap().contains("- [x] **Me**"));
+    assert!(!merge(&partial, &r).unwrap().contains("- [x]"));
 }
 
 #[test]
@@ -819,7 +823,7 @@ fn export_merge_keeps_a_tick_written_under_the_wider_escaping_rule() {
     let doc = r.to_file();
     let line = doc
         .lines()
-        .find(|l| l.starts_with("- [ ] **Me**"))
+        .find(|l| l.starts_with("- [ ] Keep costs"))
         .unwrap()
         .to_owned();
     // The note as T14.28's first rule wrote it (every `<` escaped), then ticked.
@@ -839,6 +843,385 @@ fn export_merge_never_carries_a_mark_from_outside_the_region() {
     let merged = merge(&doc, &r).unwrap();
     assert_eq!(merged, doc);
     assert_eq!(merged.matches(&format!("- [ ] {ME_TASK}")).count(), 1);
+}
+
+// ---- T14.61: the note follows the meeting page ----
+
+/// A stand-in for the runtime's `edit::person_name_key` (core has no copy of it): white
+/// space collapsed, lower case.
+fn test_key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn casey() -> ExportUser<'static> {
+    ExportUser {
+        name: "Casey Lane",
+        key: test_key,
+    }
+}
+
+fn item(owner: &str, task: &str, due: Option<&str>, seg: u8) -> ActionItem {
+    ActionItem {
+        owner: owner.into(),
+        task: task.into(),
+        due: due.map(Into::into),
+        source_segment_ids: vec![id(seg)],
+    }
+}
+
+/// Invented action items: the user's own, someone else's, one the user shares, the same
+/// task with other citations, and one two other people share.
+fn grouped_items() -> Vec<ActionItem> {
+    vec![
+        item("Casey Lane", "Book the room", None, 20),
+        item("Ada Lovelace", "Send numbers", Some("Friday"), 21),
+        item(" casey  LANE ", "Draft the plan", None, 22),
+        item("Ada Lovelace", "Draft the plan", None, 22),
+        item("Bo Tran", "Draft the plan", None, 20),
+        item("Bo Tran", "Check rates", None, 21),
+        item("Ada Lovelace", "Check rates", None, 21),
+    ]
+}
+
+/// The "## Action items" section of a rendered region.
+fn actions_section(region: &str) -> &str {
+    let start = region.find("## Action items\n").expect("action items");
+    let rest = &region[start..];
+    &rest[..rest.find("\n## ").unwrap_or(rest.len())]
+}
+
+#[test]
+fn export_golden_with_the_users_own_actions() {
+    // Copied by hand to `acceptance/export/my_actions.md`, whose JSON is this input.
+    let mut f = fixture();
+    f.speakers[0].display_name = "Casey Lane".into();
+    f.attendees = vec!["Ada Lovelace".into(), "Casey Lane".into()];
+    f.summary.action_items = vec![
+        item("Casey Lane", "Update the forecast", None, 22),
+        item(
+            "Ada Lovelace",
+            "Send revised travel numbers",
+            Some("Friday"),
+            21,
+        ),
+        item("Ada Lovelace", "Update the forecast", None, 22),
+    ];
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    assert_snapshot("my_actions", &r.to_file());
+}
+
+#[test]
+fn export_region_follows_the_meeting_page_order() {
+    let f = fixture();
+    let r = render(&input(&f), &opts()).unwrap();
+    let at = |h: &str| {
+        r.region
+            .find(h)
+            .unwrap_or_else(|| panic!("{h} missing: {}", r.region))
+    };
+    let order = [
+        "## TL;DR",
+        "## Decisions",
+        "## Action items",
+        "## Notes",
+        "### Budget",
+        "## Open questions",
+        "## My notes",
+        "> [!note]- Transcript",
+    ];
+    for w in order.windows(2) {
+        assert!(
+            at(w[0]) < at(w[1]),
+            "{} before {}: {}",
+            w[0],
+            w[1],
+            r.region
+        );
+    }
+}
+
+#[test]
+fn export_actions_are_grouped_into_the_users_and_other_peoples() {
+    let mut f = fixture();
+    f.summary.action_items = grouped_items();
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    assert_eq!(
+        actions_section(&r.region),
+        "## Action items\n\n\
+         ### My actions\n\n\
+         - [ ] Book the room\n\
+         - [ ] Draft the plan (with Ada Lovelace)\n\n\
+         ### Other actions\n\n\
+         - [ ] Draft the plan (Bo Tran)\n\
+         - [ ] Send numbers (due: Friday) (Ada Lovelace)\n\
+         - [ ] Check rates (Bo Tran, Ada Lovelace)\n",
+        "{}",
+        r.region
+    );
+    let doc = r.to_file();
+    assert_eq!(merge(&doc, &r).unwrap(), doc, "still a fixed point");
+}
+
+#[test]
+fn export_an_empty_action_group_is_left_out() {
+    let mut f = fixture();
+    f.summary.action_items = vec![item("Ada Lovelace", "Send numbers", None, 21)];
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    assert_eq!(
+        actions_section(&r.region),
+        "## Action items\n\n### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n"
+    );
+    f.summary.action_items = vec![item("casey lane", "Book the room", Some("Monday"), 20)];
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    assert_eq!(
+        actions_section(&r.region),
+        "## Action items\n\n### My actions\n\n- [ ] Book the room (due: Monday)\n"
+    );
+}
+
+#[test]
+fn export_actions_without_a_user_name_are_one_list_with_owners() {
+    let mut f = fixture();
+    f.summary.action_items = grouped_items();
+    let blank = |name| ExportUser {
+        name,
+        key: test_key,
+    };
+    for user in [None, Some(blank("")), Some(blank("  "))] {
+        let mut i = input(&f);
+        i.user = user;
+        let r = render(&i, &opts()).unwrap();
+        assert_eq!(
+            actions_section(&r.region),
+            "## Action items\n\n\
+             - [ ] Book the room (Casey Lane)\n\
+             - [ ] Draft the plan (Bo Tran)\n\
+             - [ ] Send numbers (due: Friday) (Ada Lovelace)\n\
+             - [ ] Check rates (Bo Tran, Ada Lovelace)\n\
+             - [ ] Draft the plan (casey  LANE, Ada Lovelace)\n",
+            "{user:?}"
+        );
+    }
+}
+
+#[test]
+fn export_the_user_owns_by_the_key_they_were_given() {
+    let u = casey();
+    assert!(u.owns("Casey Lane"));
+    assert!(u.owns("  casey\tLANE "));
+    assert!(!u.owns("Casey"));
+    // The key is the caller's: one that folds nothing matches only the exact name.
+    let exact = ExportUser {
+        name: "Casey Lane",
+        key: |s| s.to_owned(),
+    };
+    assert!(exact.owns("Casey Lane"));
+    assert!(!exact.owns("casey lane"));
+    // A name the key makes blank owns nothing, not even a blank owner.
+    let blank = ExportUser {
+        name: " ",
+        key: test_key,
+    };
+    assert!(!blank.owns(""));
+    assert!(!blank.owns(" "));
+}
+
+#[test]
+fn export_action_order_and_merge_key_follow_the_meeting_page() {
+    let mut f = fixture();
+    f.summary.action_items = vec![
+        item("Ada Lovelace", "Cites nothing", None, 0),
+        item("Ada Lovelace", "Cites the third line", None, 22),
+        item("Ada Lovelace", "Cites the second line", Some("Friday"), 21),
+        item("Bo Tran", "Cites the second line", Some("Monday"), 21),
+        item("Bo Tran", "Cites the second line", Some("Friday"), 21),
+        item(
+            "Ada Lovelace",
+            "Cites a line not in the transcript",
+            None,
+            99,
+        ),
+        item("Bo Tran", "Cites the first and third lines", None, 22),
+    ];
+    f.summary.action_items[0].source_segment_ids.clear();
+    f.summary.action_items[6].source_segment_ids.push(id(20));
+    let r = render(&input(&f), &opts()).unwrap();
+    // By earliest cited line, stable; another due date is another item; items citing no
+    // line of the transcript last, in summary order.
+    assert_eq!(
+        actions_section(&r.region),
+        "## Action items\n\n\
+         - [ ] Cites the first and third lines (Bo Tran)\n\
+         - [ ] Cites the second line (due: Friday) (Ada Lovelace, Bo Tran)\n\
+         - [ ] Cites the second line (due: Monday) (Bo Tran)\n\
+         - [ ] Cites the third line (Ada Lovelace)\n\
+         - [ ] Cites nothing (Ada Lovelace)\n\
+         - [ ] Cites a line not in the transcript (Ada Lovelace)\n",
+        "{}",
+        r.region
+    );
+}
+
+/// The action items as a version before T14.61 rendered [`grouped_items`]: one
+/// "**Owner**: task" line per item, in summary order.
+const OLD_ACTIONS: &str = "## Action items\n\n\
+     - [ ] **Casey Lane**: Book the room\n\
+     - [ ] **Ada Lovelace**: Send numbers (due: Friday)\n\
+     - [ ] ** casey  LANE **: Draft the plan\n\
+     - [ ] **Ada Lovelace**: Draft the plan\n\
+     - [ ] **Bo Tran**: Draft the plan\n\
+     - [ ] **Bo Tran**: Check rates\n\
+     - [ ] **Ada Lovelace**: Check rates\n";
+
+/// A note exported before T14.61 (old order and action format), with `ticks` (lines of
+/// [`OLD_ACTIONS`] without their checkbox) ticked.
+fn old_note(new_doc: &str, new_region: &str, ticks: &[&str]) -> String {
+    let mut old = OLD_ACTIONS.to_owned();
+    for t in ticks {
+        let line = format!("- [ ] {t}\n");
+        assert!(old.contains(&line), "{t}");
+        old = old.replace(&line, &format!("- [x] {t}\n"));
+    }
+    new_doc.replace(actions_section(new_region), &old)
+}
+
+#[test]
+fn export_merge_keeps_ticks_from_a_note_written_before_the_action_groups() {
+    let mut f = fixture();
+    f.summary.action_items = grouped_items();
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    let doc = r.to_file();
+    // The user ticked their own item, Ada's half of the shared one and Bo's half of the
+    // one Bo and Ada share.
+    let old = old_note(
+        &doc,
+        &r.region,
+        &[
+            "**Casey Lane**: Book the room",
+            "**Ada Lovelace**: Draft the plan",
+            "**Bo Tran**: Check rates",
+        ],
+    );
+    assert!(old.contains("**Bo Tran**: Check rates"), "{old}");
+    let merged = merge(&old, &r).unwrap();
+    let section = actions_section(&merged);
+    assert_eq!(
+        section,
+        "## Action items\n\n\
+         ### My actions\n\n\
+         - [x] Book the room\n\
+         - [x] Draft the plan (with Ada Lovelace)\n\n\
+         ### Other actions\n\n\
+         - [ ] Draft the plan (Bo Tran)\n\
+         - [ ] Send numbers (due: Friday) (Ada Lovelace)\n\
+         - [x] Check rates (Bo Tran, Ada Lovelace)\n",
+        "{merged}"
+    );
+    // Apart from the marks the merge is the plain new render, and it is a fixed point.
+    assert_eq!(
+        merged.replace("- [x]", "- [ ]"),
+        merge(&doc, &r).unwrap(),
+        "only marks carried"
+    );
+    assert_eq!(merge(&merged, &r).unwrap(), merged);
+
+    // The user's own half of a shared item counts too: ticked from the user's line alone.
+    let old = old_note(&doc, &r.region, &["** casey  LANE **: Draft the plan"]);
+    let merged = merge(&old, &r).unwrap();
+    assert!(
+        merged.contains("- [x] Draft the plan (with Ada Lovelace)\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+
+    // Re-exported with no user name set: one list, the same ticks.
+    let old = old_note(
+        &doc,
+        &r.region,
+        &[
+            "**Casey Lane**: Book the room",
+            "**Ada Lovelace**: Draft the plan",
+        ],
+    );
+    let r2 = render(&input(&f), &opts()).unwrap();
+    let merged = merge(&old, &r2).unwrap();
+    assert!(
+        merged.contains("- [x] Book the room (Casey Lane)\n"),
+        "{merged}"
+    );
+    assert!(
+        merged.contains("- [x] Draft the plan (casey  LANE, Ada Lovelace)\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 2, "{merged}");
+}
+
+#[test]
+fn export_merge_does_not_carry_a_tick_to_another_persons_item_across_the_format_change() {
+    let mut f = fixture();
+    f.summary.action_items = vec![item("Bo Tran", "Send numbers", None, 21)];
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    let doc = r.to_file();
+    // Before T14.61 the item was Ada's and the user ticked it; now it is Bo's.
+    let old = doc.replace(
+        actions_section(&r.region),
+        "## Action items\n\n- [x] **Ada Lovelace**: Send numbers\n",
+    );
+    let merged = merge(&old, &r).unwrap();
+    assert!(
+        merged.contains("- [ ] Send numbers (Bo Tran)\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
+    // The control: as Bo's line it carries.
+    let merged = merge(&old.replace("Ada Lovelace", "Bo Tran"), &r).unwrap();
+    assert!(
+        merged.contains("- [x] Send numbers (Bo Tran)\n"),
+        "{merged}"
+    );
+}
+
+#[test]
+fn export_task_keys_take_owners_off_both_forms() {
+    let k = super::merge::task_key_parts("**Ada Lovelace**: Send numbers (due: Friday)");
+    assert_eq!(
+        k,
+        (
+            "Send numbers (due: Friday)".into(),
+            vec!["ada lovelace".into()],
+            false
+        )
+    );
+    let k = super::merge::task_key_parts("Send numbers (due: Friday) (Ada Lovelace, Bo)");
+    assert_eq!(
+        k,
+        (
+            "Send numbers (due: Friday)".into(),
+            vec!["ada lovelace".into(), "bo".into()],
+            false
+        )
+    );
+    let k = super::merge::task_key_parts("Draft the plan (with Casey (1))");
+    assert_eq!(k, ("Draft the plan".into(), vec!["casey (1)".into()], true));
+    let k = super::merge::task_key_parts("Plan (draft");
+    assert_eq!(k, ("Plan (draft".into(), vec![], false));
+    let k = super::merge::task_key_parts("Plan(x)");
+    assert_eq!(k, ("Plan(x)".into(), vec![], false));
 }
 
 // ---- T14.28: generated text cannot embed or fetch ----

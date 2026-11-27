@@ -1,9 +1,9 @@
 {
   "milestone": "m5",
   "requested_backend": null,
-  "timestamp": "2026-11-25T15:39:59Z",
+  "timestamp": "2026-11-27T00:08:41Z",
   "host": "x86_64-pc-windows-msvc",
-  "commit": "88f23cb",
+  "commit": "6d8a069",
   "backends": [],
   "results": [
     {
@@ -35,7 +35,7 @@
     {
       "name": "export case coverage",
       "pass": true,
-      "detail": "4 cases including em_dash_off, full, minimal, no_summary"
+      "detail": "5 cases including em_dash_off, full, minimal, no_summary"
     }
   ],
   "pass": true
