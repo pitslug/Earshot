@@ -2806,6 +2806,11 @@ Second wave (after the lanes above are merged):
   - deps: T14.42, T14.57
   - do: a rule in docs/sync-spec.md first: person and folder tombstones are final in `apply_remote`, as meeting tombstones are.
   - accept: `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime sync`; `cargo xtask accept m11`
+- [ ] T14.62 Damaged items can be cleared by the user
+  - decided (the owner, 2026-11-27): after T14.57 a damaged row is left as it is and noted (Sync page, People page, Forget, Dictionary); it clears only when another computer sends a good copy or its meeting is deleted, so a note can stay for good with nothing the user can do.
+  - deps: T14.57, T14.49
+  - do: a rule in docs/sync-spec.md first (spec-reviewed). Beside the damaged-items note on the Sync page: "Repair" asks the vault for every row again (the existing reset of the cursor and re-pull, `queue_everything` on the other side is not needed), so every damaged row that has a good copy elsewhere is replaced; then, for what is still damaged, "Remove damaged items" erases those rows on this computer only (by rowid under section 16's written-columns rule, never sent, so other computers keep their copies), counted and confirmed in a dialog, with fixed copy. Works with sync off (Remove only). Tests: a damaged row healed by Repair; one with no good copy removed by Remove and not re-sent; nothing removed while a meeting records; the note gone afterwards.
+  - accept: `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime sync`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
 - [x] T14.50 Small sync fixes
   - deps: T14.46
   - do: a retired sync thread stops when a new one starts; the signal lock is not held while waiting for the beats lock; the open Sync page asks the relay only while the window is watched and reuses the thread's client; `converge` runs only for kinds a page wrote.
