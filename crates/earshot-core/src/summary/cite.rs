@@ -543,8 +543,8 @@ pub fn drop_repeats(summary: &mut SummaryV1) -> usize {
 pub const JOINED_SUMMARY_NOTICE: &str = "Joined from parts of the meeting, because the final \
      merge did not finish, so this summary may repeat itself.";
 
-/// One summary from `parts` in order, for a merge step that gave no valid reply (T8.4d): a
-/// rougher summary rather than none. The first title, the [`JOINED_SUMMARY_NOTICE`] and every
+/// One summary from `parts` in order, for a merge step that gave no valid reply (T8.4d) or
+/// could not be planned at all (T14.69): a rougher summary rather than none. The first title, the [`JOINED_SUMMARY_NOTICE`] and every
 /// part's `tldr`, and every list joined with exact repeats dropped ([`drop_repeats`]). No text
 /// is invented and every citation is a part's own. Never used for a part that failed: each
 /// part here is a validated summary.

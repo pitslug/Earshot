@@ -46,8 +46,8 @@ pub struct SummaryReport {
     pub map_parts: usize,
     /// Reduce requests that succeeded.
     pub reduce_steps: usize,
-    /// Summaries joined by `join_partials` because a merge gave no valid reply (0 when every
-    /// merge worked).
+    /// Summaries joined by `join_partials` because a merge gave no valid reply or could not
+    /// be planned (T14.69; 0 when every merge worked).
     pub joined_parts: usize,
     /// Repeated items dropped from valid replies (`CheckedReply::duplicates_dropped`).
     pub duplicates_dropped: usize,
@@ -189,6 +189,8 @@ impl LlmSummarizer {
                 duplicates_dropped: 0,
             },
             steps: Vec::new(),
+            #[cfg(test)]
+            cancel_before_merge_plan: false,
         }
     }
 }
@@ -217,6 +219,10 @@ struct Run<'a> {
     any_success: bool,
     report: SummaryReport,
     steps: Vec<RequestStep>,
+    /// Test seam: cancel the run's token right before each merge level is planned, a point
+    /// no request reaches (the client checks the token before and while it waits).
+    #[cfg(test)]
+    cancel_before_merge_plan: bool,
 }
 
 impl Run<'_> {
@@ -269,13 +275,26 @@ impl Run<'_> {
             partials.push(self.step("map", chunk.prompt, numbers).await?);
         }
         loop {
-            let groups = reduce_groups_carrying(
+            #[cfg(test)]
+            if self.cancel_before_merge_plan {
+                self.cancel.cancel();
+            }
+            let Ok(groups) = reduce_groups_carrying(
                 input,
                 self.rules,
                 &partials,
                 &carried_names(&carried),
                 budget,
-            )?;
+            ) else {
+                // A merge that cannot be planned is joined like one with no valid reply
+                // (T14.69): a rougher summary rather than none, and it says so itself.
+                // Cancellation is never joined.
+                if self.cancel.is_cancelled() {
+                    return Err(LlmError::Cancelled);
+                }
+                self.report.joined_parts = partials.len();
+                return Ok(join_partials(&partials));
+            };
             // One group: this merge writes the summary the user sees (and carries the style).
             let level = if groups.len() == 1 {
                 MergeLevel::Last
@@ -458,6 +477,111 @@ fn cap_echo(reply: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::Arc;
+
+    use earshot_core::asr::MeetingTime;
+    use earshot_core::identity::{EntityId, ManualClock};
+    use earshot_core::prompt::{ContextBudget, MeetingInfo, PromptSegment, Template, plan};
+    use earshot_llm_replay::mock::{MockResponse, MockServer};
+    use earshot_net::{Allowlist, NetClient, NetConfig};
+
+    /// A meeting of `n` invented lines.
+    fn meeting(n: usize) -> SummaryInput {
+        SummaryInput {
+            meeting: MeetingInfo {
+                title: Some("Beta planning".into()),
+                started: Some("2026-10-17 14:00".into()),
+                duration_ms: n as u64 * 10_000,
+                attendees: vec!["Ana".into(), "Ben".into()],
+            },
+            segments: (0..n)
+                .map(|i| PromptSegment {
+                    id: EntityId::from_bytes(
+                        ((i as u128) | (0x0189_0a5d_ac96_7000u128 << 64)).to_be_bytes(),
+                    ),
+                    start: MeetingTime::from_millis(i as u64 * 10_000),
+                    speaker: if i % 2 == 0 { "Ana" } else { "Ben" }.into(),
+                    text: format!(
+                        "Point {i}: we ship the beta on Friday and Ana writes the notes."
+                    ),
+                })
+                .collect(),
+            notes: vec![],
+            template: Template::General,
+            prompt_variant: Default::default(),
+            rules: Default::default(),
+            style: Default::default(),
+            style_preset: Default::default(),
+            vocabulary: Default::default(),
+            people: Default::default(),
+            user_name: None,
+        }
+    }
+
+    /// A valid part reply citing `number` whose tldr is `words` invented words long.
+    fn long_part(number: usize, words: usize) -> MockResponse {
+        let reply = serde_json::json!({
+            "title": "Beta planning",
+            "tldr": vec!["lorem"; words].join(" "),
+            "enhanced_notes": [],
+            "decisions": [{"text": format!("Decision {number}"), "source_segment_ids": [number]}],
+            "action_items": [],
+            "open_questions": [],
+            "topics": []
+        });
+        MockResponse::completion(&reply.to_string(), "stop")
+    }
+
+    /// T14.69: a merge that cannot be planned is joined, except after a cancel. The token is
+    /// cancelled through the seam right before the merge is planned.
+    #[tokio::test]
+    async fn summarizer_cancelled_before_an_unplannable_merge_is_not_joined() {
+        let input = meeting(40);
+        let budget = ContextBudget {
+            context_window: 3_564,
+            max_output_tokens: 200,
+        };
+        let PromptPlan::MapReduce(chunks) = plan(&input, budget).unwrap() else {
+            panic!("expected map-reduce");
+        };
+        for cancel_first in [false, true] {
+            let script = chunks
+                .iter()
+                .map(|c| long_part(c.segments.start + 1, 1_500))
+                .collect();
+            let server = MockServer::start(script).unwrap();
+            let mut allow = Allowlist::new();
+            allow.allow_url(&server.endpoint()).unwrap();
+            let net = NetClient::new(NetConfig::new(
+                allow,
+                Arc::new(ManualClock::new(1_790_000_000_000)),
+            ))
+            .unwrap();
+            let mut config =
+                crate::LlmConfig::new(server.endpoint().as_str(), "test-model").unwrap();
+            config.budget = budget;
+            let summarizer = LlmSummarizer::new(crate::ChatClient::new(net, config));
+            let cancel = CancelToken::new();
+            let mut run = summarizer.run(&cancel);
+            run.cancel_before_merge_plan = cancel_first;
+            let result = run.summarize(&input).await;
+            assert_eq!(run.report.map_parts, chunks.len());
+            if cancel_first {
+                assert!(matches!(result, Err(LlmError::Cancelled)), "{result:?}");
+                assert_eq!(run.report.joined_parts, 0);
+            } else {
+                // Control: the same run uncancelled joins its parts.
+                let s = result.unwrap();
+                assert!(
+                    s.tldr
+                        .starts_with(earshot_core::summary::JOINED_SUMMARY_NOTICE)
+                );
+                assert_eq!(run.report.joined_parts, chunks.len());
+            }
+            assert_eq!((server.remaining(), server.unscripted()), (0, 0));
+        }
+    }
 
     #[test]
     fn cap_echo_keeps_short_replies_and_cuts_on_a_char_boundary() {

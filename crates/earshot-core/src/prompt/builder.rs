@@ -360,6 +360,23 @@ pub fn reply_tokens(basis: ReplyBasis, budget: ContextBudget) -> usize {
         .min(budget.max_output_tokens)
 }
 
+/// The reply budget of a merge request of `prompt_tokens` estimated tokens whose content
+/// gives it `reply` ([`reply_tokens`] with [`ReplyBasis::Partials`]): `reply`, capped at
+/// what the context leaves free beside the prompt and [`REPAIR_MAX_TOKENS`], and the cap
+/// never below [`REPLY_MIN_TOKENS`] (T14.69). A merge reply is a summary, not the sum of
+/// its parts: without the cap two large partials could not be merged at all. A merge that
+/// fits with its whole reply keeps it, so its request is unchanged.
+pub(super) fn merge_reply_tokens(
+    reply: usize,
+    prompt_tokens: usize,
+    budget: ContextBudget,
+) -> usize {
+    let free = budget
+        .context_window
+        .saturating_sub(prompt_tokens + REPAIR_MAX_TOKENS);
+    reply.min(free.max(REPLY_MIN_TOKENS))
+}
+
 /// The reply budget to ask again with after a reply was cut off at `current`: twice as much,
 /// at most `budget.max_output_tokens` and what a prompt of `prompt_tokens` leaves free beside
 /// [`REPAIR_MAX_TOKENS`]. `None` when it cannot grow, and only then is the model asked for
@@ -385,8 +402,12 @@ pub fn grown_reply_tokens(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptError {
     /// The fixed part of a prompt (instructions, schema, meeting details, notes) or a
-    /// single transcript segment or partial summary, with its reply budget and the repair
-    /// headroom, does not fit in the context window.
+    /// single transcript segment, with its reply budget and the repair headroom, does not
+    /// fit in the context window; or a merge cannot be planned: a partial summary, or every
+    /// pair of neighbouring partials, does not fit even with the smallest reply a merge is
+    /// capped to ([`REPLY_MIN_TOKENS`], T14.69). `needed` is always above `available`. The
+    /// writers join the parts of a merge that cannot be planned
+    /// ([`crate::summary::join_partials`]); a map or single request that does not fit fails.
     ContextTooSmall {
         /// Estimated tokens needed (prompt, reply budget and repair headroom).
         needed: usize,
@@ -838,7 +859,10 @@ fn notes_for_chunk(input: &SummaryInput, chunks: &[Range<usize>], i: usize) -> V
 /// reduce is the final one; otherwise each group of two or more is reduced to one summary,
 /// a single-partial group is carried over unchanged, and the results are grouped again. A
 /// multi-group split always has fewer groups than partials, so every level shrinks the
-/// list.
+/// list. Groups are formed with each merge's whole reply budget; only when no two
+/// neighbours fit that way are pairs formed with the capped reply [`reduce_prompt`] then
+/// gives them (T14.69), so any two partials that fit with [`REPLY_MIN_TOKENS`] of reply
+/// can be merged.
 pub fn reduce_groups(
     input: &SummaryInput,
     partials: &[SummaryV1],
@@ -943,7 +967,9 @@ fn reduce_groups_merging(
     budget: ContextBudget,
     merge: Merge,
 ) -> Result<Vec<Range<usize>>, PromptError> {
-    let whole = reduce_prompt_merging(
+    // The whole merge with its whole reply (no cap): a plan that fitted before T14.69 is
+    // unchanged.
+    let whole = reduce_request(
         input,
         rules,
         partials,
@@ -977,6 +1003,10 @@ fn reduce_groups_merging(
     let cost = |p: &SummaryV1| estimate_tokens(&partial_block(999_999, 999_999, p, &numbers));
     let reply = |content: usize| reply_tokens(ReplyBasis::Partials(content), budget);
     let fits = |content: usize| budget.fits(fixed + content, reply(content));
+    // With the merge reply capped ([`merge_reply_tokens`]): used only for a pair (or a
+    // single partial), and only when no group fits with its whole reply.
+    let capped = |content: usize| merge_reply_tokens(reply(content), fixed + content, budget);
+    let fits_capped = |content: usize| budget.fits(fixed + content, capped(content));
     let mut groups = Vec::new();
     let mut start = 0;
     let mut content = 0;
@@ -1001,24 +1031,47 @@ fn reduce_groups_merging(
         last.start -= 1;
     }
     let largest = partials.iter().map(&cost).max().unwrap_or(0);
-    if !fits(largest) {
+    // What a request of `content` needs at the least: its prompt, the smallest reply the cap
+    // allows and the repair headroom.
+    let needed =
+        |content: usize| fixed + content + reply(content).min(REPLY_MIN_TOKENS) + REPAIR_MAX_TOKENS;
+    if !fits_capped(largest) {
         return Err(PromptError::ContextTooSmall {
-            needed: fixed + largest + reply(largest) + REPAIR_MAX_TOKENS,
+            needed: needed(largest),
             available: budget.context_window,
         });
     }
+    if groups.len() < partials.len() {
+        return Ok(groups);
+    }
+    if partials.len() == 1 {
+        // A single partial that fits only with a capped reply: that request.
+        return Ok(std::iter::once(0..1).collect());
+    }
+    // No two neighbours fit together with their whole reply (T14.69): merge pairs with a
+    // capped reply, carrying a partial over where it fits with neither neighbour.
+    let mut groups = Vec::new();
+    let mut start = 0;
+    let mut content = 0;
+    for (i, p) in partials.iter().enumerate() {
+        let c = cost(p);
+        if i > start && !(i == start + 1 && fits_capped(content + c)) {
+            groups.push(start..i);
+            start = i;
+            content = 0;
+        }
+        content += c;
+    }
+    groups.push(start..partials.len());
     if groups.len() >= partials.len() {
-        // No two neighbours fit together: no progress is possible.
-        let needed = partials
+        // Not even a pair fits with the smallest reply: no progress is possible.
+        let smallest = partials
             .windows(2)
-            .map(|w| {
-                let c = cost(&w[0]) + cost(&w[1]);
-                fixed + c + reply(c) + REPAIR_MAX_TOKENS
-            })
+            .map(|w| needed(cost(&w[0]) + cost(&w[1])))
             .min()
-            .unwrap_or(fixed + largest + reply(largest) + REPAIR_MAX_TOKENS);
+            .unwrap_or(needed(largest));
         return Err(PromptError::ContextTooSmall {
-            needed,
+            needed: smallest,
             available: budget.context_window,
         });
     }
@@ -1026,7 +1079,9 @@ fn reduce_groups_merging(
 }
 
 /// The request that merges `partials` (consecutive partial summaries, in meeting order)
-/// into one summary, with the reply budget [`reply_tokens`] of the partials. The partials
+/// into one summary, with the reply budget [`reply_tokens`] of the partials, capped at what
+/// the context leaves free beside the prompt but never below [`REPLY_MIN_TOKENS`]
+/// (T14.69: a merge that fits with its whole reply keeps it). The partials
 /// are shown citing segment numbers ([`crate::summary::to_numbered_json`]); the reply may cite
 /// only the segments the partials cite ([`Citable::cited_by`]): a merge sees no transcript.
 /// The [`MergeLevel::Last`] merge carries the user's style ([`SummaryInput::style`]).
@@ -1093,7 +1148,25 @@ pub fn reduce_prompt_two_call(
     )
 }
 
+/// [`reduce_request`] with its reply capped ([`merge_reply_tokens`], T14.69), so a pair
+/// [`reduce_groups`] formed with a capped reply fits; a merge that fits with its whole reply
+/// is the same request.
 fn reduce_prompt_merging(
+    input: &SummaryInput,
+    rules: SummaryRules,
+    partials: &[SummaryV1],
+    carried: &[CarriedName],
+    budget: ContextBudget,
+    merge: Merge,
+    level: MergeLevel,
+) -> Prompt {
+    let mut p = reduce_request(input, rules, partials, carried, budget, merge, level);
+    p.max_output_tokens = merge_reply_tokens(p.max_output_tokens, p.estimated_tokens, budget);
+    p
+}
+
+/// The merge request with its whole reply budget ([`reply_tokens`] of the partials).
+fn reduce_request(
     input: &SummaryInput,
     rules: SummaryRules,
     partials: &[SummaryV1],
