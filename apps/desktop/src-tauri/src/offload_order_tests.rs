@@ -109,12 +109,24 @@ impl JobWork for RecordingJobs {
     }
 }
 
+/// The computer `offload_host_continues_an_order_run_with_the_next_step` hands back from, its
+/// own: the names this process has heard (`offload::COMPUTERS`) are process-wide, and other
+/// tests here name `DESK` while it runs, which changed its expected note between the host's
+/// read and the assertion's.
+const HAND_BACK_DESK: DeviceId = DeviceId::from_bytes([0x46; 16]);
+
 #[test]
 fn offload_host_continues_an_order_run_with_the_next_step() {
     let dir = TempDir::new("offload-order-continue");
     let svc = services(&dir);
+    // What the production chooser (`summary_order::remembering`) remembers when it asks.
+    crate::offload::remember_computer(HAND_BACK_DESK, Some("Invented hand-back desk".into()), None);
     let m = meeting_with_final(&svc, 21, 2);
-    let request = waiting_run(&svc, m, &[OrderStep::Computer(DESK), OrderStep::LOCAL]);
+    let request = waiting_run(
+        &svc,
+        m,
+        &[OrderStep::Computer(HAND_BACK_DESK), OrderStep::LOCAL],
+    );
     let work = Arc::new(RecordingJobs::default());
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
@@ -137,7 +149,7 @@ fn offload_host_continues_an_order_run_with_the_next_step() {
     let answer = host.continue_run(WriteHere {
         meeting: m,
         request,
-        helper: DESK,
+        helper: HAND_BACK_DESK,
         why: HereReason::NotClaimed,
         continuation: Continuation::Order {
             word: OutcomeWord::NoReply,
@@ -145,14 +157,19 @@ fn offload_host_continues_an_order_run_with_the_next_step() {
     });
     assert_eq!(answer, ContinueAnswer::Started);
     let first = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    let message = crate::summary_order::continue_note(
+        HAND_BACK_DESK,
+        &crate::summary_order::StepContext::read(&svc),
+    );
+    assert!(
+        message.starts_with("Invented hand-back desk could not write the summary"),
+        "the note names the computer: {message}"
+    );
     assert_eq!(
         first,
         JobEvent::Warning {
             meeting: m.to_string(),
-            message: crate::summary_order::continue_note(
-                DESK,
-                &crate::summary_order::StepContext::read(&svc)
-            ),
+            message,
         }
     );
     runner.join();
