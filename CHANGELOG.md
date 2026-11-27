@@ -4,6 +4,28 @@ What each release changed, in plain words, newest first. It is written from the 
 
 [docs/compatibility.md](docs/compatibility.md) says what an update does to your data, to sync and to the relay and worker.
 
+## 0.9.1 - 2026-11-27
+
+This release changes no synced row and no database step: a computer on 0.9.1 still syncs with one on 0.9.0, and the relay and worker can stay on 0.9.0.
+
+### Added
+
+- One banner says when items on this computer are damaged. Details says what, in counts by kind, and Repair reads everything from the sync server again, so good copies from your other computers replace them. Repair removes nothing and sends nothing.
+
+### Changed
+
+- The computer stays awake until a meeting has finished its final transcript and summary, and while a Re-transcribe or Re-summarise runs. The lid, the power button and Start, Sleep still put it to sleep.
+- A summary's actions are grouped: your actions first, then everyone else's with the owner after each. The heading folds the list. The Obsidian note follows the meeting page, with the same groups and both headings always shown.
+- Exporting a meeting again replaces its note, ticks included, after asking first. Export no longer searches the vault for a moved note.
+- The meeting header fits a narrow window: Speakers, Export and Copy become icons, and Re-transcribe is greyed out with "Recording not available" when the recording is gone.
+- Banners on the meeting page stay at the top while the transcript scrolls, and confirmations hide by themselves after a few seconds.
+
+### Fixed
+
+- Transcript text that a re-transcription replaced is erased on every computer, not kept in the background.
+- A removed person or folder stays removed when sync brings back an older copy.
+- One damaged row no longer stops a sync, a removal or the repair at start-up, and no longer blanks the meeting list.
+
 ## 0.9.0 - 2026-11-26
 
 ### Added
