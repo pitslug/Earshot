@@ -1288,6 +1288,10 @@ fn detail_edit_refusals_become_plain_user_copy() {
         (EditError::PreviousSummaryStale, "previous_summary_stale"),
         (EditError::FolderNotFound(id), "folder_not_found"),
         (EditError::FolderNameTaken(id), "folder_name_taken"),
+        (
+            EditError::FolderBlockedByDamage(id),
+            "folder_blocked_by_damage",
+        ),
         (EditError::MeetingRecording(id), "meeting_recording"),
         // Never sent (an empty title is allowed, pinned below): no copy asks for a title.
         (EditError::InvalidTitle(TextProblem::Empty), "internal"),

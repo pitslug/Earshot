@@ -479,6 +479,74 @@ fn list_meetings_a_damaged_folder_row_is_left_out_and_said() {
     }
 }
 
+/// T14.64 review: with a damaged folder row and a damaged meeting row, folders can still be
+/// created and renamed (a new name may clash with the damaged folder's, which cannot be read),
+/// and deleting a folder fails closed with the fixture's fixed copy, changing nothing. Control:
+/// with no damage the folder is deleted.
+#[test]
+fn list_meetings_damaged_rows_let_folders_be_named_but_not_deleted() {
+    let copy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/meeting_list_copy_cases.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        copy["folder_blocked_by_damage"].as_str(),
+        Some(crate::detail::FOLDER_BLOCKED_BY_DAMAGE_COPY)
+    );
+    for damaged in [true, false] {
+        let dir = TempDir::new("folders-damaged");
+        let svc = services(&dir);
+        let broken_folder = earshot_runtime::folders::create(&svc, "Invented Quillmere").unwrap();
+        let broken_meeting = meeting(&svc, "Invented review", T0, Some(60_000), 91);
+        let filed = meeting(&svc, "Invented planning", T0 + 1, Some(60_000), 92);
+        if damaged {
+            let c = rusqlite::Connection::open(dir.0.join("data").join("earshot.db")).unwrap();
+            for (sql, id) in [
+                (
+                    "UPDATE folder SET name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    broken_folder,
+                ),
+                (
+                    "UPDATE meeting SET title = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    broken_meeting,
+                ),
+            ] {
+                let changed = c
+                    .execute(sql, rusqlite::params![id.as_uuid().as_bytes().to_vec()])
+                    .unwrap();
+                assert_eq!(changed, 1);
+            }
+        }
+        // The damaged folder's name cannot be checked, so the same name is accepted then.
+        let same = crate::folders::create(&svc, "Invented Quillmere");
+        assert_eq!(same.is_ok(), damaged, "{same:?}");
+        let other = crate::folders::create(&svc, "Invented archive").unwrap();
+        crate::folders::rename(&svc, &other, "Invented archive two").unwrap();
+        let other_id: EntityId = other.parse().unwrap();
+        earshot_runtime::folders::move_meeting(&svc, filed, Some(other_id)).unwrap();
+        for with_meetings in [false, true] {
+            let out = crate::folders::delete(&svc, &other, with_meetings);
+            if damaged {
+                let e = out.unwrap_err();
+                assert_eq!(e.kind, "folder_blocked_by_damage");
+                assert_eq!(e.message, crate::detail::FOLDER_BLOCKED_BY_DAMAGE_COPY);
+                // Nothing changed: the folder and its meeting are still there.
+                let listed = crate::folders::folder_list(&svc).unwrap();
+                assert!(listed.iter().any(|f| f.id == other));
+                assert_eq!(
+                    earshot_runtime::folders::meeting_folders(&svc)
+                        .unwrap()
+                        .get(&filed),
+                    Some(&other_id)
+                );
+            } else {
+                assert!(out.is_ok(), "{out:?}");
+                break;
+            }
+        }
+    }
+}
+
 #[test]
 fn list_meetings_states_follow_the_runtime_activity() {
     let dir = TempDir::new("states");

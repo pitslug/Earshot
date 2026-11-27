@@ -217,27 +217,37 @@ pub fn export_meeting<R: Rng + ?Sized>(
     Ok(report)
 }
 
+/// What [`export_meetings`] did.
+#[derive(Debug)]
+pub struct ExportBatch {
+    /// One result per exported meeting, in meeting order.
+    pub results: Vec<(EntityId, Result<ExportReport, StoreError>)>,
+    /// Meeting rows that are not tombstones but do not read (damaged, T14.64): left out of
+    /// the batch, never failing it. 0 normally. No window or CLI command runs a batch export
+    /// today; whatever shows one says some damaged meetings were left out when this is above 0.
+    pub damaged: usize,
+}
+
 /// Exports every meeting, or the changed ones, into `vault` in one batch (explicit
 /// command). Returns one result per exported meeting, in meeting order; one meeting's
-/// failure does not stop the others (and keeps it "changed").
+/// failure does not stop the others (and keeps it "changed"). A meeting row that does not
+/// read is left out and counted ([`ExportBatch::damaged`]).
 ///
 /// # Errors
 /// [`RuntimeError::Export`] for unusable options; store errors reading the meetings or
 /// an unusable vault (then nothing is exported).
-#[allow(clippy::type_complexity)]
 pub fn export_meetings<R: Rng + ?Sized>(
     services: &Services,
     vault: &Path,
     selection: ExportSelection,
     options: &ExportOptions,
     rng: &mut R,
-) -> Result<Vec<(EntityId, Result<ExportReport, StoreError>)>, RuntimeError> {
+) -> Result<ExportBatch, RuntimeError> {
     export_meetings_observed(services, vault, selection, options, rng, &mut || {})
 }
 
 /// [`export_meetings`] with `on_vault` called when the writer starts each meeting's vault
 /// work, with the store lock free (tests).
-#[allow(clippy::type_complexity)]
 fn export_meetings_observed<R: Rng + ?Sized>(
     services: &Services,
     vault: &Path,
@@ -245,15 +255,15 @@ fn export_meetings_observed<R: Rng + ?Sized>(
     options: &ExportOptions,
     rng: &mut R,
     on_vault: &mut dyn FnMut(),
-) -> Result<Vec<(EntityId, Result<ExportReport, StoreError>)>, RuntimeError> {
+) -> Result<ExportBatch, RuntimeError> {
     let clock = Arc::clone(&services.clock);
-    let (device, meetings, user_name) = {
+    let (device, (meetings, damaged), user_name) = {
         let db = services.store();
         (
             db.device(),
-            // A meeting row that does not read is left out (T14.64): it cannot be rendered,
-            // and the others are still exported.
-            db.live_meetings_or_damaged()?.0,
+            // A meeting row that does not read is left out and counted (T14.64): it cannot be
+            // rendered, and the others are still exported.
+            db.live_meetings_or_damaged()?,
             crate::edit::user_name_in(&**db)?,
         )
     };
@@ -300,5 +310,8 @@ fn export_meetings_observed<R: Rng + ?Sized>(
     }
     // The chosen meetings could not be deleted until their fingerprints were written.
     drop(leases);
-    Ok(chosen.iter().map(|(m, _)| *m).zip(results).collect())
+    Ok(ExportBatch {
+        results: chosen.iter().map(|(m, _)| *m).zip(results).collect(),
+        damaged,
+    })
 }

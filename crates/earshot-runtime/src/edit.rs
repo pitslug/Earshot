@@ -166,6 +166,10 @@ pub enum EditError {
     /// Another live folder (the id) already has this name, ignoring case
     /// ([`crate::folders`]). Never carries the name: it is content.
     FolderNameTaken(EntityId),
+    /// A meeting row on this computer that does not read stops the folder (the id) from being
+    /// deleted: which meetings are in it cannot be told, so nothing is changed (T14.64, failing
+    /// closed).
+    FolderBlockedByDamage(EntityId),
     /// The meeting (the id) is recording: it can be moved to a folder once it has ended
     /// ([`crate::folders::move_meeting`]).
     MeetingRecording(EntityId),
@@ -305,6 +309,10 @@ impl fmt::Display for EditError {
             Self::FolderNameTaken(id) => {
                 write!(f, "folder {id} already has this name (case is ignored)")
             }
+            Self::FolderBlockedByDamage(id) => write!(
+                f,
+                "folder {id} cannot be deleted while a meeting on this computer is damaged"
+            ),
             Self::MeetingRecording(id) => write!(
                 f,
                 "meeting {id} is recording; it can be moved to a folder once it has ended"
@@ -2144,10 +2152,12 @@ pub fn rename_person(
         }
         let identity = identity_of(&*tx, person).map_err(voiceprint_err)?;
         let mut rewritten = 0;
-        // A meeting row that does not read is left out (T14.64): it cannot be opened, and the
-        // rename still reaches every other meeting.
-        for m in tx.live_meetings_or_damaged()?.0 {
-            for mut s in tx.speakers(m.id)? {
+        // A write that must reach every row tied to an entity never selects parents through a
+        // lenient reader (T14.64): the meetings are chosen by their `deleted` column alone, so a
+        // person's speaker rows in a meeting whose row is damaged are renamed too, and the old
+        // name is not left there for good.
+        for m in tx.non_tombstone_meeting_ids()? {
+            for mut s in tx.speakers(m)? {
                 if s.meta.deleted
                     || !s.person_id.is_some_and(|id| identity.contains(&id))
                     || s.display_name == name
@@ -2157,7 +2167,7 @@ pub fn rename_person(
                 let old = std::mem::replace(&mut s.display_name, name.clone());
                 s.meta.touch(stamp.hlc, stamp.clock);
                 tx.put_speaker(s)?;
-                crate::summary_names::name_changed_tx(tx, m.id, &old, &name)?;
+                crate::summary_names::name_changed_tx(tx, m, &old, &name)?;
                 rewritten += 1;
             }
         }

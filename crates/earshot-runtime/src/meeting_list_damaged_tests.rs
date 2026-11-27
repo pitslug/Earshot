@@ -162,7 +162,9 @@ fn meeting_list_damaged_folder_row_never_fails_the_folders_of_the_list() {
     }
 }
 
-/// Renaming a person everywhere still renames their voice in every readable meeting.
+/// Renaming a person everywhere renames their voice in every meeting, the one whose meeting row is
+/// damaged included: a write that must reach every row of an entity never selects its meetings
+/// through the lenient list reader (which would leave the old name there for good).
 #[test]
 fn meeting_list_damaged_row_never_fails_a_person_rename() {
     for damaged in [true, false] {
@@ -200,8 +202,8 @@ fn meeting_list_damaged_row_never_fails_a_person_rename() {
             w.damage(middle);
         }
         let rewritten = crate::edit::rename_person(&w.svc, person, "Invented Halvard").unwrap();
-        assert_eq!(rewritten, if damaged { 2 } else { 3 });
-        for m in [first, last] {
+        assert_eq!(rewritten, 3);
+        for m in [first, middle, last] {
             let names: Vec<String> = w
                 .svc
                 .store()
@@ -211,6 +213,7 @@ fn meeting_list_damaged_row_never_fails_a_person_rename() {
                 .map(|s| s.display_name)
                 .collect();
             assert!(names.contains(&"Invented Halvard".to_owned()), "{names:?}");
+            assert!(!names.contains(&"Invented Corvina".to_owned()), "{names:?}");
         }
     }
 }
@@ -233,7 +236,7 @@ fn meeting_list_damaged_row_never_stops_recovery() {
     }
 }
 
-/// An export of every meeting exports the readable ones.
+/// An export of every meeting exports the readable ones and counts the damaged one.
 #[test]
 fn meeting_list_damaged_row_never_fails_an_export_of_every_meeting() {
     for damaged in [true, false] {
@@ -241,7 +244,7 @@ fn meeting_list_damaged_row_never_fails_an_export_of_every_meeting() {
         let (first, middle, last) = w.three(damaged);
         let vault = w.dir.0.join("vault");
         std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
-        let all = crate::export::export_meetings(
+        let batch = crate::export::export_meetings(
             &w.svc,
             &vault,
             crate::export::ExportSelection::All,
@@ -249,7 +252,9 @@ fn meeting_list_damaged_row_never_fails_an_export_of_every_meeting() {
             &mut ChaCha8Rng::seed_from_u64(9),
         )
         .unwrap();
-        let mut ids: Vec<EntityId> = all
+        assert_eq!(batch.damaged, usize::from(damaged));
+        let mut ids: Vec<EntityId> = batch
+            .results
             .iter()
             .map(|(m, r)| {
                 assert!(r.is_ok(), "{r:?}");

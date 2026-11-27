@@ -435,6 +435,26 @@ impl Store {
 }
 
 impl StoreTx<'_> {
+    /// The ids of every meeting row that is not a tombstone, chosen by its `deleted` column
+    /// alone, damaged rows included (T14.64). A write that must reach every row tied to an
+    /// entity (a person's speaker rows) selects meetings with this, never with
+    /// [`StoreTx::live_meetings_or_damaged`], which leaves damaged meetings out.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn non_tombstone_meeting_ids(&self) -> Result<Vec<EntityId>, StoreError> {
+        Ok(crate::repo::lenient::non_tombstone_meeting_ids(&self.conn)?)
+    }
+
+    /// [`Store::live_folders_or_damaged`] inside the transaction.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_folders_or_damaged(&self) -> Result<(Vec<Folder>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_folders(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
     /// [`Store::live_meetings_or_damaged`] inside the transaction.
     ///
     /// # Errors
