@@ -589,9 +589,10 @@ impl Store {
         clock: &C,
     ) -> Result<usize, StoreError> {
         self.transaction(|tx| {
-            Ok(earshot_core::model::replace_segments(
-                tx, meeting, pass, segments, hlc, clock,
-            )?)
+            let n = earshot_core::model::replace_segments(tx, meeting, pass, segments, hlc, clock)?;
+            // Lines go out before what they replace (docs/sync-spec.md 15.2).
+            tx.send_lines_first(hlc, clock)?;
+            Ok(n)
         })
     }
 }

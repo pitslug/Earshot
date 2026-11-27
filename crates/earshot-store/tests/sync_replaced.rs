@@ -980,6 +980,32 @@ fn sync_replaced_only_the_two_holds_rows_are_the_releases() {
     assert_eq!(e.held(), 1, "the orphan still waits for its speaker");
 }
 
+/// A row H2 held that the release then holds for a missing parent leaves the two holds' list:
+/// it waits for its parent like any other and is not retried by the release again.
+#[test]
+fn sync_replaced_a_released_row_held_for_its_parent_leaves_the_list() {
+    let mut e = env("apply-theirs-parent");
+    e.apply_page(&base_rows(PEER));
+    let line = peer_row(10, MIC, TranscriptPass::Final, &["only", "line"], 10);
+    e.apply_page(&[seg(line.clone())]);
+    // The tombstone names a speaker this device does not hold.
+    let mut tomb = tomb_at(&line, 50);
+    tomb.segment.speaker_id = Some(id(77));
+    e.apply_page(&[seg(tomb.clone())]);
+    assert_eq!(
+        e.store.held_by_replaced_text().unwrap().len(),
+        1,
+        "H2 holds it"
+    );
+    let released = e.release(&[seg(tomb)], &|_, _| false);
+    assert_eq!(released.written, 0);
+    assert_eq!(e.held(), 1, "it waits for its speaker");
+    assert!(
+        e.store.held_by_replaced_text().unwrap().is_empty(),
+        "and the release does not retry it again"
+    );
+}
+
 /// A tombstone over a local row that does not read is applied without a hold.
 #[test]
 fn sync_replaced_a_tombstone_over_an_unreadable_row_is_not_held() {

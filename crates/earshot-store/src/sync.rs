@@ -1422,6 +1422,7 @@ impl Store {
                 page.iter().map(|inc| (inc, false)).collect();
             // The row keys H1 and H2 hold (`HELD_REPLACED_KEY`).
             let mut h_held = held_replaced_keys(&tx.conn)?;
+            let h_held_before = !h_held.is_empty();
             while let Some((inc, deferred)) = rows.pop_front() {
                 let Some(row) = &inc.row else {
                     // A kind switched off is skipped before anything is held, whether or not
@@ -1724,6 +1725,8 @@ impl Store {
                         Err(RepoError::MissingParent { .. }) => {
                             drop(sp);
                             hold(tx, inc, HoldReason::Parent)?;
+                            // Held for a missing parent, not by H1 or H2: the release leaves it.
+                            h_held.remove(&inc.key);
                             out.hold(HoldReason::Parent);
                             continue;
                         }
@@ -1806,7 +1809,7 @@ impl Store {
                 }
             }
             // Kept to the rows still held for a parent: an applied or re-held row leaves it.
-            if !h_held.is_empty() {
+            if h_held_before || !h_held.is_empty() {
                 put_held_replaced_keys(&tx.conn, &h_held)?;
             }
             converge(tx, hlc, clock, &mut out, wrote)?;
