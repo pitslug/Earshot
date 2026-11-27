@@ -128,7 +128,6 @@ pub fn services(dir: &TempDir) -> (Services, Arc<ManualClock>) {
     (svc, clock)
 }
 
-/// A finished two-track meeting: "Me" and "Alice", a final transcript, one note.
 /// Stores `meeting`'s UTC offset as 0, as every build before T14.67 did (a test write).
 pub fn store_offset_zero(svc: &Services, meeting: EntityId) {
     use earshot_core::model::MeetingRepo;
@@ -139,6 +138,7 @@ pub fn store_offset_zero(svc: &Services, meeting: EntityId) {
     store.put_meeting(m).unwrap();
 }
 
+/// A finished two-track meeting: "Me" and "Alice", a final transcript, one note.
 pub fn meeting(svc: &Services, title: &str, seed: u64) -> EntityId {
     let clock = Arc::clone(&svc.clock);
     let mut rng = ChaCha8Rng::seed_from_u64(seed);

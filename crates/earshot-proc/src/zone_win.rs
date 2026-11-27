@@ -111,6 +111,26 @@ mod tests {
         fn EnumDynamicTimeZoneInformation(index: u32, zone: *mut DynamicTimeZone) -> u32;
     }
 
+    /// `TIME_ZONE_INFORMATION`: the first 172 bytes of [`DynamicTimeZone`].
+    #[repr(C)]
+    struct TimeZoneInformation {
+        bias: i32,
+        standard_name: [u16; 32],
+        standard_date: SystemTime,
+        standard_bias: i32,
+        daylight_name: [u16; 32],
+        daylight_date: SystemTime,
+        daylight_bias: i32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetTimeZoneInformation(zone: *mut TimeZoneInformation) -> u32;
+    }
+
+    /// `GetTimeZoneInformation`'s answer when daylight time is in force now.
+    const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+
     const ERROR_SUCCESS: u32 = 0;
 
     /// The zone whose key name is `key`, from Windows' list.
@@ -143,6 +163,7 @@ mod tests {
         assert_eq!(size_of::<FileTime>(), 8);
         assert_eq!(size_of::<SystemTime>(), 16);
         assert_eq!(size_of::<DynamicTimeZone>(), 432);
+        assert_eq!(size_of::<TimeZoneInformation>(), 172);
     }
 
     #[test]
@@ -159,16 +180,46 @@ mod tests {
         assert_eq!(at(&zone_named("India Standard Time"), JULY), Some(330));
     }
 
+    /// 2026-12-31 13:30 and 23:30 UTC: Sydney's local date is already 2027-01-01.
+    const NEW_YEAR_EVE_LATE: u64 = 1_798_723_800_000;
+    const NEW_YEAR_EVE_LAST: u64 = 1_798_759_800_000;
+
     #[test]
-    fn zone_shipped_reader_is_the_explicit_path_with_the_current_zone() {
+    fn zone_southern_daylight_time_holds_across_new_year() {
+        // A southern zone's daylight time spans New Year, so the rule year Windows picks for
+        // an instant whose UTC and local years differ must still give daylight time.
+        let sydney = zone_named("AUS Eastern Standard Time");
+        assert_eq!(at(&sydney, NEW_YEAR_EVE_LATE), Some(660));
+        assert_eq!(at(&sydney, NEW_YEAR_EVE_LAST), Some(660));
+        // The control: Brisbane, the same longitude with no daylight time.
+        let brisbane = zone_named("E. Australia Standard Time");
+        assert_eq!(at(&brisbane, NEW_YEAR_EVE_LAST), Some(600));
+    }
+
+    #[test]
+    fn zone_shipped_reader_agrees_with_the_static_zone_now() {
+        // The DST proof is `zone_explicit_zones_follow_their_own_daylight_rules` and
+        // `zone_southern_daylight_time_holds_across_new_year` (named zones, any host). This one
+        // checks the shipped reader on this host against an independent API:
+        // `GetTimeZoneInformation`'s bias and whether daylight time is in force now. A DST
+        // change between the two reads would fail it once; nothing else should.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap();
         let now = u64::try_from(now.as_millis()).unwrap();
-        assert!(crate::utc_offset_minutes_at(now).is_some());
-        let zone = current_zone().expect("Windows names the active zone");
-        for instant in [JANUARY, JULY] {
-            assert_eq!(crate::utc_offset_minutes_at(instant), at(&zone, instant));
-        }
+        let shipped = crate::utc_offset_minutes_at(now);
+        assert!(shipped.is_some());
+        let mut info = MaybeUninit::<TimeZoneInformation>::zeroed();
+        // SAFETY: `info` is a writable, properly sized TIME_ZONE_INFORMATION (pinned above).
+        let id = unsafe { GetTimeZoneInformation(info.as_mut_ptr()) };
+        assert_ne!(id, TIME_ZONE_ID_INVALID);
+        // SAFETY: zeroed is a valid value of this plain-data struct, and the call succeeded.
+        let info = unsafe { info.assume_init() };
+        let extra = if id == TIME_ZONE_ID_DAYLIGHT {
+            info.daylight_bias
+        } else {
+            info.standard_bias
+        };
+        assert_eq!(shipped, Some(-(info.bias + extra)));
     }
 }

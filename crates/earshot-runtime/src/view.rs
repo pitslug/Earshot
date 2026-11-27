@@ -320,7 +320,7 @@ pub fn distinct_names(people: &[(EntityId, &str)]) -> Vec<String> {
 
 /// The UTC offset an output (the export, the summary input) shows a meeting in (T14.67,
 /// docs/sync-spec.md 18.3). A stored offset means "unknown or UTC" when it is 0, never
-/// "recorded in UTC": every build before 0.9.2 stored 0. So a stored non-zero offset is used
+/// "recorded in UTC": meetings stored before T14.67 hold 0. So a stored non-zero offset is used
 /// as stored and `zone` is not asked; a stored 0 is `zone(started_unix_ms)`, this computer's
 /// offset at the meeting's own start, or 0 when `zone` cannot say (the worker: UTC).
 #[must_use]
@@ -343,12 +343,11 @@ pub fn shown_offset_of(meeting: &Meeting, zone: impl FnOnce(u64) -> Option<i32>)
     shown_offset(meeting.utc_offset_minutes, meeting.started_unix_ms, zone)
 }
 
-/// `unix_ms` shifted by `utc_offset_minutes`, as `YYYY-MM-DD HH:MM` (proleptic Gregorian;
+/// `unix_ms` shifted by `offset_minutes`, as `YYYY-MM-DD HH:MM` (proleptic Gregorian;
 /// days-to-civil after H. Hinnant, "chrono-Compatible Low-Level Date Algorithms").
 #[must_use]
-pub fn format_local(unix_ms: u64, utc_offset_minutes: i32) -> String {
-    let minutes =
-        i64::try_from(unix_ms / 60_000).unwrap_or(i64::MAX) + i64::from(utc_offset_minutes);
+pub fn format_local(unix_ms: u64, offset_minutes: i32) -> String {
+    let minutes = i64::try_from(unix_ms / 60_000).unwrap_or(i64::MAX) + i64::from(offset_minutes);
     let (days, minute_of_day) = (minutes.div_euclid(1440), minutes.rem_euclid(1440));
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -387,6 +386,8 @@ pub fn cites_only(summary: &earshot_core::summary::SummaryV1, ids: &BTreeSet<Ent
 
 #[cfg(test)]
 mod tests {
+    use super::format_local;
+
     #[test]
     fn view_shown_offset_reads_a_stored_zero_as_this_computers_zone() {
         // T14.67: a stored 0 is this computer's offset at the meeting's own start.
@@ -406,8 +407,6 @@ mod tests {
         // No reader (the worker): a stored 0 stays 0, UTC.
         assert_eq!(super::shown_offset(0, 42, |_| None), 0);
     }
-
-    use super::format_local;
 
     #[test]
     fn summary_and_export_local_start_time_formatting() {
