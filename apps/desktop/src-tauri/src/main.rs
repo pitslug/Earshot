@@ -281,9 +281,8 @@ fn main() {
             if let Some(scans) = &damage_scans {
                 // What each tick says of damaged rows, and the end of a Repair (T14.65).
                 let scans = Arc::clone(scans);
-                let host = Arc::clone(&sync);
                 sync.set_damage_listener(Arc::new(move |t: &earshot_runtime::sync::TickDamage| {
-                    scans.heard_tick(t, &host)
+                    scans.heard_tick(t)
                 }));
             }
             if let Some(scans) = damage_scans {

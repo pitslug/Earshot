@@ -224,6 +224,11 @@ fn page_names_details_kind_off_sentences_name_the_sync_page_with_its_switches() 
         assert!(text.contains("on the Sync page"), "{key}: {text}");
         assert!(stale_page_names(text).is_empty(), "{key}: {text}");
     }
+    // Each names the option by its switch's own label on that page.
+    let voice = copy["kind_off_voice"].as_str().unwrap();
+    assert!(voice.contains("Turning on Sync voiceprints"), "{voice}");
+    let words = copy["kind_off_words"].as_str().unwrap();
+    assert!(words.contains("Turning on Dictionary sync"), "{words}");
     let settings = include_str!("../../../../packages/ui/src/settings/SettingsView.tsx");
     let sections = settings
         .split_once("export const SETTINGS_SECTIONS = [")

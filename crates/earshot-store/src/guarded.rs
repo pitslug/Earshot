@@ -1009,6 +1009,15 @@ macro_rules! guarded_readers {
             Ok((ok, bad.len()))
         }
 
+        /// How many of `meeting`'s parts (tracks, lines, speakers, notes, summaries, summary
+        /// requests) do not read (T14.65: a meeting page that could not be read reports them).
+        ///
+        /// # Errors
+        /// Store errors.
+        pub fn damaged_parts_of(&self, meeting: EntityId) -> Result<u64, StoreError> {
+            crate::repo::lenient::damaged_parts_of(self.c(), meeting).map_err(repo)
+        }
+
         /// Every person row that reads, by id; the others counted.
         ///
         /// # Errors

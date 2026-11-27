@@ -166,7 +166,7 @@ describe("a Repair in Details", () => {
       }
       expect(within(dialog).queryByText(DAMAGED_COPY.repair_stopped)).toBeNull();
       await expect(ipc.repairFromSync()).rejects.toMatchObject({ error: { kind: "busy", message: DAMAGED_COPY.busy } });
-      await user.click(within(dialog).getByRole("button", { name: "Close" }));
+      await user.click(within(dialog).getByRole("button", { name: DAMAGED_COPY.close }));
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       cleanup();
     }
@@ -233,3 +233,56 @@ describe("a Repair in Details", () => {
     expect(within(dialog).queryByText(DAMAGED_COPY.nothing_healable)).toBeNull();
   });
 });
+
+describe("Details after the T14.65 review", () => {
+  it("says nothing is damaged when its scan finds nothing and no Repair runs or ended", async () => {
+    const { user } = setup({ counts: { parts: 1 }, syncOn: true, dismissedAt: { parts: 0 } });
+    const dialog = await openDetails(user);
+    expect(within(dialog).queryByText(DAMAGED_COPY.nothing_damaged)).toBeNull();
+    cleanup();
+    // The banner is from the record; Details' own scan finds nothing.
+    const base = createMockIpc({ now: NOW, damaged: { counts: { parts: 1 }, syncOn: true } });
+    const ipc = {
+      ...base,
+      damagedItems: async () => ({ ...(await base.damagedItems()), counts: { ...NO_DAMAGE } }),
+    };
+    const u = userEvent.setup();
+    renderApp(ipc, { now: () => NOW });
+    const d = await openDetails(u);
+    expect(within(d).getByText(DAMAGED_COPY.nothing_damaged)).toBeInTheDocument();
+    expect(within(d).queryByRole("button", { name: DAMAGED_COPY.repair_button })).toBeNull();
+    expect(within(d).queryByText(DAMAGED_COPY.result_none)).toBeNull();
+  });
+
+  it("never shows nothing-left against its own fresh scan: the counts, with Repair offered", async () => {
+    const { user } = setup({
+      counts: { meetings: 1 },
+      syncOn: true,
+      repair: { state: "done", left: { ...NO_DAMAGE } },
+    });
+    const dialog = await openDetails(user);
+    expect(within(dialog).queryByText(DAMAGED_COPY.result_none)).toBeNull();
+    expect(within(dialog).getByText(DAMAGED_COPY.result_some)).toBeInTheDocument();
+    expect(within(dialog).getByText(DAMAGED_COPY.kinds.meetings.one)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: DAMAGED_COPY.repair_button })).toBeInTheDocument();
+  });
+
+  it("closes with focus on the window when the banner went while it was open", async () => {
+    const { user, timer } = setup({ counts: { parts: 1 }, syncOn: true });
+    await banner();
+    const details = screen.getByRole("button", { name: DAMAGED_COPY.details_button });
+    // The Details button is the dialog's restore target (jsdom cannot prove the hand-back).
+    expect(details.getAttribute("data-tabster")).toContain("restorer");
+    const dialog = await openDetails(user);
+    await user.click(within(dialog).getByRole("button", { name: DAMAGED_COPY.repair_button }));
+    act(() => timer.advance(MOCK_REPAIR_STEP_MS));
+    act(() => timer.advance(MOCK_REPAIR_STEP_MS));
+    expect(await within(dialog).findByText(DAMAGED_COPY.result_none)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(DAMAGED_COPY.banner)).toBeNull());
+    await user.click(within(dialog).getByRole("button", { name: DAMAGED_COPY.close }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement).not.toBeNull();
+  });
+});
+

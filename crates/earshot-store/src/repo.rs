@@ -618,6 +618,41 @@ pub(crate) mod lenient {
         Ok(page)
     }
 
+    /// How many rows of `meeting`'s parts (tracks, lines, speakers, notes, summaries, summary
+    /// requests, by raw `meeting_id`) do not read: the figure the damage scan keeps per meeting
+    /// (T14.65, docs/sync-spec.md 17.3).
+    pub(crate) fn damaged_parts_of(c: &Connection, meeting: EntityId) -> Result<u64, RepoError> {
+        fn bad<T>(
+            c: &Connection,
+            table: &str,
+            cols: &[&'static str],
+            meeting: EntityId,
+            decode: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
+        ) -> Result<u64, RepoError> {
+            let rows = rows_in_order(
+                c,
+                table,
+                synced_cols(cols),
+                "WHERE meeting_id = ?1",
+                &[id_value(meeting)],
+                decode,
+            )?;
+            Ok(rows.iter().filter(|(_, r)| r.is_none()).count() as u64)
+        }
+        Ok(bad(c, "track", &TRACK, meeting, track_row)?
+            + bad(c, "segment", &SEGMENT, meeting, segment_row)?
+            + bad(c, "speaker", &SPEAKER, meeting, speaker_row)?
+            + bad(c, "note", &NOTE, meeting, note_row)?
+            + bad(c, "summary", &SUMMARY, meeting, summary_row)?
+            + bad(
+                c,
+                "summary_request",
+                &SUMMARY_REQUEST,
+                meeting,
+                summary_request_row,
+            )?)
+    }
+
     /// The person row `id`: `None` when absent, else the row or the rowid of a damaged one.
     pub(crate) fn person(
         c: &Connection,

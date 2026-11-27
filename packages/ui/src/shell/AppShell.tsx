@@ -410,6 +410,24 @@ export function AppShell({
   // The damaged-items banner (T14.65) and whether its Details dialog is open.
   const [damageShown, setDamageShown] = useDamageBanner();
   const [damageDetails, setDamageDetails] = useState(false);
+  // Details hands focus back to the banner's Details button; when the banner went while it was
+  // open (a Repair healed everything), that target is gone, so focus goes where it goes after
+  // any bar (A6 of the T14.65 review).
+  const [damageClosedBannerGone, setDamageClosedBannerGone] = useState(false);
+  const closeDamageDetails = () => {
+    setDamageDetails(false);
+    if (!damageShown) setDamageClosedBannerGone(true);
+  };
+  const focusAfterBarRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!damageClosedBannerGone) return;
+    setDamageClosedBannerGone(false);
+    // Focus is still on the closing dialog's button (it unmounts after this), or already lost.
+    const active = document.activeElement;
+    if (active === null || active === document.body || active.closest('[role="dialog"]') !== null) {
+      focusAfterBarRef.current();
+    }
+  }, [damageClosedBannerGone]);
   const [compact, setCompact] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
@@ -1322,6 +1340,8 @@ export function AppShell({
     (row ?? newMeetingButton.current)?.focus();
   };
 
+  focusAfterBarRef.current = focusAfterBar;
+
   // Why a meeting could not start, on every screen (T14.15): a start from the tray or the
   // shortcut fails wherever the user is, and one from the window can fail after they left the
   // new-meeting screen.
@@ -1351,7 +1371,7 @@ export function AppShell({
       onGoneWithFocus={focusAfterBar}
     />
   );
-  const damageDialog = <DamagedDetails open={damageDetails} onClose={() => setDamageDetails(false)} />;
+  const damageDialog = <DamagedDetails open={damageDetails} onClose={closeDamageDetails} />;
 
   if (view === "first-run") {
     return (

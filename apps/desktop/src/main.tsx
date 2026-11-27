@@ -24,7 +24,8 @@ import { createRoot } from "react-dom/client";
 // sync with other computers that write summaries, `?summary=offloaded` a meeting whose summary
 // another computer writes (T11.3db). `?notInUse=3` shows a Dictionary whose words joined from
 // the user's computers pass a limit, three of them not in use (T11.3e). `?unknownSpeaker=1` leaves line
-// 6 of finished meetings with an unknown speaker (T12.65). The mock is loaded only here, with a
+// 6 of finished meetings with an unknown speaker (T12.65). `?damaged=1` shows the damaged-items
+// banner with a few damaged kinds and sync on, so Details offers Repair (T14.65). The mock is loaded only here, with a
 // dynamic import, so the app's own bundle starts without it (T12.54).
 async function previewIpc(): Promise<Ipc> {
   const { createMockIpc, samplePersons } = await import("@earshot/ui/preview");
@@ -39,6 +40,9 @@ async function previewIpc(): Promise<Ipc> {
     noModels: query.get("clean") === "1",
     inRoom: query.get("inRoom") === "recognised" ? "recognised" : query.get("inRoom") === "1",
     unknownLine: query.get("unknownSpeaker") === "1" ? 5 : undefined,
+    ...(query.get("damaged") === "1"
+      ? { damaged: { counts: { parts: 3, people: 1, voice: 1 }, syncOn: true, switchesOff: { voice: true, words: false } } }
+      : {}),
     ...(query.get("selfNamed") === "1"
       ? { persons: [...samplePersons(), { id: "9e000000-0000-7000-8000-000000000009", name: "Casey", has_voiceprint: true, is_me: false, meetings: 1 }] }
       : {}),

@@ -623,11 +623,31 @@ fn sync_repair_ends_when_sync_is_turned_off_or_this_device_leaves() {
     repair::start_repair(&a.svc).unwrap();
     remove_this_device(&a.svc, a.vault()).unwrap();
     assert_eq!(step(&a), None, "leaving ends it");
-    repair::start_repair(&b.svc).unwrap();
+    // Joining: a record written after the removal and right before the join (as a Repair of an
+    // earlier vault left behind) goes with the join's own transaction.
+    let reading = |dev: &Device| {
+        let mut db = dev.svc.store();
+        local::set(
+            &mut db,
+            &DeviceRecord::DamageRepair.key(),
+            &repair::encode_step(RepairStep::Reading),
+        )
+        .unwrap();
+    };
     let offer = offer_pairing_code(&b.svc, b.vault()).unwrap();
+    reading(&a);
+    assert_eq!(step(&a), Some(RepairStep::Reading));
     join_with_code(&a.svc, &*a.vault, &relay.relay.url(), offer.code()).unwrap();
+    assert_eq!(step(&a), None, "joining ends it");
+}
+
+/// Test 9: setting up as a vault's first device ends a Repair a record left behind. Control:
+/// the record is there right before the setup.
+#[test]
+fn sync_repair_ends_when_this_device_sets_up_a_vault() {
+    let relay = relay();
+    let a = Device::new("sync-repair-setup");
     {
-        // A record left by an earlier vault goes when this device joins again.
         let mut db = a.svc.store();
         local::set(
             &mut db,
@@ -636,10 +656,9 @@ fn sync_repair_ends_when_sync_is_turned_off_or_this_device_leaves() {
         )
         .unwrap();
     }
-    let offer = offer_pairing_code(&b.svc, b.vault()).unwrap();
-    remove_this_device(&a.svc, a.vault()).unwrap();
-    join_with_code(&a.svc, &*a.vault, &relay.relay.url(), offer.code()).unwrap();
-    assert_eq!(step(&a), None, "joining ends it");
+    assert_eq!(step(&a), Some(RepairStep::Reading));
+    set_up_first_device(&a.svc, &*a.vault, &relay.relay.url(), SECRET).unwrap();
+    assert_eq!(step(&a), None, "setting up ends it");
 }
 
 /// Test 13 (informational): what the scan and a Repair cost at a stated size, on whatever host

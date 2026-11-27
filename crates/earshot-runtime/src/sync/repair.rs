@@ -118,11 +118,14 @@ pub enum RepairStart {
     Started,
     /// A Repair is already in progress: nothing was written.
     AlreadyRunning,
+    /// Sync is off (read in the arm's own transaction): nothing was written.
+    SyncOff,
 }
 
 /// Starts a Repair from sync: in one transaction, the pull's restart (`pull_seq` 0; `seen_seq`,
 /// the epoch and the resets kept, so it is no vault reset and nothing is queued) and the arm, a
-/// compare-and-set on an absent record. The caller checks sync is set up and on.
+/// compare-and-set on an absent record, refused while sync is off. The caller also checks sync
+/// is set up.
 ///
 /// # Errors
 /// [`SyncProblem::Store`].
@@ -131,6 +134,15 @@ pub fn start_repair(services: &Services) -> Result<RepairStart, SyncProblem> {
     db.transaction(|tx| -> Result<RepairStart, SyncProblem> {
         if tx.local_value(DAMAGE_REPAIR_KEY)?.is_some() {
             return Ok(RepairStart::AlreadyRunning);
+        }
+        // Sync off in this transaction means no tick would read anything: refuse rather than
+        // arm a Repair that waits for ever (turning sync off also ends one).
+        let on = tx
+            .local_value(super::SYNC_ON_KEY)?
+            .and_then(|b| local::on_off(&String::from_utf8_lossy(&b)))
+            .unwrap_or(false);
+        if !on {
+            return Ok(RepairStart::SyncOff);
         }
         restart_pull_tx(tx)?;
         local::set_tx(

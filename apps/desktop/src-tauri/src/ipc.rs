@@ -540,7 +540,7 @@ pub fn meeting_search(
             "A newer search replaced this one.",
         ));
     };
-    crate::damage::report(crate::damage::Scope::LinesAndSummaries, results.unreadable);
+    crate::damage::report(crate::damage::Scope::Search, results.unreadable);
     Ok(SearchResultsView {
         items: results
             .hits

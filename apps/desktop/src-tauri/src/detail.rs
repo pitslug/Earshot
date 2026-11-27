@@ -967,13 +967,14 @@ fn speaker_cards(
 pub fn meeting_detail(services: &Services, meeting: EntityId) -> Result<MeetingDetail, IpcError> {
     let read = meeting_detail_read(services, meeting);
     if read.is_err() {
-        // A meeting page that meets lines that do not read reports them to the damage scans
-        // (T14.65, docs/sync-spec.md 17.3), counted by the meeting's own damaged parts.
+        // A meeting page that meets rows that do not read reports them to the damage scans
+        // (T14.65, docs/sync-spec.md 17.3): every damaged part of the meeting, the figure the
+        // scan keeps for it.
         let damaged = services
             .guarded_read()
             .read()
-            .segments_and_damaged(meeting)
-            .map_or(0, |(_, n)| n);
+            .damaged_parts_of(meeting)
+            .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
         crate::damage::report(crate::damage::Scope::Meeting(meeting), damaged);
     }
     read

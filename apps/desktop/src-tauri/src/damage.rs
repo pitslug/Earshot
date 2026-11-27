@@ -65,9 +65,9 @@ pub enum Scope {
     People,
     /// Meetings and folders (the meeting list).
     MeetingsAndFolders,
-    /// Damaged line and summary rows (a search).
-    LinesAndSummaries,
-    /// Damaged parts of one meeting (a meeting page with unreadable lines).
+    /// Damaged meeting, line and summary rows (a search, which counts all three).
+    Search,
+    /// Damaged parts of one meeting (a meeting page that could not be read).
     Meeting(EntityId),
 }
 
@@ -76,7 +76,8 @@ pub enum Scope {
 #[derive(Debug, Clone, Default)]
 pub struct Figures {
     counts: DamageCounts,
-    lines_and_summaries: u64,
+    /// Damaged rows of the tables a search reads: meetings, lines and summaries.
+    search: u64,
     by_meeting: BTreeMap<EntityId, u64>,
     /// Meeting figures are known only after a scan of this run (17.2: the start-up scan
     /// refills them).
@@ -91,7 +92,7 @@ impl Figures {
             Scope::PeopleAndVoice => c.people.saturating_add(c.voice),
             Scope::People => c.people,
             Scope::MeetingsAndFolders => c.meetings.saturating_add(c.folders),
-            Scope::LinesAndSummaries => self.lines_and_summaries,
+            Scope::Search => self.search,
             Scope::Meeting(m) => self.by_meeting.get(&m).copied().unwrap_or(0),
         }
     }
@@ -115,6 +116,10 @@ pub enum Start {
 pub struct Gate {
     running: bool,
     again: bool,
+    /// The scan asked for during the running one must run as soon as it ends, not after the
+    /// debounce: a forced scan (Details, the end of a Repair, the start-up scan) waits only for
+    /// the one running (docs/sync-spec.md 17.7).
+    again_forced: bool,
     last_start: Option<Duration>,
     due: Option<Duration>,
 }
@@ -144,6 +149,7 @@ impl Gate {
     pub fn force(&mut self, now: Duration) -> Start {
         if self.running {
             self.again = true;
+            self.again_forced = true;
             return Start::None;
         }
         self.begin(now)
@@ -162,11 +168,24 @@ impl Gate {
     /// A scan ended at `now`.
     pub fn finished(&mut self, now: Duration) -> Start {
         self.running = false;
-        if std::mem::take(&mut self.again) {
-            self.request(now)
-        } else {
-            Start::None
+        let forced = std::mem::take(&mut self.again_forced);
+        if !std::mem::take(&mut self.again) {
+            return Start::None;
         }
+        if forced {
+            self.due = None;
+            self.begin(now)
+        } else {
+            self.request(now)
+        }
+    }
+
+    /// The scan just begun could not be started (no thread): nothing runs and nothing is due.
+    fn not_started(&mut self) {
+        self.running = false;
+        self.again = false;
+        self.again_forced = false;
+        self.due = None;
     }
 
     fn begin(&mut self, now: Duration) -> Start {
@@ -183,8 +202,9 @@ impl Gate {
     }
 }
 
-/// Runs a job off the caller's thread (a thread in the app; tests may hold the jobs).
-pub type Spawn = Arc<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
+/// Runs a job off the caller's thread (a thread in the app; tests may hold the jobs); `false`
+/// when it could not be started.
+pub type Spawn = Arc<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send + Sync>;
 
 /// The clock the gate reads (monotonic).
 pub type Clock = Arc<dyn Fn() -> Duration + Send + Sync>;
@@ -199,10 +219,11 @@ struct State {
     finished: u64,
     /// Scans started so far.
     started: u64,
-    /// What the closing scan of the last Repair left (`Done`); cleared by a new Repair.
+    /// What the last scan found since a Repair ended (`Done`): set by the closing scan and
+    /// replaced by every later scan, so it never outlives the figures; cleared by a new Repair.
     repair_left: Option<DamageCounts>,
-    /// The scan running now closes a Repair.
-    closing_repair: bool,
+    /// A Repair ended once this many scans had started: only a scan started after it closes it.
+    closing_after: Option<u64>,
     /// The last scan failed (a store error): Details says it could not read.
     failed: bool,
 }
@@ -236,7 +257,7 @@ impl Scans {
                 finished: 0,
                 started: 0,
                 repair_left: None,
-                closing_repair: false,
+                closing_after: None,
                 failed: false,
             }),
             done: Condvar::new(),
@@ -254,9 +275,10 @@ impl Scans {
             services,
             Arc::new(move || origin.elapsed()),
             Arc::new(|job| {
-                let _ = std::thread::Builder::new()
+                std::thread::Builder::new()
                     .name("earshot-damage-scan".into())
-                    .spawn(job);
+                    .spawn(job)
+                    .is_ok()
             }),
             sink,
         )
@@ -274,7 +296,7 @@ impl Scans {
             let figure = match scope {
                 // Before this run's first scan a meeting's figure is unknown: the start-up
                 // scan refills it, and a report meanwhile asks.
-                Scope::Meeting(_) | Scope::LinesAndSummaries if !s.figures.scanned => 0,
+                Scope::Meeting(_) | Scope::Search if !s.figures.scanned => 0,
                 _ => s.figures.of(scope),
             };
             if count <= figure {
@@ -298,11 +320,15 @@ impl Scans {
 
     /// What a sync tick said: its damaged rows are a report against the total; the end of a
     /// Repair starts the closing scan; a Repair still running tells the window where it is.
-    pub fn heard_tick(&self, tick: &TickDamage, sync: &SyncHost) {
+    ///
+    /// It runs on the sync thread every tick, so it reads only the store (never Credential
+    /// Manager or the sync host's locks).
+    pub fn heard_tick(&self, tick: &TickDamage) {
         if tick.repair_ended {
             let start = {
                 let mut s = self.lock();
-                s.closing_repair = true;
+                // A scan already running started before the end: the closing one starts after.
+                s.closing_after = Some(s.started);
                 let now = (self.clock)();
                 s.gate.force(now)
             };
@@ -321,7 +347,7 @@ impl Scans {
             let shown = damaged::stored(&self.services).is_ok_and(|s| s.items.shown());
             (self.sink)(DamageEvent {
                 shown,
-                repair: self.repair_view(sync),
+                repair: self.repair_view_without_host(),
             });
         }
     }
@@ -361,14 +387,28 @@ impl Scans {
         match start {
             Start::None => {}
             Start::Now => {
-                self.lock().started += 1;
-                if let Some(me) = self.me.upgrade() {
-                    (self.spawn)(Box::new(move || me.run()));
+                let number = {
+                    let mut s = self.lock();
+                    s.started += 1;
+                    s.started
+                };
+                let spawned = self
+                    .me
+                    .upgrade()
+                    .is_some_and(|me| (self.spawn)(Box::new(move || me.run(number))));
+                if !spawned {
+                    // No thread: the scan counts as finished and failed, so nothing waits for
+                    // it and the next request can start one.
+                    let mut s = self.lock();
+                    s.gate.not_started();
+                    s.failed = true;
+                    s.finished += 1;
+                    self.done.notify_all();
                 }
             }
             Start::At(at) => {
                 if let Some(me) = self.me.upgrade() {
-                    (self.spawn)(Box::new(move || {
+                    let spawned = (self.spawn)(Box::new(move || {
                         let wait = at.saturating_sub((me.clock)());
                         if !wait.is_zero() {
                             std::thread::sleep(wait);
@@ -380,13 +420,16 @@ impl Scans {
                         };
                         me.act(start);
                     }));
+                    if !spawned {
+                        self.lock().gate.not_started();
+                    }
                 }
             }
         }
     }
 
     /// One scan: reads the store, stores the record, keeps the figures, tells the window.
-    fn run(&self) {
+    fn run(&self, number: u64) {
         let scanned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let scan = damaged::scan(&self.services).ok()?;
             let items = damaged::record_scan(&self.services, scan.counts()).ok()?;
@@ -402,8 +445,9 @@ impl Scans {
                     s.failed = false;
                     s.figures = Figures {
                         counts: scan.counts(),
-                        lines_and_summaries: scan
-                            .in_table("segment")
+                        search: scan
+                            .in_table("meeting")
+                            .saturating_add(scan.in_table("segment"))
                             .saturating_add(scan.in_table("summary")),
                         by_meeting: scan
                             .meetings()
@@ -411,7 +455,11 @@ impl Scans {
                             .collect(),
                         scanned: true,
                     };
-                    if std::mem::take(&mut s.closing_repair) {
+                    let closes = s.closing_after.is_some_and(|after| number > after);
+                    if closes {
+                        s.closing_after = None;
+                    }
+                    if closes || s.repair_left.is_some() {
                         s.repair_left = Some(scan.counts());
                     }
                     event = Some(items.shown());
@@ -677,6 +725,7 @@ pub fn repair(scans: &Scans, sync: &SyncHost) -> Result<(), IpcError> {
     }
     match earshot_runtime::sync::start_repair(services).map_err(|_| IpcError::internal())? {
         RepairStart::AlreadyRunning => Err(IpcError::busy(BUSY_COPY)),
+        RepairStart::SyncOff => Err(IpcError::invalid(SYNC_OFF_COPY)),
         RepairStart::Started => {
             scans.repair_started();
             sync.sync_now(services);

@@ -185,8 +185,10 @@ export function DamagedDetails({ open, onClose }: DamagedDetailsProps) {
         (v) => {
           if (!live) return;
           setView(v);
-          // An event heard since the request is newer than the answer's Repair.
-          if (!heard) setRepair(v.repair);
+          // An event heard since the request is newer than the answer's Repair. A finished
+          // Repair in the answer shows what the answer's own scan found, so Details never
+          // contradicts it (a "nothing left" beside damaged counts).
+          if (!heard) setRepair(v.repair.state === "done" ? { state: "done", left: v.counts } : v.repair);
         },
         (e: unknown) => {
           if (live) setLoadError(errorText(e));
@@ -246,6 +248,8 @@ export function DamagedDetails({ open, onClose }: DamagedDetailsProps) {
               <>
                 {repair.state === "done" ? (
                   <RepairResult left={repair.left} off={view.kinds_off} />
+                ) : repair.state === "idle" && totalDamaged(view.counts) === 0 ? (
+                  <Body1>{DAMAGED_COPY.nothing_damaged}</Body1>
                 ) : (
                   <KindList counts={view.counts} off={view.kinds_off} />
                 )}
@@ -260,7 +264,7 @@ export function DamagedDetails({ open, onClose }: DamagedDetailsProps) {
           </DialogContent>
           <DialogActions>
             <Button appearance="secondary" onClick={onClose}>
-              Close
+              {DAMAGED_COPY.close}
             </Button>
           </DialogActions>
         </DialogBody>

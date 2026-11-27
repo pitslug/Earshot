@@ -35,7 +35,10 @@ impl Watch {
         let scans = Scans::new(
             svc.clone(),
             Arc::new(move || *n.lock().unwrap()),
-            Arc::new(move |job| j.lock().unwrap().push(job)),
+            Arc::new(move |job| {
+                j.lock().unwrap().push(job);
+                true
+            }),
             Arc::new(move |ev| e.lock().unwrap().push(ev)),
         );
         set_app_scans(&scans);
@@ -182,20 +185,19 @@ fn host() -> Arc<SyncHost> {
 
 // ---- the gate (17.3) ----
 
-/// Requests within the debounce run one scan; a request during a scan runs one more after it;
-/// a forced scan waits only for one running. Control: a request after the debounce starts at
-/// once, and with no request nothing starts.
+/// Requests within the debounce run one scan; a request during a scan runs one more after it,
+/// after the debounce; a forced scan waits only for one running, then starts at once. Control: a
+/// request after the debounce starts at once, and with no request nothing starts.
 #[test]
 fn damaged_gate_debounces_and_never_overlaps() {
     let t = |s: u64| Duration::from_secs(s);
     let mut g = Gate::default();
     assert_eq!(g.request(t(0)), Start::Now);
     assert_eq!(g.request(t(1)), Start::None, "one runs: one more after it");
-    assert_eq!(g.force(t(1)), Start::None, "a forced scan never overlaps");
     assert_eq!(
         g.finished(t(2)),
         Start::At(t(30)),
-        "the one more waits for the debounce"
+        "an unforced one more waits for the debounce"
     );
     assert_eq!(g.request(t(3)), Start::None, "already due");
     assert_eq!(g.due(t(30)), Start::Now);
@@ -203,9 +205,13 @@ fn damaged_gate_debounces_and_never_overlaps() {
     // Control: a request after the debounce starts at once.
     assert_eq!(g.request(t(61)), Start::Now);
     assert_eq!(g.finished(t(62)), Start::None);
-    // A forced scan ignores the debounce but not a running scan.
+    // A forced scan ignores the debounce but not a running scan...
     assert_eq!(g.force(t(63)), Start::Now);
     assert!(g.running());
+    // ...and one forced while a scan runs starts the moment it ends, debounce or not (17.7).
+    assert_eq!(g.force(t(64)), Start::None, "a forced scan never overlaps");
+    assert_eq!(g.finished(t(65)), Start::Now);
+    assert_eq!(g.finished(t(66)), Start::None);
 }
 
 /// Test 1: each report scope requests a scan only above its figure; a meeting page with new
@@ -244,7 +250,7 @@ fn damaged_reports_request_a_scan_only_above_the_last_scans_figure() {
     assert_eq!(f.of_for_test(Scope::Total), 1);
     // At or below each figure: nothing.
     w.advance(Duration::from_secs(60));
-    for scope in [Scope::Total, Scope::LinesAndSummaries, Scope::Meeting(old)] {
+    for scope in [Scope::Total, Scope::Search, Scope::Meeting(old)] {
         report(scope, 1);
     }
     for scope in [
@@ -297,7 +303,6 @@ fn damaged_the_apps_routes_each_report_what_they_meet() {
                 m,
             );
         }
-        let sync = host();
         let routes: Vec<Route<'_>> = vec![
             (
                 "meeting list",
@@ -320,13 +325,10 @@ fn damaged_the_apps_routes_each_report_what_they_meet() {
                 "sync tick",
                 Box::new(|| {
                     let w = app_scans().unwrap();
-                    w.heard_tick(
-                        &TickDamage {
-                            damaged: usize::from(damaged),
-                            repair_ended: false,
-                        },
-                        &sync,
-                    );
+                    w.heard_tick(&TickDamage {
+                        damaged: usize::from(damaged),
+                        repair_ended: false,
+                    });
                 }),
             ),
         ];
@@ -521,13 +523,10 @@ fn damaged_details_name_kinds_whose_sync_is_off_and_done_keeps_what_is_left() {
     assert!(!on.kinds_off.words, "control: the switch is on");
     // The end of a Repair starts the closing scan, whose counts Done keeps.
     w.advance(Duration::from_secs(60));
-    w.scans.heard_tick(
-        &TickDamage {
-            damaged: 0,
-            repair_ended: true,
-        },
-        &sync,
-    );
+    w.scans.heard_tick(&TickDamage {
+        damaged: 0,
+        repair_ended: true,
+    });
     w.run();
     assert_eq!(
         w.scans.repair_view(&sync),
@@ -554,6 +553,8 @@ fn damaged_copy_is_the_tables() {
         "details_button",
         "dismiss",
         "details_title",
+        "close",
+        "nothing_damaged",
         "repair_intro",
         "nothing_healable",
         "kind_off_voice",
@@ -672,4 +673,236 @@ fn damaged_old_notes_are_gone_and_kept_ones_stay() {
     ));
     assert!(holds_key("damaged_note: Option<String>", "damaged_note"));
     assert!(!holds_key("forget_damaged_note", "damaged_note"));
+}
+
+// ---- the fix round (T14.65c) ----
+
+/// A Watch with sync set up and on, so `repair` arms.
+fn sync_on(svc: &Services) -> Arc<SyncHost> {
+    earshot_runtime::sync::set_sync_on(svc, true).unwrap();
+    Arc::new(SyncHost::new(set_up_vault()))
+}
+
+/// Ends the armed Repair as a tick would, and runs the closing scan.
+fn end_repair(w: &Watch, svc: &Services) {
+    svc.store()
+        .delete_local_value(earshot_runtime::sync::DAMAGE_REPAIR_KEY)
+        .unwrap();
+    w.advance(Duration::from_secs(60));
+    w.scans.heard_tick(&TickDamage {
+        damaged: 0,
+        repair_ended: true,
+    });
+    w.run();
+}
+
+/// B1: Done never outlives the figures. A Repair ends with nothing left; a later scan finds a
+/// damaged row; Details then shows its count with Repair offered and Done holding the fresh
+/// count, never zeros (`result_none`). Control: with no later damage Done stays at zeros.
+#[test]
+fn damaged_done_follows_every_later_scan() {
+    for later in [true, false] {
+        let dir = TempDir::new("damaged-done-later");
+        let svc = services(&dir);
+        let m = a_meeting(&svc, "Invented Wrenfield review");
+        let w = Watch::new(&svc);
+        let sync = sync_on(&svc);
+        repair(&w.scans, &sync).unwrap();
+        end_repair(&w, &svc);
+        assert_eq!(
+            w.scans.repair_view(&sync),
+            RepairView::Done {
+                left: DamageCountsView::default()
+            }
+        );
+        if later {
+            damage(
+                &dir,
+                "UPDATE meeting SET template = 'invented-word' WHERE id = ?1",
+                m,
+            );
+        }
+        w.advance(Duration::from_secs(60));
+        let view = w.details(&sync).unwrap();
+        let want = DamageCountsView {
+            meetings: u32::from(later),
+            ..DamageCountsView::default()
+        };
+        assert_eq!(view.counts, want);
+        assert!(view.sync_repairs, "Repair is offered");
+        assert_eq!(view.repair, RepairView::Done { left: want });
+    }
+}
+
+/// B2: a scan already running when the Repair ends is not the closing scan; the closing one is
+/// the next to start. Control: with no scan in flight, the next scan closes it at once.
+#[test]
+fn damaged_a_scan_in_flight_when_a_repair_ends_does_not_close_it() {
+    let dir = TempDir::new("damaged-closing-in-flight");
+    let svc = services(&dir);
+    let m = a_meeting(&svc, "Invented Talloway planning");
+    let w = Watch::new(&svc);
+    let sync = sync_on(&svc);
+    repair(&w.scans, &sync).unwrap();
+    // A scan starts (held) while the line is damaged.
+    damage(
+        &dir,
+        "UPDATE meeting SET template = 'invented-word' WHERE id = ?1",
+        m,
+    );
+    w.scans.scan_soon();
+    assert_eq!(w.held(), 1, "the scan is in flight");
+    // The Repair ends while that scan is still in flight.
+    svc.store()
+        .delete_local_value(earshot_runtime::sync::DAMAGE_REPAIR_KEY)
+        .unwrap();
+    w.scans.heard_tick(&TickDamage {
+        damaged: 0,
+        repair_ended: true,
+    });
+    // Run only the scan that started before the end: it does not close the Repair.
+    let first = w.jobs.lock().unwrap().remove(0);
+    first();
+    assert_eq!(w.scans.repair_view(&sync), RepairView::Idle);
+    // The closing scan, forced, starts at once after it and closes it with what is left.
+    w.run();
+    assert_eq!(
+        w.scans.repair_view(&sync),
+        RepairView::Done {
+            left: DamageCountsView {
+                meetings: 1,
+                ..DamageCountsView::default()
+            }
+        }
+    );
+}
+
+/// A2: a search's count covers meeting rows as its figure does, so a damaged meeting row a
+/// scan already counted causes no scan. Control: a gate that has not scanned asks.
+#[test]
+fn damaged_a_search_over_a_counted_meeting_row_asks_no_scan() {
+    let dir = TempDir::new("damaged-search-meeting");
+    let svc = services(&dir);
+    let m = a_meeting(&svc, "Invented Brannock retro");
+    damage(
+        &dir,
+        "UPDATE meeting SET title = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+        m,
+    );
+    let w = Watch::new(&svc);
+    w.scans.scan_soon();
+    w.run();
+    let before = w.started();
+    w.advance(Duration::from_secs(60));
+    let found =
+        crate::ipc::meeting_search(&svc, "invented", &earshot_core::asr::CancelToken::new())
+            .unwrap();
+    assert_eq!(found.unreadable, 1);
+    assert_eq!(w.started(), before, "the counted row asks for nothing");
+    let w2 = Watch::new(&svc);
+    crate::ipc::meeting_search(&svc, "invented", &earshot_core::asr::CancelToken::new()).unwrap();
+    assert_eq!(w2.started(), 1, "control: an unscanned gate asks");
+}
+
+/// A3: a meeting page that fails on a damaged speaker reports the meeting's damaged parts.
+/// Control: the same page over an undamaged meeting reads and reports nothing.
+#[test]
+fn damaged_a_meeting_page_failing_on_a_speaker_reports_its_parts() {
+    for damaged in [true, false] {
+        let dir = TempDir::new("damaged-page-speaker");
+        let svc = services(&dir);
+        let m = a_meeting(&svc, "Invented Quillmere review");
+        {
+            use earshot_core::model::{MeetingRepo, Speaker};
+            let clock = Arc::clone(&svc.clock);
+            let mut db = svc.store();
+            let (store, hlc) = db.parts();
+            store
+                .put_speaker(Speaker {
+                    id: EntityId::from_bytes([
+                        0x01, 0x95, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 7, 3,
+                    ]),
+                    meta: earshot_core::identity::SyncMeta::new(hlc, &*clock),
+                    meeting_id: m,
+                    role: earshot_core::diar::SpeakerRole::Remote,
+                    display_name: "Invented Ferrow".into(),
+                    person_id: None,
+                    ignored: false,
+                })
+                .unwrap();
+        }
+        if damaged {
+            let c = rusqlite::Connection::open(db(&dir)).unwrap();
+            c.execute(
+                "UPDATE speaker SET role = 'bogus' WHERE meeting_id = ?1",
+                rusqlite::params![m.as_uuid().as_bytes().to_vec()],
+            )
+            .unwrap();
+        }
+        let (read, asked) = reports_for_test(|| crate::detail::meeting_detail(&svc, m).map(|_| ()));
+        assert_eq!(read.is_err(), damaged);
+        assert_eq!(asked, damaged);
+    }
+}
+
+/// A4: a scan whose thread cannot start leaves the gate free and Details answers `internal`.
+/// Control: with a thread, Details answers.
+#[test]
+fn damaged_a_scan_that_cannot_start_never_hangs_details() {
+    let dir = TempDir::new("damaged-no-thread");
+    let svc = services(&dir);
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = Arc::clone(&refuse);
+    let jobs: Jobs = Arc::default();
+    let j = Arc::clone(&jobs);
+    let scans = Scans::new(
+        svc.clone(),
+        Arc::new(|| Duration::from_secs(1_000)),
+        Arc::new(move |job| {
+            if r.load(std::sync::atomic::Ordering::SeqCst) {
+                return false;
+            }
+            j.lock().unwrap().push(job);
+            true
+        }),
+        Arc::new(|_| {}),
+    );
+    let sync = host();
+    let e = details(&scans, &sync).unwrap_err();
+    assert_eq!(e, IpcError::internal());
+    assert!(!scans.gate_for_test().running(), "the gate is free again");
+    refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    let ok = std::thread::scope(|s| {
+        let h = s.spawn(|| details(&scans, &sync));
+        while !h.is_finished() {
+            let next = jobs.lock().unwrap().pop();
+            if let Some(job) = next {
+                job();
+            }
+            std::thread::yield_now();
+        }
+        h.join().unwrap()
+    });
+    assert!(ok.is_ok(), "{ok:?}");
+}
+
+/// A5: Repair with sync off is refused in the arm's own transaction and arms nothing, even
+/// past the page's check (a host that says set up). Control: on, it arms.
+#[test]
+fn damaged_repair_with_sync_off_arms_nothing() {
+    let dir = TempDir::new("damaged-repair-off");
+    let svc = services(&dir);
+    assert_eq!(
+        earshot_runtime::sync::start_repair(&svc).unwrap(),
+        earshot_runtime::sync::RepairStart::SyncOff
+    );
+    assert_eq!(earshot_runtime::sync::repair_step(&svc).unwrap(), None);
+    let w = Watch::new(&svc);
+    let refused = repair(&w.scans, &Arc::new(SyncHost::new(set_up_vault()))).unwrap_err();
+    assert_eq!(refused.message, SYNC_OFF_COPY);
+    earshot_runtime::sync::set_sync_on(&svc, true).unwrap();
+    assert_eq!(
+        earshot_runtime::sync::start_repair(&svc).unwrap(),
+        earshot_runtime::sync::RepairStart::Started
+    );
 }
