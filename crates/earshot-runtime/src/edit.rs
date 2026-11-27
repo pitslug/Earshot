@@ -1856,7 +1856,16 @@ pub fn user_name_in<R: VoiceprintRepo + ?Sized>(repo: &R) -> Result<Option<Strin
         return Ok(None);
     };
     let name = me.display_name.trim();
-    Ok((name != DEFAULT_ME_NAME && !name.is_empty()).then(|| name.to_owned()))
+    Ok(is_set_user_name(name).then(|| name.to_owned()))
+}
+
+/// Whether `name` is a name the user gave (not empty and not the default [`DEFAULT_ME_NAME`]
+/// in any case or spacing), compared by [`person_name_key`] as the meeting page's
+/// `userNamed` compares it.
+#[must_use]
+pub fn is_set_user_name(name: &str) -> bool {
+    let key = person_name_key(name);
+    !key.is_empty() && key != person_name_key(DEFAULT_ME_NAME)
 }
 
 fn name_key(name: &str) -> String {

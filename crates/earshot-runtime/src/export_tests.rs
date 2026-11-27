@@ -386,6 +386,11 @@ fn export_action_owners_match_the_shared_cases() {
 fn export_note_user_is_none_for_the_default_or_a_blank_name() {
     assert!(note_user(None).is_none());
     assert!(note_user(Some("Me")).is_none());
+    // The default in any case or spacing, as the meeting page compares it.
+    assert!(note_user(Some("me")).is_none());
+    assert!(note_user(Some(" ME ")).is_none());
+    assert!(crate::edit::is_set_user_name("Mei"));
+    assert!(!crate::edit::is_set_user_name("mE"));
     assert!(note_user(Some("  ")).is_none());
     assert_eq!(
         note_user(Some(" Casey Lane ")).map(|u| u.name),

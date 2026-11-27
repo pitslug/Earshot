@@ -5,7 +5,9 @@
 //! mix) and a leading UTF-8 byte-order mark. Generated text (owned keys, tags, the region,
 //! separators) uses the note's dominant line ending.
 
-use super::render::{RenderedExport, name_key, owner_names, tags_block, union_tags};
+use super::render::{
+    RenderedAction, RenderedExport, name_key, owner_names, tags_block, union_tags,
+};
 use super::{BEGIN_MARKER, END_MARKER, ExportError, OWNED_KEYS};
 use crate::identity::EntityId;
 
@@ -195,75 +197,65 @@ fn task_line(line: &str) -> Option<(char, &str)> {
     (!matches!(mark, '\n' | '\r')).then_some((mark, text))
 }
 
-/// An action-item line's task with its owners taken off (T14.61), for matching a line
-/// across the change of format: a leading "**Owner**: " (the form before T14.61) and a
-/// trailing "(<owners>)" or "(with <owners>)" (the form since) are removed, a trailing
-/// "(due: ...)" is kept. Owner names are compared by `render::name_key` (old and new
-/// lines hold the same summary's owner text, so no user rule is needed). A text that has neither is its own task with no owners.
-#[derive(Debug, Default)]
-struct TaskKey {
-    task: String,
-    owners: Vec<String>,
-    /// The owners were listed as "(with ...)": a line of the user's own, shared.
-    with: bool,
+/// Where a task line sits in a region: in "## Action items" under "### My actions", under
+/// "### Other actions", in the one list (no subheadings, which includes every note written
+/// before T14.61), or outside the action items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Mine,
+    Other,
+    Single,
+    Elsewhere,
 }
 
-impl TaskKey {
-    fn of(text: &str) -> TaskKey {
-        let name = name_key;
-        let mut owners = Vec::new();
-        let mut rest = text;
-        if let Some(after) = text.strip_prefix("**")
-            && let Some(end) = after.find("**: ")
-            && end > 0
-        {
-            owners = owner_names(&after[..end]).into_iter().map(name).collect();
-            rest = &after[end + 4..];
+impl Place {
+    /// Whether two places can hold the same action: the user's own lines only match the
+    /// user's own, and action lines never match lines from other sections.
+    fn compatible(self, other: Place) -> bool {
+        match (self, other) {
+            (Place::Elsewhere, Place::Elsewhere) => true,
+            (Place::Elsewhere, _) | (_, Place::Elsewhere) => false,
+            (a, b) => (a == Place::Mine) == (b == Place::Mine),
         }
-        let mut with = false;
-        if let Some(open) = trailing_group(rest) {
-            let inner = &rest[open + 1..rest.len() - 1];
-            if !inner.starts_with("due: ") {
-                let (listed, w) = match inner.strip_prefix("with ") {
-                    Some(l) => (l, true),
-                    None => (inner, false),
-                };
-                if owners.is_empty() {
-                    owners = listed.split(", ").map(name).collect();
-                    with = w;
-                }
-                rest = &rest[..open - 1];
+    }
+}
+
+/// The place of every line of `region` (one entry per `split_inclusive('\n')` line).
+fn places(region: &str) -> Vec<Place> {
+    let mut place = Place::Elsewhere;
+    region
+        .split_inclusive('\n')
+        .map(|l| {
+            let l = l.trim_end_matches(['\n', '\r']);
+            if l == "## Action items" {
+                place = Place::Single;
+            } else if place != Place::Elsewhere && l == "### My actions" {
+                place = Place::Mine;
+            } else if place != Place::Elsewhere && l == "### Other actions" {
+                place = Place::Other;
+            } else if l.starts_with("## ") || l == BEGIN_MARKER || l == END_MARKER {
+                place = Place::Elsewhere;
             }
-        }
-        TaskKey {
-            task: rest.to_owned(),
-            owners,
-            with,
-        }
-    }
+            place
+        })
+        .collect()
 }
 
-/// [`TaskKey::of`] as (task, owners, with), for the tests.
-#[cfg(test)]
-pub(super) fn task_key_parts(text: &str) -> (String, Vec<String>, bool) {
-    let k = TaskKey::of(text);
-    (k.task, k.owners, k.with)
+/// Whether `text` starts with a balanced "(...)" group.
+fn starts_with_group(text: &str) -> bool {
+    text.starts_with('(') && group_end(text).is_some()
 }
 
-/// The byte index of the `(` that opens a balanced "(...)" ending `text`, when a space
-/// comes before it.
-fn trailing_group(text: &str) -> Option<usize> {
-    if !text.ends_with(')') {
-        return None;
-    }
+/// The byte index just past the ")" closing the "(" that starts `text`.
+fn group_end(text: &str) -> Option<usize> {
     let mut depth = 0usize;
-    for (i, c) in text.char_indices().rev() {
+    for (i, c) in text.char_indices() {
         match c {
-            ')' => depth += 1,
-            '(' => {
-                depth -= 1;
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
                 if depth == 0 {
-                    return (i > 0 && text[..i].ends_with(' ')).then_some(i);
+                    return Some(i + 1);
                 }
             }
             _ => {}
@@ -272,13 +264,128 @@ fn trailing_group(text: &str) -> Option<usize> {
     None
 }
 
+/// The names of a ", "-joined owner list as the merge compares them.
+fn name_set(list: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in list.split(", ").map(name_key).filter(|n| !n.is_empty()) {
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// One new action line as the render built it, in plain form and with names keyed.
+struct NewAction {
+    task: String,
+    mine: bool,
+    /// Every owner, the user's names included, keyed and sorted.
+    owners: Vec<String>,
+    /// The owners shown after "with" on a line of the user's own, keyed and sorted.
+    others: Vec<String>,
+}
+
+impl NewAction {
+    fn of(a: &RenderedAction) -> NewAction {
+        let keyed = |names: &[String]| {
+            name_set(
+                &names
+                    .iter()
+                    .map(|n| plain_form(n))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        };
+        NewAction {
+            task: plain_form(&a.task),
+            mine: a.mine,
+            owners: keyed(&a.owners),
+            others: keyed(&a.others),
+        }
+    }
+
+    /// How old line `text` at `place` relates to this action (T14.61).
+    ///
+    /// The owner set is part of an action's identity: an old line matches only when its own
+    /// owners, read from the line's form, are this action's. Ambiguity never carries a tick
+    /// (losing one is acceptable, moving one is not), so the old line is read against this
+    /// action's own task as rendered, never by stripping an arbitrary trailing bracket:
+    /// - "**X**: <task>" (the form before T14.61, one line per owner text): matches when
+    ///   <task> is this task exactly and every name in X is an owner here
+    ///   ([`OldMatch::PerOwner`]; a shared action takes each such line);
+    /// - under "### My actions": "<task>" (the user alone) or "<task> (with <names>)"
+    ///   matches a line of the user's own with exactly those others;
+    /// - elsewhere in the action items: "<task>" (no owner) or "<task> (<names>)" matches
+    ///   when the names are exactly this action's owners, the user's names included, so a
+    ///   one-list note still maps once a user name is set.
+    ///
+    /// A user name change: an old "My actions" line names the user by its place only, so it
+    /// carries onto a line that is the user's now (a renamed user is still the user), and is
+    /// lost when the user's name was cleared or no longer matches the owner text: the merge
+    /// does not know the old name, and guessing could move a tick onto someone else's item.
+    fn matches(&self, text: &str, place: Place) -> OldMatch {
+        if let Some(after) = text.strip_prefix("**")
+            && let Some(end) = after.find("**: ")
+            && end > 0
+        {
+            let names = name_set(&owner_names(&after[..end]).join(", "));
+            let fits = after[end + 4..] == self.task
+                && !names.is_empty()
+                && names.iter().all(|n| self.owners.contains(n));
+            return if fits {
+                OldMatch::PerOwner
+            } else {
+                OldMatch::No
+            };
+        }
+        let Some(rest) = text.strip_prefix(self.task.as_str()) else {
+            return OldMatch::No;
+        };
+        let listed = if rest.is_empty() {
+            Some("")
+        } else {
+            rest.strip_prefix(' ')
+                .filter(|g| g.starts_with('(') && group_end(g) == Some(g.len()))
+                .map(|g| &g[1..g.len() - 1])
+        };
+        let Some(listed) = listed else {
+            return OldMatch::No;
+        };
+        let fits = match place {
+            Place::Mine => {
+                let others = match listed.strip_prefix("with ") {
+                    Some(l) if !l.is_empty() => name_set(l),
+                    Some(_) => return OldMatch::No,
+                    None if listed.is_empty() => Vec::new(),
+                    None => return OldMatch::No,
+                };
+                self.mine && others == self.others
+            }
+            Place::Other | Place::Single => name_set(listed) == self.owners,
+            Place::Elsewhere => false,
+        };
+        if fits { OldMatch::Whole } else { OldMatch::No }
+    }
+}
+
+/// How an old line matches a new action.
+#[derive(Debug, PartialEq, Eq)]
+enum OldMatch {
+    No,
+    /// The same action in the form since T14.61 (one line).
+    Whole,
+    /// One owner's line of it in the form before T14.61 (several may match).
+    PerOwner,
+}
+
 /// The new managed region with the task marks the user set in the old one (T14.27).
 ///
 /// Earshot renders action items as unticked `- [ ]` tasks inside the region, which a
 /// re-export replaces whole. Matching runs in three passes over the task lines of the new
-/// region, each old task line used at most once, first come first served (the third, for
-/// notes written before T14.61's change of the action-item format, is described where it
-/// runs):
+/// region, each old task line used at most once, first come first served. An action line
+/// matches only an action line, and a line of the user's own only a line of the user's own
+/// (`Place::compatible`): the owner set is part of an action's identity in every pass.
 ///
 /// 1. Exact: every new task line, whatever its own mark, takes the first unused old line
 ///    with the same text after the checkbox. Repeated identical lines pair up in order,
@@ -287,8 +394,13 @@ fn trailing_group(text: &str) -> Option<usize> {
 ///    output stays the identity.
 /// 2. Appended: a new unticked line still unmatched takes the first unused old line
 ///    whose text starts with the new text and a space (a task plugin added a done date
-///    or a tag after the text). Only that direction: an old line that is a prefix of the
-///    new text is another, longer item and does not match.
+///    or a tag after the text), unless what follows starts with a balanced "(...)": that
+///    is an owner list, so another person's action. Only that direction: an old line that
+///    is a prefix of the new text is another, longer item and does not match.
+/// 3. Owners (T14.61): a new unticked action line still unmatched takes the old lines
+///    that are the same action in another form ([`NewAction::matches`]): one line written
+///    since T14.61, or every owner's line written before. A shared action is ticked if any
+///    line it took was ticked, with the mark of the first ticked one in the old order.
 ///
 /// Only an unticked new line (`[ ]`) is rewritten, to the matched line's mark exactly as
 /// the user left it (`x`, `X` or another plugin's character); appended text is not
@@ -296,105 +408,99 @@ fn trailing_group(text: &str) -> Option<usize> {
 /// before or after a change to the escaping rule matches its re-render. Only text between
 /// the old markers is read; every other byte of the new region is unchanged, so with no
 /// marks set the result is the new region itself.
-fn carry_task_marks(old_region: &str, new_region: &str) -> String {
-    let mut old: Vec<Option<(char, String)>> = old_region
+fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedAction]) -> String {
+    let old_places = places(old_region);
+    let mut old: Vec<Option<(char, String, Place)>> = old_region
         .split_inclusive('\n')
-        .filter_map(task_line)
-        .map(|(m, t)| Some((m, plain_form(t))))
+        .zip(&old_places)
+        .filter_map(|(l, p)| task_line(l).map(|(m, t)| Some((m, plain_form(t), *p))))
         .collect();
-    let old_marks: Vec<char> = old.iter().flatten().map(|(m, _)| *m).collect();
+    let old_marks: Vec<char> = old.iter().flatten().map(|(m, _, _)| *m).collect();
     if old_marks.iter().all(|m| *m == ' ') {
         // Nothing marked: the new region as rendered.
         return new_region.to_owned();
     }
     let lines: Vec<&str> = new_region.split_inclusive('\n').collect();
-    let new: Vec<Option<(char, String)>> = lines
+    let new_places = places(new_region);
+    let new: Vec<Option<(char, String, Place)>> = lines
         .iter()
-        .map(|l| task_line(l).map(|(m, t)| (m, plain_form(t))))
+        .zip(&new_places)
+        .map(|(l, p)| task_line(l).map(|(m, t)| (m, plain_form(t), *p)))
         .collect();
-    // The old mark each new line takes (pass 1, then pass 2).
+    // The render's own action for each new action line, in order; none at all when the
+    // region and the list disagree (nothing is then carried by owners).
+    let mut action_of: Vec<Option<NewAction>> = Vec::with_capacity(lines.len());
+    {
+        let mut next = actions.iter();
+        let mut agree = true;
+        for n in &new {
+            match n {
+                Some((_, text, p)) if *p != Place::Elsewhere => {
+                    let a = next.next();
+                    agree &= a.is_some_and(|a| plain_form(&a.text) == *text);
+                    action_of.push(a.map(NewAction::of));
+                }
+                _ => action_of.push(None),
+            }
+        }
+        if !agree || next.next().is_some() {
+            action_of.iter_mut().for_each(|a| *a = None);
+        }
+    }
+    // The old mark each new line takes (pass 1, then pass 2, then pass 3).
     let mut taken: Vec<Option<char>> = vec![None; lines.len()];
-    let mut take = |matches: &dyn Fn(&str) -> bool| {
+    let mut take = |matches: &dyn Fn(&str, Place) -> bool| {
         let slot = old
             .iter_mut()
-            .find(|o| o.as_ref().is_some_and(|(_, t)| matches(t)))?;
-        slot.take().map(|(m, _)| m)
+            .find(|o| o.as_ref().is_some_and(|(_, t, p)| matches(t, *p)))?;
+        slot.take().map(|(m, _, _)| m)
     };
     for (i, n) in new.iter().enumerate() {
-        if let Some((_, text)) = n {
-            taken[i] = take(&|t: &str| t == text);
+        if let Some((_, text, place)) = n {
+            taken[i] = take(&|t: &str, p: Place| t == text && p.compatible(*place));
         }
     }
     for (i, n) in new.iter().enumerate() {
-        if let Some((' ', text)) = n
+        if let Some((' ', text, place)) = n
             && taken[i].is_none()
         {
-            taken[i] = take(&|t: &str| {
-                t.strip_prefix(text.as_str())
-                    .is_some_and(|rest| rest.starts_with(' '))
+            taken[i] = take(&|t: &str, p: Place| {
+                p.compatible(*place)
+                    && t.strip_prefix(text.as_str())
+                        .and_then(|rest| rest.strip_prefix(' '))
+                        .is_some_and(|rest| !starts_with_group(rest))
             });
         }
     }
-    // Pass 3 (T14.61): the action-item format changed from "**Owner**: task" once per
-    // owner to grouped lines with the owners in a trailing "(...)". A new unticked line still
-    // unmatched collects the unused old lines with the same task (`TaskKey`):
-    // a. every one whose owner is among the new line's listed owners (a shared item takes
-    //    each per-owner line it replaces);
-    // b. then, for a line of the user's own (no owners listed, or "(with ...)"), the first
-    //    remaining one whose owners are not listed: the user's own old line, whose name the
-    //    merge does not know.
-    // The merged line is ticked if any line it collected was ticked: it takes the mark of
-    // the first ticked one in the old region's order. Each old line is still used once.
-    let keys: Vec<Option<TaskKey>> = new
-        .iter()
-        .zip(&taken)
-        .map(|(n, t)| match (n, t) {
-            (Some((' ', text)), None) => Some(TaskKey::of(text)),
-            _ => None,
-        })
-        .collect();
-    let old_keys: Vec<TaskKey> = old
-        .iter()
-        .map(|o| {
-            o.as_ref()
-                .map_or_else(TaskKey::default, |(_, t)| TaskKey::of(t))
-        })
-        .collect();
-    let mut collected: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
-    for (i, k) in keys.iter().enumerate() {
-        let Some(k) = k.as_ref().filter(|k| !k.owners.is_empty()) else {
+    for (i, n) in new.iter().enumerate() {
+        let (Some((' ', _, _)), None, Some(action)) = (n, taken[i], &action_of[i]) else {
             continue;
         };
-        for (j, ok) in old_keys.iter().enumerate() {
-            if old[j].is_some()
-                && ok.task == k.task
-                && ok.owners.iter().any(|o| k.owners.contains(o))
-            {
-                collected[i].push(j);
-                old[j] = None;
+        let mut collected: Vec<usize> = Vec::new();
+        let mut whole = false;
+        for (j, o) in old.iter().enumerate() {
+            let Some((_, text, place)) = o else { continue };
+            if *place == Place::Elsewhere {
+                continue;
+            }
+            match action.matches(text, *place) {
+                OldMatch::Whole if !whole => {
+                    whole = true;
+                    collected.push(j);
+                }
+                OldMatch::PerOwner => collected.push(j),
+                _ => {}
             }
         }
-    }
-    for (i, k) in keys.iter().enumerate() {
-        let Some(k) = k.as_ref().filter(|k| k.with || k.owners.is_empty()) else {
+        if collected.is_empty() {
             continue;
-        };
-        if let Some(j) = (0..old.len()).find(|&j| {
-            old[j].is_some()
-                && old_keys[j].task == k.task
-                && !old_keys[j].owners.iter().any(|o| k.owners.contains(o))
-        }) {
-            collected[i].push(j);
+        }
+        for &j in &collected {
             old[j] = None;
         }
-    }
-    for (i, mut js) in collected.into_iter().enumerate() {
-        if js.is_empty() {
-            continue;
-        }
-        js.sort_unstable();
         taken[i] = Some(
-            js.iter()
+            collected
+                .iter()
                 .map(|&j| old_marks[j])
                 .find(|m| *m != ' ')
                 .unwrap_or(' '),
@@ -403,7 +509,7 @@ fn carry_task_marks(old_region: &str, new_region: &str) -> String {
     let mut out = String::with_capacity(new_region.len());
     for ((line, n), mark) in lines.iter().zip(&new).zip(taken) {
         match (n, mark) {
-            (Some((' ', _)), Some(mark)) => {
+            (Some((' ', _, _)), Some(mark)) => {
                 out.push_str("- [");
                 out.push(mark);
                 // `- [ ` is four bytes: the rest (`] text` and the line ending) is kept.
@@ -521,7 +627,7 @@ pub fn merge(existing: &str, rendered: &RenderedExport) -> Result<String, Export
                 .or_else(|| after.strip_prefix('\n'))
                 .unwrap_or(after);
             out.push_str(&body[..b]);
-            out.push_str(&carry_task_marks(&body[b..e], &region));
+            out.push_str(&carry_task_marks(&body[b..e], &region, &rendered.actions));
             out.push_str(after);
         }
         (0, _) | (_, 0) => return Err(ExportError::Markers("only one region marker present")),

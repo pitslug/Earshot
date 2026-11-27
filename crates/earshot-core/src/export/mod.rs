@@ -47,8 +47,8 @@ mod text;
 
 pub use merge::{earshot_id_of, merge};
 pub use render::{
-    ExportInput, ExportOptions, ExportUser, OwnerGroup, RenderedExport, owner_group, owner_names,
-    render,
+    ExportInput, ExportOptions, ExportUser, OwnerGroup, RenderedAction, RenderedExport,
+    owner_group, owner_names, render,
 };
 pub use text::{MAX_TITLE_BYTES, MAX_TITLE_CHARS, replace_em_dash, sanitize_file_name};
 

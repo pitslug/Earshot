@@ -1196,32 +1196,174 @@ fn export_merge_does_not_carry_a_tick_to_another_persons_item_across_the_format_
     );
 }
 
+/// `doc` with its action items section replaced by `actions` (a hand-written old form).
+fn with_old_actions(doc: &str, region: &str, actions: &str) -> String {
+    doc.replace(actions_section(region), actions)
+}
+
 #[test]
-fn export_task_keys_take_owners_off_both_forms() {
-    let k = super::merge::task_key_parts("**Ada Lovelace**: Send numbers (due: Friday)");
-    assert_eq!(
-        k,
+fn export_merge_never_moves_another_persons_tick_onto_the_users_own_line() {
+    for due in [None, Some("Friday")] {
+        let mut f = fixture();
+        f.summary.action_items = vec![item("Casey Lane", "Send numbers", due, 21)];
+        let mut i = input(&f);
+        i.user = Some(casey());
+        let r = render(&i, &opts()).unwrap();
+        let doc = r.to_file();
+        let task = match due {
+            Some(d) => format!("Send numbers (due: {d})"),
+            None => "Send numbers".to_owned(),
+        };
+        assert!(
+            doc.contains(&format!("### My actions\n\n- [ ] {task}\n")),
+            "{doc}"
+        );
+        // Ada's item, ticked, in every form an older note can hold it: Other actions, the
+        // one list and the form before T14.61.
+        for old in [
+            format!("## Action items\n\n### Other actions\n\n- [x] {task} (Ada Lovelace)\n"),
+            format!("## Action items\n\n- [x] {task} (Ada Lovelace)\n"),
+            format!("## Action items\n\n- [x] **Ada Lovelace**: {task}\n"),
+            // The user's line shared with Ada is another owner set: not this action either.
+            format!("## Action items\n\n### My actions\n\n- [x] {task} (with Ada Lovelace)\n"),
+        ] {
+            let merged = merge(&with_old_actions(&doc, &r.region, &old), &r).unwrap();
+            assert!(!merged.contains("- [x]"), "{old:?}: {merged}");
+        }
+        // The control: the user's own line carries, in each form.
+        for old in [
+            format!("## Action items\n\n### My actions\n\n- [x] {task}\n"),
+            format!("## Action items\n\n- [x] {task} (Casey Lane)\n"),
+            format!("## Action items\n\n- [x] **Casey Lane**: {task}\n"),
+        ] {
+            let merged = merge(&with_old_actions(&doc, &r.region, &old), &r).unwrap();
+            assert!(
+                merged.contains(&format!("### My actions\n\n- [x] {task}\n")),
+                "{old:?}: {merged}"
+            );
+        }
+    }
+}
+
+#[test]
+fn export_merge_reads_a_task_ending_in_its_own_bracket_against_the_render() {
+    let mut f = fixture();
+    f.summary.action_items = vec![
+        item("Casey Lane", "Write spec (draft)", None, 20),
+        item("Robin Vale", "Write spec", None, 21),
+    ];
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    let doc = r.to_file();
+    let mine = "### My actions\n\n- [x] Write spec (draft)\n";
+    let robin = "### Other actions\n\n- [x] Write spec (Robin Vale)\n";
+    assert!(doc.contains(&mine.replace("[x]", "[ ]")), "{doc}");
+    assert!(doc.contains(&robin.replace("[x]", "[ ]")), "{doc}");
+    for (old, want) in [
+        // Before T14.61.
         (
-            "Send numbers (due: Friday)".into(),
-            vec!["ada lovelace".into()],
-            false
-        )
-    );
-    let k = super::merge::task_key_parts("Send numbers (due: Friday) (Ada Lovelace, Bo)");
-    assert_eq!(
-        k,
+            "- [x] **Robin Vale**: Write spec\n- [ ] **Casey Lane**: Write spec (draft)\n",
+            Some(robin),
+        ),
         (
-            "Send numbers (due: Friday)".into(),
-            vec!["ada lovelace".into(), "bo".into()],
-            false
+            "- [ ] **Robin Vale**: Write spec\n- [x] **Casey Lane**: Write spec (draft)\n",
+            Some(mine),
+        ),
+        // One list, no user name then.
+        (
+            "- [x] Write spec (draft) (Casey Lane)\n- [ ] Write spec (Robin Vale)\n",
+            Some(mine),
+        ),
+        // Ambiguous: an Other line that reads as Robin's task owned by "draft", or as an
+        // ownerless task: it is neither action here, so the tick is lost, never moved.
+        ("### Other actions\n\n- [x] Write spec (draft)\n", None),
+    ] {
+        let merged = merge(
+            &with_old_actions(&doc, &r.region, &format!("## Action items\n\n{old}")),
+            &r,
         )
+        .unwrap();
+        assert_eq!(
+            merged.matches("- [x]").count(),
+            usize::from(want.is_some()),
+            "{old:?}: {merged}"
+        );
+        if let Some(want) = want {
+            assert!(merged.contains(want), "{old:?}: {merged}");
+        }
+    }
+}
+
+#[test]
+fn export_merge_carries_ticks_across_a_user_name_change_or_loses_them() {
+    let casey_as = |name: &'static str| ExportUser {
+        name,
+        key: test_key,
+    };
+    let render_with = |owner: &str, user: Option<ExportUser<'static>>| {
+        let mut f = fixture();
+        f.summary.action_items = vec![
+            item(owner, "Book the room", None, 20),
+            item("Ada Lovelace", "Send numbers", None, 21),
+        ];
+        let mut i = input(&f);
+        i.user = user;
+        render(&i, &opts()).unwrap()
+    };
+    let tick = |doc: &str, line: &str| {
+        assert!(doc.contains(&format!("- [ ] {line}\n")), "{line}: {doc}");
+        doc.replace(&format!("- [ ] {line}\n"), &format!("- [x] {line}\n"))
+    };
+
+    // Set: a one-list note, then a name: the explicit owner maps to the user's line.
+    let old = tick(
+        &render_with("Casey Lane", None).to_file(),
+        "Book the room (Casey Lane)",
     );
-    let k = super::merge::task_key_parts("Draft the plan (with Casey (1))");
-    assert_eq!(k, ("Draft the plan".into(), vec!["casey (1)".into()], true));
-    let k = super::merge::task_key_parts("Plan (draft");
-    assert_eq!(k, ("Plan (draft".into(), vec![], false));
-    let k = super::merge::task_key_parts("Plan(x)");
-    assert_eq!(k, ("Plan(x)".into(), vec![], false));
+    let r = render_with("Casey Lane", Some(casey()));
+    let merged = merge(&old, &r).unwrap();
+    assert!(
+        merged.contains("### My actions\n\n- [x] Book the room\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+
+    // Renamed, and the summary names the user by the new name: still the user's line.
+    let old = tick(
+        &render_with("Casey", Some(casey_as("Casey"))).to_file(),
+        "Book the room",
+    );
+    let r = render_with("Casey Lane", Some(casey()));
+    let merged = merge(&old, &r).unwrap();
+    assert!(
+        merged.contains("### My actions\n\n- [x] Book the room\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+
+    // Cleared: an old "My actions" line names the user only by its place, and the merge
+    // does not know the old name, so the tick is lost; nothing is moved.
+    let old = tick(
+        &render_with("Casey Lane", Some(casey())).to_file(),
+        "Book the room",
+    );
+    let r = render_with("Casey Lane", None);
+    let merged = merge(&old, &r).unwrap();
+    assert!(
+        merged.contains("- [ ] Book the room (Casey Lane)\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
+
+    // Renamed so the owner text no longer names the user: lost the same way.
+    let r = render_with("Casey Lane", Some(casey_as("Robin Vale")));
+    let merged = merge(&old, &r).unwrap();
+    assert!(
+        merged.contains("- [ ] Book the room (Casey Lane)\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
 }
 
 // ---- T14.28: generated text cannot embed or fetch ----

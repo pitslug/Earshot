@@ -87,7 +87,7 @@ pub enum ExportSelection {
 #[must_use]
 pub fn note_user(user_name: Option<&str>) -> Option<ExportUser<'_>> {
     let name = user_name?.trim();
-    (!name.is_empty() && name != earshot_core::voiceprint::DEFAULT_ME_NAME).then_some(ExportUser {
+    crate::edit::is_set_user_name(name).then_some(ExportUser {
         name,
         key: crate::edit::person_name_key,
     })

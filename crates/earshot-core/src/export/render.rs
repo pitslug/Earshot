@@ -230,6 +230,25 @@ pub struct RenderedExport {
     pub tags: Vec<String>,
     /// The managed region, from [`BEGIN_MARKER`] to [`END_MARKER`] and a final `\n`.
     pub region: String,
+    /// The action-item lines of `region`, in order, as the render built them (T14.61): what
+    /// the merge needs to carry a tick to the same action in another form.
+    pub actions: Vec<RenderedAction>,
+}
+
+/// One action-item line of a rendered region (T14.61). All text is as written (generated
+/// text escaped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedAction {
+    /// The line's text after `- [ ] `.
+    pub text: String,
+    /// The task and its " (due: ...)", without owners.
+    pub task: String,
+    /// Under "### My actions".
+    pub mine: bool,
+    /// Every owner name, the user's included.
+    pub owners: Vec<String>,
+    /// The names shown after "with" on a line of the user's own; empty otherwise.
+    pub others: Vec<String>,
 }
 
 impl RenderedExport {
@@ -366,11 +385,13 @@ pub fn render(
         );
     }
 
+    let (region, actions) = region(input, opts);
     Ok(RenderedExport {
         path,
         frontmatter,
         tags,
-        region: region(input, opts),
+        region,
+        actions,
     })
 }
 
@@ -385,24 +406,33 @@ fn action_items(
     segments: &[Segment],
     user: Option<ExportUser<'_>>,
     gen_text: &dyn Fn(&str) -> String,
-) -> String {
+) -> (String, Vec<RenderedAction>) {
     let user = user.filter(|u| !(u.key)(u.name).trim().is_empty());
     let lines = action_lines(sum, segments, user);
-    let line = |l: &ActionLine<'_>, owners: &[&str], with: bool| {
-        let mut s = format!("- [ ] {}", gen_text(l.task));
+    let mut actions = Vec::new();
+    let mut line = |l: &ActionLine<'_>, shown: &[&str], mine: bool| {
+        let mut task = gen_text(l.task);
         if let Some(due) = l.due {
-            let _ = write!(s, " (due: {})", gen_text(due));
+            let _ = write!(task, " (due: {})", gen_text(due));
         }
-        if !owners.is_empty() {
-            let names: Vec<String> = owners.iter().map(|o| gen_text(o)).collect();
+        let names: Vec<String> = shown.iter().map(|o| gen_text(o)).collect();
+        let mut text = task.clone();
+        if !names.is_empty() {
             let _ = write!(
-                s,
+                text,
                 " ({}{})",
-                if with { "with " } else { "" },
+                if mine { "with " } else { "" },
                 names.join(", ")
             );
         }
-        s.push('\n');
+        let s = format!("- [ ] {text}\n");
+        actions.push(RenderedAction {
+            text,
+            task,
+            mine,
+            owners: l.owners.iter().map(|o| gen_text(o)).collect(),
+            others: if mine { names } else { Vec::new() },
+        });
         s
     };
     let mut s = String::from("## Action items\n\n");
@@ -410,7 +440,7 @@ fn action_items(
         for l in &lines {
             s.push_str(&line(l, &l.owners, false));
         }
-        return s;
+        return (s, actions);
     };
     let mine: Vec<&ActionLine<'_>> = lines.iter().filter(|l| l.mine).collect();
     let other: Vec<&ActionLine<'_>> = lines.iter().filter(|l| !l.mine).collect();
@@ -430,11 +460,11 @@ fn action_items(
             s.push_str(&line(l, &l.owners, false));
         }
     }
-    s
+    (s, actions)
 }
 
-/// The managed region.
-fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
+/// The managed region and its action-item lines.
+fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> (String, Vec<RenderedAction>) {
     // Generated text: one line, em dashes per the option, no markers, images, embeds or
     // HTML.
     let gen_text = |s: &str| {
@@ -446,6 +476,7 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
         }
     };
     let mut sections: Vec<String> = Vec::new();
+    let mut actions = Vec::new();
 
     if let Some(sum) = input.summary {
         if !sum.tldr.trim().is_empty() {
@@ -460,7 +491,9 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
             sections.push(s);
         }
         if !sum.action_items.is_empty() {
-            sections.push(action_items(sum, input.segments, input.user, &gen_text));
+            let (s, a) = action_items(sum, input.segments, input.user, &gen_text);
+            sections.push(s);
+            actions = a;
         }
         if !sum.enhanced_notes.is_empty() {
             let mut s = String::from("## Notes\n");
@@ -533,5 +566,5 @@ fn region(input: &ExportInput<'_>, opts: &ExportOptions) -> String {
     out.push_str(&sections.join("\n"));
     out.push_str(END_MARKER);
     out.push('\n');
-    out
+    (out, actions)
 }
