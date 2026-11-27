@@ -446,6 +446,19 @@ impl StoreTx<'_> {
         Ok(crate::repo::lenient::non_tombstone_meeting_ids(&self.conn)?)
     }
 
+    /// `meeting`'s speaker rows that read, and how many do not (T14.64): a write that must reach
+    /// every speaker row of an entity checks the count and fails closed rather than skip one.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn speakers_or_damaged(
+        &self,
+        meeting: EntityId,
+    ) -> Result<(Vec<Speaker>, usize), StoreError> {
+        let (ok, bad) = for_deletion::speakers(&self.conn, meeting)?;
+        Ok((ok, bad.len()))
+    }
+
     /// [`Store::live_folders_or_damaged`] inside the transaction.
     ///
     /// # Errors

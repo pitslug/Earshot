@@ -170,6 +170,9 @@ pub enum EditError {
     /// deleted: which meetings are in it cannot be told, so nothing is changed (T14.64, failing
     /// closed).
     FolderBlockedByDamage(EntityId),
+    /// A speaker row on this computer that does not read stops the person (the id) from being
+    /// renamed everywhere: it may be theirs, so nothing is changed (T14.64, failing closed).
+    RenameBlockedByDamage(EntityId),
     /// The meeting (the id) is recording: it can be moved to a folder once it has ended
     /// ([`crate::folders::move_meeting`]).
     MeetingRecording(EntityId),
@@ -309,6 +312,10 @@ impl fmt::Display for EditError {
             Self::FolderNameTaken(id) => {
                 write!(f, "folder {id} already has this name (case is ignored)")
             }
+            Self::RenameBlockedByDamage(id) => write!(
+                f,
+                "person {id} cannot be renamed everywhere while a speaker row on this computer is damaged"
+            ),
             Self::FolderBlockedByDamage(id) => write!(
                 f,
                 "folder {id} cannot be deleted while a meeting on this computer is damaged"
@@ -2157,7 +2164,13 @@ pub fn rename_person(
         // person's speaker rows in a meeting whose row is damaged are renamed too, and the old
         // name is not left there for good.
         for m in tx.non_tombstone_meeting_ids()? {
-            for mut s in tx.speakers(m)? {
+            // A speaker row that does not read may be this person's: the rename cannot reach it,
+            // so it fails closed and the transaction writes nothing (T14.64).
+            let (speakers, damaged) = tx.speakers_or_damaged(m)?;
+            if damaged > 0 {
+                return Err(EditError::RenameBlockedByDamage(person).into());
+            }
+            for mut s in speakers {
                 if s.meta.deleted
                     || !s.person_id.is_some_and(|id| identity.contains(&id))
                     || s.display_name == name

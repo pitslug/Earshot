@@ -4,6 +4,7 @@
 // summary after it stops.
 
 import keepLocalCases from "../../../../fixtures/ui/keep_local_cases.json";
+import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
 import { type Timer, realTimer } from "../time";
 import {
   RECOGNISED_ME_COPY,
@@ -245,8 +246,9 @@ export interface MockIpcData {
   /** A damaged row on this computer that the People list, Remove and Forget voice leave as it
    * is (T14.57): their answers say so (default false). */
   personsDamaged?: boolean;
-  /** A damaged meeting row on this computer that the meeting list leaves out (T14.64): its
-   * answer says so (default false). */
+  /** A damaged row on this computer (T14.64): the meeting list says something was left out, and
+   * deleting a folder or renaming a person everywhere is refused with the fixture's copy
+   * (default false). */
   meetingsDamaged?: boolean;
   /** The vault exports go to (the stored Obsidian vault); without one `exportMeeting`
    * rejects with `no_vault`. */
@@ -881,6 +883,21 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     ...foldersMock,
     listFolders: async () => storeFailure() ?? foldersMock.listFolders(),
+    // T14.64: a damaged meeting row stops a folder from being deleted (failing closed).
+    deleteFolderKeepingMeetings: async (folder) => {
+      if (data.meetingsDamaged === true) {
+        call("deleteFolderKeepingMeetings", folder);
+        fail("folder_blocked_by_damage", MEETING_LIST_COPY.folder_blocked_by_damage);
+      }
+      return foldersMock.deleteFolderKeepingMeetings(folder);
+    },
+    deleteFolderWithMeetings: async (folder) => {
+      if (data.meetingsDamaged === true) {
+        call("deleteFolderWithMeetings", folder);
+        fail("folder_blocked_by_damage", MEETING_LIST_COPY.folder_blocked_by_damage);
+      }
+      return foldersMock.deleteFolderWithMeetings(folder);
+    },
     appInfo: async () => ({ ...appInfo }),
     listMeetings: async () =>
       storeFailure() ?? {
@@ -1518,6 +1535,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     renamePerson: async (person, name) => {
       call("renamePerson", person, name);
       const n = checkName(name);
+      // T14.64: a damaged speaker row stops a rename everywhere (failing closed).
+      if (data.meetingsDamaged === true) fail("rename_blocked_by_damage", MEETING_LIST_COPY.rename_blocked_by_damage);
       const p =
         persons.find((x) => x.id === person) ??
         fail("person_not_found", "This person no longer exists.");

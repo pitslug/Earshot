@@ -46,6 +46,9 @@ import {
 import { type SaveOnNext, useSaveOnNext } from "./saveOnNext";
 import { type SpeakersNotice, type SpeakersPageState, sampleRunning, useSpeakers } from "./useSpeakers";
 
+/** Refusals whose message is the app's fixed copy about damaged rows, shown as sent. */
+const DAMAGE_REFUSALS = new Set(["person_unreadable", "rename_blocked_by_damage"]);
+
 const useStyles = makeStyles({
   heading: {
     margin: 0,
@@ -419,8 +422,11 @@ function PeopleSection() {
       setListDamaged(all.damaged);
       return true;
     } catch (e) {
-      // A refusal for a person whose details do not read is the app's fixed copy.
-      setProblem(e instanceof IpcFailure && e.error.kind === "person_unreadable" ? e.error.message : failed);
+      // A refusal for a person whose details do not read, or one a damaged row stops (T14.64), is
+      // the app's fixed copy.
+      setProblem(
+        e instanceof IpcFailure && DAMAGE_REFUSALS.has(e.error.kind) ? e.error.message : failed,
+      );
       return false;
     } finally {
       setBusy(false);

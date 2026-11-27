@@ -493,6 +493,20 @@ fn list_meetings_damaged_rows_let_folders_be_named_but_not_deleted() {
         copy["folder_blocked_by_damage"].as_str(),
         Some(crate::detail::FOLDER_BLOCKED_BY_DAMAGE_COPY)
     );
+    assert_eq!(
+        copy["rename_blocked_by_damage"].as_str(),
+        Some(crate::detail::RENAME_BLOCKED_BY_DAMAGE_COPY)
+    );
+    let refused = IpcError::from(RuntimeError::Edit(
+        earshot_runtime::edit::EditError::RenameBlockedByDamage(EntityId::from_bytes([3; 16])),
+    ));
+    assert_eq!(
+        (refused.kind.as_str(), refused.message.as_str()),
+        (
+            "rename_blocked_by_damage",
+            crate::detail::RENAME_BLOCKED_BY_DAMAGE_COPY
+        )
+    );
     for damaged in [true, false] {
         let dir = TempDir::new("folders-damaged");
         let svc = services(&dir);

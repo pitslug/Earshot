@@ -218,6 +218,91 @@ fn meeting_list_damaged_row_never_fails_a_person_rename() {
     }
 }
 
+/// A speaker row that does not read (another voice's, which could as well be the person's):
+/// renaming the person everywhere fails closed with `RenameBlockedByDamage` and writes nothing,
+/// neither the person row nor any speaker row. Control: with no damage every row is renamed.
+#[test]
+fn meeting_list_damaged_speaker_row_refuses_a_person_rename_and_writes_nothing() {
+    for damaged in [true, false] {
+        let w = World::new("rename-damaged-speaker");
+        let (first, middle, last) = w.three(false);
+        let person =
+            EntityId::from_bytes([0x01, 0x94, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 2, 7]);
+        let other_voice;
+        {
+            let clock = Arc::clone(&w.svc.clock);
+            let mut db = w.svc.store();
+            let (store, hlc) = db.parts();
+            store
+                .put_person(Person {
+                    id: person,
+                    meta: SyncMeta::new(hlc, &*clock),
+                    display_name: "Invented Corvina".into(),
+                    is_me: false,
+                    merged_into: None,
+                })
+                .unwrap();
+            for m in [first, middle, last] {
+                let mut s = store
+                    .speakers(m)
+                    .unwrap()
+                    .into_iter()
+                    .find(|s| s.display_name == "Alice")
+                    .unwrap();
+                s.person_id = Some(person);
+                s.display_name = "Invented Corvina".into();
+                s.meta.touch(hlc, &*clock);
+                store.put_speaker(s).unwrap();
+            }
+            other_voice = store
+                .speakers(middle)
+                .unwrap()
+                .into_iter()
+                .find(|s| s.display_name == "Me")
+                .unwrap()
+                .id;
+        }
+        if damaged {
+            let db = earshot_store::DataDir::new(w.dir.0.join("data")).db_path();
+            let c = rusqlite::Connection::open(db).unwrap();
+            let changed = c
+                .execute(
+                    "UPDATE speaker SET display_name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    rusqlite::params![other_voice.as_uuid().as_bytes().to_vec()],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
+        }
+        let out = crate::edit::rename_person(&w.svc, person, "Invented Halvard");
+        let want = if damaged {
+            assert!(
+                matches!(
+                    out,
+                    Err(crate::RuntimeError::Edit(
+                        crate::edit::EditError::RenameBlockedByDamage(p)
+                    )) if p == person
+                ),
+                "{out:?}"
+            );
+            "Invented Corvina"
+        } else {
+            assert_eq!(out.unwrap(), 3);
+            "Invented Halvard"
+        };
+        let db = w.svc.store();
+        assert_eq!(db.person(person).unwrap().unwrap().display_name, want);
+        for m in [first, last] {
+            let names: Vec<String> = db
+                .speakers(m)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.display_name)
+                .collect();
+            assert!(names.contains(&want.to_owned()), "{names:?}");
+        }
+    }
+}
+
 /// The recovery at start still answers for the readable interrupted meeting.
 #[test]
 fn meeting_list_damaged_row_never_stops_recovery() {

@@ -2,6 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
+import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
 import PEOPLE_COPY from "../../../../fixtures/ui/people_copy_cases.json";
 import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
 import { VOICE_SAMPLE_MS, VOICE_STEP_MS, voiceMessage } from "../ipc/mockSettings";
@@ -91,6 +92,17 @@ describe("Settings, People, people", () => {
     expect((screen.getByRole("textbox", { name: "New name for Bo Example" }) as HTMLInputElement).value).toBe(
       "Bo Example!",
     );
+  });
+
+  // T14.64: a damaged row stops a rename everywhere; the refusal is the fixture's fixed copy and
+  // the stored name is unchanged. Control: "renames someone in the stored list" above.
+  it("says in fixed copy when a damaged row stops a rename", async () => {
+    const s = await open({ persons: people, meetingsDamaged: true });
+    await s.user.click(await screen.findByRole("button", { name: "Rename Bo Example" }));
+    await s.user.type(screen.getByRole("textbox", { name: "New name for Bo Example" }), " two");
+    await s.user.click(within(screen.getByRole("region", { name: "People" })).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(MEETING_LIST_COPY.rename_blocked_by_damage)).toBeTruthy();
+    expect((await s.ipc.listPersons()).persons.find((p) => p.id === "b")?.name).toBe("Bo Example");
   });
 
   it("asks before forgetting a voice, and Cancel changes nothing", async () => {
