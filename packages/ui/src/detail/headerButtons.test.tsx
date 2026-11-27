@@ -3,10 +3,13 @@
 // its icon, with its accessible name and tooltip. jsdom does no layout, so the order and the
 // containment are what is checked; the look is checked in the preview.
 
-import { screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { createMockIpc, sampleDetail } from "../ipc";
+import { ORDER_COPY, createMockIpc, fillCopy, sampleDetail } from "../ipc";
+import { IpcProvider } from "../ipc/context";
+import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
+import { MeetingDetailView } from "./MeetingDetailView";
 import { renderApp } from "../test/app";
 import { ITEM, OTHER, setup } from "../test/meetingDetail";
 import { createManualTimer } from "../time";
@@ -55,9 +58,15 @@ describe("the meeting header", () => {
     for (const b of buttons.getAllByRole("button")) {
       expect(b.querySelector("svg")).not.toBeNull();
     }
-    // The full label shows on hover.
-    await user.hover(exportButton());
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Export to Obsidian");
+    // Every button's label shows on hover: its own tooltip leads with its name.
+    for (const b of buttons.getAllByRole("button")) {
+      const name = b.getAttribute("aria-label") ?? b.textContent ?? "";
+      await user.hover(b);
+      const tip = await screen.findByRole("tooltip");
+      expect(name.startsWith(tip.textContent ?? "-") || (tip.textContent ?? "").startsWith(name)).toBe(true);
+      await user.unhover(b);
+      await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+    }
   });
 
   it("keeps the title out of the button row, so it wraps across the full width", async () => {
@@ -78,5 +87,33 @@ describe("the meeting header", () => {
     await screen.findByText(/TL;DR/);
     expect(retranscribe()).toHaveAttribute("aria-disabled", "true");
     expect(retranscribe()).toHaveAccessibleDescription("Recording not available");
+  });
+});
+
+describe("the header while the meeting finishes", () => {
+  it("says on each greyed button what it is and when it comes back", async () => {
+    const timer = createManualTimer(10_000);
+    const ipc = createMockIpc({ timer, meetings: [ITEM, OTHER] });
+    render(
+      <EarshotThemeProvider>
+        <IpcProvider ipc={ipc}>
+          <MeetingDetailView
+            item={ITEM}
+            timer={timer}
+            onChanged={() => {}}
+            onJobStarted={() => {}}
+            onJobDismissed={() => {}}
+            onJobCancel={() => {}}
+            finishing
+          />
+        </IpcProvider>
+      </EarshotThemeProvider>,
+    );
+    await screen.findByText(/TL;DR/);
+    for (const label of ["Re-transcribe", "Re-summarise"]) {
+      const b = within(row()).getByRole("button", { name: label });
+      expect(b).toHaveAttribute("aria-disabled", "true");
+      expect(b).toHaveAccessibleDescription(fillCopy(ORDER_COPY.finishing_tip, { label }));
+    }
   });
 });

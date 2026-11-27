@@ -198,9 +198,6 @@ fn summary_order_run_move_on_table_lists_each_result_and_stops_on_the_rest() {
                 "x".into(),
             ))),
         }),
-        local(LocalSummaryError::Chunks(
-            earshot_core::prompt::TimeChunkError::ZeroWindow,
-        )),
         local(LocalSummaryError::GpuStalled),
         local(LocalSummaryError::LoadStalled),
         local(LocalSummaryError::GpuChildStalled),
@@ -216,12 +213,24 @@ fn summary_order_run_move_on_table_lists_each_result_and_stops_on_the_rest() {
             errors: vec![],
             last_reply_tail: String::new(),
         })),
-        invalid(),
-        prompt(),
     ] {
         // Every one moves on; which word it moves on with is its kind (T14.66), pinned by
         // `summary_order_run_local_failures_move_on_with_their_kind`.
         assert!(failure_word(WriterStep::Local, &e).is_some(), "{e}");
+    }
+    // Not a local model's own failure, or one of kind Other: `failed`, exactly as before.
+    for e in [
+        local(LocalSummaryError::Chunks(
+            earshot_core::prompt::TimeChunkError::ZeroWindow,
+        )),
+        invalid(),
+        prompt(),
+    ] {
+        assert_eq!(
+            failure_word(WriterStep::Local, &e),
+            Some(OutcomeWord::Failed),
+            "{e}"
+        );
     }
     // Endpoint: HTTP, transport, refused, format, invalid, too long; a key that cannot be read.
     for e in [

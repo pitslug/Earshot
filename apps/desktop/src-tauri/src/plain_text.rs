@@ -665,7 +665,13 @@ pub fn runtime_text(e: &RuntimeError) -> String {
             NOT_THIS_VERSION.to_owned()
         }
         RuntimeError::Llm(l) => summary_copy(l),
-        RuntimeError::LocalSummary(l) if l.is_cancelled() => SUMMARY_CANCELLED.to_owned(),
+        // Every cancelled kind (T14.66); only a run's cancel is reachable today.
+        RuntimeError::LocalSummary(l)
+            if l.is_cancelled()
+                || l.kind() == earshot_runtime::summary::LocalFailureKind::Cancelled =>
+        {
+            SUMMARY_CANCELLED.to_owned()
+        }
         // Which kind of failure, in fixed words (T14.66), never the error's text.
         RuntimeError::LocalSummary(l) => crate::summary_order::local_failure_copy(l.kind())
             .unwrap_or(LOCAL_SUMMARY_FAILED)

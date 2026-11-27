@@ -1376,7 +1376,9 @@ impl Offload {
             services
                 .store()
                 .transaction(|tx| store_step_times(tx, &before, &times))?;
-        } else if nothing_seen && !sync_stopped && outcome.is_ok() {
+        } else if nothing_seen && !sync_stopped && outcome.is_ok() && writing.is_empty() {
+            // (Never idle while this host writes for another device: the withdrawal that must
+            // cancel it may arrive in a later page, T14.66.)
             // Nothing looked at and nothing written: the next steps after a tick skip the scan
             // until a request row changes ([`Idle`]).
             self.set_idle(Some(Idle { mark, at_ms: now }));

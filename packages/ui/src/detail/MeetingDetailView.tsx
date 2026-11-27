@@ -584,7 +584,8 @@ function jobAskedAnotherComputer(job: JobView): boolean {
 }
 
 /** Why Re-transcribe and Summarise wait while the meeting finishes. */
-const FINISHING_TIP = "Available when the summary is done.";
+/** A header button's tooltip while the meeting finishes, led by the button's own label. */
+const finishingTip = (label: string) => fillCopy(ORDER_COPY.finishing_tip, { label });
 
 /** A meeting's job: which one, and its latest event (`null` until the first). `seq` changes
  * with every event. `cancelling`: the user asked to cancel it and its last event has not come. */
@@ -1292,7 +1293,7 @@ export function MeetingDetailView({
                 <Button disabledFocusable aria-label="Re-transcribe" icon={<RetranscribeIcon />} />
               </Tooltip>
             ) : finishing ? (
-              <Tooltip content={FINISHING_TIP} relationship="description">
+              <Tooltip content={finishingTip("Re-transcribe")} relationship="description">
                 <Button disabledFocusable aria-label="Re-transcribe" icon={<RetranscribeIcon />} />
               </Tooltip>
             ) : (
@@ -1306,21 +1307,20 @@ export function MeetingDetailView({
               </IconTip>
             )}
             {finishing ? (
-              <Tooltip content={FINISHING_TIP} relationship="description">
+              <Tooltip content={finishingTip(summariseLabel)} relationship="description">
                 <Button disabledFocusable aria-label={summariseLabel} icon={<ResummariseIcon />} />
               </Tooltip>
             ) : (
-              <IconTip content={summariseLabel}>
-                <ResummariseControl
-                  meeting={id}
-                  label={summariseLabel}
-                  icon={<ResummariseIcon />}
-                  disabled={detail === null}
-                  onOrder={() => void startJob("resummarise")}
-                  onWriter={(step) => void resummariseWith(step)}
-                  onAsk={(device) => void askHelper(device)}
-                />
-              </IconTip>
+              // Its tooltip is on the split button itself (ResummariseControl).
+              <ResummariseControl
+                meeting={id}
+                label={summariseLabel}
+                icon={<ResummariseIcon />}
+                disabled={detail === null}
+                onOrder={() => void startJob("resummarise")}
+                onWriter={(step) => void resummariseWith(step)}
+                onAsk={(device) => void askHelper(device)}
+              />
             )}
           </div>
         </div>

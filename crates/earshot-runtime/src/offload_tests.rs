@@ -2687,6 +2687,28 @@ mod order_steps {
         report
     }
 
+    /// T14.66: while the host writes for another device the step never goes idle, so a
+    /// withdrawal pulled by a later tick is still read and cancels the write. Control: with
+    /// nothing written the step after an empty tick reads nothing.
+    #[test]
+    fn offload_a_step_never_goes_idle_while_the_host_writes() {
+        for writing in [true, false] {
+            let dev = Device::new("offload-idle-writing");
+            let host = Recorder::default();
+            if writing {
+                *host.writing.lock().unwrap() = vec![EntityId::from_bytes([5; 16])];
+            }
+            after_tick(&dev, &host, true);
+            let before = scans(&dev.offload);
+            after_tick(&dev, &host, false);
+            assert_eq!(
+                scans(&dev.offload) - before,
+                usize::from(writing),
+                "writing {writing}"
+            );
+        }
+    }
+
     #[test]
     fn offload_a_step_after_a_tick_reads_no_request_while_nothing_can_have_changed() {
         let relay = relay();
@@ -3144,29 +3166,79 @@ mod order_steps {
 
     #[test]
     fn offload_order_stop_after_the_summary_arrived_is_already_written() {
-        for done in [false, true] {
+        for summary_arrived in [false, true] {
             let a = Device::new("offload-stop-written");
             let m = meeting(&a.svc, "Invented planning", 607);
             let request = asked_of_desk(&a, m);
-            if done {
+            if summary_arrived {
                 // The summary row arrives before the request's Done (a different page).
                 store_a_summary(&a, m, "From the desk");
             }
             let answer = stop_waiting(&a.svc, m).unwrap();
-            if done {
-                assert_eq!(answer, StopAnswer::AlreadyWritten { device: DESK });
-                // Withdrawn too, so a third device's summary leaves the helper nothing to write.
+            if summary_arrived {
+                // Who wrote it is not known from a summary row alone: no device is named.
+                assert_eq!(answer, StopAnswer::AlreadyWritten { device: None });
+                // Withdrawn too, so a third device's summary leaves the helper nothing to write;
+                // the asker's step settles it (a summary since), never a hand-back.
                 assert_eq!(a.request(request).state, RequestState::Withdrawn);
                 let r = record(&a.svc, m);
                 assert_eq!(
                     (r.state, r.writer, r.stopped),
                     (RunState::Ended, Some(0), None)
                 );
+                let host = Recorder::default();
+                hand_back(&a, &host);
+                assert!(host.here().is_empty());
             } else {
                 // Control: no summary yet.
                 assert_eq!(answer, StopAnswer::Stopped { device: DESK });
             }
         }
+    }
+
+    #[test]
+    fn offload_order_stop_after_the_helpers_done_names_it_and_ends_the_run() {
+        let relay = relay();
+        let (a, b) = pair(&relay);
+        let (ca, cb) = (a.client(), b.client());
+        let m = meeting(&a.svc, "Invented planning", 612);
+        let peers = helper_online(b.id());
+        let writers = Writers::default().choice(b.id(), decide(Some(b.id()), Some(&peers), false));
+        let request = offloaded(start(
+            &a,
+            m,
+            RunStart::Order(order(&[OrderStep::Computer(b.id()), LOCAL])),
+            &writers,
+        ));
+        sync(&ca, &cb);
+        let helper = Recorder::default();
+        b.step(None, &helper);
+        let server = MockServer::start(vec![reply("Written by the helper")]).unwrap();
+        let done = write_for_request(
+            &b.svc,
+            &MeetingQueue::new(),
+            &helper.for_others()[0],
+            &|_| remote_writer(&b.svc, &server),
+            &CancelToken::new(),
+        );
+        assert!(matches!(done, HelperOutcome::Done { .. }), "{done:?}");
+        sync(&cb, &ca);
+        // The Done is here and the record still waits (the asker's step has not run).
+        assert_eq!(a.request(request).state, RequestState::Done);
+        assert_eq!(record(&a.svc, m).state, RunState::Waiting);
+        assert_eq!(
+            stop_waiting(&a.svc, m).unwrap(),
+            StopAnswer::AlreadyWritten {
+                device: Some(b.id())
+            }
+        );
+        let r = record(&a.svc, m);
+        assert_eq!(
+            (r.state, r.writer, r.stopped),
+            (RunState::Ended, Some(0), None)
+        );
+        // The Done request is never withdrawn.
+        assert_eq!(a.request(request).state, RequestState::Done);
     }
 
     #[test]

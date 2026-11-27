@@ -1272,10 +1272,12 @@ pub enum StopAnswer {
         /// The computer that was asked.
         device: DeviceId,
     },
-    /// `device` had already written the summary: the run ended with it as the writer.
+    /// A summary had already arrived: the run ended with the asked computer as the writer.
     AlreadyWritten {
-        /// The computer that wrote it.
-        device: DeviceId,
+        /// The computer that wrote it, when that is known: the asked computer's request reads
+        /// `Done`. `None` when only a summary created after the request was found, which another
+        /// device may have written.
+        device: Option<DeviceId>,
     },
     /// Nothing waits on another computer for this meeting.
     NotWaiting,
@@ -1311,8 +1313,8 @@ pub fn stop_waiting(services: &Services, meeting: EntityId) -> Result<StopAnswer
             return Ok(StopAnswer::NotWaiting);
         };
         let device = request.target_device;
-        let written = request.state == RequestState::Done
-            || crate::offload::summarised_since(&*tx, &request)?;
+        let done = request.state == RequestState::Done;
+        let written = done || crate::offload::summarised_since(&*tx, &request)?;
         let open = request.state.is_open();
         if open {
             request.state = RequestState::Withdrawn;
@@ -1335,7 +1337,9 @@ pub fn stop_waiting(services: &Services, meeting: EntityId) -> Result<StopAnswer
                 run.state = RunState::Ended;
                 put_tx(tx, meeting, &run)?;
             }
-            return Ok(StopAnswer::AlreadyWritten { device });
+            return Ok(StopAnswer::AlreadyWritten {
+                device: done.then_some(device),
+            });
         }
         match record {
             RunRecord::Read(mut run) if waits(&run) => {

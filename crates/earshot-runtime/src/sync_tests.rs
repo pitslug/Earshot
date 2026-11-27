@@ -5356,14 +5356,22 @@ fn sync_thread_tick_now_reaches_the_server_during_a_back_off() {
     });
     let again =
         LocalRelay::start_on(RelayServer::open(&relay_config(&dir)).unwrap(), port).unwrap();
-    // `nudge` is ignored while failing (the outbox is not empty, so a successful tick would
-    // empty it): the control is that nothing was sent before `tick_now`.
-    thread.nudge();
-    assert!(a.svc.store().outbox_len().unwrap() > 0);
+    // (That `nudge` does not do this while failing is `sync_thread_a_nudge_waits_for_the_back_off`.)
     thread.tick_now();
     wait_for("tick_now never reached the server", || {
         a.svc.store().outbox_len().unwrap() == 0
     });
     thread.stop();
     drop(again);
+}
+
+#[test]
+fn sync_thread_a_nudge_waits_for_the_back_off() {
+    use crate::sync::thread::after_nudge;
+    let now = Instant::now();
+    let later = now + Duration::from_secs(120);
+    // While ticks are failing a nudge leaves the backed-off tick where it was.
+    assert_eq!(after_nudge(later, now, 2), later);
+    // Control: with no failure it brings the tick forward.
+    assert_eq!(after_nudge(later, now, 0), now);
 }

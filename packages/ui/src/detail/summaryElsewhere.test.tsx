@@ -29,11 +29,12 @@ const WAITING = "Waiting for Invented desk to write the summary.";
 const STOP_NAME = fillCopy(ORDER_COPY.stop.label, { device: MOCK_WAITING_DEVICE });
 const STALE_NAMES = "This summary uses a speaker's earlier name. Re-summarise to use the current names.";
 
-/** The detail alone, with `job` and `data`. */
-async function view(data: MockIpcData, job?: JobView) {
+/** The detail alone, with `job` and `data`; `again` renders it with another job and refresh
+ * count (a new count reads the meeting again). `ipc` may wrap the mock. */
+async function view(data: MockIpcData, job?: JobView, wrap: (ipc: Ipc) => Ipc = (i) => i) {
   const timer = createManualTimer(10_000);
-  const ipc = createMockIpc({ timer, meetings: [ITEM, OTHER], ...data });
-  render(
+  const ipc = wrap(createMockIpc({ timer, meetings: [ITEM, OTHER], ...data }));
+  const tree = (j: JobView | undefined, refresh: number) => (
     <EarshotThemeProvider>
       <IpcProvider ipc={ipc}>
         <MeetingDetailView
@@ -44,12 +45,15 @@ async function view(data: MockIpcData, job?: JobView) {
           onJobDismissed={() => {}}
           onJobCancel={() => {}}
           finishing={false}
-          job={job}
+          job={j}
+          refresh={refresh}
         />
       </IpcProvider>
-    </EarshotThemeProvider>,
+    </EarshotThemeProvider>
   );
+  const r = render(tree(job, 0));
   await screen.findByText(/TL;DR/);
+  return { again: (j: JobView | undefined, refresh = 0) => r.rerender(tree(j, refresh)) };
 }
 
 const stale = (extra: Partial<MeetingDetail> = {}): MockIpcData => ({
@@ -105,8 +109,26 @@ describe("the out-of-date notes while a new summary is written", () => {
 
   it("waits while a re-summary runs, and comes back when it ends", async () => {
     const running: JobView = { job: "Resummarise", last: null, seq: 1 };
-    await view(stale(), running);
+    const { again } = await view(stale(), running);
     expect(screen.queryByText(STALE_NAMES)).toBeNull();
+    // The job's terminal event: the note comes back.
+    again({ job: "Resummarise", last: { type: "Cancelled", meeting: ITEM.id, job: "Resummarise" }, seq: 2 });
+    expect(await screen.findByText(STALE_NAMES)).toBeInTheDocument();
+  });
+
+  it("comes back when a detail read finds nothing waiting any more", async () => {
+    let waiting = true;
+    const { again } = await view(stale(), undefined, (ipc) => ({
+      ...ipc,
+      getMeeting: async (id) => {
+        const d = await ipc.getMeeting(id);
+        return waiting ? { ...d, waiting_for: WAITING, waiting_device: MOCK_WAITING_DEVICE } : d;
+      },
+    }));
+    expect(screen.queryByText(STALE_NAMES)).toBeNull();
+    waiting = false;
+    again(undefined, 1);
+    expect(await screen.findByText(STALE_NAMES)).toBeInTheDocument();
   });
 
   it("shows with no summary being written (control)", async () => {

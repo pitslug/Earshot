@@ -556,8 +556,8 @@ fn run(
                 }
                 return;
             }
-            if std::mem::take(&mut s.soon) && failures == 0 {
-                next = next.min(Instant::now());
+            if std::mem::take(&mut s.soon) {
+                next = after_nudge(next, Instant::now(), failures);
             }
             if std::mem::take(&mut s.urgent) {
                 let now = Instant::now();
@@ -720,6 +720,11 @@ fn run(
 
 /// `wait` scaled by `tick / TICK`: the back-off as production has it, shortened with the
 /// tick in tests.
+fn scaled(wait: Duration, tick: Duration) -> Duration {
+    let nanos = wait.as_nanos() * tick.as_nanos() / TICK.as_nanos();
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
 /// The failure count and the next tick after a tick that `ok` or not, at `now`. An urgent
 /// attempt ([`SyncThread::tick_now`], brought forward from the regular tick `urgent`) that fails
 /// leaves both as they were: the count unchanged and the next tick the one it was brought forward
@@ -741,7 +746,8 @@ pub(crate) fn after_tick(
     }
 }
 
-fn scaled(wait: Duration, tick: Duration) -> Duration {
-    let nanos = wait.as_nanos() * tick.as_nanos() / TICK.as_nanos();
-    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+/// The next tick after a `nudge` heard at `now`: brought forward only while ticks are not
+/// failing (the back-off decides then; [`SyncThread::tick_now`] does not wait for it).
+pub(crate) fn after_nudge(next: Instant, now: Instant, failures: u32) -> Instant {
+    if failures == 0 { next.min(now) } else { next }
 }

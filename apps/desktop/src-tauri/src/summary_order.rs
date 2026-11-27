@@ -154,6 +154,8 @@ pub struct StopTexts {
     pub label: String,
     /// The computer had already written it (`{device}`).
     pub already_written: String,
+    /// A summary had already arrived, from a computer not known.
+    pub already_summarised: String,
     /// Nothing waits on another computer.
     pub not_waiting: String,
     /// The stop could not be stored (the UI's).
@@ -255,6 +257,9 @@ pub struct Copy {
     pub list_elsewhere: String,
     /// The sentence for each kind of local summary failure.
     pub local_failures: LocalFailureTexts,
+    /// A header button's tooltip while the meeting finishes (`{label}`; the UI's).
+    #[allow(dead_code)]
+    pub finishing_tip: String,
 }
 
 /// The fixed sentence for a local summary failure of `kind` (T14.66, docs/summary-order.md
@@ -316,10 +321,14 @@ pub fn stop_copy(
     use earshot_runtime::summary_order::run::StopAnswer;
     match answer {
         StopAnswer::Stopped { .. } => None,
-        StopAnswer::AlreadyWritten { device } => Some(fill(
+        StopAnswer::AlreadyWritten {
+            device: Some(device),
+        } => Some(fill(
             &COPY.stop.already_written,
             &[("device", &cx.device(device))],
         )),
+        // Another device may have written it: no device is named.
+        StopAnswer::AlreadyWritten { device: None } => Some(COPY.stop.already_summarised.clone()),
         StopAnswer::NotWaiting => Some(COPY.stop.not_waiting.clone()),
     }
 }
@@ -403,6 +412,15 @@ impl StepContext {
             .map(|(s, _)| s)
             .unwrap_or_default();
         Self::of(&settings)
+    }
+
+    /// `device`'s name mid-sentence: its name, or "your other computer" in lower case.
+    fn device_inline(&self, device: DeviceId) -> String {
+        self.names
+            .get(&device)
+            .and_then(|n| n.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| crate::offload::waiting_device_name_in(None))
     }
 
     fn device(&self, device: DeviceId) -> String {
@@ -712,11 +730,15 @@ pub fn run_note_stopped(
                     Some(OrderStep::Computer(d)) => Some(*d),
                     _ => None,
                 });
+            // Mid-sentence: a computer not known is named in lower case.
             let mut note = fill(
                 &COPY.stopped_note,
                 &[(
                     "device",
-                    &device.map_or_else(|| COPY.unnamed.clone(), |d| cx.device(d)),
+                    &device.map_or_else(
+                        || crate::offload::waiting_device_name_in(None),
+                        |d| cx.device_inline(d),
+                    ),
                 )],
             );
             let views = earshot_runtime::summary_order::run::views(run);

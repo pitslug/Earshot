@@ -208,7 +208,13 @@ pub fn waiting_copy(name: Option<&str>) -> String {
 #[must_use]
 pub fn waiting_device_name(device: DeviceId) -> String {
     let name = known_computers().get(&device).and_then(|n| n.name.clone());
-    named(name.as_deref(), UNNAMED_INLINE)
+    waiting_device_name_in(name.as_deref())
+}
+
+/// `name` mid-sentence, or "your other computer" when it is not known (`UNNAMED_INLINE`).
+#[must_use]
+pub fn waiting_device_name_in(name: Option<&str>) -> String {
+    named(name, UNNAMED_INLINE)
 }
 
 /// What happens to a meeting's summary if the computer it waits for does not answer (T12.81).

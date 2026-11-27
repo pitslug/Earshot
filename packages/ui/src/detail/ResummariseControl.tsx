@@ -16,6 +16,7 @@ import {
   MenuPopover,
   MenuTrigger,
   SplitButton,
+  Tooltip,
   type MenuButtonProps,
 } from "@fluentui/react-components";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
@@ -106,14 +107,17 @@ export function ResummariseControl({ meeting, label, icon, disabled, onOrder, on
     >
       <MenuTrigger disableButtonEnhancement>
         {(triggerProps: MenuButtonProps) => (
-          <SplitButton
-            disabled={disabled}
-            icon={icon}
-            menuButton={{ ...triggerProps, "aria-label": fillCopy(ORDER_COPY.resummarise.choose, { label }) }}
-            primaryActionButton={{ onClick: onOrder, "aria-label": icon === undefined ? undefined : label }}
-          >
-            {icon === undefined ? label : undefined}
-          </SplitButton>
+          // An icon-only button shows its label on hover and focus (the button names itself).
+          <Tooltip content={label} relationship="inaccessible" visible={icon === undefined ? false : undefined}>
+            <SplitButton
+              disabled={disabled}
+              icon={icon}
+              menuButton={{ ...triggerProps, "aria-label": fillCopy(ORDER_COPY.resummarise.choose, { label }) }}
+              primaryActionButton={{ onClick: onOrder, "aria-label": icon === undefined ? undefined : label }}
+            >
+              {icon === undefined ? label : undefined}
+            </SplitButton>
+          </Tooltip>
         )}
       </MenuTrigger>
       <MenuPopover>

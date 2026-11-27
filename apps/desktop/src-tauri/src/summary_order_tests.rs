@@ -1101,6 +1101,18 @@ fn summary_order_detail_note_says_a_run_was_stopped_or_moves_on() {
         run_note_stopped(&RunView::Ended(stopped.clone()), false, true, &cx).as_deref(),
         Some(want)
     );
+    // A computer not known is named mid-sentence in lower case.
+    let mut unknown = stopped.clone();
+    unknown.steps = vec![OrderStep::Computer(DeviceId::from_bytes([0x77; 16]))];
+    let note = run_note_stopped(&RunView::Ended(unknown), false, true, &cx).unwrap();
+    assert!(
+        note.starts_with(&format!(
+            "You stopped this summary and asked {} to stop",
+            crate::offload::waiting_device_name_in(None)
+        )),
+        "{note}"
+    );
+    assert!(!note.contains(&format!("asked {}", COPY.unnamed)), "{note}");
     // A summary came after the stopped request: the note falls.
     assert_eq!(
         run_note_stopped(&RunView::Ended(stopped.clone()), false, false, &cx),
@@ -1191,8 +1203,13 @@ fn summary_order_stop_copy_says_why_nothing_stopped() {
     let cx = cx();
     assert_eq!(stop_copy(StopAnswer::Stopped { device: DESK }, &cx), None);
     assert_eq!(
-        stop_copy(StopAnswer::AlreadyWritten { device: DESK }, &cx).as_deref(),
+        stop_copy(StopAnswer::AlreadyWritten { device: Some(DESK) }, &cx).as_deref(),
         Some("Invented desk had already written the summary.")
+    );
+    // A summary whose writer is not known names no device.
+    assert_eq!(
+        stop_copy(StopAnswer::AlreadyWritten { device: None }, &cx).as_deref(),
+        Some(COPY.stop.already_summarised.as_str())
     );
     assert_eq!(
         stop_copy(StopAnswer::NotWaiting, &cx).as_deref(),

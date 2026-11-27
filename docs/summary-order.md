@@ -163,7 +163,7 @@ All copy here (step names, destinations, outcome words, banners, re-summarise it
 
 ## 11. T14.66: stopping a summary written elsewhere, and saying failed writers as they happen
 
-**Status.** Design only: nothing is built.
+**Status.** Built on `lane/offload-stop` (as built, after the lane review; the sections below describe the code).
 - **Source.** T14.66 in PLAN.md section 8, plus the owner's additions of 2026-11-27 (11.6 to 11.8, 11.13, 11.14).
 - **Review.** Spec review round 1 (2026-11-27) found 2 blocking and 6 advisory findings. All are addressed in this revision, which is not yet reviewed again.
 
@@ -194,9 +194,9 @@ The transaction does this, in order:
    - open: `offload::open_request` (asked by me, not deleted, requested or claimed, `authored`); or
    - named by a record still `waiting` on it, whatever its state (the case 4 below).
 2. **Already written.** If `summarised_since(request)` holds (a summary row can arrive before the request's `Done`), or the request is `Done`:
-   - write nothing to the request;
+   - an open request is withdrawn all the same (a summary written by a third device must not leave the helper writing); the asker's step then settles it, because a summary exists since it was asked, so it is never handed back; a `Done` request is left as it is;
    - end a record waiting on it with that computer as writer, as `end_after_done` does;
-   - answer `AlreadyWritten`.
+   - answer `AlreadyWritten { device }`: `Some(computer)` only when that computer's `Done` is here (it wrote it); `None` when only a summary row was found, which another device may have written, and the copy then names no device (`stop.already_summarised`).
 3. **Withdraw.** If the request is open, write it `Withdrawn`: the asker is its only allowed writer.
 4. **End the run**, by the run record:
    - **The record waits on this request** (`waiting_on == Some(request)`, `state: waiting`). This also covers a request already withdrawn by the 90 s or stale rule whose continuation has not begun. End it in the same transaction with `put_own_tx`:
@@ -247,7 +247,7 @@ The transaction does this, in order:
 
 **The shape.** A new `offload::Writing` holds `Mutex<WritingState { tokens: BTreeMap<EntityId, CancelToken>, stopping: bool }>`. Each host embeds one.
 
-`OffloadHost` gains two methods with default bodies:
+`OffloadHost` gains two required methods (no default bodies, so every host says what it writes):
 - `writing(&self) -> Vec<EntityId>`: the ids being written now;
 - `cancel_writing(&self, request: EntityId)`.
 
@@ -267,7 +267,7 @@ The transaction does this, in order:
 
 This runs in every step, `step_sync_stopped` included. No store lock is held across a cancel.
 
-The T14.50 skip rule is unaffected. While a write runs, its request is claimed and open, so the scan is never idle. A pulled withdrawal is a row the tick applied, which forces the next scan.
+The T14.50 skip rule: a scan never goes idle while `host.writing()` is not empty (lane review), so a withdrawal pulled by a later tick is always read, whatever the request looked like at this scan. A pulled withdrawal is also a row the tick applied, which forces the next scan.
 
 **After a restart or a thread replacement.**
 - **A new `Offload` finds the request claimed and hands it again.** `write_for` sees an existing entry and does nothing. The running write keeps its one token, and the next withdrawal cancels it.
@@ -351,7 +351,7 @@ A successful Stop re-reads it too.
 - **A meeting's own summary.** `host::after_meeting` passes `&mut || progress(HostStep::SummaryRunChanged)`, a new variant.
   - The driver's watch counts it as the summary phase (unwatched), so T9.22's timings do not change.
   - The driver maps it to a new `MeetingEvent::SummaryRunChanged { meeting }` with ids only. It joins the events the driver passes for an older meeting (`Ended`, `PostProgress`, `Summary`), so an older meeting's page still hears it.
-  - `meeting_events::SentRecord` gets no fold arm for it: it sets no screen state, which the snapshot case table pins.
+  - `meeting_events::SentRecord` gets no fold arm for it: it sets no screen state (its catch-all arm ignores it).
   - `AppShell` handles it as `PostProgress Stored` is handled: `setDetailRefresh(countedFor(.., meeting))`.
 - **A re-summarise.** `jobs::summarise_run_with` passes a callback that sends a new non-terminal `JobEvent::SummaryRunChanged { meeting }`.
   - `jobNotice` draws it as the running job's bar, as before it.
@@ -415,8 +415,10 @@ This replaces the width rule designed here earlier (owner addition 7), by the ow
 | `stopped_note` | You stopped this summary and asked {device} to stop writing it. Re-summarise to write it again. |
 | `stop_button` | Stop |
 | `stop_label` | Stop the summary on {device} (accessible name) |
-| `stop_already_written` | {device} had already written the summary. |
+| `stop.already_written` | {device} had already written the summary. |
+| `stop.already_summarised` | A summary of this meeting had already arrived. |
 | `stop_not_waiting` | This summary is no longer waiting for another computer. |
+| `finishing_tip` | {label}: available when the summary is done. (a greyed header button's tooltip while the meeting finishes, led by its own label) |
 | `stop_failed` | The summary could not be stopped. Try again. |
 | `in_progress_here` | New summary being written |
 | `in_progress_on` | New summary being written on {device} |
@@ -542,18 +544,19 @@ Today `plain_text::runtime_text` maps every `LocalSummaryError` except a cancel 
 
 | Error | Kind |
 |---|---|
-| `Run(TooLong)`, `Run(Plan)` (no plan fits the context) | TooLong |
+| `Run(TooLong)`, `Run(Plan)` (no plan fits the context), `Run(Model(ContextTooSmall))`, `Load(ContextTooSmall)` | TooLong |
 | `Run(Invalid)` (still invalid after the repair rounds) | ReplyUnusable |
 | `GpuChildDied`, `GpuChildStalled` | CardStopped |
 | `GpuStalled`, `LoadStalled` | Stalled |
 | `Load(LlmError::Load)` | LoadFailed |
 | `Load(LlmError::LoadStuck)` | LoadStuck |
 | `Load(LlmError::Backend)` | WrongBackend |
-| `Load(Input)`, `Load(ContextTooSmall)`, `Load(Decode)`, `Load(Utf8)`, `Run(Grammar)`, `Run(Model)`, `Chunks` | Other |
-| `Load(LlmError::Cancelled)`, `Run(Cancelled)` | Cancelled |
+| `Load(Input)`, `Load(Decode)`, `Load(Utf8)`, `Run(Model(Load, Input, Decode, Utf8, Backend, LoadStuck))`, `Run(Grammar)`, `Chunks` | Other |
+| `Load(LlmError::Cancelled)`, `Run(Model(Cancelled))`, `Run(Cancelled)` | Cancelled |
 | `LoadRetried { cpu, .. }` | `cpu.kind()`: the last attempt's kind |
 | `CudaFilesChanged` | CudaChanged |
-| `ChildRun { kind, .. }` | `kind`, else Other |
+| `ChildRun { kind, .. }` (the run failed in the GPU child) | `kind`, else Other |
+| `ChildLoad { kind, .. }` (the GPU child refused the load; the summary may move to the CPU) | `kind`, else Other; never WrongBackend by itself |
 
 **The GPU child.** Today a GPU summary's run failure reaches the parent only as text, which can never be shown. It is the likely path of the owner's 79-minute failure. The changes:
 - `summary_child::ChildLine::Failed` gains `kind: Option<String>` (`serde(default)`). The child fills it with its error's kind word.
@@ -561,7 +564,8 @@ Today `plain_text::runtime_text` maps every `LocalSummaryError` except a cancel 
 - `ChildEnd::RunFailed` carries the parsed kind, and `LocalSummaryError::ChildRun` becomes `ChildRun { message: String, kind: Option<LocalFailureKind> }`.
 
 **Copy.** `runtime_text`'s arm becomes `RuntimeError::LocalSummary(l) => local_failure_copy(l.kind())`.
-- That is an exhaustive match: `SUMMARY_CANCELLED` for Cancelled, and 11.9's `local_failures` sentences for the rest. It never shows the error's text.
+- That is an exhaustive match: `SUMMARY_CANCELLED` for every Cancelled kind, today's `LOCAL_SUMMARY_FAILED` for Other, and 11.9's `local_failures` sentences for the rest. It never shows the error's text.
+- Cancelled, as before: only `Run(Cancelled)` is reachable (llama.cpp's own cancel becomes it, and a load is not interruptible), and it kept `SUMMARY_CANCELLED` and stopped the run before. `local_word` stops the run for every Cancelled kind.
 - "Try again or choose another model" is kept only where it helps: the reply, and the load (there as "choose another model").
 
 **The order's words.**
