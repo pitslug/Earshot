@@ -2840,7 +2840,12 @@ Second wave (after the lanes above are merged):
     - (4) new copy in a fixture for the owner to approve;
     - (5) while a summary run is in progress, the stale-names and out-of-date notes are hidden, and the header says a new summary is being written (and where), not only who wrote the current one;
     - (6) the header's buttons never squeeze a long title into a narrow column at a normal window width;
-    - (7) a local summary that fails says which kind of failure it was, in fixed words (today every kind reads "could not finish").
+    - (7) a local summary that fails says which kind of failure it was, in fixed words (today every kind reads "could not finish");
+    - (8) confirmations on the Summary tab ("New summary ready", "Exported to ...") hide by themselves like any other; T14.59's exclusion covers only that tab's notes.
+- [ ] T14.67 A meeting records its local time zone
+  - found (the owner, 2026-11-27): an exported note's file name read 00-59 for a meeting that started at 10:59 local time. Nothing in the app or CLI sets `Meeting.utc_offset_minutes` (`LiveConfig` defaults it to 0), so every meeting is stored as UTC, and everything that reads the stored offset is wrong by the local offset: export file names and note dates, and the start time sent to a summary writer. The window shows the right time because it converts itself.
+  - do: the runtime takes this computer's UTC offset at the meeting's start through an adapter (no OS access in core) and stores it; the CLI the same. Meetings already stored with offset 0 (a design question for the owner: leave them, or set each to this computer's offset at its own start time, a synced write).
+  - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`; `cargo test -p earshot-cli`
     No meeting content in any new record, event or log; nothing new sent.
   - accept: `cargo test -p earshot-runtime offload`; `cargo test -p earshot-runtime summary_order`; `cargo test -p earshot-worker`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
 - [x] T14.50 Small sync fixes
