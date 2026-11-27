@@ -29,12 +29,15 @@ use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 use tauri_specta::Event;
 
 use crate::ipc::{AppState, IpcError};
+use crate::jumplist::{JumpBoard, TrayItem};
 use crate::meeting::{DriverPhase, MeetingDriver, StartRequest};
 use crate::meeting_events::{EndedReason, MeetingEvent, SummaryEvent};
 use crate::sync_settings::{QUIT_GONE_WAIT, SyncHost};
 
 /// The argument of the `Run` value: started by Windows, stay in the tray.
 pub const AUTOSTART_ARG: &str = "--autostart";
+/// The tray menu's last item, also the taskbar jump list's (T14.71).
+pub const QUIT_LABEL: &str = "Quit Earshot";
 /// The global shortcut, as the page and the notifications write it.
 pub const SHORTCUT_TEXT: &str = "Ctrl+Alt+Shift+R";
 /// The label of the main window (`tauri.conf.json`).
@@ -64,6 +67,11 @@ pub const EXIT_SAVE_LIMIT: std::time::Duration = std::time::Duration::from_secs(
 /// past [`EXIT_SAVE_LIMIT`] from the start; an unfinished send is cut by the process ending.
 pub fn save_before_exit(app: &AppHandle) {
     let started = std::time::Instant::now();
+    // The jump list is deleted on its own thread meanwhile (T14.71), so a pinned button with
+    // Earshot closed offers no dead entries; waited for last, briefly.
+    let jump = app
+        .try_state::<Arc<Shell>>()
+        .and_then(|shell| shell.jump.clear());
     let gone = app
         .try_state::<Arc<SyncHost>>()
         .and_then(|host| host.say_gone());
@@ -71,6 +79,24 @@ pub fn save_before_exit(app: &AppHandle) {
     if let Some(rx) = gone {
         let _ = rx.recv_timeout(gone_wait(started.elapsed()));
     }
+    if let Some(rx) = jump
+        && let Some(wait) = jump_clear_wait(started.elapsed())
+    {
+        let _ = rx.recv_timeout(wait);
+    }
+}
+
+/// The longest quitting waits for the jump list's deletion (T14.71, a judgement: it is a few
+/// milliseconds when the shell answers). Past it the process ends and the list stays until the
+/// next start sets it again.
+pub const JUMP_CLEAR_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// How long quitting still waits for the jump list's deletion after `spent`: at most
+/// [`JUMP_CLEAR_WAIT`], never past [`EXIT_SAVE_LIMIT`]; `None` when no time is left.
+#[must_use]
+pub fn jump_clear_wait(spent: std::time::Duration) -> Option<std::time::Duration> {
+    let wait = EXIT_SAVE_LIMIT.saturating_sub(spent).min(JUMP_CLEAR_WAIT);
+    (!wait.is_zero()).then_some(wait)
 }
 
 /// How long quitting still waits for the gone presence after `spent` on saving a recording.
@@ -991,6 +1017,8 @@ pub struct Shell {
     end_already_told: AtomicBool,
     #[cfg(windows)]
     toasts: crate::toast_win::Toaster,
+    /// The taskbar jump list (T14.71), once [`Shell::start_jump_list`] has started it.
+    jump: JumpBoard,
 }
 
 impl Shell {
@@ -1012,6 +1040,7 @@ impl Shell {
             end_already_told: AtomicBool::new(false),
             #[cfg(windows)]
             toasts: crate::toast_win::Toaster::default(),
+            jump: JumpBoard::default(),
         }
     }
 
@@ -1030,16 +1059,28 @@ impl Shell {
     pub fn build_tray(self: &Arc<Self>) -> tauri::Result<()> {
         let app = &self.app;
         let view = tray_view(Phase::Idle);
-        let open = MenuItem::with_id(app, "open", "Open Earshot", true, None::<&str>)?;
+        let open = MenuItem::with_id(
+            app,
+            TrayItem::Open.menu_id(),
+            "Open Earshot",
+            true,
+            None::<&str>,
+        )?;
         let toggle = MenuItem::with_id(
             app,
-            "toggle",
+            TrayItem::Toggle.menu_id(),
             view.toggle_label,
             view.toggle_enabled,
             None::<&str>,
         )?;
         let separator = PredefinedMenuItem::separator(app)?;
-        let quit = MenuItem::with_id(app, "quit", "Quit Earshot", true, None::<&str>)?;
+        let quit = MenuItem::with_id(
+            app,
+            TrayItem::Quit.menu_id(),
+            QUIT_LABEL,
+            true,
+            None::<&str>,
+        )?;
         let menu = Menu::with_items(app, &[&open, &toggle, &separator, &quit])?;
         let base =
             app.default_window_icon()
@@ -1056,11 +1097,10 @@ impl Shell {
             .tooltip(view.tooltip)
             .menu(&menu)
             .show_menu_on_left_click(false)
-            .on_menu_event(move |_, event: MenuEvent| match event.id().as_ref() {
-                "open" => on_menu.show_window(),
-                "toggle" => on_menu.toggle(),
-                "quit" => on_menu.quit(),
-                _ => {}
+            .on_menu_event(move |_, event: MenuEvent| {
+                if let Some(item) = TrayItem::of_menu_id(event.id().as_ref()) {
+                    on_menu.do_item(item);
+                }
             })
             .on_tray_icon_event(move |_, event| {
                 if let TrayIconEvent::Click {
@@ -1337,6 +1377,20 @@ impl Shell {
         true
     }
 
+    /// A second start of Earshot (the single-instance plugin): a jump list entry acts as the
+    /// tray's item does (T14.71); any other start opens the window.
+    pub fn second_start(self: &Arc<Self>, args: &[String]) {
+        self.do_item(crate::jumplist::item_of_second_start(args));
+    }
+
+    /// Does what the tray's `item` does: the one dispatch of the tray menu and the jump list.
+    pub fn do_item(self: &Arc<Self>, item: TrayItem) {
+        match item_handler(item) {
+            ShellMethod::Plain(f) => f(self),
+            ShellMethod::Shared(f) => f(self),
+        }
+    }
+
     /// "Quit Earshot": at once with no meeting, else the window asks first.
     pub fn quit(&self) {
         match quit_action(self.driver().phase()) {
@@ -1420,7 +1474,25 @@ impl Shell {
     }
 
     fn refresh_tray(&self) {
-        self.tray.refresh(|| self.tracker().phase());
+        refresh_surfaces(&self.tray, &self.jump, || self.tracker().phase());
+    }
+
+    /// Sets the taskbar jump list (T14.71) and keeps it following the tray. Its thread does the
+    /// work and reads the phase itself (through a weak handle, so it never keeps the shell
+    /// alive); a list the shell refuses costs nothing.
+    pub fn start_jump_list(self: &Arc<Self>) {
+        #[cfg(windows)]
+        {
+            let shell = Arc::downgrade(self);
+            let read = move || {
+                shell
+                    .upgrade()
+                    .map_or(Phase::Idle, |shell| shell.tracker().phase())
+            };
+            if let Some(jump) = crate::jumplist_win::JumpList::start(Box::new(read)) {
+                self.jump.set(Box::new(jump));
+            }
+        }
     }
 
     /// Shows `toast`; `meeting` is what its clicks open. Never blocks the caller (the meeting
@@ -1553,6 +1625,32 @@ pub async fn quit_app(app: AppHandle, driver: State<'_, MeetingDriver>) -> Resul
         Ok(())
     })
     .await
+}
+
+/// A shell method a tray item runs.
+#[derive(Clone, Copy)]
+pub enum ShellMethod {
+    /// One taking `&Shell`.
+    Plain(fn(&Shell)),
+    /// One taking `&Arc<Shell>`.
+    Shared(fn(&Arc<Shell>)),
+}
+
+/// What each tray item runs (the tray menu and the jump list alike; pinned method by method).
+#[must_use]
+pub fn item_handler(item: TrayItem) -> ShellMethod {
+    match item {
+        TrayItem::Open => ShellMethod::Plain(Shell::show_window),
+        TrayItem::Toggle => ShellMethod::Shared(Shell::toggle),
+        TrayItem::Quit => ShellMethod::Plain(Shell::quit),
+    }
+}
+
+/// Draws the tray of the phase `phase` reads, then wakes the jump list, which reads the phase
+/// itself on its own thread (T14.71).
+pub fn refresh_surfaces(tray: &TrayBoard, jump: &JumpBoard, phase: impl Fn() -> Phase) {
+    tray.refresh(phase);
+    jump.wake();
 }
 
 #[cfg(test)]
