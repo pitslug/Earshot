@@ -402,8 +402,12 @@ pub fn grown_reply_tokens(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptError {
     /// The fixed part of a prompt (instructions, schema, meeting details, notes) or a
-    /// single transcript segment or partial summary, with its reply budget and the repair
-    /// headroom, does not fit in the context window.
+    /// single transcript segment, with its reply budget and the repair headroom, does not
+    /// fit in the context window; or a merge cannot be planned: a partial summary, or every
+    /// pair of neighbouring partials, does not fit even with the smallest reply a merge is
+    /// capped to ([`REPLY_MIN_TOKENS`], T14.69). `needed` is always above `available`. The
+    /// writers join the parts of a merge that cannot be planned
+    /// ([`crate::summary::join_partials`]); a map or single request that does not fit fails.
     ContextTooSmall {
         /// Estimated tokens needed (prompt, reply budget and repair headroom).
         needed: usize,
@@ -1039,6 +1043,10 @@ fn reduce_groups_merging(
     }
     if groups.len() < partials.len() {
         return Ok(groups);
+    }
+    if partials.len() == 1 {
+        // A single partial that fits only with a capped reply: that request.
+        return Ok(std::iter::once(0..1).collect());
     }
     // No two neighbours fit together with their whole reply (T14.69): merge pairs with a
     // capped reply, carrying a partial over where it fits with neither neighbour.

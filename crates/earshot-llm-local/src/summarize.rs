@@ -581,8 +581,16 @@ fn reduce_levels(
             next_carried.push(p.carried());
             report.reduce_steps += 1;
             let merged = match step(model, "reduce", Whole, p, numbers, options, report) {
-                // A rougher summary rather than none (T8.4d); it says so itself.
-                Err(SummaryFailure::Invalid { .. }) if merge == Merge::Plain => {
+                // A rougher summary rather than none (T8.4d); it says so itself. So is a
+                // merge the model's tokenizer finds longer than the estimate it was planned
+                // with (T14.69: a capped merge leaves only the repair headroom free).
+                // Cancellation is never joined.
+                Err(SummaryFailure::Invalid { .. } | SummaryFailure::TooLong { .. })
+                    if merge == Merge::Plain =>
+                {
+                    if options.cancel.is_cancelled() {
+                        return Err(SummaryFailure::Cancelled);
+                    }
                     report.joined_parts = partials.len();
                     return Ok(join_partials(&partials));
                 }
@@ -1929,6 +1937,85 @@ mod tests {
             "{merges:?}"
         );
         assert!(merges[1] > merges[0], "{merges:?}");
+    }
+
+    #[test]
+    fn summarize_a_merge_the_tokenizer_finds_too_long_joins_the_parts() {
+        // T14.69: the first merge is capped to leave only the repair headroom free by the
+        // estimate; a tokenizer counting 1.2 times the estimate finds it too long.
+        let inp = input(30);
+        let roomy = SummaryOptions {
+            max_output_tokens: 8_192,
+            ..options()
+        };
+        let mut m = Fake::new(16_384, 1.2);
+        three_long_parts(&mut m, 3_000);
+        let run = summarize_chunks(&mut m, &inp, &roomy, &RANGES);
+        let s = run.result.unwrap();
+        assert!(
+            s.tldr
+                .starts_with(earshot_core::summary::JOINED_SUMMARY_NOTICE)
+        );
+        assert_eq!(s.decisions.len(), 3, "every part is kept");
+        let r = &run.report;
+        // Three map requests, then the merge refused before it was sent.
+        assert_eq!(
+            (r.map_parts, r.reduce_steps, r.requests, r.joined_parts),
+            (3, 1, 3, 3)
+        );
+
+        // Cancelled first: not joined.
+        let cancel = CancelToken::new();
+        let mut m = Fake::new(16_384, 1.2);
+        three_long_parts(&mut m, 3_000);
+        m.cancel_after = Some((2, cancel.clone()));
+        let run = summarize_chunks(
+            &mut m,
+            &inp,
+            &SummaryOptions {
+                cancel,
+                ..roomy.clone()
+            },
+            &RANGES,
+        );
+        assert_eq!(run.result, Err(SummaryFailure::Cancelled));
+        assert_eq!(run.report.joined_parts, 0);
+    }
+
+    #[test]
+    fn summarize_a_map_step_the_tokenizer_finds_too_long_still_fails() {
+        // Control for the merge above: a map step planned to fit by the estimate that the
+        // tokenizer finds too long is a failure, never a join.
+        let budget = ContextBudget {
+            context_window: 16_384,
+            max_output_tokens: options().max_output_tokens,
+        };
+        let sized = |words: usize| {
+            let mut inp = input(30);
+            inp.segments[12].text = vec!["lorem"; words].join(" ");
+            inp
+        };
+        let words = (1_000..20_000)
+            .step_by(100)
+            .find(|&w| {
+                let inp = sized(w);
+                let Ok(chunks) = earshot_core::prompt::plan_chunks(&inp, budget, &RANGES) else {
+                    return false;
+                };
+                let p = &chunks[1].prompt;
+                let real = (p.estimated_tokens as f64 * 1.2).ceil() as usize;
+                real + p.max_output_tokens > budget.context_window
+            })
+            .expect("a map part that fits by the estimate only");
+        let mut m = Fake::new(16_384, 1.2);
+        let run = summarize_chunks(&mut m, &sized(words), &options(), &RANGES);
+        assert!(
+            matches!(run.result, Err(SummaryFailure::TooLong { .. })),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(run.report.joined_parts, 0);
+        assert_eq!(run.report.reduce_steps, 0);
     }
 
     #[test]

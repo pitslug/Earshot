@@ -1573,6 +1573,7 @@ fn prompt_merges_never_exceed_the_context_and_keep_their_whole_reply_when_it_fit
     let inp = long_input(40);
     let sizes = [3, 40, 300, 900, 2_500, 6_000];
     let mut planned = 0;
+    let mut kept = 0;
     let mut capped = 0;
     let mut refused = 0;
     for window in (3_000..40_000).step_by(1_700) {
@@ -1629,6 +1630,7 @@ fn prompt_merges_never_exceed_the_context_and_keep_their_whole_reply_when_it_fit
                     );
                     if budget.fits(whole.estimated_tokens, whole.max_output_tokens) {
                         assert_eq!(p, whole, "a merge that fits keeps its request");
+                        kept += 1;
                     } else {
                         assert_eq!(g.len(), 2, "only pairs are capped");
                         capped += 1;
@@ -1640,7 +1642,84 @@ fn prompt_merges_never_exceed_the_context_and_keep_their_whole_reply_when_it_fit
         }
     }
     assert!(
-        planned > 0 && capped > 0 && refused > 0,
-        "{planned} {capped} {refused}"
+        planned > 0 && kept > 0 && capped > 0 && refused > 0,
+        "{planned} {kept} {capped} {refused}"
     );
+}
+
+/// Fitted merge plans whose groups and request bytes are pinned by a snapshot captured on
+/// 0d391b5, before T14.69 (`reduce_fitted_0d391b5.txt`): the cap must leave every merge
+/// that fitted with its whole reply exactly as it was. Never regenerate this snapshot from
+/// later code.
+#[test]
+fn prompt_fitted_merge_plans_are_the_requests_of_0d391b5() {
+    let inp = long_input(40);
+    let with_tldr = |i: usize, words: usize| {
+        let mut p = partial(i, &[inp.segments[i].id]);
+        p.tldr = vec!["lorem"; words].join(" ");
+        p
+    };
+    let small: Vec<SummaryV1> = (0..12)
+        .map(|i| partial(i, &[inp.segments[i].id, inp.segments[i + 1].id]))
+        .collect();
+    let large: Vec<SummaryV1> = (0..5).map(|i| with_tldr(i, 1_000)).collect();
+    let gpu = ContextBudget {
+        context_window: 16_384,
+        max_output_tokens: 8_192,
+    };
+    let mut out = String::new();
+    for (name, partials, budget) in [
+        ("small partials, small budget", &small, small_budget()),
+        ("small partials, big budget", &small, BIG),
+        ("large partials, 16k context", &large, gpu),
+    ] {
+        let groups = reduce_groups(&inp, partials, budget).unwrap();
+        out.push_str(&format!("== {name}: {groups:?}\n"));
+        for g in &groups {
+            if g.len() == 1 && groups.len() > 1 {
+                continue;
+            }
+            let level = if groups.len() == 1 {
+                MergeLevel::Last
+            } else {
+                MergeLevel::Inner
+            };
+            let p = reduce_prompt(&inp, &partials[g.clone()], budget, level);
+            out.push_str(&format!("-- {g:?}\n{}", render(&p)));
+        }
+    }
+    assert_snapshot("reduce_fitted_0d391b5", &out);
+}
+
+#[test]
+fn prompt_a_single_partial_merges_with_a_capped_reply_or_needs_more_than_the_context() {
+    let inp = long_input(40);
+    let one = |words: usize| vec![sized_partial(0, inp.segments[0].id, words)];
+    // Fits only with a capped reply: that request.
+    let words = (500..40_000)
+        .step_by(250)
+        .find(|&w| {
+            let p = reduce_prompt(&inp, &one(w), uncapped(GPU_9B), MergeLevel::Last);
+            !GPU_9B.fits(p.estimated_tokens, p.max_output_tokens)
+                && GPU_9B.fits(p.estimated_tokens + 200, REPLY_MIN_TOKENS)
+        })
+        .unwrap();
+    let part = one(words);
+    assert_eq!(reduce_groups(&inp, &part, GPU_9B).unwrap(), vec![0..1]);
+    let p = reduce_prompt(&inp, &part, GPU_9B, MergeLevel::Last);
+    assert!(GPU_9B.fits(p.estimated_tokens, p.max_output_tokens));
+    // Too large even for the smallest reply: `needed` is above what is available.
+    let words = (words..80_000)
+        .step_by(250)
+        .find(|&w| {
+            let p = reduce_prompt(&inp, &one(w), GPU_9B, MergeLevel::Last);
+            !GPU_9B.fits(p.estimated_tokens, p.max_output_tokens)
+        })
+        .unwrap();
+    match reduce_groups(&inp, &one(words), GPU_9B) {
+        Err(PromptError::ContextTooSmall { needed, available }) => {
+            assert!(needed > available, "{needed} {available}");
+        }
+        other => panic!("expected ContextTooSmall, got {other:?}"),
+    }
 }
