@@ -2840,7 +2840,8 @@ Second wave (after the lanes above are merged):
   - deps: T14.1, T14.2
   - do: the page-name guard reads both files.
   - accept: `cargo test -p earshot-desktop --bin earshot page_names`
-- [ ] T14.54 A forgotten voice keeps its name over a re-transcription (design: docs/name-carry.md, revised after spec review 1 and the owner's decisions, awaiting re-review)
+- [ ] T14.54 A forgotten voice keeps its name over a re-transcription
+  - parked (the owner, 2026-11-27): after 1.0. Design docs/name-carry.md, revised after spec review 1 and five owner decisions, not re-reviewed or measured; open point: carrying an in-room Me mark by timing even with a live user voiceprint (wider than decision 1).
   - found (the owner, 2026-11-27): forgetting a person's voice must never take them out of an existing transcript, only stop them being recognised in future. Today it keeps the names on the stored lines, but it also drops that person's speaker centroids (`forget_identity_biometrics`), and a re-run carries a named row only through `identities::match_previous`, so re-transcribing one of their old meetings afterwards loses the name.
   - deps: T14.49
   - do: a rule written first (docs, spec-reviewed): when a re-transcription finds a user-named or linked speaker row with no identity entry, it carries the row by line timing instead of voice: the new voice whose Final words overlap most of that row's old Final lines on the same track, one to one, above a share fixed by a rule written before measuring, with ignored voices and the Me rules unchanged and nothing enrolled or stored as biometric data. Voice matching stays first where an entry exists. Tests: forget a voice, re-transcribe, the name is kept; a re-run whose voices moved keeps no wrong name; nothing biometric is written.
