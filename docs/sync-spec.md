@@ -1532,75 +1532,79 @@ T14.62's draft put Repair on the Sync page and "Remove damaged items" beside eac
 
 ## 18. A meeting records its local time zone (T14.67)
 
-Status: design, not reviewed, not built. No row changes shape: `Meeting.utc_offset_minutes` exists in every envelope format, so `ENVELOPE_FORMAT` stays 4, with no migration, no relay change and no wire field.
+Status: design revision 2, not reviewed, not built. Spec review 1 blocked revision 1's once-per-device synced rewrite of stored meetings: a whole-row rewrite stamped now beats every edit to that row not yet pushed from another device. The owner chose this shape on 2026-11-28 (PLAN.md T14.67): nothing stored is rewritten, and a stored 0 is read as this computer's zone. No row changes shape: `ENVELOPE_FORMAT` stays 4, with no migration, no relay change, no wire field, no device record and nothing sent that was not sent before.
 
 ### 18.1 The defect
 
-Nothing sets `Meeting.utc_offset_minutes`: `LiveConfig` defaults it to 0 (`live/mod.rs:373`) and no host overrides it, so every meeting is stored as UTC. Everything that reads the stored offset is off by the local offset: the export file name and the note's dates (`export::render`, `local_civil`), and `started` in the summary request (`summary.rs:1896`, `view::format_local`). The window is right because it converts the start instant itself; it never reads the stored offset, so nothing in it changes here.
+Nothing sets `Meeting.utc_offset_minutes`: `LiveConfig` defaults it to 0 (`live/mod.rs:373`) and no host overrides it, so every meeting is stored as UTC. Two outputs read the stored offset, and both are off by the local offset:
+- the export, through core `export::render` (`render.rs:294`, `local_civil`), for the note's file name and its dates; the runtime builds the input in `export.rs` `rendered` (`export.rs:124`);
+- the summary request's `started`, built by `summary.rs` `input_of` (`summary.rs:1896`, `view::format_local`).
 
-### 18.2 Reading the offset (the adapter)
+Those are the only callers (`format_local` has one; `local_civil` has one, under `render`). The window converts the start instant itself and never reads the stored offset, so nothing there changes.
 
-- **One function**, `earshot_proc::utc_offset_minutes_at(unix_ms: u64) -> Option<i32>`: the offset of this computer's current time zone at that instant, DST included, in whole minutes. earshot-proc is the workspace's crate for processes and clocks (`awake_time`, `AwakeClock`); it is already in every graph that needs this, the worker's included (through earshot-llm), so the runtime takes it as a normal dependency, outside `engines`, and the worker's graph gains no crate.
-- **Windows:** `FileTimeToSystemTime` (the instant as UTC), `SystemTimeToTzSpecificLocalTimeEx` with a null zone (the active zone with its dynamic, per-year DST rules, so a past instant gets the rule of its own year), `SystemTimeToFileTime`, then local minus UTC. The functions and the `FILETIME` / `SYSTEMTIME` / `DYNAMIC_TIME_ZONE_INFORMATION` structures are declared by hand in a new `src/zone_win.rs`, under the rules `job_win.rs` follows (one call per `unsafe` block with a SAFETY comment, sizes pinned by tests, no `windows-sys` feature added). That widens the AGENTS rule "all `unsafe` in `earshot-proc/src/job_win.rs`" to the two files.
-- **`None`** when a call fails, the instant is outside what `FILETIME` holds, or the result is outside -14 h to +14 h or not a whole minute. Off Windows it is always `None` (no app or recording runs there; the worker is the only non-Windows user, 18.4).
-- Core stays pure: it still only stores and reads an `i32`.
+### 18.2 The meaning of a stored offset
 
-### 18.3 Taking it at a meeting's start
+- `Meeting.utc_offset_minutes == 0` means **unknown or UTC**. Until this task every build wrote 0; after it, a real recording whose zone cannot be read still writes 0 (18.4). No rule may read a stored 0 as "recorded in UTC".
+- A stored non-zero offset is always used as stored.
 
-- `LiveConfig::utc_offset_minutes: i32` becomes `LiveConfig::utc_offset: UtcOffset`:
-  - `UtcOffset::ThisComputer`, the default: resolved inside `start_live` at the same `clock.now_unix_ms()` that becomes `started_unix_ms` (`live/mod.rs:995`), so the offset is the one at the start instant, read once.
-  - `UtcOffset::Fixed(i32)`: stored as given.
-  - Resolved `None`: 0 is stored and one fixed line goes to stderr (`utc offset: unreadable, stored 0`). No banner: it does not fail on Windows in practice, and a banner for it would be noise (a judgement).
-- **Every way a meeting starts:**
-  - The app: tray, shortcut and the new-meeting screen all go through `MeetingDriver` and `Prepare::prepare` (`meeting.rs:2118`), which builds from `..LiveConfig::default()`, so all take `ThisComputer` with no per-path code.
-  - `earshot-cli record` (`record.rs:202`): `ThisComputer` (the default).
-  - **Replays keep 0**, explicitly `Fixed(0)`: `earshot-cli replay` (`replay.rs:122`), the app's hidden replay (`headless.rs`), the Settings benchmark and the `bench` example. A replay plays a recording made at another time and place, so this computer's offset now would be a guess about then; 0 is the honest "unknown". It also keeps `accept m6` and `accept m7` notes the same on every host.
-  - The worker never starts a meeting.
+### 18.3 Reading old meetings: one rule at the two outputs
 
-### 18.4 The one-off fix for stored meetings
+- **One function**, `earshot_runtime::view::shown_offset(stored: i32, started_unix_ms: u64, zone: impl Fn(u64) -> Option<i32>) -> i32`:
+  - `stored != 0`: `stored`, and `zone` is not called;
+  - `stored == 0`: `zone(started_unix_ms)`, or 0 when it gives `None`.
+- **Production** passes `earshot_proc::utc_offset_minutes_at` (18.5) through `view::shown_offset_here(&Meeting)`. The two outputs call only that:
+  - `export.rs` `rendered` hands `render` a copy of `view.meeting` with `utc_offset_minutes` set to `shown_offset_here` (core's `render` and `ExportInput` are unchanged, and core stays pure);
+  - `summary.rs` `input_of` passes `shown_offset_here(&view.meeting)` to `format_local`.
+- Nothing is written. The stored row stays 0 on every device, so there is no synced write, no conflict with another device's edits, and no once-per-device bookkeeping.
+- **The offset is this computer's zone now, applied at the meeting's own start instant**, DST included (the zone's rule for that year, 18.5). For a computer that has stayed in one zone this is exact. A meeting recorded in another zone (travel, or on another computer elsewhere) and stored at 0 reads in this computer's zone. For the owner (both computers in Queensland, +600, no DST) it is exact.
+- **The worker** has no reader (off Windows `utc_offset_minutes_at` is always `None`), so for a stored 0 it keeps 0, which is UTC. A summary the worker writes for a meeting stored at 0 sends `started` in UTC. That is the same as today, but it differs from what the desktop would send. Meetings recorded after this task carry their offset (18.4) and read the same everywhere.
+- **Replays** store 0 (18.4), so their notes and summary inputs now read in the host's zone. `accept m6` and `accept m7` check that there is one note at the export record's path, not its name or time (`m6.rs:808`), so neither changes. AMI evaluation inputs (`sum_eval`) set `started: None` and are unaffected.
+- **Export, for the owner:** a note already exported keeps its file name at the recorded path (T14.63: a re-export writes to the recorded path while the file there is this meeting's note), so a name such as `00-59` stays. Its body dates are corrected at the next export. A meeting never exported gets the right name at its first export. Earshot never renames or moves a note in the vault.
+- **Summaries:** a summary already written keeps its text; the next summary gets the right `started`. Nothing makes a summary out of date (that rule reads lines and names, not the meeting row).
 
-- **Where:** `earshot_runtime::offset_fix::fix_once(services)` (production reader) over `fix_once_with(services, zone: &dyn Fn(u64) -> Option<i32>)`, a `guarded_write` root `fix_once_in` registered in `sync_damaged_scan.rs`'s root list (section 16). Device record `utc-offset-fixed` (`DeviceRecord::UtcOffsetFixed`, value `done`, written through `local::set_guarded`), as `ignore-copied` is.
-- **What, in one transaction:** if the record exists, nothing. Otherwise, for each meeting from `meetings_lenient()` whose id and `deleted` read, live only, read the row with `meeting_or_damaged`, and when `utc_offset_minutes == 0` compute `zone(started_unix_ms)`:
-  - `Some(m)` with `m != 0`: set the field, `meta.touch` through the transaction's stamp, `put_meeting`. Only that field changes; title, folder, kept-local and the rest are the row as re-read.
-  - `Some(0)`: nothing written. A meeting in a zone at UTC+0 then (London in winter) is already right, and an unneeded re-stamp could beat another computer's edit.
-  - `None`: nothing written, counted.
-  - Then the record, in the same transaction, whatever was skipped (as 16.12 c decided for the ignore copy). One fixed line with counts only: `utc offset fix: meetings set <n>, damaged rows skipped <d>, unreadable <u>`.
-- **When**, exactly as the ignore copy:
-  - at app start, from `SyncHost::start_up`, only when this device has no vault (nothing can arrive);
-  - otherwise from the sync thread through `copy_after_tick`: only after a tick that ended Ok with `pull_complete`, `held == 0` and no row waiting for a retry, so another computer's edits to a meeting row (a title, a folder) are here before the fix re-stamps it. An edit made elsewhere in the gap between that pull and the fix's push can still lose to the re-stamp (whole-row last writer wins), as with the ignore copy (accepted there).
-  - A device with a vault and sync switched off never runs it until sync is turned on (as the ignore copy).
-- **Tombstones** are never read as live and never written, so nothing is revived.
-- **Damaged rows:** a meeting whose row does not read is skipped and counted; the fix goes on and still writes its record (16.12 c). Its offset is lost for good on this device; Repair from sync (section 17) may bring back a copy another device fixed.
-- **The worker** shares the sync thread, so `copy_after_tick` runs the fix there too. Off Windows every reading is `None`, so it writes nothing and records that it ran. This matters: a container's zone is usually UTC and must never be applied to the owner's meetings.
-- **Two devices fixing one meeting:** each writes the offset its own zone gives at that meeting's start. In the same zone (the owner's desktop and Surface, both Queensland, +600, no DST) the values are equal and last writer wins changes nothing that shows. In different zones the later stamp wins, which may be the zone of the computer that did not record it. The alternative is to fix only meetings this device created (`meta.created_at.node` is this device), at the cost of never fixing meetings from a computer that is retired or never updated. **For the owner (18.6 a).**
-- **A meeting really recorded at UTC+0:** it is shifted only when this computer's zone now gives a non-zero offset at that instant, that is, when the computer has changed zone since (or the meeting was recorded on a computer in another zone). For a computer that has stayed in one zone the fix is exact, DST included. **For the owner (18.6 b):** accept that a meeting recorded while travelling, or on a computer in another zone, takes this computer's zone.
-- **Meetings arriving later at 0** from a peer still on 0.9.x are not fixed by a device that already ran: the fix is once per device, never per row. They are fixed when that peer updates, because its own run covers every meeting it holds at 0, its own included. Only a peer that never updates leaves its meetings at 0. Running the fix again on every arrival would instead shift real UTC+0 meetings recorded by fixed builds, and would re-stamp rows forever on any device whose zone differs from the recorder's.
-- **Export:** a re-export writes to the recorded path (T14.63: a meeting with an export record keeps its file while the file there is this meeting's note), so a note already exported keeps its old, wrong file name; its body (dates in the frontmatter and heading) is rendered from the fixed offset at the next export. A meeting never exported gets the right name. Renaming old notes is not done: the vault is the user's, and the export rules never move a note.
-- **Summaries:** a summary written before the fix keeps its text; the next summary gets the right `started`. The fix does not make a summary out of date (that rule reads lines and names, not the meeting row).
-- **No content anywhere:** the record holds a word, the line holds counts, nothing new is sent beyond the re-stamped meeting rows, which sync as any meeting edit does.
+### 18.4 New meetings: the recording funnel
 
-### 18.5 Tests (one per rule, each with its control)
+- **Where.** Every real recording starts through `backends::start_wasapi_session_on` (`backends.rs:2950`), which already sets `ClockDomain::Qpc`:
+  - the app's tray, shortcut and new-meeting screen, through `host::wasapi_starter_on` (`meeting.rs:1963` -> `host.rs:1998`);
+  - `earshot-cli record`, through `host::wasapi_starter` (`record.rs:217`) -> `backends::start_wasapi_session` (`backends.rs:2920`) -> `start_wasapi_session_on` (checked: covered).
+  No replay passes through it: `earshot-cli replay` (`replay.rs:137`), the app's hidden replay (`headless.rs:296`), the Settings benchmark and tests call `start_live` directly with their own source, so they keep the default.
+- **How.** `LiveConfig::utc_offset_minutes: i32` becomes `LiveConfig::utc_offset: UtcOffset`, a two-variant enum (`Copy`, `PartialEq`, `Debug`, so `LiveConfig`'s derives hold without a function pointer):
+  - `UtcOffset::Fixed(i32)`: stored as given. The default is `Fixed(0)`, an explicit 0, so every replay and test stays deterministic.
+  - `UtcOffset::ThisComputer`: `start_live` reads `earshot_proc::utc_offset_minutes_at(started)` with the same `started = clock.now_unix_ms()` it passes to `Meeting::new` (`live/mod.rs:995`). Read and start are the same instant, with no gap, whatever the capture open (`WasapiSource::start_on`) before it took. `None` stores 0, which 18.3 resolves on output, so nothing is lost.
+- The funnel sets `utc_offset: UtcOffset::ThisComputer` in the same struct update that sets `clock_domain: Qpc`, and nothing else does (pinned, 18.6 test 5). There is no `HostPrepare` variable and no per-path flag.
+- Nothing is printed or emitted for an unreadable offset: the output rule covers it, and on Windows the read does not fail in practice.
 
-1. Reader, Windows, host-independent: the inner function given an explicit zone (`EnumDynamicTimeZoneInformation` by key name) gives "AUS Eastern Standard Time" +660 in January 2026 and +600 in July 2026, "E. Australia Standard Time" +600 for both, "UTC" 0; control: the AUS Eastern January and July values differ. Structure sizes pinned. Off Windows: `None`.
-2. Reader rejects out-of-range input (an instant past `FILETIME`'s range gives `None`); control: an ordinary instant gives `Some`.
-3. `start_live` with a test reader: `ThisComputer` passes the reader exactly the stored `started_unix_ms` and stores its answer; control: `Fixed(n)` stores `n` and never calls the reader.
-4. A reader answering `None` stores 0 and prints the fixed line; control: `Some(600)` stores 600 and prints nothing.
-5. Start paths: the app's `Prepare::prepare` and `earshot-cli record` build `ThisComputer`; CLI replay, headless replay and the benchmark build `Fixed(0)`; each asserted on the config the production builder returns.
-6. Fix: a live meeting at 0 becomes `zone(started)` and is re-stamped (queued in the outbox); control: a meeting at -300 in the same store is untouched and not re-stamped.
-7. Fix: `Some(0)` and `None` write nothing (stamp unchanged); control: `Some(600)` writes.
-8. Fix: only the offset changes (title, folder, kept-local equal to the re-read row); control: the offset differs.
-9. Fix: a tombstoned meeting at 0 stays a tombstone, unwritten; control: its live sibling is fixed.
-10. Fix: a damaged meeting row is skipped and counted, the others fixed and the record written; the root is in `sync_damaged_scan.rs` (the scan test is the control that a missing root fails).
-11. Once: a meeting at 0 pulled after the run is not fixed by a second call; control: the same meeting present before the first call is fixed.
-12. When: `copy_after_tick` runs the fix after a clean complete tick and not after one holding a row; `start_up` runs it with no vault and not with one (controls built into each pair).
-13. Worker-shaped run (reader always `None`): nothing written, record written; control: a reader answering `Some(600)` writes.
-14. Through `LocalRelay`: two devices fix one meeting to the same value and converge; a device that pulls a fixed row before its own run leaves it alone (control: the unfixed row on that device is fixed).
-15. Privacy: the start line and the fix line hold fixed words and counts only.
+### 18.5 The reader (the adapter)
 
-`ENVELOPE_FORMAT` is untouched; earshot-sync's frozen 0.4.2 tests must still pass unchanged as the check.
+- **One function**, `earshot_proc::utc_offset_minutes_at(unix_ms: u64) -> Option<i32>`: this computer's current time zone's UTC offset at that instant, DST included, in whole minutes. earshot-proc is the workspace's crate for processes and clocks (`awake_time`, `AwakeClock`). It is already in the worker's graph through earshot-llm (`cargo tree -p earshot-worker -e normal -i earshot-proc --target all`), so the runtime takes it as a normal dependency and the worker gains no crate. `live` is not behind `engines` and now needs it, so `dep:earshot-proc` leaves the runtime's `engines` list and the optional dependency becomes a plain one.
+- **Windows, the documented path:**
+  1. Range check before any call: `unix_ms` is converted to 100 ns ticks since 1601 in checked `u64` arithmetic (`unix_ms * 10_000 + 116_444_736_000_000_000`); overflow, or a result above `i64::MAX` (the most `FileTimeToSystemTime` accepts), is `None`.
+  2. `FileTimeToSystemTime` -> the instant as a UTC `SYSTEMTIME`.
+  3. `GetDynamicTimeZoneInformation` -> the active zone as a `DYNAMIC_TIME_ZONE_INFORMATION`; `TIME_ZONE_ID_INVALID` is `None`.
+  4. `SystemTimeToTzSpecificLocalTimeEx(&dtzi, &utc, &mut local)`, always with that structure, never NULL, so the zone's dynamic DST rule for the instant's own year applies.
+  5. `SystemTimeToFileTime` on `local`; the offset is `(local_ticks - utc_ticks) / 600_000_000`.
+  - `None` when any call fails, when the difference is not a whole minute, or when it is outside -14 h to +14 h.
+  - Structures and the five kernel32 functions are declared by hand in a new `earshot-proc/src/zone_win.rs`, under `job_win.rs`'s rules: one call per `unsafe` block with a SAFETY comment, layouts pinned by tests (`FILETIME` 8 bytes, `SYSTEMTIME` 16, `DYNAMIC_TIME_ZONE_INFORMATION` 432), and no `windows-sys` feature added.
+  - `EnumDynamicTimeZoneInformation` (advapi32) is declared only under `#[cfg(test)]`, for the explicit-zone test.
+- **Off Windows:** always `None`.
+- **Housekeeping:** the AGENTS.md rule ("all `unsafe` in `earshot-proc/src/job_win.rs`", in the Claude Code bullet) and the comment in `earshot-proc/Cargo.toml` both name `job_win.rs` and `zone_win.rs`, and the Cargo.toml comment lists the new functions and structures. The AGENTS edit is the coordinator's (Learned).
 
-### 18.6 Decisions for the owner
+### 18.6 Tests (each with its control)
 
-- (a) Two devices in different zones: fix every live meeting at 0 (the decision of 2026-11-27, recommended while both computers share one zone), or only meetings this device recorded.
-- (b) Accept that a meeting recorded in another zone (travel, another computer) takes this computer's zone.
-- (c) Replays store 0 (recommended, 18.3) rather than this computer's offset.
+1. **The read rule**, `shown_offset` with a fake zone: stored 0 under a +600 zone gives 600 and the zone is asked exactly `started_unix_ms`; stored -300 gives -300 and the zone is never called (the control); stored 0 under a zone answering `None` gives 0.
+2. **Export through the rule:** a stored-0 meeting rendered through `export.rs`'s path with a fake +600 zone gives the local file name and body dates (10:59 for a start at 00:59 UTC); control: the same meeting with zone `None` gives the UTC name, and stored +600 gives the local name with the zone never called. This needs the production `rendered` to take the zone through a seam (`rendered_with`), with the production wrapper the only shipped caller.
+3. **Summary through the rule:** `input_of` for the same stored-0 meeting under a fake +600 zone gives `started` "... 10:59"; control: zone `None` gives "... 00:59". Same seam shape (`input_of_with`).
+4. **`start_live`:** `UtcOffset::ThisComputer` stores exactly `utc_offset_minutes_at(started_unix_ms)` for the stored start, host-independent because both sides use the same function and instant (and `0` when it is `None`); control: `Fixed(-300)` stores -300.
+5. **The funnel and replays:** a source scan of shipped code finds `UtcOffset::ThisComputer` only in `start_wasapi_session_on`, and the funnel's struct update contains it next to `ClockDomain::Qpc` (the funnel needs WASAPI, so it is pinned by source, as other shipped-code pins are); control: a replay through `earshot-cli replay`'s start (or the desktop's headless replay) stores 0.
+6. **The reader, shipped function, host-independent (Windows):** `utc_offset_minutes_at(now)` is `Some`; for a January and a July 2026 instant it equals the explicit path with the current zone's own `DYNAMIC_TIME_ZONE_INFORMATION`. Control: with an explicit "AUS Eastern Standard Time" (found by `EnumDynamicTimeZoneInformation`) the January value is +660 and the July value +600, which differ; "E. Australia Standard Time" gives +600 for both, and "UTC" 0.
+7. **Reader range:** an instant whose ticks overflow `u64`, and one above `i64::MAX` ticks, give `None` without calling Windows; control: an ordinary instant gives `Some`.
+8. **Layouts:** `size_of` for the three structures equals 8, 16 and 432.
+9. **Off Windows:** `utc_offset_minutes_at` is `None` (compiled and run by linux-check).
+
+Nothing in these tests reads stderr; every value a test checks comes from a function. The dropped fix has no tests to remove: none were written. `ENVELOPE_FORMAT` and earshot-sync's frozen 0.4.2 tests are untouched.
+
+### 18.7 Decisions taken (the owner, 2026-11-28)
+
+- No rewrite of stored meetings; a stored 0 reads in this computer's zone at the meeting's start.
+- Old exported notes keep their names; their dates are corrected at the next export.
+- The worker reads a stored 0 as UTC.
