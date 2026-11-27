@@ -2842,6 +2842,10 @@ Second wave (after the lanes above are merged):
     - (6) the header's buttons never squeeze a long title into a narrow column at a normal window width;
     - (7) a local summary that fails says which kind of failure it was, in fixed words (today every kind reads "could not finish");
     - (8) confirmations on the Summary tab ("New summary ready", "Exported to ...") hide by themselves like any other; T14.59's exclusion covers only that tab's notes.
+- [ ] T14.68 Ignored voices are not attendees
+  - found (the owner, 2026-11-27): an exported note's `attendees` listed the meeting's ignored voices ("Speaker 1", "Speaker 2").
+  - do: `MeetingView::attendees` (used by the Obsidian export and the summary input) leaves out every speaker row that counts as ignored by the one rule (`identities::counts_as_ignored`, legacy flag included); the transcript and speaker names elsewhere are unchanged.
+  - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot detail`
 - [ ] T14.67 A meeting records its local time zone
   - found (the owner, 2026-11-27): an exported note's file name read 00-59 for a meeting that started at 10:59 local time. Nothing in the app or CLI sets `Meeting.utc_offset_minutes` (`LiveConfig` defaults it to 0), so every meeting is stored as UTC, and everything that reads the stored offset is wrong by the local offset: export file names and note dates, and the start time sent to a summary writer. The window shows the right time because it converts itself.
   - do: the runtime takes this computer's UTC offset at the meeting's start through an adapter (no OS access in core) and stores it; the CLI the same. Meetings already stored with offset 0 are set to this computer's offset at their own start time, a synced write, once per device (decided by the owner, 2026-11-27).
