@@ -3,7 +3,10 @@
  "messages": {
   "add_not_in_use": "Some words are not in use: remove words to make room before adding more.",
   "stale_list": "The dictionary changed since this list was read: look at it again and try once more.",
-  "dictionary_damaged": "A word in your Dictionary on this computer is damaged, so the list can't be changed. Turning on Dictionary sync can restore it from another computer.",
+  "dictionary_damaged": {
+    "sync_off": "A word in your Dictionary on this computer is damaged, so the list can't be changed. Turning on Dictionary sync can restore it from another computer.",
+    "sync_on": "A word in your Dictionary on this computer is damaged, so the list can't be changed. It will be fixed if another computer syncs that word again."
+  },
   "not_in_use": {
    "one": "1 word is not in use: the Dictionaries of your computers together pass the limits. Remove a word to make room for it.",
    "many": "{n} words are not in use: the Dictionaries of your computers together pass the limits. Remove words to make room for them."

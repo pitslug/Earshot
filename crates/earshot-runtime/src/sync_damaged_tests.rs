@@ -260,8 +260,17 @@ fn my_voice_damaged_an_own_sample_on_someone_elses_print_takes_only_the_sample()
 /// and on). Control: with the row repaired the same edits succeed.
 #[test]
 fn sync_damaged_dictionary_edits_refuse_while_a_word_row_does_not_read() {
-    for repaired in [false, true] {
+    for (repaired, syncing) in [(false, false), (false, true), (true, false), (true, true)] {
         let w = World::new("dictionary-damaged");
+        if syncing {
+            // Dictionary sync on (sync itself on; the Dictionary switch is on by default).
+            let c = rusqlite::Connection::open(&w.db).unwrap();
+            c.execute(
+                "INSERT INTO local_state (key, value) VALUES (?1, ?2)",
+                rusqlite::params![crate::sync::SYNC_ON_KEY, b"on".to_vec()],
+            )
+            .unwrap();
+        }
         crate::vocabulary::add_entry(&w.svc, "Quillmarsh").unwrap();
         crate::vocabulary::add_entry(&w.svc, "Ostrelby").unwrap();
         let rows = w.svc.store().dictionary_words().unwrap();
@@ -288,11 +297,17 @@ fn sync_damaged_dictionary_edits_refuse_while_a_word_row_does_not_read() {
             assert!(matches!(reconciled, crate::vocabulary::Reconciled::Made(_)));
         } else {
             assert!(
-                matches!(added, Err(crate::vocabulary::SetVocabularyError::Damaged)),
+                matches!(
+                    added,
+                    Err(crate::vocabulary::SetVocabularyError::Damaged { syncing: s }) if s == syncing
+                ),
                 "{added:?}"
             );
             assert!(
-                matches!(removed, Err(crate::vocabulary::SetVocabularyError::Damaged)),
+                matches!(
+                    removed,
+                    Err(crate::vocabulary::SetVocabularyError::Damaged { syncing: s }) if s == syncing
+                ),
                 "{removed:?}"
             );
             assert!(matches!(

@@ -57,8 +57,11 @@ pub const NOT_IN_USE_REFUSAL: &str =
 pub const STALE_LIST: &str =
     "the dictionary changed since this list was read: look at it again and try once more";
 
-/// Why a Dictionary edit is refused while a word row does not read (`messages.dictionary_damaged`).
+/// Why a Dictionary edit is refused while a word row does not read (`messages.dictionary_damaged.sync_off`).
 pub const DICTIONARY_DAMAGED: &str = "a word in your Dictionary on this computer is damaged, so the list can't be changed. Turning on Dictionary sync can restore it from another computer";
+
+/// [`DICTIONARY_DAMAGED`] while Dictionary sync is on (`messages.dictionary_damaged.sync_on`).
+pub const DICTIONARY_DAMAGED_SYNCING: &str = "a word in your Dictionary on this computer is damaged, so the list can't be changed. It will be fixed if another computer syncs that word again";
 
 /// `local_state` key of the user's words.
 pub const VOCABULARY_KEY: &str = "settings/vocabulary";
@@ -80,8 +83,12 @@ pub enum SetVocabularyError {
     /// computer or window changed it (T11.3e).
     Stale,
     /// A word row on this computer does not read: no Dictionary edit is made while it stays
-    /// damaged (docs/sync-spec.md 16.5 item 13b; the page shows `dictionary_damaged`).
-    Damaged,
+    /// damaged (docs/sync-spec.md 16.5 item 13b; the page shows `dictionary_damaged`, its words
+    /// chosen by whether Dictionary sync is on).
+    Damaged {
+        /// Dictionary sync is on (a pulled copy may repair the row).
+        syncing: bool,
+    },
 }
 
 impl fmt::Display for SetVocabularyError {
@@ -91,7 +98,8 @@ impl fmt::Display for SetVocabularyError {
             Self::NotAWord => write!(f, "only a word can be added to the dictionary"),
             Self::NotInUse => write!(f, "{NOT_IN_USE_REFUSAL}"),
             Self::Stale => write!(f, "{STALE_LIST}"),
-            Self::Damaged => write!(f, "{DICTIONARY_DAMAGED}"),
+            Self::Damaged { syncing: false } => write!(f, "{DICTIONARY_DAMAGED}"),
+            Self::Damaged { syncing: true } => write!(f, "{DICTIONARY_DAMAGED_SYNCING}"),
             Self::Store(e) => write!(f, "{e}"),
         }
     }
@@ -447,9 +455,16 @@ fn remove_rows_tx(
 fn every_word_row(g: &GuardedTx<'_, '_>) -> Result<Vec<DictionaryWord>, SetVocabularyError> {
     let (rows, skipped) = g.dictionary_words_or_damaged()?;
     if skipped > 0 {
-        return Err(SetVocabularyError::Damaged);
+        return Err(damaged(g));
     }
     Ok(rows)
+}
+
+/// The refusal while a word row does not read, its words chosen by the Dictionary switch.
+fn damaged(g: &GuardedTx<'_, '_>) -> SetVocabularyError {
+    SetVocabularyError::Damaged {
+        syncing: syncs_from(|k| g.local_value(k)).unwrap_or(false),
+    }
 }
 
 /// A page edit's [`reconcile_tx`]: refused while a word row does not read.
@@ -459,7 +474,7 @@ fn reconcile_for_edit(
 ) -> Result<(), SetVocabularyError> {
     match reconcile_tx(g, stamp)? {
         Reconciled::Made(_) => Ok(()),
-        Reconciled::Unread { .. } => Err(SetVocabularyError::Damaged),
+        Reconciled::Unread { .. } => Err(damaged(g)),
     }
 }
 
@@ -468,7 +483,7 @@ fn rebuild_for_edit(g: &mut GuardedTx<'_, '_>) -> Result<Option<Vocabulary>, Set
     match rebuild_tx(g, OverRefused::Replace)? {
         Rebuild::Nothing => Ok(None),
         Rebuild::Rebuilt(v) => Ok(Some(v)),
-        Rebuild::Unread { .. } => Err(SetVocabularyError::Damaged),
+        Rebuild::Unread { .. } => Err(damaged(g)),
     }
 }
 
@@ -580,7 +595,7 @@ pub(crate) fn set_vocabulary_in<B: AsRef<str>, S: AsRef<str>>(
             .filter(|w| !listed_in(vocabulary.words(), w))
         {
             if remove_rows_tx(g, stamp, gone)?.is_none() {
-                return Err(SetVocabularyError::Damaged);
+                return Err(damaged(g));
             }
         }
         let rows = every_word_row(g)?;
@@ -743,7 +758,7 @@ pub(crate) fn remove_entry_in(
         }
         reconcile_for_edit(g, stamp)?;
         if remove_rows_tx(g, stamp, &word)?.is_none() {
-            return Err(SetVocabularyError::Damaged);
+            return Err(damaged(g));
         }
         if rebuild_for_edit(g)?.is_none() {
             let wanted = word.to_lowercase();

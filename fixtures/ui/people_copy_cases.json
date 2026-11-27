@@ -1,5 +1,5 @@
 {
-  "about": "Fixed copy for people on this computer whose rows are damaged (T14.57, docs/sync-spec.md 16.5 and 16.7). Draft wording, kept until the build is shown to the owner (16.12 d). Read by the desktop's tests and the UI's mock and tests.",
+  "about": "Fixed copy for people on this computer whose rows are damaged (T14.57, docs/sync-spec.md 16.5 and 16.7). Approved by the owner (2026-11-27). Read by the desktop's tests and the UI's mock and tests.",
   "remove_unreadable": "This person can't be removed because some of their details on this computer are damaged.",
   "remove_damaged_note": "Removed. Some damaged items on this computer could not be read, so they were left as they are.",
   "forget_damaged_note": "Forgotten. Some damaged items on this computer could not be read, so they were left as they are.",
