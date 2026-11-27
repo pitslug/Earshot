@@ -2855,7 +2855,7 @@ Second wave (after the lanes above are merged):
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot detail`
 - [ ] T14.67 A meeting records its local time zone
   - found (the owner, 2026-11-27): an exported note's file name read 00-59 for a meeting that started at 10:59 local time. Nothing in the app or CLI sets `Meeting.utc_offset_minutes` (`LiveConfig` defaults it to 0), so every meeting is stored as UTC, and everything that reads the stored offset is wrong by the local offset: export file names and note dates, and the start time sent to a summary writer. The window shows the right time because it converts itself.
-  - do: the runtime takes this computer's UTC offset at the meeting's start through an adapter (no OS access in core) and stores it; the CLI the same. Meetings already stored with offset 0 are set to this computer's offset at their own start time, a synced write, once per device (decided by the owner, 2026-11-27).
+  - do: the runtime takes this computer's UTC offset at the meeting's start through an adapter (no OS access in core) and stores it; the CLI the same. Meetings already stored with offset 0 are not rewritten: the export and summary inputs read a stored 0 as this computer's offset at that meeting's own start (decided again by the owner, 2026-11-28, after spec review 1 found a whole-row synced rewrite stamped now beats every unpushed edit on other devices).
   - accept: `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`; `cargo test -p earshot-cli`
 - [x] T14.50 Small sync fixes
   - deps: T14.46
