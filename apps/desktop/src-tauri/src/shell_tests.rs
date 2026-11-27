@@ -966,3 +966,49 @@ fn shell_a_start_with_no_started_event_goes_back_to_the_older_meeting() {
     assert!(t.apply(&summary_of("m2")));
     assert_eq!(t.phase(), Phase::Idle);
 }
+
+#[test]
+fn shell_each_tray_item_runs_its_own_method() {
+    // The tray menu and the jump list (T14.71) both run these: a swap fails here.
+    let plain = |item| match item_handler(item) {
+        ShellMethod::Plain(f) => Some(f),
+        ShellMethod::Shared(_) => None,
+    };
+    let shared = |item| match item_handler(item) {
+        ShellMethod::Shared(f) => Some(f),
+        ShellMethod::Plain(_) => None,
+    };
+    let open = plain(TrayItem::Open).expect("open takes &Shell");
+    let quit = plain(TrayItem::Quit).expect("quit takes &Shell");
+    let toggle = shared(TrayItem::Toggle).expect("toggle takes &Arc<Shell>");
+    assert!(std::ptr::fn_addr_eq(open, Shell::show_window as fn(&Shell)));
+    assert!(std::ptr::fn_addr_eq(quit, Shell::quit as fn(&Shell)));
+    assert!(std::ptr::fn_addr_eq(
+        toggle,
+        Shell::toggle as fn(&Arc<Shell>)
+    ));
+    // Control: the two plain items are told apart.
+    assert!(!std::ptr::fn_addr_eq(open, quit));
+    // A jump list entry is its tray item.
+    assert_eq!(
+        crate::jumplist::JumpAction::Meeting.tray_item(),
+        TrayItem::Toggle
+    );
+    assert_eq!(
+        crate::jumplist::JumpAction::Quit.tray_item(),
+        TrayItem::Quit
+    );
+}
+
+#[test]
+fn shell_quitting_waits_briefly_for_the_jump_list_and_never_past_the_save_limit() {
+    use std::time::Duration;
+    assert_eq!(jump_clear_wait(Duration::ZERO), Some(JUMP_CLEAR_WAIT));
+    assert_eq!(
+        jump_clear_wait(EXIT_SAVE_LIMIT - Duration::from_millis(100)),
+        Some(Duration::from_millis(100))
+    );
+    assert_eq!(jump_clear_wait(EXIT_SAVE_LIMIT), None);
+    assert_eq!(jump_clear_wait(EXIT_SAVE_LIMIT * 2), None);
+    assert!(JUMP_CLEAR_WAIT <= Duration::from_millis(500));
+}

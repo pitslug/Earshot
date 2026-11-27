@@ -128,7 +128,7 @@ fn main() {
     jumplist_win::use_app_id();
     // Only the app itself: a child may be running while an earlier crash's dump is being written.
     crash::remove_old_dumps();
-    let jump_start = jumplist::JumpAction::of(&args).is_some();
+    let setup_exit = jumplist::exit_in_setup(&args);
     let by_windows = shell::started_by_windows(&args);
     let builder = ipc::specta_builder();
     let gate = activity::WorkGate::for_app();
@@ -150,8 +150,8 @@ fn main() {
         .setup(move |app| {
             // A jump list start that got here is the only Earshot: the one it was meant for
             // ended between the check in `main` and the plugin. It starts nothing either.
-            if jump_start {
-                std::process::exit(0);
+            if let Some(code) = setup_exit {
+                std::process::exit(code);
             }
             builder.mount_events(app);
             // Opening the store runs migrations once; a failure is kept and reported by the
