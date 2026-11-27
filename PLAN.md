@@ -2837,7 +2837,9 @@ Second wave (after the lanes above are merged):
     - (1) a Stop control while a summary waits on another computer, which withdraws this computer's request and ends the run, and the helper (the desktop helper and the summary worker) stops writing within a bounded time once it hears the withdrawal, storing nothing;
     - (2) the meeting list shows that a meeting's summary is being written on another computer, as it shows local work;
     - (3) each writer step that fails and moves on is said as it happens (writer and outcome word, then the next writer), for a meeting's own summary and for a re-summarise, from the existing step copy;
-    - (4) new copy in a fixture for the owner to approve.
+    - (4) new copy in a fixture for the owner to approve;
+    - (5) while a summary run is in progress, the stale-names and out-of-date notes are hidden, and the header says a new summary is being written (and where), not only who wrote the current one;
+    - (6) the header's buttons never squeeze a long title into a narrow column at a normal window width.
     No meeting content in any new record, event or log; nothing new sent.
   - accept: `cargo test -p earshot-runtime offload`; `cargo test -p earshot-runtime summary_order`; `cargo test -p earshot-worker`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
 - [x] T14.50 Small sync fixes
