@@ -552,6 +552,72 @@ fn live_session_summary_kept_local_is_recorded_with_the_meeting() {
 }
 
 #[test]
+fn live_utc_offset_is_resolved_at_the_start_instant_only_when_asked() {
+    // T14.67 (docs/sync-spec.md 18.4): the resolution takes the zone; `ThisComputer` asks it
+    // exactly the start instant, `Fixed` never asks.
+    let mut asked = Vec::new();
+    let resolved = UtcOffset::ThisComputer.resolve(1_234, |at| {
+        asked.push(at);
+        Some(600)
+    });
+    assert_eq!((resolved, asked), (600, vec![1_234]));
+    assert_eq!(UtcOffset::ThisComputer.resolve(1_234, |_| None), 0);
+    assert_eq!(
+        UtcOffset::Fixed(-300).resolve(1_234, |_| panic!("asked")),
+        -300
+    );
+    // The default is an explicit 0: replays and tests stay deterministic.
+    assert_eq!(LiveConfig::default().utc_offset, UtcOffset::Fixed(0));
+}
+
+#[test]
+fn live_session_stores_this_computers_offset_only_when_asked() {
+    // T14.67: `start_live` reads the zone at the very instant it stores as the start.
+    for (offset, want) in [
+        (UtcOffset::ThisComputer, 600),
+        // The control: the default stores 0 and never reads the zone.
+        (UtcOffset::default(), 0),
+    ] {
+        let dir = TempDir::new();
+        let svc = services(&dir);
+        let mut source = ScriptSource::new(
+            CaptureSession::new(ORIGIN, TrackInfo::new(R16), None),
+            (0..3)
+                .map(|i| {
+                    frames(
+                        TrackId::Mic,
+                        noise(70 + i, 160, 0.01),
+                        ORIGIN.after_frames(i * 160, R16),
+                    )
+                })
+                .collect(),
+        );
+        source.end_silently = true;
+        super::fake_zone(Some(600));
+        let session = start_live(
+            source,
+            svc.clone(),
+            LiveConfig {
+                utc_offset: offset,
+                ..config(earshot_core::model::ClockDomain::Replay)
+            },
+            None,
+            Box::new(ChaCha8Rng::seed_from_u64(27)),
+        )
+        .unwrap();
+        let asked = super::fake_zone_asked();
+        let (_, outcome) = collect(session);
+        let m = svc.store().meeting(outcome.meeting).unwrap().unwrap();
+        assert_eq!(m.utc_offset_minutes, want);
+        if want == 0 {
+            assert!(asked.is_empty(), "{asked:?}");
+        } else {
+            assert_eq!(asked, [m.started_unix_ms]);
+        }
+    }
+}
+
+#[test]
 fn live_session_counts_repeated_capture_errors_instead_of_flooding() {
     let dir = TempDir::new();
     let svc = services(&dir);

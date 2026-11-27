@@ -10,7 +10,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
 use super::*;
-use crate::testutil::{TempDir, meeting, services};
+use crate::testutil::{T0, TempDir, meeting, services, store_offset_zero};
 
 fn reply(title: &str) -> MockResponse {
     let summary = SummaryV1 {
@@ -2940,3 +2940,27 @@ fn summary_input_with_no_ignored_voice_is_unchanged() {
 }
 
 const PIN_BEFORE_T14_68: &str = r#"{"title":"Invented planning","started":"2026-10-18 13:40","duration_ms":60000,"attendees":["Me","Alice","Speaker 2","Rowan Pell"]}"#;
+
+#[test]
+fn summary_started_reads_a_stored_zero_offset_in_this_computers_zone() {
+    // T14.67 (docs/sync-spec.md 18.3): `started` reads a stored 0 as this computer's offset at
+    // the meeting's start. T0 is 2026-10-18 03:40 UTC.
+    let dir = TempDir::new("summary");
+    let (svc, _) = services(&dir);
+    let id = meeting(&svc, "Zone check", 7);
+    // The control: testutil's meeting is stored at +600, kept, the zone never asked.
+    let (view, settings) = load_input(&svc, id).unwrap();
+    let kept = input_of_with(&view, &settings, |_| panic!("a stored offset is kept"));
+    assert_eq!(kept.meeting.started.as_deref(), Some("2026-10-18 13:40"));
+    store_offset_zero(&svc, id);
+    let (view, settings) = load_input(&svc, id).unwrap();
+    let mut asked = Vec::new();
+    let local = input_of_with(&view, &settings, |at| {
+        asked.push(at);
+        Some(600)
+    });
+    assert_eq!(local.meeting.started.as_deref(), Some("2026-10-18 13:40"));
+    assert_eq!(asked, [T0]);
+    let utc = input_of_with(&view, &settings, |_| None);
+    assert_eq!(utc.meeting.started.as_deref(), Some("2026-10-18 03:40"));
+}

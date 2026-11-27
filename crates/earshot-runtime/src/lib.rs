@@ -137,6 +137,8 @@ mod sync_damaged_scan;
 mod sync_damaged_tests;
 #[cfg(test)]
 mod testutil;
+#[cfg(test)]
+mod utc_offset_scan;
 
 /// The hardware facts' types (T7.4d), for hosts that show them.
 #[cfg(feature = "engines")]

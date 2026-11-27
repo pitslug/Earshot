@@ -29,6 +29,53 @@
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod job_win;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod zone_win;
+
+/// 100 ns ticks between 1601-01-01 (FILETIME's origin) and 1970-01-01 UTC.
+const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
+
+/// `unix_ms` as FILETIME ticks (100 ns since 1601-01-01 UTC), `None` when it overflows `u64`
+/// or exceeds `i64::MAX`, the largest value `FileTimeToSystemTime` accepts (T14.67). The range
+/// check comes before any Windows call.
+#[must_use]
+pub fn filetime_ticks(unix_ms: u64) -> Option<u64> {
+    let ticks = unix_ms
+        .checked_mul(10_000)?
+        .checked_add(FILETIME_UNIX_EPOCH)?;
+    (ticks <= i64::MAX.unsigned_abs()).then_some(ticks)
+}
+
+/// The UTC offset in whole minutes from a local and a UTC reading of one instant, both in
+/// FILETIME ticks: `None` unless it is a whole number of minutes within -14 h to +14 h (T14.67).
+#[must_use]
+pub fn offset_minutes(local_ticks: u64, utc_ticks: u64) -> Option<i32> {
+    const TICKS_PER_MINUTE: i128 = 600_000_000;
+    let diff = i128::from(local_ticks) - i128::from(utc_ticks);
+    if diff % TICKS_PER_MINUTE != 0 {
+        return None;
+    }
+    let minutes = i32::try_from(diff / TICKS_PER_MINUTE).ok()?;
+    (-14 * 60..=14 * 60).contains(&minutes).then_some(minutes)
+}
+
+/// This computer's UTC offset at `unix_ms`, in minutes, DST included: the active Windows time
+/// zone's rule for that instant's own year (T14.67, docs/sync-spec.md 18.5). `None` when the
+/// instant is out of range or Windows cannot say, and always off Windows.
+#[must_use]
+pub fn utc_offset_minutes_at(unix_ms: u64) -> Option<i32> {
+    let ticks = filetime_ticks(unix_ms)?;
+    #[cfg(windows)]
+    {
+        zone_win::offset_in(&zone_win::current_zone()?, ticks)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = ticks;
+        None
+    }
+}
 
 use std::ffi::OsString;
 use std::fmt;

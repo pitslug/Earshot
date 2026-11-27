@@ -8,7 +8,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
 use super::*;
-use crate::testutil::{TempDir, meeting, services};
+use crate::testutil::{T0, TempDir, meeting, services, store_offset_zero};
 
 fn vault(dir: &TempDir) -> std::path::PathBuf {
     let v = dir.0.join("vault");
@@ -642,4 +642,42 @@ fn export_note_attendees_leave_out_an_ignored_voice() {
     svc.store().put_speaker(back).unwrap();
     let text = note(6);
     assert!(frontmatter(&text).contains("[[Speaker 1]]"), "{text}");
+}
+
+#[test]
+fn export_a_stored_zero_offset_renders_in_this_computers_zone() {
+    // T14.67 (docs/sync-spec.md 18.3): the note's file name and dates read a stored 0 as this
+    // computer's offset at the meeting's start; nothing stored changes.
+    let dir = TempDir::new("export");
+    let (svc, _) = services(&dir);
+    let id = meeting(&svc, "Zone check", 7);
+    // testutil's meeting is stored at +600: the control that a stored offset is kept.
+    let kept = MeetingView::load(&**svc.store(), id).unwrap().unwrap();
+    store_offset_zero(&svc, id);
+    let zero = MeetingView::load(&**svc.store(), id).unwrap().unwrap();
+    assert_eq!(zero.meeting.utc_offset_minutes, 0);
+    let opts = ExportOptions::default();
+    let mut asked = Vec::new();
+    let local = rendered_with(&zero, None, &opts, |at| {
+        asked.push(at);
+        Some(600)
+    })
+    .unwrap();
+    assert_eq!(asked, [T0]);
+    let stored = rendered_with(&kept, None, &opts, |_| panic!("a stored offset is kept")).unwrap();
+    assert_eq!(local, stored);
+    // T0 is 03:40 UTC, 13:40 at +600: the name and the dates say so.
+    assert!(local.path.to_string().contains("13-40"), "{}", local.path);
+    // The control: with no zone (the worker) the stored 0 is UTC.
+    let utc = rendered_with(&zero, None, &opts, |_| None).unwrap();
+    assert!(utc.path.to_string().contains("03-40"), "{}", utc.path);
+    assert_ne!(utc.frontmatter, local.frontmatter);
+    assert_eq!(
+        MeetingView::load(&**svc.store(), id)
+            .unwrap()
+            .unwrap()
+            .meeting
+            .utc_offset_minutes,
+        0
+    );
 }

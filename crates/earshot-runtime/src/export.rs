@@ -118,11 +118,30 @@ fn rendered(
     user_name: Option<&str>,
     options: &ExportOptions,
 ) -> Result<RenderedExport, RuntimeError> {
+    rendered_with(
+        view,
+        user_name,
+        options,
+        earshot_proc::utc_offset_minutes_at,
+    )
+}
+
+/// [`rendered`] with the zone a stored 0 offset is read in (T14.67, docs/sync-spec.md 18.3):
+/// core renders a copy of the meeting whose offset is [`crate::view::shown_offset_of`], so the
+/// note's file name and dates are local. Only [`rendered`] calls it in shipped code.
+fn rendered_with(
+    view: &MeetingView,
+    user_name: Option<&str>,
+    options: &ExportOptions,
+    zone: impl FnOnce(u64) -> Option<i32>,
+) -> Result<RenderedExport, RuntimeError> {
     let attendees = view.attendees();
     let unknown = view.unknown_speaker_lines();
+    let mut meeting = view.meeting.clone();
+    meeting.utc_offset_minutes = crate::view::shown_offset_of(&view.meeting, zone);
     render(
         &ExportInput {
-            meeting: &view.meeting,
+            meeting: &meeting,
             attendees: &attendees,
             speakers: &view.speakers,
             segments: &view.segments,

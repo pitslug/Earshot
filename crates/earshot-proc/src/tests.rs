@@ -325,3 +325,40 @@ fn proc_read_capped_keeps_the_cap_and_drains_the_rest() {
     let (kept, complete) = read_capped(&b"abcdefg"[..], 6);
     assert_eq!((kept.as_slice(), complete), (&b"abcdef"[..], false));
 }
+
+// T14.67: the time-zone reader's portable parts (docs/sync-spec.md 18.5, tests 7 and 9).
+
+#[test]
+fn zone_range_check_comes_before_any_windows_call() {
+    // The control: an ordinary instant (2026-01-15) is in range.
+    assert_eq!(
+        filetime_ticks(1_768_435_200_000),
+        Some(1_768_435_200_000 * 10_000 + 116_444_736_000_000_000)
+    );
+    assert_eq!(filetime_ticks(0), Some(116_444_736_000_000_000));
+    // Overflowing u64 while scaling, and above i64::MAX ticks.
+    assert_eq!(filetime_ticks(u64::MAX), None);
+    let most = (i64::MAX.unsigned_abs() - 116_444_736_000_000_000) / 10_000;
+    assert!(filetime_ticks(most).is_some());
+    assert_eq!(filetime_ticks(most + 1), None);
+    assert_eq!(utc_offset_minutes_at(u64::MAX), None);
+}
+
+#[test]
+fn zone_offsets_are_whole_minutes_within_fourteen_hours() {
+    let minute = 600_000_000;
+    let t = 1_000_000 * minute;
+    assert_eq!(offset_minutes(t + 600 * minute, t), Some(600));
+    assert_eq!(offset_minutes(t - 300 * minute, t), Some(-300));
+    assert_eq!(offset_minutes(t, t), Some(0));
+    assert_eq!(offset_minutes(t + 14 * 60 * minute, t), Some(840));
+    assert_eq!(offset_minutes(t + (14 * 60 + 1) * minute, t), None);
+    assert_eq!(offset_minutes(t - (14 * 60 + 1) * minute, t), None);
+    assert_eq!(offset_minutes(t + minute / 2, t), None);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn zone_is_never_read_off_windows() {
+    assert_eq!(utc_offset_minutes_at(1_768_435_200_000), None);
+}
