@@ -2831,6 +2831,15 @@ Second wave (after the lanes above are merged):
   - deps: T14.57, T14.64
   - do: a short spec first (docs/sync-spec.md section 17 rewritten, spec-reviewed); then the build with tests for each rule above, each with a control; the per-page notes and their fixtures removed in favour of the one banner and the one refusal line (copy for the owner to approve).
   - accept: `cargo test -p earshot-store sync`; `cargo test -p earshot-runtime`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
+- [ ] T14.66 A summary written elsewhere can be stopped, and a failing writer is said at once
+  - decided (the owner, 2026-11-27, after a re-summarise on 0.9.1 moved from this computer's GPU through Claude to the summary worker with nothing on screen saying why, and the worker could not be stopped): build before 1.0.
+  - do: a short design first (docs/summary-order.md, a new section; spec-reviewed), then:
+    - (1) a Stop control while a summary waits on another computer, which withdraws this computer's request and ends the run, and the helper (the desktop helper and the summary worker) stops writing within a bounded time once it hears the withdrawal, storing nothing;
+    - (2) the meeting list shows that a meeting's summary is being written on another computer, as it shows local work;
+    - (3) each writer step that fails and moves on is said as it happens (writer and outcome word, then the next writer), for a meeting's own summary and for a re-summarise, from the existing step copy;
+    - (4) new copy in a fixture for the owner to approve.
+    No meeting content in any new record, event or log; nothing new sent.
+  - accept: `cargo test -p earshot-runtime offload`; `cargo test -p earshot-runtime summary_order`; `cargo test -p earshot-worker`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
 - [x] T14.50 Small sync fixes
   - deps: T14.46
   - do: a retired sync thread stops when a new one starts; the signal lock is not held while waiting for the beats lock; the open Sync page asks the relay only while the window is watched and reuses the thread's client; `converge` runs only for kinds a page wrote.
