@@ -507,6 +507,22 @@ fn meeting_events_a_refused_keep_awake_is_one_fixed_banner() {
 }
 
 #[test]
+fn meeting_events_a_refused_keep_awake_while_finishing_shares_the_recordings_banner() {
+    // T14.56: the finishing meeting's refusal replaces the recording's under the same key.
+    let MeetingEvent::Warning { key, kind, message } = keep_awake_finishing_warning() else {
+        panic!("a banner");
+    };
+    assert_eq!(key, KEEP_AWAKE_KEY);
+    assert_eq!(kind, WarningKind::Audio);
+    assert_eq!(message, KEEP_AWAKE_FINISHING_COPY);
+    for copy in [KEEP_AWAKE_FINISHING_COPY, KEEP_AWAKE_JOB_COPY] {
+        assert_copy(copy);
+        assert!(copy.contains("goes to sleep"), "{copy}");
+        assert!(!copy.contains('\u{2014}'), "{copy}");
+    }
+}
+
+#[test]
 fn meeting_events_a_refused_raw_mic_is_one_fixed_banner() {
     // T12.36: the Audio page asked for the raw mic and the mic refused it (at the start or on
     // a re-open); the meeting records the processed stream and says so once, under one key.

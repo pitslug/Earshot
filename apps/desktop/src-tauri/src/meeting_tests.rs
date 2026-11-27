@@ -14,6 +14,7 @@ use earshot_core::capture::{
 use earshot_core::model::{AudioFileRepo, ClockDomain, MeetingRepo};
 use earshot_runtime::call_end::{CallSessions, CallSignal};
 use earshot_runtime::host::{HostOutcome, HostPost, HostStep, SkipReason, SummaryResult};
+use earshot_runtime::keep_awake::FakeKeepAwake;
 use earshot_runtime::live::{LiveConfig, start_live};
 use earshot_runtime::meeting_queue::QueueTicket;
 use earshot_runtime::post::{CleanupWork, PostStage};
@@ -96,6 +97,8 @@ enum Script {
     StopHangs,
     /// Records until stopped through a capture source whose thread never ends (T9.20).
     CaptureThreadHangs,
+    /// [`Script::Ends`] whose session's events were taken before the driver could (T14.56).
+    EventsTaken,
 }
 
 /// Holds a stuck stop until the test lets it go (`true`).
@@ -183,6 +186,10 @@ struct FakePrepare {
     stop_gate: StopGate,
     /// Handed to the next meeting: the NPU note to record once its banners went out (T12.45).
     npu_note: Mutex<Option<earshot_runtime::host::NpuNoteShown>>,
+    /// The power requests the driver holds (T14.56): how many are held is logged when the capture
+    /// starts and when the work after the meeting runs.
+    awake: Mutex<Option<FakeKeepAwake>>,
+    awake_seen: Arc<Mutex<Vec<(&'static str, usize)>>>,
 }
 
 impl FakePrepare {
@@ -195,7 +202,19 @@ impl FakePrepare {
             effort_unread: false.into(),
             stop_gate: Arc::default(),
             npu_note: Mutex::new(None),
+            awake: Mutex::new(None),
+            awake_seen: Arc::default(),
         })
+    }
+
+    /// Logs how many of `awake`'s requests are held at the capture's start and in the work after.
+    fn watching(self: Arc<Self>, awake: &FakeKeepAwake) -> Arc<Self> {
+        *self.awake.lock().unwrap() = Some(awake.clone());
+        self
+    }
+
+    fn awake_seen(&self) -> Vec<(&'static str, usize)> {
+        self.awake_seen.lock().unwrap().clone()
     }
 }
 
@@ -230,56 +249,79 @@ impl Prepare for FakePrepare {
         let mut cfg = config();
         cfg.title = request.title.clone();
         let gate = Arc::clone(&self.stop_gate);
-        let start: StartFn = Box::new(move |svc: &Services| match script {
-            Script::StartFails => Err(RuntimeError::CaptureStart {
-                problem: earshot_runtime::CaptureProblem::MicrophoneAccessOff,
-                detail: "IAudioClient::Initialize: Access is denied. (0x80070005)".into(),
-            }),
-            Script::StopHangs => start_live(
-                HangingStop {
-                    inner: UntilStopped {
+        let awake = self.awake.lock().unwrap().clone();
+        let awake_seen = Arc::clone(&self.awake_seen);
+        let log_awake = move |at: &'static str| {
+            if let Some(a) = &awake {
+                awake_seen.lock().unwrap().push((at, a.alive()));
+            }
+        };
+        let log_start = log_awake.clone();
+        let start: StartFn = Box::new(move |svc: &Services| {
+            log_start("start");
+            match script {
+                Script::StartFails => Err(RuntimeError::CaptureStart {
+                    problem: earshot_runtime::CaptureProblem::MicrophoneAccessOff,
+                    detail: "IAudioClient::Initialize: Access is denied. (0x80070005)".into(),
+                }),
+                Script::StopHangs => start_live(
+                    HangingStop {
+                        inner: UntilStopped {
+                            inner: replay(0.5, reference),
+                            stopped: false,
+                        },
+                        gate: Arc::clone(&gate),
+                    },
+                    svc.clone(),
+                    cfg,
+                    None,
+                    Box::new(ChaCha8Rng::seed_from_u64(seed)),
+                ),
+                #[cfg(windows)]
+                Script::CaptureThreadHangs => start_live(
+                    stuck_capture(Arc::clone(&gate)),
+                    svc.clone(),
+                    LiveConfig {
+                        clock_domain: ClockDomain::Qpc,
+                        ..cfg
+                    },
+                    None,
+                    Box::new(ChaCha8Rng::seed_from_u64(seed)),
+                ),
+                Script::UntilStopped => start_live(
+                    UntilStopped {
                         inner: replay(0.5, reference),
                         stopped: false,
                     },
-                    gate: Arc::clone(&gate),
-                },
-                svc.clone(),
-                cfg,
-                None,
-                Box::new(ChaCha8Rng::seed_from_u64(seed)),
-            ),
-            #[cfg(windows)]
-            Script::CaptureThreadHangs => start_live(
-                stuck_capture(Arc::clone(&gate)),
-                svc.clone(),
-                LiveConfig {
-                    clock_domain: ClockDomain::Qpc,
-                    ..cfg
-                },
-                None,
-                Box::new(ChaCha8Rng::seed_from_u64(seed)),
-            ),
-            Script::UntilStopped => start_live(
-                UntilStopped {
-                    inner: replay(0.5, reference),
-                    stopped: false,
-                },
-                svc.clone(),
-                cfg,
-                None,
-                Box::new(ChaCha8Rng::seed_from_u64(seed)),
-            ),
-            _ => start_live(
-                replay(3.0, reference),
-                svc.clone(),
-                cfg,
-                None,
-                Box::new(ChaCha8Rng::seed_from_u64(seed)),
-            ),
+                    svc.clone(),
+                    cfg,
+                    None,
+                    Box::new(ChaCha8Rng::seed_from_u64(seed)),
+                ),
+                Script::EventsTaken => start_live(
+                    replay(3.0, reference),
+                    svc.clone(),
+                    cfg,
+                    None,
+                    Box::new(ChaCha8Rng::seed_from_u64(seed)),
+                )
+                .map(|mut s| {
+                    drop(s.take_events());
+                    s
+                }),
+                _ => start_live(
+                    replay(3.0, reference),
+                    svc.clone(),
+                    cfg,
+                    None,
+                    Box::new(ChaCha8Rng::seed_from_u64(seed)),
+                ),
+            }
         });
         let saw = Arc::clone(&self.after_saw);
         let effort_unread = self.effort_unread.load(Ordering::Relaxed);
         let after: AfterFn = Box::new(move |_svc, outcome, _cancel, progress| {
+            log_awake("after");
             *saw.lock().unwrap() = Some(outcome.meeting.to_string());
             assert!(script != Script::AfterPanics, "a post-meeting bug");
             let work = two_tracks();
@@ -3901,4 +3943,286 @@ fn meeting_snapshot_finishing_and_then_behind_a_newer_recording() {
     let s = d.snapshot();
     assert_eq!(s.followed, None);
     assert!(s.behind.is_empty());
+}
+
+/// The banners of a refused power request (T14.56) among `events`.
+fn keep_awake_banners(events: &[MeetingEvent]) -> Vec<&MeetingEvent> {
+    events
+        .iter()
+        .filter(|e| matches!(e, MeetingEvent::Warning { key, .. } if key == "keep-awake"))
+        .collect()
+}
+
+#[test]
+fn meeting_keep_awake_is_held_from_before_the_capture_until_the_summary_ends() {
+    let dir = TempDir::new("awake-held");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::new();
+    let prepare = FakePrepare::new(Script::Ends).watching(&awake);
+    let (d, rx) = driver(Arc::clone(&prepare));
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    // Held as the capture starts (so the recording's end leaves no moment without one) and while
+    // the final pass and summary run: one request, the same one.
+    assert_eq!(prepare.awake_seen(), [("start", 1), ("after", 1)]);
+    assert_eq!(
+        (awake.taken(), awake.alive()),
+        (1, 0),
+        "released at the end"
+    );
+    assert!(keep_awake_banners(&events).is_empty(), "{events:?}");
+}
+
+#[test]
+fn meeting_keep_awake_is_released_when_the_start_fails() {
+    let dir = TempDir::new("awake-start-fails");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::new();
+    let prepare = FakePrepare::new(Script::StartFails).watching(&awake);
+    let (d, _rx) = driver(Arc::clone(&prepare));
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    assert!(d.start(&svc, request(CaptureMode::Call)).is_err());
+    d.join();
+    assert_eq!(prepare.awake_seen(), [("start", 1)]);
+    assert_eq!((awake.taken(), awake.alive()), (1, 0));
+}
+
+#[test]
+fn meeting_keep_awake_is_never_taken_for_a_failed_preflight() {
+    let dir = TempDir::new("awake-preflight");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::new();
+    let (d, _rx) = driver(FakePrepare::new(Script::PreflightFails));
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    assert!(d.start(&svc, request(CaptureMode::Call)).is_err());
+    d.join();
+    assert_eq!((awake.taken(), awake.alive()), (0, 0));
+}
+
+#[test]
+fn meeting_keep_awake_is_released_when_the_work_after_panics() {
+    let dir = TempDir::new("awake-panic");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::new();
+    let prepare = FakePrepare::new(Script::AfterPanics).watching(&awake);
+    let (d, rx) = driver(Arc::clone(&prepare));
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    assert_eq!(
+        result_of(&events, &meeting),
+        SummaryEvent::RecordingFailed {
+            message: MEETING_PANIC_MESSAGE.into()
+        }
+    );
+    assert_eq!(prepare.awake_seen(), [("start", 1), ("after", 1)]);
+    assert_eq!((awake.taken(), awake.alive()), (1, 0));
+}
+
+#[test]
+fn meeting_keep_awake_is_released_when_the_finishing_is_cancelled() {
+    let dir = TempDir::new("awake-cancel");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::new();
+    let (running_tx, running) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::PassUntilCancelled(running_tx)]);
+    let (d, rx) = cancel_driver(prepare);
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    running.recv_timeout(MEET_GUARD).unwrap();
+    assert_eq!(awake.alive(), 1, "held while the final pass runs");
+    d.cancel_finishing(&meeting);
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(result_of(&events, &meeting), SummaryEvent::PostCancelled);
+    assert_eq!((awake.taken(), awake.alive()), (1, 0));
+}
+
+#[test]
+fn meeting_keep_awake_is_released_when_stalled_work_is_left() {
+    let dir = TempDir::new("awake-left");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::new();
+    let (inside_tx, inside) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::AfterHangs {
+        in_step: true,
+        inside: inside_tx,
+        release: release_rx,
+    }]);
+    let (d, rx) = cancel_driver(Arc::clone(&prepare));
+    let d = d
+        .with_after_bounds(SHORT_AFTER)
+        .with_keep_awake(Arc::new(awake.clone()));
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    inside.recv_timeout(MEET_GUARD).unwrap();
+    assert_eq!(awake.alive(), 1, "held while the work runs");
+    let events = events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Failed { .. }
+    ));
+    // The work left behind is still stuck, and the computer may sleep again.
+    assert_eq!(prepare.logged(), [format!("{meeting} starts")]);
+    assert_eq!((awake.taken(), awake.alive()), (1, 0));
+    release.send(()).unwrap();
+    logged_eventually(&prepare, &format!("{meeting} returned, cancelled true"));
+}
+
+#[test]
+fn meeting_keep_awake_refused_is_one_banner_after_the_end_and_the_meeting_finishes() {
+    let dir = TempDir::new("awake-refused");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::refusing();
+    let (d, rx) = driver(FakePrepare::new(Script::Ends));
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    assert_eq!(awake.refused(), 1, "asked once");
+    assert_eq!(
+        keep_awake_banners(&events),
+        [&crate::meeting_events::keep_awake_finishing_warning()]
+    );
+    let ended = position(&events, |e| matches!(e, MeetingEvent::Ended { .. }));
+    let banner = position(
+        &events,
+        |e| matches!(e, MeetingEvent::Warning { key, .. } if key == "keep-awake"),
+    );
+    assert!(ended < banner, "shown on the screen after the meeting");
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Skipped { .. }
+    ));
+}
+
+#[test]
+fn meeting_keep_awake_refused_is_said_once_when_no_event_was_heard() {
+    // The session's events are gone before the driver looks: no `RecordingSaved` carries the
+    // banner, so it goes before the work after the meeting, once.
+    let dir = TempDir::new("awake-no-events");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::refusing();
+    let (d, rx) = driver(FakePrepare::new(Script::EventsTaken));
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    let meeting = d.start(&svc, request(CaptureMode::Call)).unwrap();
+    let events = until_summary(&rx);
+    d.join();
+    assert_eq!(awake.refused(), 1);
+    assert_eq!(
+        keep_awake_banners(&events),
+        [&crate::meeting_events::keep_awake_finishing_warning()],
+        "{events:?}"
+    );
+    assert!(matches!(
+        result_of(&events, &meeting),
+        SummaryEvent::Skipped { .. }
+    ));
+}
+
+/// A re-summary that says when it runs and then waits for its gate (T14.56's overlap with a
+/// meeting).
+struct GatedSummary(Mutex<Receiver<()>>, mpsc::Sender<()>);
+
+impl crate::jobs::JobWork for GatedSummary {
+    fn retranscribe(
+        &self,
+        _: &Services,
+        _: earshot_core::identity::EntityId,
+        _: &CancelToken,
+        _: &mut dyn FnMut(HostStep<'_>),
+        _: &mut dyn FnMut(String),
+    ) -> Result<earshot_runtime::edit::Retranscribed, IpcError> {
+        unreachable!("only re-summaries here")
+    }
+
+    fn summarise(
+        &self,
+        _: &Services,
+        _: earshot_core::identity::EntityId,
+        _: &CancelToken,
+        _: &mut dyn FnMut(String),
+    ) -> Result<SummaryResult, IpcError> {
+        self.1.send(()).unwrap();
+        self.0.lock().unwrap().recv_timeout(MEET_GUARD).unwrap();
+        Ok(SummaryResult::Skipped {
+            reason: SkipReason::NotRequested,
+        })
+    }
+}
+
+/// A stored meeting for a job, apart from any that records.
+fn stored_meeting(svc: &Services, seed: u64) -> earshot_core::identity::EntityId {
+    let clock = Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = earshot_core::model::Stamp {
+        clock: &*clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let mut m = earshot_core::model::Meeting::new(
+        "Sync",
+        crate::testutil::T0,
+        600,
+        earshot_core::prompt::Template::General,
+        &mut stamp,
+    );
+    m.duration_ms = Some(60_000);
+    let id = m.id;
+    store.put_meeting(m).unwrap();
+    id
+}
+
+#[test]
+fn meeting_keep_awake_a_finishing_meeting_and_a_job_each_hold_their_own() {
+    let dir = TempDir::new("awake-overlap");
+    let svc = services(&dir);
+    let awake = FakeKeepAwake::new();
+    let stored = stored_meeting(&svc, 9100);
+    let (job_go, job_gate) = mpsc::channel();
+    let (job_in, job_inside) = mpsc::channel();
+    let (sink_tx, job_rx) = mpsc::channel();
+    let sink_tx = Mutex::new(sink_tx);
+    let jobs = crate::jobs::JobRunner::new(
+        Arc::new(GatedSummary(Mutex::new(job_gate), job_in)),
+        Arc::new(move |e| {
+            let _ = sink_tx.lock().unwrap().send(e);
+        }),
+        crate::activity::WorkGate::new(),
+        &crate::cuda_settings::CudaLatch::resolved_off(),
+    )
+    .with_keep_awake(Arc::new(awake.clone()));
+
+    let (open, gate) = mpsc::channel();
+    let prepare = CancelPrepare::new(vec![Finish::Gate(gate)]);
+    let (d, rx) = cancel_driver(prepare);
+    let d = d.with_keep_awake(Arc::new(awake.clone()));
+    let meeting = d.start(&svc, request(CaptureMode::InRoom)).unwrap();
+    d.stop().unwrap();
+    events_until(&rx, |e| matches!(e, MeetingEvent::Ended { .. }));
+    jobs.start(&svc, stored, crate::jobs::JobKind::Resummarise)
+        .unwrap();
+    job_inside.recv_timeout(MEET_GUARD).unwrap();
+    assert_eq!(awake.alive(), 2, "the finishing meeting's and the job's");
+
+    // The meeting ends first: the job's request stays.
+    open.send(()).unwrap();
+    events_until(&rx, |e| is_summary_of(&meeting, e));
+    d.join();
+    assert_eq!(awake.alive(), 1, "the job's");
+    job_go.send(()).unwrap();
+    assert!(matches!(
+        job_rx.recv_timeout(MEET_GUARD).unwrap(),
+        crate::jobs::JobEvent::Summary { .. }
+    ));
+    jobs.join();
+    assert_eq!((awake.taken(), awake.alive()), (2, 0));
 }
