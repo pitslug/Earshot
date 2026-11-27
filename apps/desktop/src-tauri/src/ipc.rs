@@ -409,14 +409,14 @@ impl MeetingListItem {
     }
 }
 
-/// The meeting list (T14.64): the meetings, and whether a damaged meeting row on this computer
-/// was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
+/// The meeting list (T14.64): the meetings, and whether a damaged meeting or folder row on this
+/// computer was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
 /// names a damaged row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct MeetingListView {
     /// The live meetings, newest first.
     pub meetings: Vec<MeetingListItem>,
-    /// Some damaged meeting row was left out.
+    /// Some damaged meeting or folder row was left out.
     pub damaged: bool,
 }
 
@@ -431,11 +431,18 @@ pub fn meeting_list(services: &Services) -> Result<MeetingListView, IpcError> {
     // Every meeting's folder, read once with the first meeting, in the same lock, by the
     // one rule (`folders::meeting_folders_in`): never the raw `Meeting::folder_id`, so a
     // deleted or unknown folder reads as none.
+    // A folder row that does not read is left out and counted (T14.64), so a meeting in it reads
+    // as in no folder and the list says something was left out.
     let mut folders: Option<BTreeMap<EntityId, EntityId>> = None;
+    let mut damaged_folders = 0;
     let read = services.live_meetings(|store, m| {
         let folders = match &mut folders {
             Some(read) => read,
-            None => folders.insert(earshot_runtime::folders::meeting_folders_in(store)?),
+            None => {
+                let (map, damaged) = earshot_runtime::folders::meeting_folders_counted_in(store)?;
+                damaged_folders = damaged;
+                folders.insert(map)
+            }
         };
         let folder = folders.get(&m.id).copied();
         let new_summary = earshot_runtime::summary_seen::has_new_summary(store, m.id)?;
@@ -452,9 +459,17 @@ pub fn meeting_list(services: &Services) -> Result<MeetingListView, IpcError> {
         })
         .collect();
     items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
+    if folders.is_none() {
+        // No meeting was listed, so the folders were not read with one: read their count now.
+        damaged_folders = services
+            .store()
+            .live_folders_or_damaged()
+            .map_err(earshot_runtime::RuntimeError::from)?
+            .1;
+    }
     Ok(MeetingListView {
         meetings: items.into_iter().map(|(_, i)| i).collect(),
-        damaged: read.damaged > 0,
+        damaged: read.damaged > 0 || damaged_folders > 0,
     })
 }
 

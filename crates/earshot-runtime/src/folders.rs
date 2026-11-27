@@ -62,6 +62,20 @@ impl LiveFolders {
         ))
     }
 
+    /// The live folders of `store` that read, and how many folder rows that are not tombstones
+    /// do not (T14.64): a damaged folder is left out, so a meeting in it reads as in no folder,
+    /// as for a tombstoned one. What every list of folders reads.
+    ///
+    /// # Errors
+    /// Storage errors.
+    pub fn read_lenient(store: &earshot_store::Store) -> Result<(Self, usize), RuntimeError> {
+        let (folders, damaged) = store.live_folders_or_damaged()?;
+        Ok((
+            Self(folders.into_iter().map(|f| (f.id, f)).collect()),
+            damaged,
+        ))
+    }
+
     /// The folder a meeting with `folder_id` is in: `None` for no folder, and for an id
     /// naming a tombstoned or unknown folder.
     #[must_use]
@@ -108,12 +122,13 @@ pub fn name_order(name: &str) -> (String, String) {
     (base, folded)
 }
 
-/// Every live folder, sorted by name ([`name_order`]).
+/// Every live folder, sorted by name ([`name_order`]). A folder row that does not read is left
+/// out (T14.64: the meeting list says so).
 ///
 /// # Errors
 /// Storage errors.
 pub fn list(services: &Services) -> Result<Vec<FolderItem>, RuntimeError> {
-    Ok(LiveFolders::read(&**services.store())?.sorted())
+    Ok(LiveFolders::read_lenient(&services.store())?.0.sorted())
 }
 
 /// The folder `meeting` is in: `None` for no folder, a dangling or tombstoned `folder_id`,
@@ -129,7 +144,7 @@ pub fn folder_of(
     let Some(m) = db.meeting(meeting)?.filter(|m| !m.meta.deleted) else {
         return Ok(None);
     };
-    let folders = LiveFolders::read(&**db)?;
+    let (folders, _damaged) = LiveFolders::read_lenient(&db)?;
     Ok(folders.resolve(m.folder_id).map(|f| FolderItem {
         id: f.id,
         name: f.name.clone(),
@@ -147,20 +162,33 @@ pub fn meeting_folders(services: &Services) -> Result<BTreeMap<EntityId, EntityI
 }
 
 /// [`meeting_folders`] in a store the caller already holds (a host listing meetings under
-/// its own one lock): the one rule both use. A meeting row that does not read is left out
-/// (T14.64: the list it serves leaves it out too and says so).
+/// its own one lock): the one rule both use. A meeting or folder row that does not read is left
+/// out (T14.64: the list it serves leaves it out too and says so); a meeting in a folder left out
+/// is absent, as for a tombstoned folder.
 ///
 /// # Errors
 /// Storage errors.
 pub fn meeting_folders_in(
     store: &earshot_store::Store,
 ) -> Result<BTreeMap<EntityId, EntityId>, RuntimeError> {
-    let folders = LiveFolders::read(store)?;
-    let (meetings, _damaged) = store.live_meetings_or_damaged()?;
-    Ok(meetings
+    Ok(meeting_folders_counted_in(store)?.0)
+}
+
+/// [`meeting_folders_in`] with how many folder rows that are not tombstones did not read
+/// (T14.64), for a list that says when something was left out.
+///
+/// # Errors
+/// Storage errors.
+pub fn meeting_folders_counted_in(
+    store: &earshot_store::Store,
+) -> Result<(BTreeMap<EntityId, EntityId>, usize), RuntimeError> {
+    let (folders, damaged) = LiveFolders::read_lenient(store)?;
+    let (meetings, _damaged_meetings) = store.live_meetings_or_damaged()?;
+    let map = meetings
         .into_iter()
         .filter_map(|m| Some((m.id, folders.resolve(m.folder_id)?.id)))
-        .collect())
+        .collect();
+    Ok((map, damaged))
 }
 
 /// The live folder `folder` in a transaction.

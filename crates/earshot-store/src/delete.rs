@@ -14,8 +14,8 @@
 use earshot_core::identity::{Clock, EntityId, Hlc};
 use earshot_core::identity::{DeviceId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
-    AudioFileRepo, Meeting, MeetingRepo, Note, RepoError, SegmentRow, Speaker, Summary, Track,
-    delete_meeting,
+    AudioFileRepo, Folder, Meeting, MeetingRepo, Note, RepoError, SegmentRow, Speaker, Summary,
+    Track, delete_meeting,
 };
 use earshot_core::prompt::Template;
 use earshot_core::summary::SummaryV1;
@@ -407,6 +407,17 @@ impl Store {
     /// SQLite errors.
     pub fn live_meetings_or_damaged(&self) -> Result<(Vec<Meeting>, usize), StoreError> {
         let (ok, bad) = crate::repo::lenient::live_meetings(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
+    /// Every live folder row that reads, in `FolderRepo::folders`' order, and how many folder
+    /// rows that are not tombstones do not read (T14.64): a damaged folder row is left out and
+    /// counted, never failing the meeting list or the folder list.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_folders_or_damaged(&self) -> Result<(Vec<Folder>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_folders(&self.conn)?;
         Ok((ok, bad.len()))
     }
 

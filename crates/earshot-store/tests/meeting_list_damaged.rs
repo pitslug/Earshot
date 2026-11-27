@@ -50,6 +50,63 @@ fn damage(path: &std::path::Path, sql: &str, n: u8) {
     assert_eq!(changed, 1, "{sql}");
 }
 
+/// A damaged live folder row is left out and counted, a damaged folder tombstone is left out
+/// and not counted. Control: with no damage the reader equals the strict `folders()` filtered
+/// to live rows.
+#[test]
+fn store_meeting_list_leaves_out_and_counts_damaged_folder_rows() {
+    use earshot_core::model::{Folder, FolderRepo};
+    for damaged in [true, false] {
+        let dir = TempDir::new("meeting-list-damaged-folder");
+        let path = dir.path().join("earshot.db");
+        let folder = |n: u8, name: &str, deleted: bool| Folder {
+            id: id(n),
+            meta: meeting(n, "", deleted).meta,
+            name: name.into(),
+        };
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .put_folder(folder(1, "Invented archive", false))
+                .unwrap();
+            store
+                .put_folder(folder(2, "Invented Quillmere", false))
+                .unwrap();
+            store.put_folder(folder(3, "", true)).unwrap();
+        }
+        let strict: Vec<Folder> = Store::open(&path)
+            .unwrap()
+            .folders()
+            .unwrap()
+            .into_iter()
+            .filter(|f| !f.meta.deleted)
+            .collect();
+        if damaged {
+            for n in [2, 3] {
+                let c = rusqlite::Connection::open(&path).unwrap();
+                let changed = c
+                    .execute(
+                        "UPDATE folder SET name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                        rusqlite::params![id(n).as_uuid().as_bytes().to_vec()],
+                    )
+                    .unwrap();
+                assert_eq!(changed, 1);
+            }
+        }
+        let store = Store::open(&path).unwrap();
+        let (listed, count) = store.live_folders_or_damaged().unwrap();
+        if damaged {
+            assert!(store.folders().is_err(), "the strict reader fails on them");
+            assert_eq!(count, 1, "the tombstone is not counted");
+            assert_eq!(listed.iter().map(|f| f.id).collect::<Vec<_>>(), vec![id(1)]);
+        } else {
+            assert_eq!(count, 0);
+            assert_eq!(listed, strict);
+            assert_eq!(listed.len(), 2);
+        }
+    }
+}
+
 /// Damaged live rows (a title that is not UTF-8, an unknown template word, a 15-byte id) are
 /// left out and counted; a damaged tombstone is left out and not counted; the readable live
 /// rows come back in `meetings()`' order. Control: with no damage the reader equals the

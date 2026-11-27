@@ -370,7 +370,7 @@ fn list_meetings_a_damaged_meeting_row_is_left_out_and_said() {
     .unwrap();
     assert_eq!(
         copy["list_damaged_note"].as_str(),
-        Some("Some meetings on this computer are damaged and are not shown.")
+        Some("Some meetings or folders on this computer are damaged and are not shown.")
     );
     for damaged in [true, false] {
         let dir = TempDir::new("list-damaged");
@@ -414,6 +414,68 @@ fn list_meetings_a_damaged_meeting_row_is_left_out_and_said() {
         let found = meeting_search(&svc, "invented", &CancelToken::new()).unwrap();
         assert_eq!(found.items.len(), if damaged { 2 } else { 3 });
         assert_eq!(found.unreadable, u32::from(damaged));
+    }
+}
+
+/// T14.64: a folder row that does not read (a name that is not UTF-8): the meeting list still
+/// lists every meeting, the one filed in it reads as in no folder, the list says something was
+/// left out (also with no meeting at all), and the folder list lists the other folders and never
+/// names it. Control: with no damage nothing is said and the meeting keeps its folder.
+#[test]
+fn list_meetings_a_damaged_folder_row_is_left_out_and_said() {
+    for damaged in [true, false] {
+        let dir = TempDir::new("list-damaged-folder");
+        let svc = services(&dir);
+        let broken = earshot_runtime::folders::create(&svc, "Invented Quillmere").unwrap();
+        let kept = earshot_runtime::folders::create(&svc, "Invented archive").unwrap();
+        let damage = || {
+            let c = rusqlite::Connection::open(dir.0.join("data").join("earshot.db")).unwrap();
+            let changed = c
+                .execute(
+                    "UPDATE folder SET name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    rusqlite::params![broken.as_uuid().as_bytes().to_vec()],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
+        };
+        if damaged {
+            damage();
+        }
+        // No meeting yet: the list still says a folder was left out.
+        let empty = meeting_list(&svc).unwrap();
+        assert!(empty.meetings.is_empty());
+        assert_eq!(empty.damaged, damaged);
+        let filed = meeting(&svc, "Invented planning", T0, Some(60_000), 81);
+        let loose = meeting(&svc, "Invented retro", T0 + 60_000, Some(60_000), 82);
+        if damaged {
+            // A move into a damaged folder is not something this test checks: file it first.
+            let c = rusqlite::Connection::open(dir.0.join("data").join("earshot.db")).unwrap();
+            c.execute(
+                "UPDATE meeting SET folder_id = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    broken.as_uuid().as_bytes().to_vec(),
+                    filed.as_uuid().as_bytes().to_vec()
+                ],
+            )
+            .unwrap();
+        } else {
+            earshot_runtime::folders::move_meeting(&svc, filed, Some(broken)).unwrap();
+        }
+        let view = meeting_list(&svc).unwrap();
+        assert_eq!(view.damaged, damaged);
+        let ids: Vec<String> = view.meetings.iter().map(|m| m.id.clone()).collect();
+        assert_eq!(ids, [loose.to_string(), filed.to_string()]);
+        let want = (!damaged).then(|| broken.to_string());
+        assert_eq!(view.meetings[1].folder_id, want);
+        let folders = crate::folders::folder_list(&svc).unwrap();
+        let listed: Vec<String> = folders.iter().map(|f| f.id.clone()).collect();
+        let mut expect = vec![kept.to_string()];
+        if !damaged {
+            expect.push(broken.to_string());
+        }
+        assert_eq!(listed, expect);
+        let json = serde_json::to_string(&(&view, &folders)).unwrap();
+        assert_eq!(json.contains(&broken.to_string()), !damaged, "{json}");
     }
 }
 

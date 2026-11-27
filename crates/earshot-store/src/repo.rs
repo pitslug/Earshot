@@ -541,6 +541,20 @@ pub(crate) mod lenient {
         Ok((ok.into_iter().filter(|m| !m.meta.deleted).collect(), bad))
     }
 
+    /// The folder rows that are not tombstones, in [`all_folders`]' order (T14.64), split as
+    /// [`live_meetings`] splits meeting rows.
+    pub(crate) fn live_folders(c: &Connection) -> Result<(Vec<Folder>, Vec<i64>), RepoError> {
+        let (ok, bad) = split_rows(
+            c,
+            "folder",
+            synced_cols(&FOLDER),
+            "WHERE deleted IS NOT 1 ORDER BY created_wall, created_logical, created_node, id",
+            &[],
+            folder_row,
+        )?;
+        Ok((ok.into_iter().filter(|f| !f.meta.deleted).collect(), bad))
+    }
+
     /// `meeting`'s speaker rows in [`speakers_of`]'s order, each with its rowid.
     pub(crate) fn speakers_in_order(
         c: &Connection,

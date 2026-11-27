@@ -115,6 +115,53 @@ fn meeting_list_damaged_row_never_fails_the_folders_of_the_list() {
     }
 }
 
+/// A folder row that does not read (a name that is not UTF-8): the folder list leaves it out,
+/// the folder map reads a meeting in it as in no folder and counts it, and the meeting's own
+/// folder reads as none; the other folder is untouched. Control: nothing counted, the meeting
+/// keeps its folder.
+#[test]
+fn meeting_list_damaged_folder_row_never_fails_the_folders_of_the_list() {
+    for damaged in [true, false] {
+        let w = World::new("folder-damaged");
+        let (first, _, last) = w.three(false);
+        let broken = crate::folders::create(&w.svc, "Invented Quillmere").unwrap();
+        let kept = crate::folders::create(&w.svc, "Invented archive").unwrap();
+        crate::folders::move_meeting(&w.svc, first, Some(broken)).unwrap();
+        crate::folders::move_meeting(&w.svc, last, Some(kept)).unwrap();
+        if damaged {
+            let db = earshot_store::DataDir::new(w.dir.0.join("data")).db_path();
+            let c = rusqlite::Connection::open(db).unwrap();
+            let changed = c
+                .execute(
+                    "UPDATE folder SET name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    rusqlite::params![broken.as_uuid().as_bytes().to_vec()],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
+        }
+        let listed: Vec<EntityId> = crate::folders::list(&w.svc)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.id)
+            .collect();
+        let (map, count) = crate::folders::meeting_folders_counted_in(&w.svc.store()).unwrap();
+        let of_first = crate::folders::folder_of(&w.svc, first)
+            .unwrap()
+            .map(|f| f.id);
+        assert_eq!(count, usize::from(damaged));
+        assert_eq!(map.get(&last), Some(&kept));
+        if damaged {
+            assert_eq!(listed, vec![kept]);
+            assert_eq!(map.get(&first), None);
+            assert_eq!(of_first, None);
+        } else {
+            assert_eq!(listed, vec![kept, broken]);
+            assert_eq!(map.get(&first), Some(&broken));
+            assert_eq!(of_first, Some(broken));
+        }
+    }
+}
+
 /// Renaming a person everywhere still renames their voice in every readable meeting.
 #[test]
 fn meeting_list_damaged_row_never_fails_a_person_rename() {

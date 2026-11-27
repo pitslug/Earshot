@@ -1649,14 +1649,14 @@ export type MeetingListItem = {
 };
 
 /**
- *  The meeting list (T14.64): the meetings, and whether a damaged meeting row on this computer
- *  was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
+ *  The meeting list (T14.64): the meetings, and whether a damaged meeting or folder row on this
+ *  computer was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
  *  names a damaged row.
  */
 export type MeetingListView = {
 	/**  The live meetings, newest first. */
 	meetings: MeetingListItem[],
-	/**  Some damaged meeting row was left out. */
+	/**  Some damaged meeting or folder row was left out. */
 	damaged: boolean,
 };
 
