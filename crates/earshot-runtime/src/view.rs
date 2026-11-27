@@ -50,12 +50,18 @@ pub struct MeetingView {
     /// The earlier speaker names each summary row used (T12.82, `crate::summary_names`):
     /// empty from [`MeetingView::load`], read by [`MeetingView::load_named`].
     pub earlier_names: crate::summary_names::EarlierNames,
+    /// The speakers whose identity entry holds a legacy ignore still honoured on this device
+    /// (`crate::edit::legacy_ignores`; empty once this device's ignore copy has run): empty
+    /// from [`MeetingView::load`], read by [`MeetingView::load_named`]. The rows' own synced
+    /// flag (`Speaker::ignored`) needs nothing extra.
+    pub legacy_ignores: BTreeSet<EntityId>,
 }
 
 impl MeetingView {
     /// [`MeetingView::load`] with the lines left without a speaker
-    /// ([`MeetingView::unknown_lines`]) and the summaries that use a changed name
-    /// ([`MeetingView::earlier_names`]), for anything that shows speaker names: summaries,
+    /// ([`MeetingView::unknown_lines`]), the summaries that use a changed name
+    /// ([`MeetingView::earlier_names`]) and the legacy ignores
+    /// ([`MeetingView::legacy_ignores`]), for anything that shows speaker names: summaries,
     /// exports and the meeting detail.
     ///
     /// # Errors
@@ -69,6 +75,7 @@ impl MeetingView {
         };
         view.unknown_lines = crate::unknown_lines::read(store, meeting)?;
         view.earlier_names = crate::summary_names::read(store, meeting)?;
+        view.legacy_ignores = crate::edit::legacy_ignores(store, meeting)?;
         Ok(Some(view))
     }
 
@@ -122,6 +129,7 @@ impl MeetingView {
             summary,
             unknown_lines: BTreeSet::new(),
             earlier_names: crate::summary_names::EarlierNames::new(),
+            legacy_ignores: BTreeSet::new(),
         }))
     }
 
@@ -211,12 +219,18 @@ impl MeetingView {
             .collect()
     }
 
-    /// Attendee names: the speakers' display names, first appearance first, without
-    /// duplicates.
+    /// Attendee names: the speakers' names as this meeting shows them
+    /// ([`MeetingView::labels`]), first appearance first, without duplicates, leaving out every
+    /// row the user ignored (T14.68, `crate::edit::is_ignored`: the row's synced flag, or a
+    /// legacy ignore among [`MeetingView::legacy_ignores`]; never the user). The labels are
+    /// computed over every row first, so leaving one out never changes another's label.
     #[must_use]
     pub fn attendees(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for (_, label) in self.labels() {
+        for (row, (_, label)) in self.speakers.iter().zip(self.labels()) {
+            if crate::edit::is_ignored(row, &self.legacy_ignores) {
+                continue;
+            }
             if !label.is_empty() && !out.contains(&label) {
                 out.push(label);
             }
@@ -359,6 +373,10 @@ pub fn cites_only(summary: &earshot_core::summary::SummaryV1, ids: &BTreeSet<Ent
         )
         .all(|id| ids.contains(id))
 }
+
+#[cfg(test)]
+#[path = "view_attendees_tests.rs"]
+mod attendees_tests;
 
 #[cfg(test)]
 mod tests {
