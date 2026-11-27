@@ -238,6 +238,15 @@ export function createTauriIpc(): Ipc {
     onBenchmarkEvent: (handler) => events.benchmarkEvent.listen((event) => handler(event.payload)),
     onShellEvent: (handler) => events.shellEvent.listen((event) => handler(event.payload)),
     onSyncEvent: (handler) => events.syncEvent.listen((event) => handler(event.payload)),
+    onDamageEvent: (handler) => events.damageEvent.listen((event) => handler(event.payload)),
+    damagedItems: async () => unwrap(await commands.damagedItems()),
+    repairFromSync: async () => {
+      unwrap(await commands.repairFromSync());
+    },
+    damageBanner: async () => unwrap(await commands.damageBanner()),
+    dismissDamageBanner: async () => {
+      unwrap(await commands.dismissDamageBanner());
+    },
     onUpdateEvent: (handler) => events.updateEvent.listen((event) => handler(event.payload)),
     updateStatus: async () => unwrap(await commands.updateStatus()),
     checkForUpdate: async () => {

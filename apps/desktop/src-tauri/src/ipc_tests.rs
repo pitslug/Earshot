@@ -359,19 +359,11 @@ fn list_meetings_returns_live_meetings_newest_first_without_deleted_ones() {
 }
 
 /// T14.64: a meeting row that does not read (a title that is not UTF-8) beside readable ones:
-/// the list holds the readable ones, says one was left out, and never names it; a search and
-/// the folder map read past it too. Control: with no damage the list says nothing was left out.
-/// The copy the window shows for it is the fixture's.
+/// the list holds the readable ones, reports the one left out to the damage scans (T14.65) and
+/// never names it; a search and the folder map read past it too. Control: with no damage
+/// nothing is reported.
 #[test]
-fn list_meetings_a_damaged_meeting_row_is_left_out_and_said() {
-    let copy: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../fixtures/ui/meeting_list_copy_cases.json"
-    ))
-    .unwrap();
-    assert_eq!(
-        copy["list_damaged_note"].as_str(),
-        Some("Some meetings or folders on this computer are damaged and are not shown.")
-    );
+fn list_meetings_a_damaged_meeting_row_is_left_out_and_reported() {
     for damaged in [true, false] {
         let dir = TempDir::new("list-damaged");
         let svc = services(&dir);
@@ -396,8 +388,9 @@ fn list_meetings_a_damaged_meeting_row_is_left_out_and_said() {
                 .unwrap();
             assert_eq!(changed, 1);
         }
-        let view = meeting_list(&svc).unwrap();
-        assert_eq!(view.damaged, damaged);
+        let reported = crate::damage::reports_for_test(|| meeting_list(&svc).unwrap());
+        let (view, asked) = reported;
+        assert_eq!(asked, damaged);
         let mut want = vec![last.to_string()];
         if !damaged {
             want.push(broken.to_string());
@@ -418,11 +411,12 @@ fn list_meetings_a_damaged_meeting_row_is_left_out_and_said() {
 }
 
 /// T14.64: a folder row that does not read (a name that is not UTF-8): the meeting list still
-/// lists every meeting, the one filed in it reads as in no folder, the list says something was
-/// left out (also with no meeting at all), and the folder list lists the other folders and never
-/// names it. Control: with no damage nothing is said and the meeting keeps its folder.
+/// lists every meeting, the one filed in it reads as in no folder, the row left out is reported
+/// to the damage scans (T14.65; also with no meeting at all), and the folder list lists the other
+/// folders and never names it. Control: with no damage nothing is reported and the meeting keeps
+/// its folder.
 #[test]
-fn list_meetings_a_damaged_folder_row_is_left_out_and_said() {
+fn list_meetings_a_damaged_folder_row_is_left_out_and_reported() {
     for damaged in [true, false] {
         let dir = TempDir::new("list-damaged-folder");
         let svc = services(&dir);
@@ -442,9 +436,9 @@ fn list_meetings_a_damaged_folder_row_is_left_out_and_said() {
             damage();
         }
         // No meeting yet: the list still says a folder was left out.
-        let empty = meeting_list(&svc).unwrap();
+        let (empty, asked) = crate::damage::reports_for_test(|| meeting_list(&svc).unwrap());
         assert!(empty.meetings.is_empty());
-        assert_eq!(empty.damaged, damaged);
+        assert_eq!(asked, damaged);
         let filed = meeting(&svc, "Invented planning", T0, Some(60_000), 81);
         let loose = meeting(&svc, "Invented retro", T0 + 60_000, Some(60_000), 82);
         if damaged {
@@ -461,8 +455,8 @@ fn list_meetings_a_damaged_folder_row_is_left_out_and_said() {
         } else {
             earshot_runtime::folders::move_meeting(&svc, filed, Some(broken)).unwrap();
         }
-        let view = meeting_list(&svc).unwrap();
-        assert_eq!(view.damaged, damaged);
+        let (view, asked) = crate::damage::reports_for_test(|| meeting_list(&svc).unwrap());
+        assert_eq!(asked, damaged);
         let ids: Vec<String> = view.meetings.iter().map(|m| m.id.clone()).collect();
         assert_eq!(ids, [loose.to_string(), filed.to_string()]);
         let want = (!damaged).then(|| broken.to_string());
@@ -481,31 +475,16 @@ fn list_meetings_a_damaged_folder_row_is_left_out_and_said() {
 
 /// T14.64 review: with a damaged folder row and a damaged meeting row, folders can still be
 /// created and renamed (a new name may clash with the damaged folder's, which cannot be read),
-/// and deleting a folder fails closed with the fixture's fixed copy, changing nothing. Control:
-/// with no damage the folder is deleted.
+/// and deleting a folder fails closed with the one refusal line (T14.65, kind `damaged`),
+/// changing nothing. Control: with no damage the folder is deleted.
 #[test]
 fn list_meetings_damaged_rows_let_folders_be_named_but_not_deleted() {
-    let copy: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../fixtures/ui/meeting_list_copy_cases.json"
-    ))
-    .unwrap();
-    assert_eq!(
-        copy["folder_blocked_by_damage"].as_str(),
-        Some(crate::detail::FOLDER_BLOCKED_BY_DAMAGE_COPY)
-    );
-    assert_eq!(
-        copy["rename_blocked_by_damage"].as_str(),
-        Some(crate::detail::RENAME_BLOCKED_BY_DAMAGE_COPY)
-    );
     let refused = IpcError::from(RuntimeError::Edit(
         earshot_runtime::edit::EditError::RenameBlockedByDamage(EntityId::from_bytes([3; 16])),
     ));
     assert_eq!(
         (refused.kind.as_str(), refused.message.as_str()),
-        (
-            "rename_blocked_by_damage",
-            crate::detail::RENAME_BLOCKED_BY_DAMAGE_COPY
-        )
+        (crate::damage::DAMAGED_KIND, crate::damage::REFUSAL_COPY)
     );
     for damaged in [true, false] {
         let dir = TempDir::new("folders-damaged");
@@ -542,8 +521,8 @@ fn list_meetings_damaged_rows_let_folders_be_named_but_not_deleted() {
             let out = crate::folders::delete(&svc, &other, with_meetings);
             if damaged {
                 let e = out.unwrap_err();
-                assert_eq!(e.kind, "folder_blocked_by_damage");
-                assert_eq!(e.message, crate::detail::FOLDER_BLOCKED_BY_DAMAGE_COPY);
+                assert_eq!(e.kind, crate::damage::DAMAGED_KIND);
+                assert_eq!(e.message, crate::damage::REFUSAL_COPY);
                 // Nothing changed: the folder and its meeting are still there.
                 let listed = crate::folders::folder_list(&svc).unwrap();
                 assert!(listed.iter().any(|f| f.id == other));

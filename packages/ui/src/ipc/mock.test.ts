@@ -25,7 +25,6 @@ describe("mock IPC", () => {
     const listed = await createMockIpc({ now: 1_800_000_000_000 }).listMeetings();
     const b = await createMockIpc({ now: 1_800_000_000_000 }).listMeetings();
     expect(listed).toEqual(b);
-    expect(listed.damaged).toBe(false);
     const a = listed.meetings;
     expect(a.length).toBeGreaterThanOrEqual(3);
     expect(a.length).toBeLessThanOrEqual(4);

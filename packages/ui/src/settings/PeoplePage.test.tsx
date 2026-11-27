@@ -2,9 +2,9 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
 import PEOPLE_COPY from "../../../../fixtures/ui/people_copy_cases.json";
 import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
+import { DAMAGED_COPY } from "../ipc/damagedCopy";
 import { VOICE_SAMPLE_MS, VOICE_STEP_MS, voiceMessage } from "../ipc/mockSettings";
 import { openSettings, renderApp } from "../test/app";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
@@ -94,14 +94,14 @@ describe("Settings, People, people", () => {
     );
   });
 
-  // T14.64: a damaged row stops a rename everywhere; the refusal is the fixture's fixed copy and
-  // the stored name is unchanged. Control: "renames someone in the stored list" above.
+  // T14.64: a damaged row stops a rename everywhere; the refusal is the one damaged line (T14.65)
+  // and the stored name is unchanged. Control: "renames someone in the stored list" above.
   it("says in fixed copy when a damaged row stops a rename", async () => {
-    const s = await open({ persons: people, meetingsDamaged: true });
+    const s = await open({ persons: people, damaged: { counts: { parts: 1 } } });
     await s.user.click(await screen.findByRole("button", { name: "Rename Bo Example" }));
     await s.user.type(screen.getByRole("textbox", { name: "New name for Bo Example" }), " two");
     await s.user.click(within(screen.getByRole("region", { name: "People" })).getByRole("button", { name: "Save" }));
-    expect(await screen.findByText(MEETING_LIST_COPY.rename_blocked_by_damage)).toBeTruthy();
+    expect(await screen.findByText(DAMAGED_COPY.refusal)).toBeTruthy();
     expect((await s.ipc.listPersons()).persons.find((p) => p.id === "b")?.name).toBe("Bo Example");
   });
 
@@ -140,9 +140,8 @@ describe("Settings, People, people", () => {
     expect(await screen.findByRole("button", { name: "Remove Alex Sample" })).toBeTruthy();
   });
 
-  it("says in fixed copy when damaged rows were left out or left as they are (T14.57)", async () => {
-    const s = await open({ persons: people, personsDamaged: true });
-    expect(await screen.findByText(PEOPLE_COPY.list_damaged_note)).toBeTruthy();
+  it("says in fixed copy when Remove or Forget voice left damaged rows as they are (T14.57)", async () => {
+    const s = await open({ persons: people, damaged: { counts: { people: 1 } } });
     await s.user.click(await screen.findByRole("button", { name: "Remove Bo Example" }));
     const dialog = await screen.findByRole("alertdialog");
     await s.user.click(within(dialog).getByRole("button", { name: "Remove" }));
@@ -159,7 +158,6 @@ describe("Settings, People, people", () => {
     const dialog = await screen.findByRole("alertdialog");
     await s.user.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Remove Bo Example" })).toBeNull());
-    expect(screen.queryByText(PEOPLE_COPY.list_damaged_note)).toBeNull();
     expect(screen.queryByText(PEOPLE_COPY.remove_damaged_note)).toBeNull();
   });
 

@@ -62,7 +62,8 @@ pub use presence::{
 };
 pub use removal::{REMOVAL_REPAIR_KEY, REMOVAL_REPAIR_VERSION, RemovalRepaired, removal_repair};
 pub use repair::{
-    DAMAGE_REPAIR_KEY, DAMAGE_REPAIR_VERSION, RepairStart, RepairStep, repair_step, start_repair,
+    DAMAGE_REPAIR_KEY, DAMAGE_REPAIR_VERSION, RepairProgress, RepairStart, RepairStep,
+    repair_percent, repair_progress, repair_step, start_repair,
 };
 pub use setup::{
     PairingOffer, join_with_code, offer_pairing_code, remove_other_device, remove_this_device,

@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
+import { DAMAGED_COPY } from "../ipc/damagedCopy";
 import { type FolderListItem, type Ipc, type MeetingListItem, createMockIpc } from "../ipc";
 import { renderApp } from "../test/app";
 import { createManualTimer } from "../time";
@@ -293,17 +293,17 @@ describe("folders", () => {
     await waitFor(() => expect(folderButton("All meetings")).toHaveFocus());
   });
 
-  // T14.64: a damaged meeting row stops a folder from being deleted; the refusal is the fixture's
-  // fixed copy and the folder stays. Control: the undamaged delete above.
+  // T14.64: a damaged meeting row stops a folder from being deleted; the refusal is the one
+  // damaged line (T14.65) and the folder stays. Control: the undamaged delete above.
   it("a damaged meeting row stops a folder from being deleted, in fixed copy", async () => {
-    const { user, calls } = setup({ meetingsDamaged: true });
+    const { user, calls } = setup({ damaged: { counts: { meetings: 1 } } });
     await folderList();
     await openMenu(user, folderButton("Orchard"));
     await user.click(await screen.findByRole("menuitem", { name: "Delete..." }));
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: "Delete folder" }));
     await waitFor(() => expect(calls).toContainEqual(["deleteFolderKeepingMeetings", ORCHARD.id]));
-    expect(await screen.findByText(MEETING_LIST_COPY.folder_blocked_by_damage)).toBeInTheDocument();
+    expect(await screen.findByText(DAMAGED_COPY.refusal)).toBeInTheDocument();
     expect(folderButton("Orchard")).toBeInTheDocument();
   });
 

@@ -196,6 +196,7 @@ pub fn set_timing(
 /// blocked).
 pub fn forget_voice(services: &Services) -> Result<crate::detail::VoicesForgottenView, IpcError> {
     let n = my_voice::forget_my_voice(services)?;
+    crate::damage::report(crate::damage::Scope::PeopleAndVoice, n.damaged);
     Ok(crate::detail::VoicesForgottenView::of(n))
 }
 

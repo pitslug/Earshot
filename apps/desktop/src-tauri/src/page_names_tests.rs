@@ -210,3 +210,28 @@ fn page_names_the_dictionary_page_names_the_people_page_its_names_come_from() {
         "the Dictionary page's link opens the People page"
     );
 }
+
+/// Details names the Sync page for a damaged kind whose own switch is off (T14.65,
+/// `kind_off_voice` and `kind_off_words`): that page exists in Settings and holds both switches.
+#[test]
+fn page_names_details_kind_off_sentences_name_the_sync_page_with_its_switches() {
+    let copy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/damaged_copy_cases.json"
+    ))
+    .unwrap();
+    for key in ["kind_off_voice", "kind_off_words"] {
+        let text = copy[key].as_str().unwrap();
+        assert!(text.contains("on the Sync page"), "{key}: {text}");
+        assert!(stale_page_names(text).is_empty(), "{key}: {text}");
+    }
+    let settings = include_str!("../../../../packages/ui/src/settings/SettingsView.tsx");
+    let sections = settings
+        .split_once("export const SETTINGS_SECTIONS = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .unwrap()
+        .0;
+    assert!(sections.contains("\"Sync\""), "{sections}");
+    let sync = include_str!("../../../../packages/ui/src/settings/SyncPage.tsx");
+    assert!(sync.contains("label=\"Sync voiceprints\""));
+    assert!(sync.contains("label=\"Sync Dictionary words\""));
+}

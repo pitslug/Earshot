@@ -55,9 +55,6 @@ export const SYNC_COMMAND_PROBLEMS: Record<SyncProblemWord, string> = table.comm
 /** What the app says when the setup secret is left empty. */
 export const SECRET_MISSING = table.secret_missing;
 
-/** What the app says when the last sync skipped damaged queued items (T12.77b8). */
-export const DAMAGED_NOTE = table.damaged_note;
-
 /** What the app says when the last sync left `count` queued items unsent because they cannot be
  * sealed (too large, or holding an audio file's signature; T14.43, `sync_settings::refused_note`):
  * null for none. */
@@ -115,10 +112,6 @@ export interface SyncMockData {
   held?: number;
   /** Rows from other devices that could not be read (default 0). */
   unreadable?: number;
-  /** Whether the last sync skipped damaged queued rows (default false). */
-  unsendable?: boolean;
-  /** The last sync left damaged rows here as they are (T14.57): the page shows `damaged_note`. */
-  damaged?: boolean;
   /** Queued rows the last sync could not seal and left unsent (default 0, T14.43). */
   refused?: number;
   /** The vault's devices (default: this computer and three others). */
@@ -300,7 +293,6 @@ export function createSyncMock(data: SyncMockData = {}): SyncCommands {
     stopped,
     unreadable,
     waiting,
-    damaged_note: data.unsendable === true || data.damaged === true ? DAMAGED_NOTE : null,
     refused_note: refusedNote(data.refused ?? 0),
     held,
     offers_summaries: offersSummaries,

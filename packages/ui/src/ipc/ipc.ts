@@ -47,6 +47,8 @@ import type {
   PreviewsView,
   ShellEvent,
   SyncEvent,
+  DamagedView,
+  DamageEvent,
   RecoveredRecording,
   ObsidianSettingsValue,
   ObsidianSettingsView,
@@ -82,8 +84,8 @@ export interface IpcCommands
     SummaryOrderCommands {
   /** The app version and data directory. */
   appInfo(): Promise<AppInfo>;
-  /** The meetings, newest first, and whether a damaged meeting was left out (T14.64). Rejects
-   * with an `IpcFailure`. */
+  /** The meetings, newest first (T14.64); a damaged row is left out and reported to the damage
+   * scans (T14.65). Rejects with an `IpcFailure`. */
   listMeetings(): Promise<MeetingListView>;
   /** The meetings whose title, transcript or summary contains `query`, newest first. An empty
    * query finds nothing. Rejects with an `IpcFailure`. */
@@ -181,7 +183,8 @@ export interface IpcCommands
   unmarkMe(meeting: string, speaker: string): Promise<void>;
   /** Renames a person and their speaker rows in every meeting. */
   renamePerson(person: string, name: string): Promise<number>;
-  /** Every person, by name, and whether a damaged row on this computer was left out (T14.57). */
+  /** Every person, by name (T14.57); a damaged row is left out and reported to the damage
+   * scans (T14.65). */
   listPersons(): Promise<PersonListView>;
   /** "Save" on a voice that needs a name (T12.19): names it, links it to that person and
    * remembers the voice, in one step. */
@@ -197,8 +200,8 @@ export interface IpcCommands
   notThisPerson(meeting: string, speaker: string): Promise<NotThisPersonResult>;
   /** Forgets every voiceprint of a person; says whether a damaged row was left (T14.57). */
   forgetPersonVoices(person: string): Promise<VoicesForgottenView>;
-  /** Removes a person; says whether a damaged row was left (T14.57). Rejects with
-   * person_unreadable while a member's details on this computer are damaged. */
+  /** Removes a person; says whether a damaged row was left (T14.57). Rejects with kind
+   * `damaged` while a member's details on this computer are damaged (T14.65). */
   removePerson(person: string): Promise<PersonRemovedView>;
   /** The Updates section's state. */
   updateStatus(): Promise<UpdateView>;
@@ -325,6 +328,16 @@ export interface IpcCommands
   startAudioCheck(): Promise<void>;
   /** Cancels the audio check; nothing is stored. */
   cancelAudioCheck(): Promise<void>;
+  /** Details of the damaged-items banner (T14.65): runs a scan and returns counts by kind,
+   * the switched-off kinds and where a Repair is. Counts only. */
+  damagedItems(): Promise<DamagedView>;
+  /** Repair from sync: reads everything from the sync server again; removes nothing.
+   * Rejects with `invalid` while sync is off, `busy` while a Repair runs. */
+  repairFromSync(): Promise<void>;
+  /** Whether the damaged-items banner shows (the stored record; no scan). */
+  damageBanner(): Promise<boolean>;
+  /** Dismisses the banner until a scan finds more damaged items in any kind. */
+  dismissDamageBanner(): Promise<void>;
 }
 
 /** The commands plus the app's events. */
@@ -350,6 +363,9 @@ export interface Ipc extends IpcCommands {
   /** Calls `handler` after every sync tick that changed rows here (T12.81): the meetings it
    * touched, by id only. */
   onSyncEvent(handler: (event: SyncEvent) => void): Promise<() => void>;
+  /** Calls `handler` after every damage scan and Repair step (T14.65): whether the banner
+   * shows and where a Repair is. */
+  onDamageEvent(handler: (event: DamageEvent) => void): Promise<() => void>;
 }
 
 /** The names of the generated commands; `IpcCommands` must have exactly these methods. */
@@ -367,6 +383,7 @@ export const EVENT_METHODS = [
   "onCudaEvent",
   "onShellEvent",
   "onSyncEvent",
+  "onDamageEvent",
 ] as const;
 
 // Compile-time check: a command added in Rust without an `Ipc` method (or the reverse)

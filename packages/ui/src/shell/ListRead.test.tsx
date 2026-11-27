@@ -1,12 +1,12 @@
 // A meeting list that could not be read keeps what was read before (T14.16); one that left out
-// a damaged meeting says so (T14.64).
+// a damaged meeting lists the others, and the damaged-items banner says so (T14.64, T14.65).
 
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { type Ipc, IpcFailure, type MeetingListItem, type SyncEvent, createMockIpc } from "../ipc";
-import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
+import { DAMAGED_COPY } from "../ipc/damagedCopy";
 import { listLoaded, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 
@@ -67,20 +67,27 @@ const rowNames = () =>
     .filter((b) => b.getAttribute("aria-expanded") === null)
     .map((b) => b.textContent);
 
-// T14.64: a damaged meeting row on this computer is left out of the list, which says so.
+// T14.64: a damaged meeting row on this computer is left out of the list; the one banner says so
+// (T14.65), never a note of the list's own.
 describe("a meeting list with a damaged meeting left out", () => {
   for (const damaged of [true, false]) {
-    it(damaged ? "lists the others and shows the fixed note" : "shows no note when nothing was left out", async () => {
+    it(damaged ? "lists the others and shows the banner" : "shows no banner when nothing is damaged", async () => {
       const timer = createManualTimer(NOW);
-      const ipc = createMockIpc({ timer, now: NOW, meetings: [SHOWN, OTHER], meetingsDamaged: damaged });
+      const ipc = createMockIpc({
+        timer,
+        now: NOW,
+        meetings: [SHOWN, OTHER],
+        damaged: damaged ? { counts: { meetings: 1 } } : undefined,
+      });
       renderApp(ipc, { timer, now: () => NOW });
       await listLoaded();
       expect(rowNames()).toHaveLength(2);
       const nav = screen.getByRole("navigation", { name: "Meetings and settings" });
       if (damaged) {
-        expect(within(nav).getByText(MEETING_LIST_COPY.list_damaged_note)).toBeInTheDocument();
+        expect(await screen.findByText(DAMAGED_COPY.banner)).toBeInTheDocument();
+        expect(within(nav).queryByText(DAMAGED_COPY.banner)).toBeNull();
       } else {
-        expect(screen.queryByText(MEETING_LIST_COPY.list_damaged_note)).toBeNull();
+        expect(screen.queryByText(DAMAGED_COPY.banner)).toBeNull();
       }
       // Never an error bar: the list read worked.
       expect(screen.queryByText(STALE_TITLE)).toBeNull();

@@ -72,12 +72,14 @@ pub fn recover_then(
 }
 
 /// [`recover_then`] with the app's retention loop, on a thread of its own: at once, then
-/// retention every `period` while the app runs.
+/// retention every `period` while the app runs. `after` runs once recovery has finished and
+/// before retention's first run (the start-up damage scan, T14.65).
 pub fn spawn(
     services: Services,
     status: RetentionStatus,
     period: Duration,
     recovered: impl FnOnce(&RecoveryReport) + Send + 'static,
+    after: impl FnOnce() + Send + 'static,
 ) {
     let _ = std::thread::Builder::new()
         .name("earshot-recovery".into())
@@ -88,6 +90,7 @@ pub fn spawn(
                 recovered,
                 |p| status.set_recovery(p),
                 |services| {
+                    after();
                     retention_loop(services, &status, earshot_runtime::retention::run, || {
                         std::thread::sleep(period);
                         true
