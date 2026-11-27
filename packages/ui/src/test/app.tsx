@@ -1,7 +1,8 @@
 // The app as the UI tests render it, and the way they reach a Settings page (T12.55): one copy
 // of the render tree and the Settings navigation for every test file.
 
-import { type RenderResult, render, screen, within } from "@testing-library/react";
+import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import { expect } from "vitest";
 import type userEvent from "@testing-library/user-event";
 
 import { type Ipc, IpcProvider } from "../ipc";
@@ -17,6 +18,15 @@ export function renderApp(ipc: Ipc, props: AppShellProps = {}): RenderResult {
       </IpcProvider>
     </EarshotThemeProvider>,
   );
+}
+
+/** Waits until the home screen has the window's first meeting-list read (T14.49: that read waits
+ * for the sync subscription, so right after a render the home screen shows only the "Loading
+ * meetings" spinner). Call it before reading home or list content synchronously, and before
+ * asserting that something there is absent, which would otherwise pass while still loading. */
+export async function listLoaded(): Promise<void> {
+  const main = await screen.findByRole("main");
+  await waitFor(() => expect(within(main).queryByRole("progressbar", { name: "Loading meetings" })).toBeNull());
 }
 
 /** Opens Settings from the app and picks `section` in its navigation; resolves with the

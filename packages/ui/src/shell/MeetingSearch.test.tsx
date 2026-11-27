@@ -12,7 +12,7 @@ import {
 } from "../ipc";
 import { sampleDetail } from "../ipc/mockDetail";
 import { SEARCH_MAX_RESULTS, searchSample } from "../ipc/mockSearch";
-import { renderApp } from "../test/app";
+import { listLoaded, renderApp } from "../test/app";
 import { createManualTimer } from "../time";
 import { SEARCH_DEBOUNCE_MS, SEARCH_SUPERSEDED_KIND, UNREADABLE_NOTE, resultLine } from "./MeetingSearch";
 
@@ -35,9 +35,12 @@ const MEETINGS: MeetingListItem[] = [
   row("m1", "Orchard planning", at(1, 11)),
 ];
 
-function setup(ipc: Ipc = createMockIpc({ meetings: MEETINGS })) {
+// Resolves once the first list read has landed, so a test that says the list gave way to the
+// results (or stayed) is about a list that was there.
+async function setup(ipc: Ipc = createMockIpc({ meetings: MEETINGS })) {
   const timer = createManualTimer(NOW);
   renderApp(ipc, { now: () => NOW, timer });
+  await listLoaded();
   const settle = () => act(async () => timer.advance(SEARCH_DEBOUNCE_MS));
   return { timer, settle, user: userEvent.setup() };
 }
@@ -54,7 +57,7 @@ describe("meeting search", () => {
   it("search finds meetings after typing pauses, and only then", async () => {
     const base = createMockIpc({ meetings: MEETINGS });
     const searchMeetings = vi.fn(base.searchMeetings);
-    const { settle, user, timer } = setup({ ...base, searchMeetings });
+    const { settle, user, timer } = await setup({ ...base, searchMeetings });
     await user.type(await box(), "orch");
     expect(searchMeetings).not.toHaveBeenCalled();
 
@@ -75,7 +78,7 @@ describe("meeting search", () => {
   });
 
   it("search opens the picked meeting and keeps the results", async () => {
-    const { settle, user } = setup();
+    const { settle, user } = await setup();
     await user.type(await box(), "planning");
     await settle();
     await user.click(screen.getByRole("button", { name: /^Orchard planning/ }));
@@ -91,7 +94,7 @@ describe("meeting search", () => {
   });
 
   it("search shows where a transcript matched", async () => {
-    const { settle, user } = setup();
+    const { settle, user } = await setup();
     await user.type(await box(), "LEAD TIME");
     await settle();
     const list = screen.getByRole("list", { name: "Search results" });
@@ -102,7 +105,7 @@ describe("meeting search", () => {
   });
 
   it("search clearing brings the same list back, by the clear button and by Esc", async () => {
-    const { settle, user } = setup();
+    const { settle, user } = await setup();
     const list = await screen.findByRole("list", { name: "Meetings" });
     const before = list.textContent;
     const input = await box();
@@ -126,7 +129,7 @@ describe("meeting search", () => {
   it("search of only white space keeps the list and asks nothing", async () => {
     const base = createMockIpc({ meetings: MEETINGS });
     const searchMeetings = vi.fn(base.searchMeetings);
-    const { settle, user } = setup({ ...base, searchMeetings });
+    const { settle, user } = await setup({ ...base, searchMeetings });
     await user.type(await box(), "   ");
     await settle();
     expect(searchMeetings).not.toHaveBeenCalled();
@@ -134,7 +137,7 @@ describe("meeting search", () => {
   });
 
   it("search with no match says so quietly", async () => {
-    const { settle, user } = setup();
+    const { settle, user } = await setup();
     await user.type(await box(), "quinceharvest");
     await settle();
     expect(within(screen.getByRole("status")).getByText("No meetings found")).toBeInTheDocument();
@@ -144,7 +147,7 @@ describe("meeting search", () => {
   });
 
   it("search treats wildcards as text", async () => {
-    const { settle, user } = setup(
+    const { settle, user } = await setup(
       createMockIpc({ meetings: [row("a", "Up 50% today", at(2, 9)), row("b", "Up 50 today", at(2, 8))] }),
     );
     await user.type(await box(), "%");
@@ -157,7 +160,7 @@ describe("meeting search", () => {
     const answers = new Map<string, (r: SearchResultsView) => void>();
     const searchMeetings = (query: string) =>
       new Promise<SearchResultsView>((resolve) => answers.set(query, resolve));
-    const { settle, user } = setup({ ...base, searchMeetings });
+    const { settle, user } = await setup({ ...base, searchMeetings });
     const input = await box();
     await user.type(input, "first");
     await settle();
@@ -184,7 +187,7 @@ describe("meeting search", () => {
   });
 
   it("search does not let an old no match stand for a newer query", async () => {
-    const { settle, user } = setup();
+    const { settle, user } = await setup();
     const input = await box();
     await user.type(input, "quinceharvest");
     await settle();
@@ -200,7 +203,7 @@ describe("meeting search", () => {
     const base = createMockIpc({ meetings: MEETINGS });
     let unreadable = 2;
     const searchMeetings = async (query: string) => ({ ...(await base.searchMeetings(query)), unreadable });
-    const { settle, user } = setup({ ...base, searchMeetings });
+    const { settle, user } = await setup({ ...base, searchMeetings });
     const input = await box();
     await user.type(input, "orchard");
     await settle();
@@ -224,7 +227,7 @@ describe("meeting search", () => {
     const many = Array.from({ length: SEARCH_MAX_RESULTS + 3 }, (_, i) =>
       row(`n${i}`, `Orchard ${i}`, at(1, 1) + i * 60_000),
     );
-    const { settle, user } = setup(createMockIpc({ meetings: many }));
+    const { settle, user } = await setup(createMockIpc({ meetings: many }));
     await user.type(await box(), "orchard");
     await settle();
     expect(resultTitles()).toHaveLength(SEARCH_MAX_RESULTS);
@@ -235,7 +238,7 @@ describe("meeting search", () => {
 
   it("search reports a failure in fixed copy without the error's own text", async () => {
     const base = createMockIpc({ meetings: MEETINGS });
-    const { settle, user } = setup({
+    const { settle, user } = await setup({
       ...base,
       searchMeetings: () =>
         Promise.reject(new IpcFailure({ kind: "store", message: "store: disk full", retryable: false })),
@@ -248,7 +251,7 @@ describe("meeting search", () => {
 
   it("search treats a search a newer one replaced as no answer, never a failure", async () => {
     const base = createMockIpc({ meetings: MEETINGS });
-    const { settle, user } = setup({
+    const { settle, user } = await setup({
       ...base,
       searchMeetings: (query) =>
         query === "orch"
@@ -278,7 +281,7 @@ describe("meeting search", () => {
     };
     const answers = [ghost, { items: [], capped: false, unreadable: 0 }];
     const listMeetings = vi.fn(base.listMeetings);
-    const { settle, user } = setup({
+    const { settle, user } = await setup({
       ...base,
       listMeetings,
       searchMeetings: async () => answers.shift() ?? { items: [], capped: false, unreadable: 0 },
@@ -298,7 +301,7 @@ describe("meeting search", () => {
 
   it("search does not crash on picking a meeting deleted since the list was read", async () => {
     const base = createMockIpc({ meetings: MEETINGS });
-    const { settle, user } = setup(base);
+    const { settle, user } = await setup(base);
     await user.type(await box(), "orchard");
     await settle();
     await base.deleteMeeting("m1");
@@ -318,7 +321,7 @@ describe("meeting search", () => {
         return () => {};
       },
     };
-    const { settle, user } = setup(ipc);
+    const { settle, user } = await setup(ipc);
     await user.type(await box(), "orchard");
     await settle();
     await base.deleteMeeting("m3");
@@ -329,7 +332,7 @@ describe("meeting search", () => {
   });
 
   it("search has no box on a computer with no meetings yet", async () => {
-    setup(createMockIpc({ meetings: [] }));
+    await setup(createMockIpc({ meetings: [] }));
     await screen.findByRole("heading", { name: "Record your first meeting" });
     expect(screen.queryByRole("searchbox", { name: "Search meetings" })).toBeNull();
   });

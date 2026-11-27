@@ -17,7 +17,7 @@ import {
   createMockIpc,
   sampleMeetings,
 } from "../ipc";
-import { renderApp } from "../test/app";
+import { listLoaded, renderApp } from "../test/app";
 import { EarshotThemeProvider } from "../theme/EarshotThemeProvider";
 import { type ManualTimer, createManualTimer } from "../time";
 import { CompactCard, MAX_TITLE, RecordingView, finishingExplanation } from "./MeetingViews";
@@ -652,7 +652,8 @@ describe("meeting screen", () => {
         retryable: false,
       },
     });
-    const main = await screen.findByRole("main");
+    await listLoaded();
+    const main = screen.getByRole("main");
     await s.user.click(within(main).getByRole("button", { name: "New meeting" }));
     await s.user.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByText("The meeting could not start")).toBeInTheDocument();

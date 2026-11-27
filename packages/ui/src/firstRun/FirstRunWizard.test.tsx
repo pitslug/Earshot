@@ -23,7 +23,7 @@ import { CLAUDE_CODE_PRIVACY, CODEX_PRIVACY, remoteWarning } from "../settings/S
 import { SYNC_INTRO } from "../settings/SyncPage";
 import { PREVIEWS_HEADING, PREVIEWS_SUGGESTED } from "../settings/TranscriptionPage";
 import { formatSize } from "../settings/copy";
-import { openSettings, renderApp } from "../test/app";
+import { listLoaded, openSettings, renderApp } from "../test/app";
 import { type ManualTimer, createManualTimer } from "../time";
 import {
   AUDIO_CHECK_ROW,
@@ -127,16 +127,16 @@ describe("First run wizard", () => {
   });
 
   it("does not show when the app says it is done, or when its state cannot be read", async () => {
-    // The list is read once the window's sync subscription is in place (T14.49f): one flush
-    // after the navigation lets that read land, so the only spinner left would be the wizard's.
+    // The list is read once the window's sync subscription is in place (T14.49f): once that read
+    // has landed, the only spinner left would be the wizard's.
     setup({ firstRun: { show: false } });
     await screen.findByRole("navigation", { name: "Meetings and settings" });
-    await act(async () => {});
+    await listLoaded();
     expect(screen.queryByRole("progressbar")).toBeNull();
     cleanup();
     setup({ firstRun: { show: true, stateFails: true } });
     await screen.findByRole("navigation", { name: "Meetings and settings" });
-    await act(async () => {});
+    await listLoaded();
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
 
@@ -156,6 +156,7 @@ describe("First run wizard", () => {
     cleanup();
     s.mount();
     await screen.findByRole("navigation", { name: "Meetings and settings" });
+    await listLoaded();
     // The wizard's own bar is named "Step N of M"; the meeting list's loading spinner is also a
     // progressbar and may still show while the first read waits for the sync subscription (T14.49).
     expect(screen.queryByRole("progressbar", { name: /^Step \d+ of \d+$/ })).toBeNull();
