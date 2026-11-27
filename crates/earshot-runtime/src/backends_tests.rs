@@ -1133,6 +1133,17 @@ fn backends_production_loader_feeds_the_live_factory_and_the_post_processor() {
     let dir = crate::testutil::TempDir::new("backends");
     let (svc, _) = crate::testutil::services(&dir);
     let meeting = crate::testutil::meeting(&svc, "Silence", 81);
+    // A first pass: the fixture's final lines are taken out first, because a pass that finds
+    // nothing on a track with final lines keeps them (T14.47, docs/sync-spec.md 15.11 c).
+    {
+        let clock = std::sync::Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        for mut row in store.segments(meeting).unwrap() {
+            row.meta.mark_deleted(hlc, &*clock);
+            store.put_segment(row).unwrap();
+        }
+    }
     let tracks: Vec<_> = svc.store().tracks(meeting).unwrap();
     let mut setup = ok(post_processor(
         &EvidenceLoader::default(),

@@ -44,8 +44,16 @@ use crate::services::Services;
 pub use earshot_sync::VaultKey;
 pub use engine::{
     ChangeListener, Heard, LISTENER_PANICKED, Peer, PresenceListener, SyncChanges, SyncClient,
-    TickReport, WorkerWriter,
+    TickReport, TickSeen, WorkerWriter, tick_seen,
 };
+
+/// The push's own guard as the store's "lines go out before what they replace" reads it
+/// (docs/sync-spec.md 15.2, "The check"): whether a queued row would be sealed and sent. Every
+/// [`Services`] gives it to its store, so the check never copies the push's rule.
+#[must_use]
+pub fn push_guard() -> earshot_store::PushGuard {
+    earshot_store::PushGuard::new(engine::sealable)
+}
 pub use presence::{
     Beats, KIND_APP, KIND_SERVER, MAX_DEVICE_NAME, ModelPlace, ONLINE_WITHIN_S, PRESENCE_EVERY,
     Presence, clean_name, computer_name, online,
@@ -742,8 +750,10 @@ pub(crate) fn judge_vault(stored: &Cursor, seen: VaultSeen<'_>, now_ms: u64) -> 
 /// [`SyncProblem::Server`] when the history changed too often; [`SyncProblem::Store`].
 pub(crate) fn observe_vault(services: &Services, seen: VaultSeen<'_>) -> Result<bool, SyncProblem> {
     let now_ms = services.clock.now_unix_ms();
+    let clock = std::sync::Arc::clone(&services.clock);
     let mut db = services.store();
-    db.transaction(|tx| -> Result<bool, SyncProblem> {
+    let (store, hlc) = db.parts();
+    store.transaction(|tx| -> Result<bool, SyncProblem> {
         let stored = decode_cursor(tx.local_value(SYNC_CURSOR_KEY)?);
         match judge_vault(&stored, seen, now_ms) {
             VaultVerdict::Same(None) => Ok(false),
@@ -762,6 +772,8 @@ pub(crate) fn observe_vault(services: &Services, seen: VaultSeen<'_>) -> Result<
                     &encode_cursor_record(&next),
                 )?;
                 tx.queue_every_row()?;
+                // Re-queued cleared rows go out after a line of their track (15.2).
+                tx.send_lines_first(hlc, &*clock)?;
                 Ok(true)
             }
             VaultVerdict::TooOften => Err(SyncProblem::Server),

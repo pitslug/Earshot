@@ -36,9 +36,9 @@ pub mod repo_contract;
 pub use crate::asr::MeetingTime;
 pub use crate::voiceprint::{Person, Stamp, Voiceprint};
 pub use entities::{
-    AudioFile, AudioFormat, ClockDomain, DictionaryWord, ExportRecord, Folder, Meeting, Note,
-    RequestState, SegmentRow, Speaker, Summary, SummaryRequest, Track, TranscriptPass, VaultPath,
-    VaultPathError,
+    AudioFile, AudioFormat, CLEARED_CONFIDENCE, ClockDomain, DictionaryWord, ExportRecord, Folder,
+    Meeting, Note, RequestState, SegmentRow, Speaker, Summary, SummaryRequest, Track,
+    TranscriptPass, VaultPath, VaultPathError,
 };
 pub use memory::InMemoryRepo;
 pub use repo::{

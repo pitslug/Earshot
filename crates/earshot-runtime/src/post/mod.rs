@@ -180,7 +180,7 @@
 //! with its speakers before that transaction, with the lock free (T14.48); the transaction
 //! labels again only when the user's edited lines changed in between.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -557,6 +557,14 @@ pub enum PostWarning {
         lines: usize,
         /// New words left out because they overlap an edited segment.
         words_dropped: usize,
+    },
+    /// This run found nothing on a track that has final lines (its recogniser heard no words
+    /// there outside the user's edited lines): the track's earlier lines and speakers were kept
+    /// as they are, and the other tracks replaced as usual (T14.47, docs/sync-spec.md 15.2 and
+    /// 15.11 c). Banner `post-kept-lines`.
+    EarlierLinesKept {
+        /// The track kept.
+        track: TrackId,
     },
     /// Diarisation heard a voice that no transcribed word belongs to (nothing it said was
     /// transcribed, or every word went to another voice): it gets no speaker row.
@@ -1466,6 +1474,45 @@ where
             let segments = transcription.into_segments(t.track.id, MeetingTime::ZERO, &mut next_id);
             transcripts.push((t.track.kind, segments));
         }
+        // A side the pass found nothing on (T14.47, docs/sync-spec.md 15.2): judged per track,
+        // on this run's recogniser lines only, before echo cleaning, after the words under the
+        // track's own edited final lines are dropped. A track that found nothing and has a live
+        // final row here is kept as it is. Read in one short store lock with the kept
+        // reference's words, for echo against a kept reference (15.11 d).
+        let early_view = TrackLines::read(&services.store(), input.meeting)?;
+        // This run's recogniser lines per track, before echo cleaning, for the decision and
+        // its check in the write transaction.
+        let run_segments: BTreeMap<EntityId, Vec<Segment>> = input
+            .tracks
+            .iter()
+            .map(|t| {
+                let segments = transcripts
+                    .iter()
+                    .find(|(k, _)| *k == t.track.kind)
+                    .map(|(_, s)| s.clone())
+                    .unwrap_or_default();
+                (t.track.id, segments)
+            })
+            .collect();
+        let kept: BTreeSet<EntityId> = input
+            .tracks
+            .iter()
+            .filter(|t| early_view.keeps(t.track.id, &run_segments[&t.track.id]))
+            .map(|t| t.track.id)
+            .collect();
+        let kept_kinds: BTreeSet<TrackId> = input
+            .tracks
+            .iter()
+            .filter(|t| kept.contains(&t.track.id))
+            .map(|t| t.track.kind)
+            .collect();
+        let kept_reference: Option<Vec<Word>> = input
+            .tracks
+            .iter()
+            .find(|t| t.track.kind == TrackId::Reference && kept.contains(&t.track.id))
+            .map(|t| early_view.words_of(t.track.id));
+        // A kept track's transcript holds no text: it takes no further part.
+        transcripts.retain(|(k, _)| !kept_kinds.contains(k));
         let after = self.transcriber.backend_info();
         let backend_change =
             (after.kind != backend_before).then_some(PostWarning::BackendChanged {
@@ -1474,6 +1521,69 @@ where
             });
         // Nothing decoded here: the pass backend is the live one that decoded every piece.
         let backend = live_backend.unwrap_or(after);
+        let kept_warnings: Vec<PostWarning> = input
+            .tracks
+            .iter()
+            .filter(|t| kept.contains(&t.track.id))
+            .map(|t| PostWarning::EarlierLinesKept {
+                track: t.track.kind,
+            })
+            .collect();
+
+        // Every track of the input kept (15.2): no line changes and the write transaction
+        // writes nothing but the deletion of the live records and the clearing of what earlier
+        // passes replaced (which finds nothing in a meeting already in the new form).
+        if !input.tracks.is_empty() && input.tracks.iter().all(|t| kept.contains(&t.track.id)) {
+            let store_started = Instant::now();
+            let meeting = input.meeting;
+            let mut db = services.store();
+            let (store, hlc) = db.parts();
+            let final_segments = store.transaction(|tx| -> Result<usize, RuntimeError> {
+                if tx.meeting(meeting)?.is_none_or(|m| m.meta.deleted) {
+                    return Err(RuntimeError::Conflict("the meeting was deleted"));
+                }
+                let now_view = TrackLines::read_tx(tx, meeting)?;
+                if input.tracks.iter().any(|t| {
+                    now_view.decision_changed(&early_view, t.track.id, &run_segments, &kept)
+                }) {
+                    return Err(RuntimeError::Conflict(KEPT_DECISION_CHANGED));
+                }
+                for t in &input.tracks {
+                    tx.delete_local_value(
+                        crate::speakers::record_key(meeting, t.track.kind).as_str(),
+                    )?;
+                    tx.delete_local_value(
+                        crate::stretches::record_key(meeting, t.track.kind).as_str(),
+                    )?;
+                }
+                tx.clear_replaced_text(meeting, None, hlc, &*clock)?;
+                tx.send_lines_first(hlc, &*clock)?;
+                Ok(now_view.live_finals())
+            })?;
+            let _ = db.flush_erasures();
+            drop(db);
+            progress(PostStage::EchoChecked {
+                elapsed: Duration::ZERO,
+            });
+            progress(PostStage::Stored {
+                elapsed: store_started.elapsed(),
+            });
+            let mut warnings: Vec<PostWarning> = backend_change.into_iter().collect();
+            warnings.extend(repetition_warnings);
+            warnings.extend(unreadable_speakers);
+            warnings.extend(kept_warnings);
+            return Ok(PostOutcome {
+                meeting,
+                speakers: Vec::new(),
+                final_segments,
+                enrolled_me: None,
+                backend,
+                warnings,
+                echo: EchoReport::default(),
+                stretches,
+                speaker_windows,
+            });
+        }
 
         // Echo cleaning of the mic ("Me") transcript, before labelling (T6.4g), with the
         // echo clusters dropped from the mic diarisation (T6.23a).
@@ -1482,7 +1592,13 @@ where
             report: echo,
             warning: echo_warning,
             me: echo_me,
-        } = self.clean_echo(&input, &mut transcripts, &mut diarizations, cancel)?;
+        } = self.clean_echo(
+            &input,
+            &mut transcripts,
+            &mut diarizations,
+            kept_reference.as_deref(),
+            cancel,
+        )?;
         progress(PostStage::EchoChecked {
             elapsed: started.elapsed(),
         });
@@ -1507,7 +1623,14 @@ where
             embedding_model: model.clone(),
         };
         let two = recorded.contains(&TrackId::Mic) && recorded.contains(&TrackId::Reference);
-        let find = |k: TrackId| diarizations.iter().find(|(t, _)| *t == k).map(|(_, d)| d);
+        // A kept track is treated as one this run did not process (15.2): its diarisation is
+        // the empty one in the policy.
+        let find = |k: TrackId| {
+            diarizations
+                .iter()
+                .find(|(t, _)| *t == k && !kept_kinds.contains(t))
+                .map(|(_, d)| d)
+        };
         let mut meeting_diar = match (find(TrackId::Mic), find(TrackId::Reference)) {
             (Some(mic), Some(lb)) => two_track(mic, lb).map_err(RuntimeError::Diar)?,
             (Some(mic), None) if two => two_track(mic, &none).map_err(RuntimeError::Diar)?,
@@ -1516,11 +1639,20 @@ where
             (None, Some(one)) => in_person(one, TrackId::Reference),
             (None, None) => return Err(RuntimeError::NoTracks),
         };
-        let processed: BTreeSet<EntityId> = input.tracks.iter().map(|t| t.track.id).collect();
-        // Every recorded track is processed: all earlier speakers are this run's to replace.
-        let full = recorded
+        let processed: BTreeSet<EntityId> = input
+            .tracks
             .iter()
-            .all(|k| input.tracks.iter().any(|t| t.track.kind == *k));
+            .map(|t| t.track.id)
+            .filter(|id| !kept.contains(id))
+            .collect();
+        // Every recorded track is replaced by this run: all earlier speakers are this run's to
+        // replace. Counted over the tracks the pass replaces, so a kept track makes it false.
+        let full = recorded.iter().all(|k| {
+            input
+                .tracks
+                .iter()
+                .any(|t| t.track.kind == *k && processed.contains(&t.track.id))
+        });
 
         // Labelling with the store lock free (T14.48): it needs only this run's transcripts,
         // the diarisation's turns (naming never changes them) and the user's edited final
@@ -1560,8 +1692,20 @@ where
             if tx.meeting(meeting)?.is_none_or(|m| m.meta.deleted) {
                 return Err(RuntimeError::Conflict("the meeting was deleted"));
             }
+            // The kept tracks were decided before echo cleaning (15.2, "The decision is made
+            // once"): if what the decision read changed meanwhile so that it would differ, the
+            // pass fails and writes nothing.
+            let now_view = TrackLines::read_tx(tx, meeting)?;
+            if input
+                .tracks
+                .iter()
+                .any(|t| now_view.decision_changed(&early_view, t.track.id, &run_segments, &kept))
+            {
+                return Err(RuntimeError::Conflict(KEPT_DECISION_CHANGED));
+            }
             let mut warnings: Vec<PostWarning> = backend_change
                 .into_iter()
+                .chain(kept_warnings)
                 .chain(
                     input
                         .echo_locks_unreadable
@@ -2134,6 +2278,11 @@ where
             // the summary does later (T7.4k); a re-run leaves an earlier
             // clock as it is.
             crate::retention::start_clock_tx(tx, meeting, stamp.clock.now_unix_ms())?;
+            // Last: what this pass and earlier ones replaced holds no text any more (T14.47,
+            // docs/sync-spec.md 15.2), every stamp later than the pass's final lines; then lines
+            // go out before what they replace.
+            tx.clear_replaced_text(meeting, None, stamp.hlc, stamp.clock)?;
+            tx.send_lines_first(stamp.hlc, stamp.clock)?;
             Ok(PostOutcome {
                 meeting,
                 speakers,
@@ -2193,6 +2342,7 @@ where
         input: &PostInput,
         transcripts: &mut [(TrackId, Vec<Segment>)],
         diarizations: &mut [(TrackId, Diarization)],
+        kept_reference: Option<&[Word]>,
         cancel: &CancelToken,
     ) -> Result<MicEchoCleaning, RuntimeError> {
         // `MicEcho` holds one mic and one reference: a second track of either kind would be
@@ -2209,10 +2359,14 @@ where
             count(TrackId::Reference)
         );
         let mic = transcripts.iter().position(|(k, _)| *k == TrackId::Mic);
-        let reference: Option<Vec<Word>> = transcripts
-            .iter()
-            .find(|(k, _)| *k == TrackId::Reference)
-            .map(|(_, s)| s.iter().flat_map(|s| s.words.iter().cloned()).collect());
+        // A kept reference (T14.47, docs/sync-spec.md 15.11 d): the words of its live final
+        // lines here, in time order, in place of this run's (there are none).
+        let reference: Option<Vec<Word>> = kept_reference.map(<[Word]>::to_vec).or_else(|| {
+            transcripts
+                .iter()
+                .find(|(k, _)| *k == TrackId::Reference)
+                .map(|(_, s)| s.iter().flat_map(|s| s.words.iter().cloned()).collect())
+        });
         // The first mic and reference diarisations, borrowed apart (no copy).
         let (mut mic_diar, mut ref_diar) = (None, None);
         for (k, d) in diarizations.iter_mut() {
@@ -2635,6 +2789,101 @@ struct Labelled {
     words_under_edits: usize,
     /// One [`PostWarning::SpeakerUnknown`] per track that has such lines.
     unknown: Vec<PostWarning>,
+}
+
+/// The conflict when what decided the kept tracks changed before the write (T14.47,
+/// docs/sync-spec.md 15.2, "The decision is made once"): the pass writes nothing.
+pub const KEPT_DECISION_CHANGED: &str =
+    "the transcript's earlier lines changed while it was being processed";
+
+/// What the kept-track decision reads of a meeting's final rows (T14.47, docs/sync-spec.md
+/// 15.2): per track, its live final rows (in time order) and which of them the user edited.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct TrackLines {
+    finals: BTreeMap<EntityId, Vec<SegmentRow>>,
+}
+
+impl TrackLines {
+    fn of(rows: Vec<SegmentRow>) -> Self {
+        let mut finals: BTreeMap<EntityId, Vec<SegmentRow>> = BTreeMap::new();
+        for r in rows {
+            if r.pass == TranscriptPass::Final && !r.meta.deleted {
+                finals.entry(r.segment.track).or_default().push(r);
+            }
+        }
+        for rows in finals.values_mut() {
+            rows.sort_by_key(|r| (r.segment.start, r.segment.id));
+        }
+        Self { finals }
+    }
+
+    /// Read in one short lock.
+    fn read(store: &earshot_store::Store, meeting: EntityId) -> Result<Self, RuntimeError> {
+        Ok(Self::of(store.segments(meeting)?))
+    }
+
+    /// Read again inside the write transaction.
+    fn read_tx(tx: &earshot_store::StoreTx<'_>, meeting: EntityId) -> Result<Self, RuntimeError> {
+        Ok(Self::of(tx.segments(meeting)?))
+    }
+
+    fn rows(&self, track: EntityId) -> &[SegmentRow] {
+        self.finals.get(&track).map_or(&[], Vec::as_slice)
+    }
+
+    /// The track's live edited final lines.
+    fn edited(&self, track: EntityId) -> Vec<Segment> {
+        self.rows(track)
+            .iter()
+            .filter(|r| r.text_edited_at.is_some())
+            .map(|r| r.segment.clone())
+            .collect()
+    }
+
+    /// Whether the track has a live final row here, edited or not.
+    fn has_final(&self, track: EntityId) -> bool {
+        !self.rows(track).is_empty()
+    }
+
+    /// Whether `segments` (this run's for the track) found nothing: after the words under the
+    /// track's edited lines are dropped (core `drop_words_under_edits`), none holds text.
+    fn finds_nothing(&self, track: EntityId, segments: &[Segment]) -> bool {
+        let (left, _) = drop_words_under_edits(segments.to_vec(), &self.edited(track));
+        left.iter().all(|s| s.text.is_empty() && s.words.is_empty())
+    }
+
+    /// Whether the track is kept: it found nothing and has lines to keep.
+    fn keeps(&self, track: EntityId, segments: &[Segment]) -> bool {
+        self.has_final(track) && self.finds_nothing(track, segments)
+    }
+
+    /// Whether what the decision reads of `track` changed since `early` so that it would now
+    /// differ from the one made (`kept`).
+    fn decision_changed(
+        &self,
+        early: &TrackLines,
+        track: EntityId,
+        segments: &BTreeMap<EntityId, Vec<Segment>>,
+        kept: &BTreeSet<EntityId>,
+    ) -> bool {
+        let read_changed = self.edited(track) != early.edited(track)
+            || self.has_final(track) != early.has_final(track);
+        let segments = segments.get(&track).map_or(&[][..], Vec::as_slice);
+        read_changed && self.keeps(track, segments) != kept.contains(&track)
+    }
+
+    /// The words of the track's live final rows, in time order (a kept reference, 15.11 d).
+    fn words_of(&self, track: EntityId) -> Vec<Word> {
+        self.rows(track)
+            .iter()
+            .flat_map(|r| r.segment.words.iter().cloned())
+            .collect()
+    }
+
+    /// How many live final rows the meeting has.
+    fn live_finals(&self) -> usize {
+        self.finals.values().map(Vec::len).sum()
+    }
 }
 
 /// Labels each track's segments with `diar`'s speakers after dropping the new words under the

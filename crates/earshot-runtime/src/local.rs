@@ -313,6 +313,9 @@ pub(crate) enum DeviceRecord {
     /// `ignore-copied`: this device's legacy ignores (device-local `speaker-identities`
     /// entries) were copied onto the synced speaker rows (T12.93; [`crate::ignore_copy`]).
     IgnoreCopied,
+    /// `replaced-text-swept`: the one-off sweep of replaced transcript text ran to the end
+    /// (T14.47; [`crate::replaced_text`]).
+    ReplacedTextSwept,
 }
 
 impl DeviceRecord {
@@ -374,6 +377,7 @@ impl DeviceRecord {
         DeviceRecord::SummaryOrder,
         DeviceRecord::SummarySeenStart,
         DeviceRecord::IgnoreCopied,
+        DeviceRecord::ReplacedTextSwept,
     ];
 
     /// Its key.
@@ -459,6 +463,7 @@ impl DeviceRecord {
                 DeviceRecord::SummaryOrder => crate::summary_order::SUMMARY_ORDER_KEY,
                 DeviceRecord::SummarySeenStart => crate::summary_seen::SEEN_START_KEY,
                 DeviceRecord::IgnoreCopied => crate::ignore_copy::COPIED_KEY,
+                DeviceRecord::ReplacedTextSwept => crate::replaced_text::SWEPT_KEY,
             }
             .to_owned(),
         )

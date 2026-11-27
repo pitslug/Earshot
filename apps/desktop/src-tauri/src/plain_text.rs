@@ -130,6 +130,31 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             ));
         }
     }
+    // T14.47 (docs/sync-spec.md 15.11 c): a side the new run found nothing on kept its lines.
+    let kept: Vec<LiveTrack> = [LiveTrack::You, LiveTrack::Them]
+        .into_iter()
+        .filter(|track| {
+            warnings.iter().any(|w| {
+                matches!(w, PostWarning::EarlierLinesKept { track: t } if LiveTrack::of(*t) == *track)
+            })
+        })
+        .collect();
+    match kept.as_slice() {
+        [] => {}
+        [one] => out.push((
+            "post-kept-lines".to_owned(),
+            format!(
+                "Transcribing again found no words from {}, so its earlier lines are kept as \
+                 they were.",
+                one.device()
+            ),
+        )),
+        _ => out.push((
+            "post-kept-lines".to_owned(),
+            "Transcribing again found no words, so the earlier transcript is kept as it was."
+                .to_owned(),
+        )),
+    }
     // T12.16: the user's corrected lines were kept over the new transcript.
     let edited: usize = warnings
         .iter()
@@ -195,6 +220,7 @@ pub fn post_warning_copy(warnings: &[PostWarning]) -> Vec<(String, String)> {
             | PostWarning::RepetitionDropped { .. }
             | PostWarning::VoiceWithoutWords { .. }
             | PostWarning::SpeakerUnknown { .. }
+            | PostWarning::EarlierLinesKept { .. }
             | PostWarning::EditedLinesKept { .. } => None,
         };
         if let Some((key, text)) = shown

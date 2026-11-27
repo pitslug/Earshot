@@ -104,6 +104,105 @@ pub struct TickReport {
     /// (T12.93: with no problem in the tick, no row held and none waiting for a retry, the
     /// one-off copy of legacy ignores may run, [`crate::ignore_copy`]).
     pub pull_complete: bool,
+    /// Segment rows whose copy here held text before a page and holds none after it
+    /// ([`earshot_store::Applied::text_emptied`], docs/sync-spec.md 15.4): a tick with any runs
+    /// one `flush_erasures` at its end, however it ends (15.8). Rows, never content.
+    pub text_emptied: usize,
+}
+
+/// What the sweep of replaced text ([`crate::replaced_text`]) reads of a store's sync: whether
+/// its sync thread is running, how its last tick ended and whether any tick completed a pull
+/// (docs/sync-spec.md 15.6). One entry per store, by device id, for the life of the process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TickSeen {
+    /// A sync thread of the store is running.
+    pub running: bool,
+    /// How its last tick ended: `Some(true)` without a problem; `None` before any.
+    pub last_ok: Option<bool>,
+    /// The last tick's [`TickReport::text_emptied`].
+    pub text_emptied: usize,
+    /// Whether any tick of this process completed a pull.
+    pub pull_completed: bool,
+}
+
+static TICKS_SEEN: std::sync::Mutex<std::collections::BTreeMap<DeviceId, TickSeen>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn ticks_seen() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<DeviceId, TickSeen>> {
+    TICKS_SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Sync threads running per store (two can run for a moment when one replaces the other).
+static THREADS_RUNNING: std::sync::Mutex<std::collections::BTreeMap<DeviceId, u32>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// What the store of `device` has seen of its sync so far ([`TickSeen`]).
+#[must_use]
+pub fn tick_seen(device: DeviceId) -> TickSeen {
+    let mut seen = ticks_seen().get(&device).copied().unwrap_or_default();
+    seen.running = THREADS_RUNNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&device)
+        .is_some_and(|n| *n > 0);
+    seen
+}
+
+/// Held by a running sync thread of the store of `device` ([`TickSeen::running`]).
+pub(crate) struct Running(DeviceId);
+
+impl Running {
+    pub(crate) fn new(device: DeviceId) -> Self {
+        *THREADS_RUNNING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(device)
+            .or_default() += 1;
+        Self(device)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let mut all = THREADS_RUNNING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = all.get_mut(&self.0) {
+            *n = n.saturating_sub(1);
+        }
+    }
+}
+
+fn record_tick(device: DeviceId, ok: bool, report: &TickReport) {
+    let mut all = ticks_seen();
+    let seen = all.entry(device).or_default();
+    seen.last_ok = Some(ok);
+    seen.text_emptied = report.text_emptied;
+    seen.pull_completed |= report.pull_complete;
+}
+
+/// Whether the push would seal `row` (its plaintext passes the push's guard,
+/// [`earshot_sync::row_refused`]): the store's "lines go out before what they replace" judges
+/// queued rows by this, the push's own rule (docs/sync-spec.md 15.2).
+pub(crate) fn sealable(row: &SyncedRow) -> bool {
+    use earshot_sync::row_refused as r;
+    let refused = match row {
+        SyncedRow::Meeting(x) => r(x),
+        SyncedRow::Track(x) => r(x),
+        SyncedRow::Segment(x) => r(x),
+        SyncedRow::Speaker(x) => r(x),
+        SyncedRow::Note(x) => r(x),
+        SyncedRow::Summary(x) => r(x),
+        SyncedRow::Person(x) => r(x),
+        SyncedRow::Voiceprint(x) => r(x),
+        SyncedRow::Folder(x) => r(x),
+        SyncedRow::SummaryRequest(x) => r(x),
+        SyncedRow::DictionaryWord(x) => r(x),
+        SyncedRow::VoiceprintSample(x) => r(x),
+    };
+    matches!(refused, Ok(None))
 }
 
 impl TickReport {
@@ -405,6 +504,12 @@ fn seal(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
         SyncedRow::DictionaryWord(r) => seal_row(keys, r),
         SyncedRow::VoiceprintSample(r) => seal_row(keys, r),
     }
+}
+
+/// Test only: [`seal`], as the push seals.
+#[cfg(test)]
+pub(super) fn seal_for_test(keys: &Keys, row: &SyncedRow) -> Result<SealedRow, SealError> {
+    seal(keys, row)
 }
 
 fn wire_row(sealed: SealedRow) -> WireRow {
@@ -818,8 +923,14 @@ impl SyncClient {
         }
         let mut report = TickReport::default();
         let outcome = self.tick_into(&mut report);
+        record_tick(self.device, outcome.is_ok(), &report);
         {
             let mut db = self.services.store();
+            // Text a page took out leaves the write-ahead log too, however the tick ended
+            // (docs/sync-spec.md 15.8). Best effort: a Busy leaves it to the next checkpoint.
+            if report.text_emptied > 0 {
+                let _ = db.flush_erasures();
+            }
             // Rows still waiting for a parent when the tick ends, whenever they were pulled.
             report.held = report.held.saturating_add(
                 db.held_count(&[HoldReason::Parent])
@@ -879,7 +990,79 @@ impl SyncClient {
         } else {
             Ok(())
         };
-        pulled.and(retried)
+        // The release of the two holds (docs/sync-spec.md 15.4): after a pull that read the
+        // relay to its end, and after the retry.
+        let released = if pulled.is_ok() && retried.is_ok() && report.pull_complete {
+            self.release_holds(&keys, kinds, report)
+        } else {
+            Ok(())
+        };
+        pulled.and(retried).and(released)
+    }
+
+    /// The release (docs/sync-spec.md 15.4): every row H1 or H2 holds
+    /// ([`Store::held_by_replaced_text`]) is applied whatever its track then shows, unless a row that could still give
+    /// its track a live final row is held too (a live final row of that meeting and track held
+    /// as busy, parent or clock). Held rows are read [`MAX_RETRY`] at a time; the segment
+    /// tombstones among those held for a parent are kept and applied [`MAX_RETRY`] a page.
+    fn release_holds(
+        &self,
+        keys: &Keys,
+        kinds: SyncKinds,
+        report: &mut TickReport,
+    ) -> Result<(), SyncProblem> {
+        use earshot_core::model::TranscriptPass;
+        // The tracks a held row could still give a line.
+        let mut blocked: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
+        let mut candidates: Vec<Incoming> = Vec::new();
+        // Only the rows H1 and H2 hold are released; any other row held for a parent waits for
+        // its parent as before.
+        let theirs = self.services.store().held_by_replaced_text()?;
+        if theirs.is_empty() {
+            return Ok(());
+        }
+        let mut after: Option<[u8; ROW_KEY_LEN]> = None;
+        loop {
+            if self.stopping() {
+                return Ok(());
+            }
+            let held = self.services.store().held_page(
+                &[HoldReason::Busy, HoldReason::Parent, HoldReason::Clock],
+                after.as_ref(),
+                MAX_RETRY,
+            )?;
+            let Some(last) = held.last() else { break };
+            after = Some(last.key);
+            let full = held.len() >= MAX_RETRY;
+            for h in held {
+                let reason = h.reason;
+                let Ok(inc) = open(keys, h.seq, &h.key, h.stamp, h.body) else {
+                    continue;
+                };
+                if let Some(SyncedRow::Segment(s)) = &inc.row {
+                    if s.pass == TranscriptPass::Final && !s.meta.deleted {
+                        blocked.insert((s.meeting_id, s.segment.track));
+                    } else if s.meta.deleted
+                        && reason == HoldReason::Parent
+                        && theirs.contains(&inc.key)
+                    {
+                        candidates.push(inc);
+                    }
+                }
+            }
+            if !full {
+                break;
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        candidates.sort_by_key(|inc| inc.seq);
+        for chunk in candidates.chunks(MAX_RETRY) {
+            report.retried += chunk.len();
+            self.apply_releasing(chunk, kinds, &blocked, report)?;
+        }
+        Ok(())
     }
 
     fn push(
@@ -1222,6 +1405,27 @@ impl SyncClient {
         kinds: SyncKinds,
         report: &mut TickReport,
     ) -> Result<usize, SyncProblem> {
+        self.apply_with(page, kinds, report, None)
+    }
+
+    /// [`Self::apply`] for the release of the two holds ([`Store::apply_remote_releasing`]).
+    fn apply_releasing(
+        &self,
+        page: &[Incoming],
+        kinds: SyncKinds,
+        blocked: &BTreeSet<(EntityId, EntityId)>,
+        report: &mut TickReport,
+    ) -> Result<usize, SyncProblem> {
+        self.apply_with(page, kinds, report, Some(blocked))
+    }
+
+    fn apply_with(
+        &self,
+        page: &[Incoming],
+        kinds: SyncKinds,
+        report: &mut TickReport,
+        release: Option<&BTreeSet<(EntityId, EntityId)>>,
+    ) -> Result<usize, SyncProblem> {
         if page.is_empty() {
             return Ok(0);
         }
@@ -1251,9 +1455,24 @@ impl SyncClient {
             }
         }
         let names_before = crate::summary_names::names_before(&**db, &speakers)?;
+        // Word choices of lines a page replaced go with them (docs/sync-spec.md 15.3): dropped
+        // in the page's transaction for every meeting the page carries a segment row of.
+        let segment_meetings: BTreeSet<EntityId> = page
+            .iter()
+            .filter_map(|inc| match &inc.row {
+                Some(SyncedRow::Segment(s)) => Some(s.meeting_id),
+                _ => None,
+            })
+            .collect();
         // With Dictionary sync on, `settings/vocabulary` is rebuilt from the live word rows in
         // the page's own transaction, so the list never differs from the rows it came from.
         let after = |tx: &mut StoreTx<'_>| -> Result<(), StoreError> {
+            for meeting in &segment_meetings {
+                crate::word_choices::drop_stale_tx(tx, *meeting).map_err(|e| match e {
+                    crate::RuntimeError::Store(e) => e,
+                    other => StoreError::Corrupt(other.to_string()),
+                })?;
+            }
             crate::summary_names::names_changed_tx(tx, &names_before)?;
             if kinds.dictionary {
                 crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep)?;
@@ -1271,7 +1490,10 @@ impl SyncClient {
         // (rows left unrepaired by an earlier build are mended once per start); every later one
         // runs the repairs its own rows call for (T14.50). One tick at a time on a store, so the
         // flag has one writer.
-        let applied = if self.repaired_all.load(Ordering::Relaxed) {
+        let applied = if let Some(blocked) = release {
+            let blocked = |m: EntityId, t: EntityId| blocked.contains(&(m, t));
+            store.apply_remote_releasing(page, &rules, &blocked, hlc, &*clock)?
+        } else if self.repaired_all.load(Ordering::Relaxed) {
             store.apply_remote(page, &rules, hlc, &*clock)?
         } else {
             let applied = store.apply_remote_every_repair(page, &rules, hlc, &*clock)?;
@@ -1283,6 +1505,7 @@ impl SyncClient {
             let _ = store.flush_erasures();
         }
         report.written += applied.written;
+        report.text_emptied += applied.text_emptied;
         report.ignored += applied.ignored + applied.skipped;
         // Rows held for a parent are counted once, from the store, when the tick ends: a later
         // page of this tick may bring the parent.

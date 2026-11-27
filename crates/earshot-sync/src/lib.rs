@@ -30,7 +30,8 @@ pub use guard::{MAX_PLAINTEXT, PlaintextRefused, check_plaintext};
 pub use keys::{KEY_CHECK_LEN, Keys, ROW_KEY_LEN, RowKey, VaultKey};
 pub use pairing::{BadCode, PairingCode, SLOT_LEN};
 pub use seal::{
-    ENVELOPE_FORMAT, Opened, OpenedRow, SealedRow, open_presence, open_row, seal_presence, seal_row,
+    ENVELOPE_FORMAT, Opened, OpenedRow, SealedRow, open_presence, open_row, row_refused,
+    seal_presence, seal_row,
 };
 
 /// Why sealed bytes could not be opened. A fixed reason, never the bytes.

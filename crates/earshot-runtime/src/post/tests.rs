@@ -3757,6 +3757,9 @@ mod mark_me_tests;
 /// T14.23: a word probability that is no number never costs the final pass its write.
 mod nan_words_tests;
 
+/// T14.47: replaced transcript text is erased (docs/sync-spec.md section 15).
+mod replaced_text_tests;
+
 /// Audio with `level` (peak) over each of `spans`, silence elsewhere.
 fn level_audio(total_ms: u64, spans: &[(u64, u64, f32)]) -> MonoBuffer {
     let mut samples = vec![0.0_f32; total_ms as usize * 16];

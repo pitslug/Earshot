@@ -498,15 +498,20 @@ impl ExportLease {
 impl Store {
     /// Runs `f` in one `IMMEDIATE` transaction (the write lock taken at the start, so
     /// what `f` reads cannot change before what it writes): committed if `f` returns `Ok`.
-    pub(crate) fn immediate<T>(
+    ///
+    /// # Errors
+    /// `f`'s error; SQLite errors.
+    pub fn immediate<T>(
         &mut self,
         f: impl FnOnce(&mut StoreTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let mut tx = StoreTx { conn: tx };
+        let mut tx = StoreTx::of(tx, self.push_guard.clone());
         let out = f(&mut tx)?;
+        // As in `Store::transaction` (docs/sync-spec.md 15.2).
+        tx.assert_lines_checked()?;
         tx.conn.commit()?;
         Ok(out)
     }

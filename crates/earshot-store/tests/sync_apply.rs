@@ -628,11 +628,23 @@ fn store_sync_queue_everything_requeues_sent_rows_and_drops_held_ones() {
     let orphan = incoming(9, SyncedRow::Track(track(3, 7, at(T0 + 3, 0, THERE))));
     let a = e.apply(&[orphan], &rules(false));
     assert_eq!(a.held, held(1, HoldReason::Parent));
-    assert_eq!(e.store.queue_everything().unwrap(), 2);
+    assert_eq!(
+        {
+            let mut hlc = e.store.hlc(HERE).unwrap();
+            e.store.queue_everything(&mut hlc, &e.clock).unwrap()
+        },
+        2
+    );
     assert_eq!(e.outbox_ids(), [id(1), id(2)]);
     assert!(e.store.held_rows().unwrap().is_empty());
     // Queued once only.
-    assert_eq!(e.store.queue_everything().unwrap(), 0);
+    assert_eq!(
+        {
+            let mut hlc = e.store.hlc(HERE).unwrap();
+            e.store.queue_everything(&mut hlc, &e.clock).unwrap()
+        },
+        0
+    );
     assert_eq!(e.store.outbox_len().unwrap(), 2);
 }
 

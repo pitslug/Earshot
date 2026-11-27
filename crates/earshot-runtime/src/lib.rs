@@ -97,6 +97,7 @@ mod priority;
 #[cfg(feature = "engines")]
 pub mod recommend;
 pub mod recover;
+pub mod replaced_text;
 pub mod replay;
 pub mod retention;
 pub mod search;

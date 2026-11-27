@@ -234,10 +234,38 @@ impl Drop for DeletionClaim {
 pub struct Services {
     db: Arc<Mutex<Db>>,
     activity: Arc<Mutex<Activity>>,
+    /// The debounced flush user text edits ask for ([`Services::request_flush`]).
+    flush: Arc<FlushDebounce>,
     /// Where audio, models and the database live.
     pub data: DataDir,
     /// Wall clock.
     pub clock: SharedClock,
+}
+
+/// How long after the last request the debounced flush runs (T14.47, docs/sync-spec.md 15.8; a
+/// judgement).
+pub const FLUSH_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The debounced flush ([`Services::request_flush`]): the latest request and whether its thread
+/// runs.
+#[derive(Debug)]
+struct FlushDebounce {
+    state: Mutex<(Option<std::time::Instant>, bool)>,
+    delay: std::sync::atomic::AtomicU64,
+    /// Flushes run, for tests.
+    runs: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for FlushDebounce {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new((None, false)),
+            delay: std::sync::atomic::AtomicU64::new(
+                u64::try_from(FLUSH_DEBOUNCE.as_millis()).unwrap_or(u64::MAX),
+            ),
+            runs: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
 }
 
 impl std::fmt::Debug for Services {
@@ -257,9 +285,13 @@ impl Services {
     pub fn new(mut store: Store, data: DataDir, clock: SharedClock) -> Result<Self, RuntimeError> {
         let device = store.device_id(&*clock, &mut *os_seeded_rng())?;
         let hlc = store.hlc(device)?;
+        // "Lines go out before what they replace" judges queued rows by the push's own guard
+        // (docs/sync-spec.md 15.2).
+        store.set_push_guard(crate::sync::push_guard());
         Ok(Self {
             db: Arc::new(Mutex::new(Db { store, hlc, device })),
             activity: Arc::default(),
+            flush: Arc::default(),
             data,
             clock,
         })
@@ -270,6 +302,87 @@ impl Services {
     #[cfg(test)]
     pub(crate) fn store_is_held(&self) -> bool {
         matches!(self.db.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    }
+
+    /// Asks for a truncating checkpoint ([`Store::flush_erasures`]) after a user's text edit
+    /// (T14.47, docs/sync-spec.md 15.8): one flush runs [`FLUSH_DEBOUNCE`] after the last
+    /// request, on a thread of its own, never inside the edit and never once per click. Best
+    /// effort: a `Busy` leaves it to the next checkpoint.
+    pub fn request_flush(&self) {
+        let debounce = Arc::clone(&self.flush);
+        let delay = std::time::Duration::from_millis(
+            debounce.delay.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        {
+            let mut s = debounce
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            s.0 = Some(std::time::Instant::now() + delay);
+            if s.1 {
+                return;
+            }
+            s.1 = true;
+        }
+        // Weak: a flush never keeps a closed store open.
+        let db = Arc::downgrade(&self.db);
+        let spawned = std::thread::Builder::new()
+            .name("earshot-flush".into())
+            .spawn(move || {
+                loop {
+                    let wait = {
+                        let mut s = debounce
+                            .state
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        let due = s.0.unwrap_or_else(std::time::Instant::now);
+                        let now = std::time::Instant::now();
+                        if now >= due {
+                            s.0 = None;
+                            s.1 = false;
+                            None
+                        } else {
+                            Some(due - now)
+                        }
+                    };
+                    match wait {
+                        Some(w) => std::thread::sleep(w),
+                        None => break,
+                    }
+                }
+                if let Some(db) = db.upgrade() {
+                    let _ = db
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .flush_erasures();
+                }
+                debounce
+                    .runs
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+        if spawned.is_err() {
+            // No thread: nothing waits for it; the closing checkpoint flushes.
+            self.flush
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .1 = false;
+        }
+    }
+
+    /// Test only: the debounced flush waits `delay` ([`FLUSH_DEBOUNCE`] otherwise).
+    #[cfg(test)]
+    pub(crate) fn set_flush_delay(&self, delay: std::time::Duration) {
+        self.flush.delay.store(
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Test only: how many debounced flushes ran.
+    #[cfg(test)]
+    pub(crate) fn flushes_run(&self) -> usize {
+        self.flush.runs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Locks the store (and the HLC).

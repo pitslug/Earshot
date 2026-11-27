@@ -347,6 +347,11 @@ pub struct Applied {
     pub lines_rewritten_under_edits: usize,
     /// Speaker rows made live again because a user's edited line still names them (rule 4c).
     pub speakers_revived: usize,
+    /// Segment rows whose copy here held text before the page and holds none after it
+    /// (docs/sync-spec.md 15.4): a pulled tombstone that held text, cleared or erased here; a
+    /// pulled copy that holds no text over one that did; a line rule 4b took out. Never a row
+    /// whose text only changed. Rows, never content. A tick with any runs `flush_erasures`.
+    pub text_emptied: usize,
     /// The meetings a row written here belongs to (a meeting's own row, its tracks, lines,
     /// speakers, notes, summaries and summary requests), including a summary the convergence
     /// rules replaced: ids only, so the window can read again what changed (T12.81). A row
@@ -470,6 +475,64 @@ fn hold(tx: &StoreTx<'_>, inc: &Incoming, reason: HoldReason) -> Result<(), Stor
             reason.word()
         ],
     )?;
+    Ok(())
+}
+
+/// `local_state` key of the row keys held by H1 or H2 (docs/sync-spec.md 15.4): the release
+/// retries only those. A list of 16-byte row keys. The hold word stays `parent` (0.9.0 refuses
+/// a word it does not know), so which `parent` rows are the two holds' is kept here.
+pub const HELD_REPLACED_KEY: &str = "sync-held-replaced";
+
+fn held_replaced_keys(
+    c: &rusqlite::Connection,
+) -> Result<std::collections::BTreeSet<[u8; 16]>, StoreError> {
+    let bytes: Option<Vec<u8>> = c
+        .query_row(
+            "SELECT value FROM local_state WHERE key = ?1",
+            params![HELD_REPLACED_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(bytes
+        .unwrap_or_default()
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .copied()
+        .collect())
+}
+
+/// Writes the set, keeping only keys still held for a parent.
+fn put_held_replaced_keys(
+    c: &rusqlite::Connection,
+    keys: &std::collections::BTreeSet<[u8; 16]>,
+) -> Result<(), StoreError> {
+    let mut value = Vec::with_capacity(keys.len() * 16);
+    for k in keys {
+        let held: bool = c
+            .query_row(
+                "SELECT 1 FROM sync_pending WHERE key = ?1 AND reason = ?2",
+                params![&k[..], HoldReason::Parent.word()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if held {
+            value.extend_from_slice(k);
+        }
+    }
+    if value.is_empty() {
+        c.execute(
+            "DELETE FROM local_state WHERE key = ?1",
+            params![HELD_REPLACED_KEY],
+        )?;
+    } else {
+        c.execute(
+            "INSERT INTO local_state (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![HELD_REPLACED_KEY, value],
+        )?;
+    }
     Ok(())
 }
 
@@ -793,7 +856,9 @@ fn edits_win<C: Clock + ?Sized>(
         {
             continue;
         }
-        let rows = crate::repo::segments_of(&tx.conn, m)?;
+        // A row that does not read takes no part (T14.26): it is never shown, and one damaged
+        // row must not fail the page.
+        let rows = crate::repo::segments_or_damaged(&tx.conn, m)?.0;
         let finals: Vec<&SegmentRow> = rows
             .iter()
             .filter(|r| r.pass == TranscriptPass::Final && !r.meta.deleted)
@@ -828,11 +893,23 @@ fn edits_win<C: Clock + ?Sized>(
             }
             let mut new = (*r).clone();
             match kept.into_iter().next() {
-                Some(segment) => new.segment = segment,
-                None => new.meta.deleted = true,
+                Some(segment) => {
+                    new.segment = segment;
+                    new.meta.touch(hlc, clock);
+                    crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(new.clone()))?;
+                    // A line this device stamped: lines go out before what they replace
+                    // (docs/sync-spec.md 15.2).
+                    tx.note_line(&new);
+                }
+                // A line that lost all its words is taken out in the cleared form, through the
+                // one statement (docs/sync-spec.md 15.2), so its words leave this device too.
+                None => {
+                    if let Some(rowid) = crate::replaced::rowid_of(&tx.conn, r.segment.id)? {
+                        crate::replaced::clear_rowid(&tx.conn, rowid, hlc.now(clock))?;
+                        out.text_emptied += 1;
+                    }
+                }
             }
-            new.meta.touch(hlc, clock);
-            crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(new))?;
             out.words_dropped_under_edits += dropped;
             out.lines_rewritten_under_edits += 1;
         }
@@ -860,6 +937,95 @@ fn edits_win<C: Clock + ?Sized>(
         }
     }
     Ok(())
+}
+
+/// What [`Store::apply_remote`] does with a pulled segment row once it is written
+/// (docs/sync-spec.md 15.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AfterWrite {
+    /// Nothing more.
+    #[default]
+    Nothing,
+    /// It is a tombstone that holds text: clear it here.
+    Clear,
+    /// It is a tombstone that holds text of a meeting deleted here: erase it.
+    Erase,
+}
+
+/// The pulled segment row's part of the apply ([`segment_plan`]).
+#[derive(Debug, Clone, Copy, Default)]
+struct SegmentPlan {
+    /// H1 or H2 holds it as `parent`.
+    hold: bool,
+    /// What follows the write.
+    after: AfterWrite,
+    /// It holds no text over a copy here that did ([`Applied::text_emptied`]).
+    emptied: bool,
+    /// It is a live final row and its track had no live final row here: rows held for it may
+    /// apply now ([`Applied::parents_written`]).
+    first_final: bool,
+}
+
+/// The holds and the clearing of docs/sync-spec.md 15.4 for the pulled segment row `there`,
+/// which is the copy to write over `local` (a local row that does not read is `None`, as an
+/// absent one). `release` is the release's `blocked`: in the release, a row is held only when
+/// its track is blocked. Reads no local row whole but `local`, which the page read already.
+fn segment_plan(
+    tx: &StoreTx<'_>,
+    there: &SegmentRow,
+    local: Option<&SyncedRow>,
+    release: Option<&dyn Fn(EntityId, EntityId) -> bool>,
+) -> Result<SegmentPlan, StoreError> {
+    use earshot_core::model::TranscriptPass;
+    let c = &tx.conn;
+    let (meeting, track) = (there.meeting_id, there.segment.track);
+    let here = match local {
+        Some(SyncedRow::Segment(l)) => Some(l),
+        _ => None,
+    };
+    let meeting_deleted = crate::repo::row_reads_deleted(c, "meeting", meeting)?;
+    let mut plan = SegmentPlan {
+        emptied: here.is_some_and(SegmentRow::holds_text) && !there.holds_text(),
+        ..SegmentPlan::default()
+    };
+    if there.meta.deleted && there.holds_text() {
+        plan.after = if meeting_deleted {
+            AfterWrite::Erase
+        } else {
+            AfterWrite::Clear
+        };
+        // Cleared here, so it counts through the clearing.
+        plan.emptied = false;
+    }
+    let meeting_live = !meeting_deleted
+        && crate::repo::synced_by_id_or_damaged(c, "meeting", meeting)?
+            .is_ok_and(|m| m.is_some_and(|m| !m.meta().deleted));
+    if !meeting_live || !crate::replaced::track_of_meeting(c, meeting, track)? {
+        return Ok(plan);
+    }
+    if there.pass == TranscriptPass::Final && !there.meta.deleted {
+        plan.first_final = !crate::replaced::has_readable_live_final(c, meeting, track, None)?;
+    }
+    let may_hold = release.is_none_or(|blocked| blocked(meeting, track));
+    if !there.meta.deleted || there.is_erasure() || !may_hold {
+        return Ok(plan);
+    }
+    let Some(here) = here.filter(|h| !h.meta.deleted) else {
+        return Ok(plan);
+    };
+    plan.hold = match (there.pass, here.pass) {
+        // H1, a cleared draft over a live draft whose track shows no final line here.
+        (TranscriptPass::Live, TranscriptPass::Live) => {
+            !there.holds_text()
+                && !crate::replaced::has_readable_live_final(c, meeting, track, None)?
+        }
+        // H2, a final line taken out over the last live final line of its track here.
+        (TranscriptPass::Final, TranscriptPass::Final) => {
+            !crate::replaced::has_readable_live_final(c, meeting, track, Some(here.segment.id))?
+        }
+        _ => false,
+    };
+    Ok(plan)
 }
 
 /// Counts a sample a repair erased and names its meeting (read in the repair's own query), so
@@ -892,6 +1058,9 @@ impl StoreTx<'_> {
                 params![table],
             )?;
         }
+        // Lines go out before what they replace (docs/sync-spec.md 15.2): every track with
+        // queued cleared rows is checked before this transaction commits.
+        self.note_every_cleared_track()?;
         Ok(u64::try_from(queued).unwrap_or(u64::MAX))
     }
 }
@@ -996,10 +1165,21 @@ impl Store {
     ///
     /// # Errors
     /// Store errors; nothing changes then.
-    pub fn queue_everything(&mut self) -> Result<u64, StoreError> {
+    pub fn queue_everything<C: Clock + ?Sized>(
+        &mut self,
+        hlc: &mut Hlc,
+        clock: &C,
+    ) -> Result<u64, StoreError> {
         self.immediate(|tx| {
             let queued = tx.queue_every_row()?;
             tx.conn.execute("DELETE FROM sync_pending", [])?;
+            tx.conn.execute(
+                "DELETE FROM local_state WHERE key = ?1",
+                params![HELD_REPLACED_KEY],
+            )?;
+            // Re-queued cleared rows go out after a line of their track (docs/sync-spec.md
+            // 15.2), stamped with the device HLC.
+            tx.send_lines_first(hlc, clock)?;
             Ok(queued)
         })
     }
@@ -1181,7 +1361,7 @@ impl Store {
         hlc: &mut Hlc,
         clock: &C,
     ) -> Result<Applied, StoreError> {
-        self.apply_remote_with(page, rules, hlc, clock, Wrote::default())
+        self.apply_remote_with(page, rules, hlc, clock, Wrote::default(), None)
     }
 
     /// [`Store::apply_remote`], running every convergence repair whatever the page wrote, as
@@ -1199,10 +1379,31 @@ impl Store {
         hlc: &mut Hlc,
         clock: &C,
     ) -> Result<Applied, StoreError> {
-        self.apply_remote_with(page, rules, hlc, clock, Wrote::EVERYTHING)
+        self.apply_remote_with(page, rules, hlc, clock, Wrote::EVERYTHING, None)
     }
 
-    /// `wrote` starts as the kinds whose repairs run whatever the page writes.
+    /// [`Store::apply_remote`] for the release of the two holds (docs/sync-spec.md 15.4, "The
+    /// release"): run by the sync client at the end of a tick whose pull completed, after the
+    /// retry, over the rows held for a parent. A row that H1 or H2 would hold is applied
+    /// whatever its track then shows, unless `blocked(meeting, track)`: a row that could still
+    /// give the track a live final row is held too (a live final row of that meeting and track
+    /// held as busy, parent or clock), so it stays held.
+    ///
+    /// # Errors
+    /// As [`Store::apply_remote`].
+    pub fn apply_remote_releasing<C: Clock + ?Sized>(
+        &mut self,
+        page: &[Incoming],
+        rules: &ApplyRules<'_>,
+        blocked: &dyn Fn(EntityId, EntityId) -> bool,
+        hlc: &mut Hlc,
+        clock: &C,
+    ) -> Result<Applied, StoreError> {
+        self.apply_remote_with(page, rules, hlc, clock, Wrote::default(), Some(blocked))
+    }
+
+    /// `wrote` starts as the kinds whose repairs run whatever the page writes; `release` is the
+    /// release's `blocked` ([`Store::apply_remote_releasing`]).
     fn apply_remote_with<C: Clock + ?Sized>(
         &mut self,
         page: &[Incoming],
@@ -1210,10 +1411,19 @@ impl Store {
         hlc: &mut Hlc,
         clock: &C,
         mut wrote: Wrote,
+        release: Option<&dyn Fn(EntityId, EntityId) -> bool>,
     ) -> Result<Applied, StoreError> {
         self.immediate(|tx| {
             let mut out = Applied::default();
-            for inc in page {
+            // A row H1 or H2 would hold is tried once more after the rest of the page
+            // (docs/sync-spec.md 15.4): a page that brings a track's new lines after the rows
+            // they replace applies both, as the end-of-tick retry would.
+            let mut rows: std::collections::VecDeque<(&Incoming, bool)> =
+                page.iter().map(|inc| (inc, false)).collect();
+            // The row keys H1 and H2 hold (`HELD_REPLACED_KEY`).
+            let mut h_held = held_replaced_keys(&tx.conn)?;
+            let h_held_before = !h_held.is_empty();
+            while let Some((inc, deferred)) = rows.pop_front() {
                 let Some(row) = &inc.row else {
                     // A kind switched off is skipped before anything is held, whether or not
                     // its record decodes: a device that never syncs it keeps nothing of it.
@@ -1434,7 +1644,9 @@ impl Store {
                         if here.meta.updated_at < there.meta.updated_at {
                             let mut again = here.clone();
                             again.meta.touch(hlc, clock);
-                            crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again))?;
+                            crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again.clone()))?;
+                            // Re-queued with a stamp of its own (docs/sync-spec.md 15.2).
+                            tx.note_line(&again);
                             out.edited_lines_kept += 1;
                             out.meetings.insert(here.meeting_id);
                         } else {
@@ -1454,6 +1666,25 @@ impl Store {
                     out.ignored += 1;
                     continue;
                 }
+                // Replaced transcript text (docs/sync-spec.md 15.4): the two holds, and what is
+                // done once the pulled segment row is written.
+                let segment_plan = match row {
+                    SyncedRow::Segment(there) => {
+                        let plan = segment_plan(tx, there, local.as_ref(), release)?;
+                        if plan.hold && !deferred {
+                            rows.push_back((inc, true));
+                            continue;
+                        }
+                        if plan.hold {
+                            hold(tx, inc, HoldReason::Parent)?;
+                            h_held.insert(inc.key);
+                            out.hold(HoldReason::Parent);
+                            continue;
+                        }
+                        plan
+                    }
+                    _ => SegmentPlan::default(),
+                };
                 let person_was_live = match &local {
                     Some(SyncedRow::Person(p)) => !p.meta.deleted,
                     None => matches!(row, SyncedRow::Person(_)),
@@ -1494,6 +1725,8 @@ impl Store {
                         Err(RepoError::MissingParent { .. }) => {
                             drop(sp);
                             hold(tx, inc, HoldReason::Parent)?;
+                            // Held for a missing parent, not by H1 or H2: the release leaves it.
+                            h_held.remove(&inc.key);
                             out.hold(HoldReason::Parent);
                             continue;
                         }
@@ -1509,10 +1742,30 @@ impl Store {
                 if restamp_written && let SyncedRow::Segment(won) = row {
                     let mut again = won.clone();
                     again.meta.touch(hlc, clock);
-                    crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again))?;
+                    crate::repo::put_synced(&tx.conn, &SyncedRow::Segment(again.clone()))?;
+                    tx.note_line(&again);
+                }
+                // A pulled tombstone that holds text leaves this device holding none (15.4):
+                // written, then cleared (or, in a meeting deleted here, erased) through the one
+                // statement, stamped after the incoming stamp was observed, so it goes out and
+                // replaces the relay's copy.
+                match segment_plan.after {
+                    AfterWrite::Clear | AfterWrite::Erase => {
+                        if let Some(rowid) = crate::replaced::rowid_of(&tx.conn, row.id())? {
+                            let at = hlc.now(clock);
+                            if segment_plan.after == AfterWrite::Clear {
+                                crate::replaced::clear_rowid(&tx.conn, rowid, at)?;
+                            } else {
+                                crate::replaced::erase_rowid(&tx.conn, rowid, at)?;
+                            }
+                            out.text_emptied += 1;
+                        }
+                    }
+                    AfterWrite::Nothing if segment_plan.emptied => out.text_emptied += 1,
+                    AfterWrite::Nothing => {}
                 }
                 out.written += 1;
-                if local.is_none() && row.has_children() {
+                if (local.is_none() && row.has_children()) || segment_plan.first_final {
                     out.parents_written += 1;
                 }
                 if let Some(m) = row.meeting() {
@@ -1555,8 +1808,15 @@ impl Store {
                     wrote.samples = true;
                 }
             }
+            // Kept to the rows still held for a parent: an applied or re-held row leaves it.
+            if h_held_before || !h_held.is_empty() {
+                put_held_replaced_keys(&tx.conn, &h_held)?;
+            }
             converge(tx, hlc, clock, &mut out, wrote)?;
             edits_win(tx, hlc, clock, rules.leased, &mut out)?;
+            // Lines this page stamped here (rule 4a's re-stamps, rule 4b's rewrites) go out
+            // before the track's queued cleared rows (docs/sync-spec.md 15.2).
+            tx.send_lines_first(hlc, clock)?;
             if let Some(after) = rules.after {
                 after(tx)?;
             }
@@ -1600,6 +1860,33 @@ impl Store {
             rows: u64::try_from(rows).unwrap_or(0),
             latest,
         })
+    }
+
+    /// The row keys held for a parent by H1 or H2 (docs/sync-spec.md 15.4), the rows the
+    /// release retries.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn held_by_replaced_text(
+        &self,
+    ) -> Result<std::collections::BTreeSet<[u8; 16]>, StoreError> {
+        let keys = held_replaced_keys(&self.conn)?;
+        let mut out = std::collections::BTreeSet::new();
+        for k in keys {
+            if self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM sync_pending WHERE key = ?1 AND reason = ?2",
+                    params![&k[..], HoldReason::Parent.word()],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some()
+            {
+                out.insert(k);
+            }
+        }
+        Ok(out)
     }
 
     /// Whether a held row with `key` exists (tests and status lines).

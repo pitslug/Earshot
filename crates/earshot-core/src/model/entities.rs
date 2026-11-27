@@ -397,6 +397,13 @@ impl TranscriptPass {
     }
 }
 
+/// The confidence a cleared segment row holds (docs/sync-spec.md 15.1): a marker in an existing
+/// field that keeps every cleared row from reading as a meeting deletion's erasure
+/// ([`SegmentRow::is_erasure`], confidence 0), so rule 4a orders it by the user's edit first.
+/// A field of its own replaces it at the next envelope format rise that changes the row's shape
+/// (15.12).
+pub const CLEARED_CONFIDENCE: f32 = 1.0;
+
 /// A persisted transcript segment: the ASR [`Segment`] (whose id is the row id) with sync
 /// metadata, its meeting and the pass that produced it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -463,9 +470,40 @@ impl SegmentRow {
         }
     }
 
+    /// Whether this row holds transcript text: its text or its words are not empty
+    /// (docs/sync-spec.md 15.1). The store's SQL form, `text <> '' OR words <> '[]'`, is pinned
+    /// to this by a test. A cleared row ([`SegmentRow::cleared`]) and a deletion's erasure do not.
+    #[must_use]
+    pub fn holds_text(&self) -> bool {
+        !self.segment.text.is_empty() || !self.segment.words.is_empty()
+    }
+
+    /// The cleared form of this row (docs/sync-spec.md 15.1): a tombstone with no text, words
+    /// or speaker and confidence [`CLEARED_CONFIDENCE`], keeping id, meeting, track, pass,
+    /// times, `text_edited_at`, `pass_run` and `created_at`. The caller stamps it. The store
+    /// writes the same form in SQL by rowid; this typed form is for tests and readers.
+    #[must_use]
+    pub fn cleared(&self) -> SegmentRow {
+        let mut row = self.clone();
+        row.meta.deleted = true;
+        row.segment.text.clear();
+        row.segment.words.clear();
+        row.segment.confidence = CLEARED_CONFIDENCE;
+        row.segment.speaker_id = None;
+        row
+    }
+
+    /// Whether this row is in the cleared form a replaced line is left in ([`SegmentRow::cleared`]):
+    /// a tombstone that holds no text with confidence [`CLEARED_CONFIDENCE`].
+    #[must_use]
+    pub fn is_cleared(&self) -> bool {
+        self.meta.deleted && !self.holds_text() && self.segment.confidence == CLEARED_CONFIDENCE
+    }
+
     /// Whether this row is a meeting deletion's erasure, as `model::delete_meeting` leaves it:
-    /// a tombstone with no text, words, confidence or speaker (its edit stamp is kept). A final
-    /// pass's tombstone keeps its text, so it is never one.
+    /// a tombstone with no text, words, confidence or speaker (its edit stamp is kept). A line a
+    /// final pass replaced is left cleared, with confidence [`CLEARED_CONFIDENCE`], so it is
+    /// never one, whatever its own confidence was (docs/sync-spec.md 15.1).
     #[must_use]
     pub fn is_erasure(&self) -> bool {
         self.meta.deleted
