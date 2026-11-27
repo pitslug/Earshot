@@ -401,7 +401,9 @@ enum OldMatch {
 ///    with the same text after the checkbox. Repeated identical lines pair up in order,
 ///    and a line whose generated text already holds a mark (`- [x] foo` from a bullet
 ///    reading `[x] foo`) uses up its own old copy, so merging a render into its own
-///    output stays the identity.
+///    output stays the identity. Exact text is the identity of the text form: an
+///    ownerless task literally named "Call (Ada)" reads the same as Ada's "Call", and the
+///    two are not told apart.
 /// 2. Appended: a new unticked line still unmatched takes the first unused old line
 ///    whose text starts with the new text and a space (a task plugin added a done date
 ///    or a tag after the text). On an action line the rest must hold no balanced "(...)"
@@ -412,8 +414,8 @@ enum OldMatch {
 /// 3. Owners (T14.61): a new unticked action line still unmatched takes the old lines
 ///    that are the same action in another form ([`NewAction::matches`]): one line written
 ///    since T14.61, or the owners' lines written before when together they name exactly
-///    its owners. A shared action is ticked if any line it took was ticked, with the mark of
-///    the first ticked one in the old order.
+///    its owners. A shared action is ticked only when every line it took was ticked, with
+///    the first one's mark: a tick on one part never ticks the whole.
 ///
 /// Only an unticked new line (`[ ]`) is rewritten, to the matched line's mark exactly as
 /// the user left it (`x`, `X` or another plugin's character); appended text is not
@@ -432,6 +434,17 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
     let subheadings = old_places
         .iter()
         .any(|p| matches!(p, Place::Mine | Place::Other));
+    // "### My actions" without "### Other actions": the user may have deleted the Other
+    // heading, leaving other people's (or ownerless) lines under My actions, so no line
+    // there is trusted to be the user's. Lost, never moved; this includes a note whose
+    // actions were all the user's (the render leaves an empty group out).
+    if old_places.contains(&Place::Mine) && !old_places.contains(&Place::Other) {
+        for o in &mut old {
+            if o.as_ref().is_some_and(|(_, _, p)| *p == Place::Mine) {
+                *o = None;
+            }
+        }
+    }
     if old_marks.iter().all(|m| *m == ' ') {
         // Nothing marked: the new region as rendered.
         return new_region.to_owned();
@@ -521,13 +534,14 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
         for &j in &collected {
             old[j] = None;
         }
-        taken[i] = Some(
-            collected
-                .iter()
-                .map(|&j| old_marks[j])
-                .find(|m| *m != ' ')
-                .unwrap_or(' '),
-        );
+        // Every line the shared action absorbs must be ticked: one unticked part means the
+        // whole is not done, and carrying a tick then would invent one on that part.
+        let marks: Vec<char> = collected.iter().map(|&j| old_marks[j]).collect();
+        taken[i] = Some(if marks.iter().all(|m| *m != ' ') {
+            marks[0]
+        } else {
+            ' '
+        });
     }
     let mut out = String::with_capacity(new_region.len());
     for ((line, n), mark) in lines.iter().zip(&new).zip(taken) {

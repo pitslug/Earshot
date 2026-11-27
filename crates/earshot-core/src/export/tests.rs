@@ -1104,13 +1104,14 @@ fn export_merge_keeps_ticks_from_a_note_written_before_the_action_groups() {
     i.user = Some(casey());
     let r = render(&i, &opts()).unwrap();
     let doc = r.to_file();
-    // The user ticked their own item, Ada's half of the shared one and Bo's half of the
-    // one Bo and Ada share.
+    // The user ticked their own item, both halves of the one they share with Ada, and
+    // only Bo's half of the one Bo and Ada share.
     let old = old_note(
         &doc,
         &r.region,
         &[
             "**Casey Lane**: Book the room",
+            "** casey  LANE **: Draft the plan",
             "**Ada Lovelace**: Draft the plan",
             "**Bo Tran**: Check rates",
         ],
@@ -1127,7 +1128,7 @@ fn export_merge_keeps_ticks_from_a_note_written_before_the_action_groups() {
          ### Other actions\n\n\
          - [ ] Draft the plan (Bo Tran)\n\
          - [ ] Send numbers (due: Friday) (Ada Lovelace)\n\
-         - [x] Check rates (Bo Tran, Ada Lovelace)\n",
+         - [ ] Check rates (Bo Tran, Ada Lovelace)\n",
         "{merged}"
     );
     // Apart from the marks the merge is the plain new render, and it is a fixed point.
@@ -1138,14 +1139,15 @@ fn export_merge_keeps_ticks_from_a_note_written_before_the_action_groups() {
     );
     assert_eq!(merge(&merged, &r).unwrap(), merged);
 
-    // The user's own half of a shared item counts too: ticked from the user's line alone.
-    let old = old_note(&doc, &r.region, &["** casey  LANE **: Draft the plan"]);
-    let merged = merge(&old, &r).unwrap();
-    assert!(
-        merged.contains("- [x] Draft the plan (with Ada Lovelace)\n"),
-        "{merged}"
-    );
-    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+    // One half ticked is not the whole: the user's half alone, or Ada's alone, carries
+    // nothing, so no tick is invented on the other part.
+    for half in [
+        "** casey  LANE **: Draft the plan",
+        "**Ada Lovelace**: Draft the plan",
+    ] {
+        let merged = merge(&old_note(&doc, &r.region, &[half]), &r).unwrap();
+        assert!(!merged.contains("- [x]"), "{half}: {merged}");
+    }
 
     // Re-exported with no user name set: one list, the same ticks.
     let old = old_note(
@@ -1153,6 +1155,7 @@ fn export_merge_keeps_ticks_from_a_note_written_before_the_action_groups() {
         &r.region,
         &[
             "**Casey Lane**: Book the room",
+            "** casey  LANE **: Draft the plan",
             "**Ada Lovelace**: Draft the plan",
         ],
     );
@@ -1232,7 +1235,7 @@ fn export_merge_never_moves_another_persons_tick_onto_the_users_own_line() {
         }
         // The control: the user's own line carries, in each form.
         for old in [
-            format!("## Action items\n\n### My actions\n\n- [x] {task}\n"),
+            format!("## Action items\n\n### My actions\n\n- [x] {task}\n\n### Other actions\n\n"),
             format!("## Action items\n\n- [x] {task} (Casey Lane)\n"),
             format!("## Action items\n\n- [x] **Casey Lane**: {task}\n"),
         ] {
@@ -1402,7 +1405,10 @@ fn export_merge_appended_text_never_hides_an_owner_list() {
         "### My actions\n\n- [x] Book the room (with Ada Lovelace)\n",
     );
     assert!(!merged.contains("- [x]"), "{merged}");
-    let merged = merged_from(&r, "### My actions\n\n- [x] Book \u{2705} 2026-11-20\n");
+    let merged = merged_from(
+        &r,
+        "### My actions\n\n- [x] Book \u{2705} 2026-11-20\n\n### Other actions\n\n",
+    );
     assert!(merged.contains("- [x] Book\n"), "{merged}");
 
     // A Tasks plugin date after an owner group: another owner set, never moved.
@@ -1448,10 +1454,16 @@ fn export_merge_takes_old_owner_lines_only_when_together_they_name_every_owner()
     // Ada's line alone names {Ada}, not {Ada, the user}.
     let merged = merged_from(&r, "- [x] **Ada Lovelace**: Draft the plan\n");
     assert!(!merged.contains("- [x]"), "{merged}");
-    // The control: both owners' lines, one ticked.
+    // Both owners' lines with one ticked: not the whole action.
     let merged = merged_from(
         &r,
         "- [x] **Ada Lovelace**: Draft the plan\n- [ ] **Casey Lane**: Draft the plan\n",
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
+    // The control: both ticked carries.
+    let merged = merged_from(
+        &r,
+        "- [x] **Ada Lovelace**: Draft the plan\n- [x] **Casey Lane**: Draft the plan\n",
     );
     assert!(
         merged.contains("- [x] Draft the plan (with Ada Lovelace)\n"),
@@ -1512,6 +1524,92 @@ fn export_merge_carries_nothing_by_owners_when_the_action_list_disagrees() {
         let merged = merged_from(&bad, old);
         assert!(!merged.contains("- [x]"), "{what}: {merged}");
     }
+}
+
+#[test]
+fn export_merge_trusts_no_line_under_my_actions_once_other_actions_is_gone() {
+    // The render: the user's own "Book" and an ownerless "Book" (Other actions).
+    let r = render_items(
+        vec![
+            item("Casey Lane", "Book", None, 20),
+            item("", "Book", None, 21),
+        ],
+        Some(casey()),
+    );
+    assert!(
+        r.region
+            .contains("### My actions\n\n- [ ] Book\n\n### Other actions\n\n- [ ] Book\n"),
+        "{}",
+        r.region
+    );
+    // The user deleted "### Other actions" and ticked the ownerless "Book", now under My
+    // actions: it must not land on the user's own line, here or with only the user's left.
+    let old = "### My actions\n\n- [ ] Book\n\n- [x] Book\n";
+    assert!(!merged_from(&r, old).contains("- [x]"));
+    let mine_only = render_items(vec![item("Casey Lane", "Book", None, 20)], Some(casey()));
+    assert!(!merged_from(&mine_only, "### My actions\n\n- [x] Book\n").contains("- [x]"));
+    // The control: with both headings the user's own tick carries.
+    let merged = merged_from(
+        &r,
+        "### My actions\n\n- [x] Book\n\n### Other actions\n\n- [ ] Book\n",
+    );
+    assert!(
+        merged.contains("### My actions\n\n- [x] Book\n"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+}
+
+#[test]
+fn export_note_sections_named_like_action_groups_hold_no_action_lines() {
+    let mut f = fixture();
+    f.summary.action_items = vec![
+        item("Casey Lane", "Book the room", None, 20),
+        item("Ada Lovelace", "Send numbers", None, 21),
+    ];
+    f.summary.enhanced_notes = vec![
+        NoteSection {
+            heading: "Action items".into(),
+            bullets: vec![NoteBullet {
+                text: "[x] Book the room".into(),
+                source_segment_ids: vec![],
+            }],
+        },
+        NoteSection {
+            heading: "My actions".into(),
+            bullets: vec![NoteBullet {
+                text: "[x] Book the room".into(),
+                source_segment_ids: vec![],
+            }],
+        },
+    ];
+    let mut i = input(&f);
+    i.user = Some(casey());
+    let r = render(&i, &opts()).unwrap();
+    assert_eq!(r.actions.len(), 2);
+    let doc = r.to_file();
+    assert!(
+        doc.contains("### Action items\n\n- [x] Book the room\n"),
+        "{doc}"
+    );
+    assert!(
+        doc.contains("### My actions\n\n- [x] Book the room\n\n## Open questions"),
+        "{doc}"
+    );
+    // The note bullets keep their own marks and give none to the user's action.
+    let merged = merge(&doc, &r).unwrap();
+    assert_eq!(merged, doc);
+    assert!(merged.contains("## Action items\n\n### My actions\n\n- [ ] Book the room\n"));
+    // Nor from an older note with the bullets ticked and the action not.
+    f.summary.enhanced_notes[0].bullets[0].text = "Book the room".into();
+    let mut i2 = input(&f);
+    i2.user = Some(casey());
+    let r2 = render(&i2, &opts()).unwrap();
+    let merged = merge(&doc, &r2).unwrap();
+    assert!(
+        merged.contains("## Action items\n\n### My actions\n\n- [ ] Book the room\n"),
+        "{merged}"
+    );
 }
 
 // ---- T14.28: generated text cannot embed or fetch ----
