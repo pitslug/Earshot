@@ -400,7 +400,7 @@ This replaces the width rule designed here earlier (owner addition 7), by the ow
 - every button an icon with its name and tooltip;
 - a long invented title kept out of the button row.
 
-### 11.9 Copy (drafts for the owner)
+### 11.9 Copy (approved by the owner, 2026-11-28)
 
 **Fixture.** The new keys go in `fixtures/ui/summary_order_cases.json`.
 - The UI and its mock import them, the desktop's tests pin them, and `_comment` names each.
@@ -432,7 +432,7 @@ This replaces the width rule designed here earlier (owner addition 7), by the ow
 | `reply_unusable` | The summary model on this computer wrote a reply Earshot could not use, even after asking it to correct it. Try again or choose another model. |
 | `card_stopped` | The graphics card's summary process stopped before it finished. Try again: the next summary tries the card again. |
 | `stalled` | The summary model on this computer stopped making progress. Restart Earshot and try again. |
-| `load_failed` | The summary model on this computer could not be loaded. Download it again in Settings, Summaries, or choose another model. |
+| `load_failed` | The summary model on this computer could not be loaded. Try again, or choose another model in Settings, Summaries. |
 | `load_stuck` | An earlier summary model load is stuck. Restart Earshot and try again. |
 | `wrong_backend` | The summary model did not load where Earshot asked it to. Try again. |
 | `cuda_changed` | The CUDA files changed after Earshot started. Restart Earshot so it can check them. |

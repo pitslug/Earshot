@@ -540,8 +540,8 @@ pub fn drop_repeats(summary: &mut SummaryV1) -> usize {
 
 /// The first words of a summary's `tldr` when it was joined by [`join_partials`]: the summary
 /// says so itself, in the app and in an export.
-pub const JOINED_SUMMARY_NOTICE: &str = "Joined from parts of the meeting, because the final \
-     merge did not finish, so this summary may repeat itself.";
+pub const JOINED_SUMMARY_NOTICE: &str = "The parts of this meeting could not be combined into \
+     one summary, so they are shown one after another and may repeat each other.";
 
 /// One summary from `parts` in order, for a merge step that gave no valid reply (T8.4d) or
 /// could not be planned at all (T14.69): a rougher summary rather than none. The first title, the [`JOINED_SUMMARY_NOTICE`] and every
