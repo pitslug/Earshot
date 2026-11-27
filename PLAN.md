@@ -2844,6 +2844,11 @@ Second wave (after the lanes above are merged):
     - (8) confirmations on the Summary tab ("New summary ready", "Exported to ...") hide by themselves like any other; T14.59's exclusion covers only that tab's notes.
     No meeting content in any new record, event or log; nothing new sent.
   - accept: `cargo test -p earshot-runtime offload`; `cargo test -p earshot-runtime summary_order`; `cargo test -p earshot-worker`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
+- [ ] T14.69 A local summary's merge always fits
+  - found (2026-11-28, the owner's 79-minute meeting, reproduced privately with `sum-eval --source store` on the 9B with CUDA): all 8 map steps succeed, then the plan fails "the model's context window is too small: about 18581 tokens needed, 16384 available": a merge's reply budget is all of its partials (`prompt::reply_tokens`, ReplyBasis partials) plus `REPAIR_MAX_TOKENS`, so two large partials do not fit, and a merge that cannot be planned fails the summary where a merge with no valid reply joins its parts.
+  - decided (the owner, 2026-11-28): cap it and never fail it; a longer summary is Claude's job.
+  - do: a merge's reply budget is capped so that every group of two partials fits (merge replies are summaries, not the sum of their parts); and a merge step that still cannot be planned joins its parts (`summary::join_partials`, `report.joined_parts`), as a failed merge does, in the local writer and in `earshot_llm::summarizer`; a map step that cannot fit still fails. The format key and `accept m4` change only if a replay case's request does (say so). Test on the private copy (informational, counts only).
+  - accept: `cargo test -p earshot-core prompt`; `cargo test -p earshot-llm`; `cargo test -p earshot-llm-local`; `cargo xtask accept m4`
 - [ ] T14.68 Ignored voices are not attendees
   - found (the owner, 2026-11-27): an exported note's `attendees` listed the meeting's ignored voices ("Speaker 1", "Speaker 2").
   - do: `MeetingView::attendees` (used by the Obsidian export and the summary input) leaves out every speaker row that counts as ignored by the one rule (`identities::counts_as_ignored`, legacy flag included); the transcript and speaker names elsewhere are unchanged.
