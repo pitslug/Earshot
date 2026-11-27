@@ -777,6 +777,53 @@ async fn a_merge_with_no_valid_reply_joins_the_parts_and_says_so() {
 }
 
 #[tokio::test]
+async fn a_merge_that_cannot_be_planned_joins_the_parts_and_says_so() {
+    // T14.69: map replies so long that no two fit one merge request, even with the smallest
+    // reply. The control is `long_meetings_are_mapped_per_chunk_and_reduced`: the same
+    // meeting and budget with short parts is merged.
+    let input = meeting(40);
+    let budget = ContextBudget {
+        context_window: 3_564,
+        max_output_tokens: 200,
+    };
+    let PromptPlan::MapReduce(chunks) = plan(&input, budget).unwrap() else {
+        panic!("expected map-reduce");
+    };
+    assert_eq!(chunks.len(), 2);
+    let long_tldr = vec!["lorem"; 1_500].join(" ");
+    let script: Vec<MockResponse> = chunks
+        .iter()
+        .map(|c| {
+            let mut v: Value = serde_json::from_str(&merged_json(&[c.segments.start + 1])).unwrap();
+            v["tldr"] = json!(long_tldr);
+            MockResponse::completion(&v.to_string(), "stop")
+        })
+        .collect();
+    let s = setup_with(script, |c| c.budget = budget);
+    let out = run(&s, &input).await;
+    let summary = out.result.unwrap();
+    assert!(
+        summary
+            .tldr
+            .starts_with(earshot_core::summary::JOINED_SUMMARY_NOTICE)
+    );
+    assert_eq!(out.report.joined_parts, 2);
+    assert_eq!(out.report.reduce_steps, 0);
+    let got: BTreeSet<EntityId> = summary
+        .decisions
+        .iter()
+        .flat_map(|d| d.source_segment_ids.iter().copied())
+        .collect();
+    let want: BTreeSet<EntityId> = chunks
+        .iter()
+        .map(|c| input.segments[c.segments.start].id)
+        .collect();
+    assert_eq!(got, want, "both parts are kept");
+    // Only the two map requests were sent.
+    assert_eq!((s.server.remaining(), s.server.unscripted()), (0, 0));
+}
+
+#[tokio::test]
 async fn long_meetings_are_mapped_per_chunk_and_reduced() {
     let input = meeting(40);
     let budget = ContextBudget {

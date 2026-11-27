@@ -46,8 +46,8 @@ pub struct SummaryReport {
     pub map_parts: usize,
     /// Reduce requests that succeeded.
     pub reduce_steps: usize,
-    /// Summaries joined by `join_partials` because a merge gave no valid reply (0 when every
-    /// merge worked).
+    /// Summaries joined by `join_partials` because a merge gave no valid reply or could not
+    /// be planned (T14.69; 0 when every merge worked).
     pub joined_parts: usize,
     /// Repeated items dropped from valid replies (`CheckedReply::duplicates_dropped`).
     pub duplicates_dropped: usize,
@@ -269,13 +269,22 @@ impl Run<'_> {
             partials.push(self.step("map", chunk.prompt, numbers).await?);
         }
         loop {
-            let groups = reduce_groups_carrying(
+            let Ok(groups) = reduce_groups_carrying(
                 input,
                 self.rules,
                 &partials,
                 &carried_names(&carried),
                 budget,
-            )?;
+            ) else {
+                // A merge that cannot be planned is joined like one with no valid reply
+                // (T14.69): a rougher summary rather than none, and it says so itself.
+                // Cancellation is never joined.
+                if self.cancel.is_cancelled() {
+                    return Err(LlmError::Cancelled);
+                }
+                self.report.joined_parts = partials.len();
+                return Ok(join_partials(&partials));
+            };
             // One group: this merge writes the summary the user sees (and carries the style).
             let level = if groups.len() == 1 {
                 MergeLevel::Last

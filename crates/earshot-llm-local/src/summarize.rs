@@ -197,8 +197,8 @@ pub struct SummaryReport {
     pub invalid_replies: usize,
     /// Repeated items dropped from valid replies (`CheckedReply::duplicates_dropped`).
     pub duplicates_dropped: usize,
-    /// Summaries joined by `join_partials` because a merge gave no valid reply (0 when every
-    /// merge worked).
+    /// Summaries joined by `join_partials` because a merge gave no valid reply or could not
+    /// be planned (T14.69; 0 when every merge worked).
     pub joined_parts: usize,
     /// Map parts (0 for a single request).
     pub map_parts: usize,
@@ -540,8 +540,19 @@ fn reduce_levels(
                 budget,
             ),
             Merge::TwoCall => reduce_groups_two_call(input, &partials, budget),
-        }
-        .map_err(SummaryFailure::Plan)?;
+        };
+        let groups = match groups {
+            Ok(groups) => groups,
+            // A merge that cannot be planned is joined like one with no valid reply
+            // (T14.69): a rougher summary rather than none, and it says so itself.
+            // Cancellation is never joined.
+            Err(_) if options.cancel.is_cancelled() => return Err(SummaryFailure::Cancelled),
+            Err(_) if merge == Merge::Plain => {
+                report.joined_parts = partials.len();
+                return Ok(join_partials(&partials));
+            }
+            Err(e) => return Err(SummaryFailure::Plan(e)),
+        };
         // One group: this merge writes the summary the user sees (and carries the style).
         let level = if groups.len() == 1 {
             MergeLevel::Last
@@ -1121,6 +1132,8 @@ mod tests {
         script: VecDeque<Option<(String, Stop)>>,
         calls: Vec<(Vec<ChatMessage>, String, String, usize)>,
         cancel_during: Option<(usize, CancelToken)>,
+        /// The token is cancelled after this request (0-based) has replied.
+        cancel_after: Option<(usize, CancelToken)>,
     }
 
     impl Fake {
@@ -1131,6 +1144,7 @@ mod tests {
                 script: VecDeque::new(),
                 calls: Vec::new(),
                 cancel_during: None,
+                cancel_after: None,
             }
         }
     }
@@ -1180,6 +1194,11 @@ mod tests {
                     Stop::EndOfGeneration,
                 ),
             };
+            if let Some((n, token)) = &self.cancel_after
+                && *n + 1 == self.calls.len()
+            {
+                token.cancel();
+            }
             Ok(Generation {
                 text,
                 stop,
@@ -1844,6 +1863,109 @@ mod tests {
         // distinct parts all survive is pinned in `summary_join_...` and the remote client's
         // `a_merge_with_no_valid_reply_joins_the_parts_and_says_so`.
         assert_eq!(s.decisions.len(), 1);
+    }
+
+    /// A valid part reply citing `cite` whose tldr is `words` invented words long.
+    fn long_part_reply(cite: u64, words: usize) -> Option<(String, Stop)> {
+        Some((
+            format!(
+                r#"{{"title":"T{cite}","tldr":"{}","enhanced_notes":[],"decisions":[{{"text":"d{cite}","source_segment_ids":[{cite}]}}],"action_items":[],"open_questions":[],"topics":[]}}"#,
+                vec!["lorem"; words].join(" ")
+            ),
+            Stop::EndOfGeneration,
+        ))
+    }
+
+    /// Three map replies of `words` words each for `RANGES` of `input(30)`.
+    fn three_long_parts(m: &mut Fake, words: usize) {
+        for cite in [1, 11, 26] {
+            m.script.push_back(long_part_reply(cite, words));
+        }
+    }
+
+    #[test]
+    fn summarize_a_merge_that_cannot_be_planned_joins_the_parts_and_says_so() {
+        // T14.69: no two of these parts fit one merge request, even with the smallest reply.
+        let inp = input(30);
+        let mut m = Fake::new(16_384, 1.0);
+        three_long_parts(&mut m, 9_000);
+        let run = summarize_chunks(&mut m, &inp, &options(), &RANGES);
+        let s = run.result.unwrap();
+        assert!(
+            s.tldr
+                .starts_with(earshot_core::summary::JOINED_SUMMARY_NOTICE)
+        );
+        assert_eq!(s.decisions.len(), 3, "every part is kept");
+        let r = &run.report;
+        assert_eq!(
+            (r.map_parts, r.reduce_steps, r.requests, r.joined_parts),
+            (3, 0, 3, 3)
+        );
+
+        // Control: parts that fit together are merged, with a reply capped to the context
+        // where their whole reply would not fit.
+        let roomy = SummaryOptions {
+            max_output_tokens: 8_192,
+            ..options()
+        };
+        let mut m = Fake::new(16_384, 1.0);
+        three_long_parts(&mut m, 3_000);
+        let run = summarize_chunks(&mut m, &inp, &roomy, &RANGES);
+        let s = run.result.unwrap();
+        assert!(
+            !s.tldr
+                .starts_with(earshot_core::summary::JOINED_SUMMARY_NOTICE)
+        );
+        let r = &run.report;
+        assert_eq!(r.joined_parts, 0);
+        assert!(r.reduce_steps >= 2, "{r:?}");
+        // The fake refuses any request that overflows its context. The first merge (two
+        // long parts) was capped below its whole reply, the ceiling; the last (a short
+        // merged part and a long one) fits with its whole reply.
+        let merges: Vec<usize> = m.calls[3..].iter().map(|c| c.3).collect();
+        assert_eq!(merges.len(), 2, "{merges:?}");
+        assert!(
+            (earshot_core::prompt::REPLY_MIN_TOKENS..8_192).contains(&merges[0]),
+            "{merges:?}"
+        );
+        assert!(merges[1] > merges[0], "{merges:?}");
+    }
+
+    #[test]
+    fn summarize_cancelled_before_an_unplannable_merge_is_not_joined() {
+        let inp = input(30);
+        let cancel = CancelToken::new();
+        let mut m = Fake::new(16_384, 1.0);
+        three_long_parts(&mut m, 9_000);
+        m.cancel_after = Some((2, cancel.clone()));
+        let run = summarize_chunks(
+            &mut m,
+            &inp,
+            &SummaryOptions {
+                cancel,
+                ..options()
+            },
+            &RANGES,
+        );
+        assert_eq!(run.result, Err(SummaryFailure::Cancelled));
+        assert_eq!(run.report.joined_parts, 0);
+    }
+
+    #[test]
+    fn summarize_a_map_step_that_cannot_fit_still_fails() {
+        let mut inp = input(30);
+        inp.segments[12].text = vec!["lorem"; 20_000].join(" ");
+        let mut m = Fake::new(16_384, 1.0);
+        let run = summarize_chunks(&mut m, &inp, &options(), &RANGES);
+        assert!(
+            matches!(
+                run.result,
+                Err(SummaryFailure::Plan(_) | SummaryFailure::TooLong { .. })
+            ),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(run.report.joined_parts, 0);
     }
 
     #[test]

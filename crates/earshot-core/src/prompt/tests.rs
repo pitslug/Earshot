@@ -1448,3 +1448,199 @@ fn prompt_rules_brief_single_pass_snapshot() {
         ))),
     );
 }
+
+// ---- T14.69: a merge always fits ----
+
+use super::builder::merge_reply_tokens;
+
+/// The budget of the T14.69 failure: a 16k context and an 8k reply ceiling.
+const GPU_9B: ContextBudget = ContextBudget {
+    context_window: 16_384,
+    max_output_tokens: 8_192,
+};
+
+/// `budget`'s reply ceiling with no context limit: a merge request with its whole reply.
+fn uncapped(budget: ContextBudget) -> ContextBudget {
+    ContextBudget {
+        context_window: usize::MAX / 2,
+        max_output_tokens: budget.max_output_tokens,
+    }
+}
+
+/// A partial whose tldr is `words` invented words long.
+fn sized_partial(i: usize, cite: EntityId, words: usize) -> SummaryV1 {
+    let mut p = partial(i, &[cite]);
+    p.tldr = vec!["lorem"; words].join(" ");
+    p
+}
+
+#[test]
+fn prompt_merge_reply_is_capped_at_what_the_context_leaves_and_never_below_the_minimum() {
+    let b = GPU_9B;
+    // Room for the whole reply: unchanged.
+    assert_eq!(merge_reply_tokens(4_000, 2_000, b), 4_000);
+    // Less room: what is left beside the prompt and the repair headroom.
+    assert_eq!(
+        merge_reply_tokens(8_192, 10_000, b),
+        16_384 - 10_000 - REPAIR_MAX_TOKENS
+    );
+    // Never below the minimum, and never above the reply it was given.
+    assert_eq!(merge_reply_tokens(8_192, 15_500, b), REPLY_MIN_TOKENS);
+    assert_eq!(merge_reply_tokens(800, 15_500, b), 800);
+    assert_eq!(merge_reply_tokens(8_192, 40_000, b), REPLY_MIN_TOKENS);
+}
+
+#[test]
+fn prompt_two_partials_too_large_for_their_whole_reply_merge_with_a_capped_one() {
+    let inp = long_input(40);
+    let pair_of = |words: usize| {
+        vec![
+            sized_partial(0, inp.segments[0].id, words),
+            sized_partial(1, inp.segments[1].id, words),
+        ]
+    };
+    // The T14.69 case: a pair whose whole reply does not fit, but which fits with the
+    // smallest reply.
+    let words = (500..20_000)
+        .step_by(250)
+        .find(|&w| {
+            let p = reduce_prompt(&inp, &pair_of(w), uncapped(GPU_9B), MergeLevel::Last);
+            !GPU_9B.fits(p.estimated_tokens, p.max_output_tokens)
+                && GPU_9B.fits(p.estimated_tokens + 1_500, REPLY_MIN_TOKENS)
+        })
+        .expect("a pair size between the two limits");
+    let pair = pair_of(words);
+    let whole = reduce_prompt(&inp, &pair, uncapped(GPU_9B), MergeLevel::Last);
+    // Control: with their whole reply the two do not fit.
+    assert!(!GPU_9B.fits(whole.estimated_tokens, whole.max_output_tokens));
+
+    assert_eq!(reduce_groups(&inp, &pair, GPU_9B).unwrap(), vec![0..2]);
+    let p = reduce_prompt(&inp, &pair, GPU_9B, MergeLevel::Last);
+    assert_eq!(p.messages, whole.messages, "only the reply budget changes");
+    assert!(GPU_9B.fits(p.estimated_tokens, p.max_output_tokens));
+    assert!(p.max_output_tokens < whole.max_output_tokens);
+    assert!(p.max_output_tokens >= REPLY_MIN_TOKENS);
+    assert_eq!(
+        p.max_output_tokens,
+        GPU_9B.context_window - p.estimated_tokens - REPAIR_MAX_TOKENS
+    );
+
+    // Among more partials the same pairs form, one level shrinking the list.
+    let many: Vec<SummaryV1> = (0..5)
+        .map(|i| sized_partial(i, inp.segments[i].id, words))
+        .collect();
+    let groups = reduce_groups(&inp, &many, GPU_9B).unwrap();
+    assert_eq!(groups, vec![0..2, 2..4, 4..5]);
+    for g in groups.iter().filter(|g| g.len() > 1) {
+        let p = reduce_prompt(&inp, &many[g.clone()], GPU_9B, MergeLevel::Inner);
+        assert!(
+            GPU_9B.fits(p.estimated_tokens, p.max_output_tokens),
+            "{g:?}"
+        );
+    }
+}
+
+#[test]
+fn prompt_a_merge_of_two_partials_larger_than_the_context_cannot_be_planned() {
+    let inp = long_input(40);
+    // Each fits alone with the smallest reply; no two fit together.
+    let words = (500..40_000)
+        .step_by(250)
+        .find(|&w| {
+            let one = [sized_partial(0, inp.segments[0].id, w)];
+            let p = reduce_prompt(&inp, &one, uncapped(GPU_9B), MergeLevel::Last);
+            p.estimated_tokens > GPU_9B.context_window / 2 + 200
+        })
+        .unwrap();
+    let parts: Vec<SummaryV1> = (0..3)
+        .map(|i| sized_partial(i, inp.segments[i].id, words))
+        .collect();
+    let one = reduce_prompt(&inp, &parts[..1], GPU_9B, MergeLevel::Last);
+    assert!(
+        GPU_9B.fits(one.estimated_tokens, REPLY_MIN_TOKENS),
+        "control"
+    );
+    match reduce_groups(&inp, &parts, GPU_9B) {
+        Err(PromptError::ContextTooSmall { needed, available }) => {
+            assert!(needed > available, "{needed} {available}");
+        }
+        other => panic!("expected ContextTooSmall, got {other:?}"),
+    }
+}
+
+#[test]
+fn prompt_merges_never_exceed_the_context_and_keep_their_whole_reply_when_it_fits() {
+    let inp = long_input(40);
+    let sizes = [3, 40, 300, 900, 2_500, 6_000];
+    let mut planned = 0;
+    let mut capped = 0;
+    let mut refused = 0;
+    for window in (3_000..40_000).step_by(1_700) {
+        for max_out in [512, 2_000, 8_192] {
+            let budget = ContextBudget {
+                context_window: window,
+                max_output_tokens: max_out,
+            };
+            // Mixed sizes (each rotation), then every size alone.
+            for shift in 0..2 * sizes.len() {
+                let size = |i: usize| {
+                    if shift < sizes.len() {
+                        sizes[(i + shift) % sizes.len()]
+                    } else {
+                        sizes[shift - sizes.len()]
+                    }
+                };
+                let partials: Vec<SummaryV1> = (0..6)
+                    .map(|i| sized_partial(i, inp.segments[i].id, size(i)))
+                    .collect();
+                let Ok(groups) = reduce_groups(&inp, &partials, budget) else {
+                    // An honest refusal: some partial does not fit even alone (the last
+                    // merge would hold it), or no two neighbours fit with the smallest reply.
+                    let fits = |ps: &[SummaryV1]| {
+                        let p = reduce_prompt(&inp, ps, budget, MergeLevel::Inner);
+                        budget.fits(p.estimated_tokens, p.max_output_tokens)
+                    };
+                    let one_too_big = partials.chunks(1).any(|p| !fits(p));
+                    assert!(
+                        one_too_big || !partials.windows(2).any(fits),
+                        "window {window} max {max_out} shift {shift}"
+                    );
+                    refused += 1;
+                    continue;
+                };
+                assert!(groups.len() < partials.len() || groups.len() == 1);
+                let mut next = 0;
+                for g in &groups {
+                    assert_eq!(g.start, next);
+                    next = g.end;
+                    if g.len() == 1 && groups.len() > 1 {
+                        continue;
+                    }
+                    let level = if groups.len() == 1 {
+                        MergeLevel::Last
+                    } else {
+                        MergeLevel::Inner
+                    };
+                    let p = reduce_prompt(&inp, &partials[g.clone()], budget, level);
+                    let whole = reduce_prompt(&inp, &partials[g.clone()], uncapped(budget), level);
+                    assert!(
+                        budget.fits(p.estimated_tokens, p.max_output_tokens),
+                        "window {window} max {max_out} shift {shift} {g:?}"
+                    );
+                    if budget.fits(whole.estimated_tokens, whole.max_output_tokens) {
+                        assert_eq!(p, whole, "a merge that fits keeps its request");
+                    } else {
+                        assert_eq!(g.len(), 2, "only pairs are capped");
+                        capped += 1;
+                    }
+                    planned += 1;
+                }
+                assert_eq!(next, partials.len());
+            }
+        }
+    }
+    assert!(
+        planned > 0 && capped > 0 && refused > 0,
+        "{planned} {capped} {refused}"
+    );
+}
