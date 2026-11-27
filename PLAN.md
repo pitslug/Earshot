@@ -2844,6 +2844,11 @@ Second wave (after the lanes above are merged):
     - (8) confirmations on the Summary tab ("New summary ready", "Exported to ...") hide by themselves like any other; T14.59's exclusion covers only that tab's notes.
     No meeting content in any new record, event or log; nothing new sent.
   - accept: `cargo test -p earshot-runtime offload`; `cargo test -p earshot-runtime summary_order`; `cargo test -p earshot-worker`; `cargo test -p earshot-desktop --bin earshot`; `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo xtask accept m11`
+- [ ] T14.70 The Summary tab's sections read at a glance
+  - decided (the owner, 2026-11-28, from a mock-up): TL;DR, Decisions, Actions and a new Notes heading use the large heading size ("My actions" and "Other actions" stay sub-headings); the summary's topic sections sit under Notes as sub-headings after a divider; the "Tick actions in the Obsidian note." line is removed (since T14.63 a re-export replaces ticks, so the line promises nothing). The Obsidian note follows the page (`## Notes`, topics as `###`), as T14.61 keeps them in step.
+  - deps: T14.66 (same view; built after it merges)
+  - do: the UI and the export render; snapshots and `acceptance/export` goldens updated by hand in the same commit; invented content only; screenshots in light and dark.
+  - accept: `cmd /c pnpm --filter @earshot/ui test`; `cmd /c pnpm -r build`; `cargo test -p earshot-core export`; `cargo xtask accept m5`
 - [ ] T14.69 A local summary's merge always fits
   - found (2026-11-28, the owner's 79-minute meeting, reproduced privately with `sum-eval --source store` on the 9B with CUDA): all 8 map steps succeed, then the plan fails "the model's context window is too small: about 18581 tokens needed, 16384 available": a merge's reply budget is all of its partials (`prompt::reply_tokens`, ReplyBasis partials) plus `REPAIR_MAX_TOKENS`, so two large partials do not fit, and a merge that cannot be planned fails the summary where a merge with no valid reply joins its parts.
   - decided (the owner, 2026-11-28): cap it and never fail it; a longer summary is Claude's job.
