@@ -39,13 +39,14 @@ export function summaryMarkdown(s: SummaryView): string {
     return `${owner === "" ? "" : `${owner}: `}${task}${due === "" ? "" : ` (by ${due})`}`;
   };
   // The topic sections under one "## Notes", each topic "###", as the page and the Obsidian
-  // note show them (T14.70); no Notes heading when no topic holds anything.
+  // note show them (T14.70); no Notes heading when no topic holds anything. A topic whose heading
+  // is blank keeps its own "### " with an empty title, as the export writes it, so its bullets
+  // never join the topic before it.
   const topics = s.notes
     .map((n) => {
       const body = bullets(n.bullets.map((b) => b.text));
       if (body === "") return null;
-      const heading = line(n.heading);
-      return heading === "" ? body : `### ${heading}\n\n${body}`;
+      return `### ${line(n.heading)}\n\n${body}`;
     })
     .filter((t) => t !== null);
   const sections = [

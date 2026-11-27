@@ -75,7 +75,8 @@ pub struct CitedText {
     pub citations: Vec<Citation>,
 }
 
-/// An action item (read-only: ticks live in the Obsidian note).
+/// An action item (read-only: the app has no ticks, and ticks made in an exported note last only
+/// until the next export rewrites it, T14.63).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct ActionView {
     /// Who.

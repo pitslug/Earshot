@@ -169,14 +169,17 @@ describe("summaryMarkdown", () => {
     );
   });
 
-  it("writes the bullets of a note with no heading on their own", () => {
+  it("keeps a topic with a blank heading under its own empty heading, as the export does", () => {
     expect(
       summaryMarkdown({
         ...EMPTY,
         tldr: "Short.",
-        notes: [{ heading: " ", bullets: [{ text: "A bullet", citations: [] }] }],
+        notes: [
+          { heading: "Costs", bullets: [{ text: "Fuel is up", citations: [] }] },
+          { heading: " ", bullets: [{ text: "A bullet", citations: [] }] },
+        ],
       }),
-    ).toBe("## TL;DR\n\nShort.\n\n## Notes\n\n- A bullet\n");
+    ).toBe("## TL;DR\n\nShort.\n\n## Notes\n\n### Costs\n\n- Fuel is up\n\n### \n\n- A bullet\n");
   });
 
   it("writes no Notes heading when no topic holds anything", () => {

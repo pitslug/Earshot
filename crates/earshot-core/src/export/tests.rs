@@ -662,6 +662,27 @@ fn export_heading_levels_follow_the_summary_tab() {
 }
 
 #[test]
+fn export_topic_with_a_blank_heading_keeps_its_own_heading() {
+    // The rule Copy summary shares (`summaryMarkdown` in packages/ui/src/detail/detail.ts):
+    // a blank-headed topic is its own "### " with an empty title, never joined to the one before.
+    let mut f = fixture();
+    f.summary.enhanced_notes.push(NoteSection {
+        heading: String::new(),
+        bullets: vec![NoteBullet {
+            text: "A bullet".into(),
+            source_segment_ids: vec![],
+        }],
+    });
+    let r = render(&input(&f), &opts()).unwrap();
+    assert!(
+        r.region
+            .contains("- Check travel with Ada\n\n### \n\n- A bullet\n"),
+        "{}",
+        r.region
+    );
+}
+
+#[test]
 fn export_without_topic_sections_has_no_notes_heading() {
     let mut f = fixture();
     f.summary.enhanced_notes.clear();
