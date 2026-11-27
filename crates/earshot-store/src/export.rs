@@ -1,54 +1,41 @@
 //! Writing rendered notes into an Obsidian vault (PLAN.md 3.8, T5.4, T5.4a-c).
 //!
-//! [`export_note`] (one meeting) and [`export_notes`] (export all / changed) find each
-//! meeting's existing note, merge the render into it (or create a new note), write
-//! atomically and record where it went:
+//! [`export_note`] (one meeting) and [`export_notes`] (export all / changed) write each
+//! meeting's whole rendered note, atomically, and record where it went (T14.63, the owner:
+//! "export is export"; the vault is never searched, so the same rules suit exporters that
+//! cannot search, such as OneNote or Notion):
 //!
 //! 1. The vault is validated ([`validate_vault`]) and the meeting must exist in the store.
-//! 2. Finding the note: the recorded path (this device's `ExportRecord`) if it still
-//!    carries the meeting's `earshot_id`, then the render's path, then the `<stem>*.md`
-//!    files beside it, then every non-hidden folder of the vault. The full search runs with
-//!    or without a record, so a note the user renamed or moved is always found and never
-//!    duplicated, even after the database was lost. Export is on demand only (the owner,
-//!    T5.4b), so the cost is accepted: a single export walks the vault, a batch builds one
-//!    `VaultIndex` (one open per note) on first need and shares it. An indexed path is
-//!    re-checked before use (a stale one falls back to a walk, whose result goes back into
-//!    the index), every note the batch writes is added to it, and a miss rebuilds the
-//!    index when it is older than `INDEX_MAX_AGE`, so at most one rebuild per
-//!    `INDEX_MAX_AGE` window. (A first-time export-all, where every meeting misses, walks
-//!    the vault at most once per 30 s of batch time; one meeting's export takes
-//!    milliseconds, so that is rare and accepted.) The one remaining race: a note that
-//!    appears in the vault from outside (a sync client, the user) after the index was
-//!    built is not seen while the index is younger than `INDEX_MAX_AGE` at its meeting's
-//!    turn, so that meeting gets a second note; a note present when the index was built,
-//!    or written by the batch, is never duplicated.
-//!    A matching note whose path cannot be expressed as a
-//!    [`VaultPath`] (for example a file name that is not valid Unicode) is an error, never
-//!    a reason to create a second note. The record is written before a new note is renamed
-//!    into place (step 4).
-//! 3. Content is [`earshot_core::export::merge`] of the render into the existing text; if it
-//!    equals the current bytes nothing is written.
+//! 2. Where the note goes: a meeting with an export record (this device's `ExportRecord`)
+//!    writes to its recorded path, replacing whatever file is there, or creating it again
+//!    when the user moved or deleted it (a moved note is the user's from then on and is
+//!    left alone). A meeting without a record writes to the render's path when that is free
+//!    or holds this meeting's note (its `earshot_id`; a record lost with the database), else
+//!    to the first free `<stem> (n).md`, so another meeting's note, or any other file, is
+//!    never replaced. Only the one file at the render's path is read for its id. The record
+//!    is written before a new note is renamed into place (step 4).
+//! 3. Content is the whole rendered note ([`RenderedExport::to_file`]): a re-export
+//!    replaces the note, ticks, edits and the user's additions included (the app warns
+//!    before re-exporting). If it equals the current bytes nothing is written, so two
+//!    exports in a row leave identical bytes.
 //! 4. Otherwise it goes to a hidden temp file in the note's folder, is synced, and then:
 //!    - update: the note's length and modification time are checked again just before the
 //!      rename; if Obsidian or a sync client changed it since it was read, the export
 //!      aborts with the retryable [`StoreError::ConcurrentEdit`] and the note is left as the
 //!      user has it;
-//!    - create: the record is written with the intended path, then the temp file is moved
-//!      with a rename that never replaces ([`crate::fsutil::rename_noreplace`]); if a note
-//!      appeared at that name meanwhile, the next free `<stem> (n).md` is used. Before each
-//!      attempt the render's path and its `<stem>*.md` variants are checked for a note of
-//!      this meeting (another export of the same render created it after this one's
-//!      search): then the export stops with the retryable [`StoreError::ConcurrentEdit`]
-//!      before writing the record. The record write is a claim: in one store access the
-//!      record is re-read and written only if it still names what this export last saw
-//!      (the record read before the search, then its own claim), else the export stops
-//!      with `ConcurrentEdit` (another export, perhaps of a different render whose note has
-//!      another name, recorded its note since). Just before the rename the record is read
-//!      once more and must still be this export's claim, else `ConcurrentEdit` (an export
-//!      that searched after this claim claimed over it and creates the note). So two
-//!      creates of one meeting never both rename a note, except when the second claims in
-//!      the instant between the first's last look and its rename; with the same render the
-//!      no-replace rename and the sibling check exclude even that.
+//!    - recreate (recorded path, file gone): a rename that never replaces
+//!      ([`crate::fsutil::rename_noreplace`]); a file that appeared at the name meanwhile is
+//!      [`StoreError::ConcurrentEdit`];
+//!    - create (no record): the record is written with the intended path, then the temp
+//!      file is moved with [`crate::fsutil::rename_noreplace`]; if a file appeared at that
+//!      name meanwhile, the next free `<stem> (n).md` is used. The record write is a claim:
+//!      in one store access the record is re-read and written only if it still names what
+//!      this export last saw (the record read at the start, then its own claim), else the
+//!      export stops with `ConcurrentEdit` (another export, perhaps of a different render
+//!      whose note has another name, recorded its note since). Just before the rename the
+//!      record is read once more and must still be this export's claim, else
+//!      `ConcurrentEdit`. So two creates of one meeting never both rename a note, except when
+//!      the second claims in the instant between the first's last look and its rename.
 //!
 //!    The folder is synced where the platform needs it. Every export writes its own temp
 //!    (`.<note>.<pid>-<n>.earshot-tmp`, created exclusively; a name already taken by
@@ -70,10 +57,9 @@
 //!
 //! The export reaches the store only through [`ExportDb::with_store`], once per short read
 //! or write (meeting check and record read, each create's claim and its last look before
-//! the rename, the final record write); the vault walk, merge and file writes run between
-//! those calls. A caller that shares the store behind a lock (the
-//! runtime) takes the lock inside `with_store` only, so other writers are not held up by a
-//! vault walk. Every record write re-reads the record inside the same `with_store` call
+//! the rename, the final record write); the file reads and writes run between those
+//! calls. A caller that shares the store behind a lock (the runtime) takes the lock inside
+//! `with_store` only, so other writers are not held up by a note's write. Every record write re-reads the record inside the same `with_store` call
 //! and keeps its id, so a concurrent export of the same meeting never changes it.
 //!
 //! # Serialisation
@@ -81,18 +67,18 @@
 //! Exports of one meeting run one at a time (T6.4c, review A8): each holds the meeting's
 //! export lease, a `local_state` row `export-lease/<meeting>` (owner: process id and a
 //! per-thread token; the time it was taken by the export clock), from before its record
-//! read and search until after its final record write. The lease lives in the database, so
+//! read until after its final record write. The lease lives in the database, so
 //! it serialises exports across threads and across processes sharing the data directory.
-//! A second export waits (polling, at most `LeaseTiming::wait`, 30 s) and then searches,
-//! finding the first export's note even when its own render names another path (the title
-//! changed between them); past the wait it fails with the retryable
+//! A second export waits (polling, at most `LeaseTiming::wait`, 30 s) and then reads the
+//! record the first one wrote, so it writes to the first export's note even when its own
+//! render names another path (the title changed between them); past the wait it fails with the retryable
 //! [`StoreError::ConcurrentEdit`] and writes nothing. A lease older (or newer) than
 //! `LeaseTiming::stale_ms` (2 min) by the export clock was left by a crash and is taken
 //! over; a release only removes a lease its owner still holds. Taking and releasing are
 //! store accesses of their own (one `with_store` call each). The holder re-stamps its lease
 //! with the export clock in each later store access (the claim, the last look before a
-//! create's rename, the final record write), so only time spent inside one phase (the vault
-//! walk, the merge) counts toward staleness; an access that finds the lease no longer its
+//! create's rename, the final record write), so only time spent inside one phase (the
+//! note's write) counts toward staleness; an access that finds the lease no longer its
 //! own (taken over after it went stale) stops with the retryable
 //! [`StoreError::ConcurrentEdit`] before writing anything. Each of those accesses, and the
 //! meeting check with the record write it guards, is one `IMMEDIATE` transaction, so a
@@ -105,7 +91,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use earshot_core::export::{RenderedExport, earshot_id_of, merge};
+use earshot_core::export::{RenderedExport, earshot_id_of};
 use earshot_core::identity::{Clock, DeviceId, EntityId};
 use earshot_core::model::{ExportRecord, ExportRepo, MeetingRepo, RepoError, VaultPath};
 use rand_core::Rng;
@@ -129,10 +115,6 @@ pub const STALE_TEMP_MS: u64 = 5 * 60 * 1000;
 /// How many temp names an export tries before giving up (a name is skipped when another
 /// process's temp already has it).
 const TEMP_ATTEMPTS: usize = 16;
-
-/// A batch index older than this is rebuilt (once) when it misses a meeting, so notes that
-/// arrived during a long export-all are still found.
-const INDEX_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How often a create retries with the next free name when a note appears at its name.
 const CREATE_ATTEMPTS: usize = 8;
@@ -185,7 +167,7 @@ pub fn validate_vault(vault: &Path) -> Result<(), VaultError> {
 pub enum ExportAction {
     /// A new note was written.
     Created,
-    /// The existing note was rewritten (merged).
+    /// The existing note was replaced with the render.
     Updated,
     /// The existing note already had exactly this content; nothing was written.
     Unchanged,
@@ -212,177 +194,8 @@ fn join(vault: &Path, rel: &VaultPath) -> PathBuf {
 fn note_id(path: &Path) -> Option<EntityId> {
     let mut buf = Vec::new();
     let f = File::open(path).ok()?;
-    #[cfg(test)]
-    tests::NOTE_OPENS.with(|n| n.set(n.get() + 1));
     f.take(ID_SCAN_BYTES).read_to_end(&mut buf).ok()?;
     earshot_id_of(&String::from_utf8_lossy(&buf))
-}
-
-fn is_markdown(p: &Path) -> bool {
-    p.extension().is_some_and(|x| x.eq_ignore_ascii_case("md"))
-}
-
-/// Markdown files under `dir`, skipping hidden entries and symlinks, sorted.
-fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = rd.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for e in entries {
-        if e.file_name().to_string_lossy().starts_with('.') {
-            continue;
-        }
-        let Ok(ty) = e.file_type() else { continue };
-        if ty.is_dir() {
-            markdown_files(&e.path(), out);
-        } else if ty.is_file() && is_markdown(&e.path()) {
-            out.push(e.path());
-        }
-    }
-}
-
-fn rel_of(vault: &Path, path: &Path) -> Option<VaultPath> {
-    let rel = path.strip_prefix(vault).ok()?;
-    let parts: Vec<String> = rel
-        .components()
-        .map(|c| c.as_os_str().to_str().map(str::to_owned))
-        .collect::<Option<_>>()?;
-    VaultPath::new(&parts.join("/")).ok()
-}
-
-/// `<stem>*.md` files beside the render's path (its collision variants), sorted.
-fn siblings(vault: &Path, rendered: &VaultPath) -> Vec<PathBuf> {
-    let full = join(vault, rendered);
-    let (Some(dir), Some(stem)) = (full.parent(), full.file_stem()) else {
-        return Vec::new();
-    };
-    let stem = stem.to_string_lossy().into_owned();
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PathBuf> = rd
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .map(|e| e.path())
-        .filter(|p| {
-            is_markdown(p)
-                && p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with(&stem))
-        })
-        .collect();
-    out.sort();
-    out
-}
-
-/// The vault-relative path of a note found on disk.
-///
-/// # Errors
-/// [`StoreError::UnusableNotePath`] when the path cannot be expressed as a [`VaultPath`]:
-/// the note exists, so creating another would duplicate it.
-fn found_rel(vault: &Path, path: &Path) -> Result<VaultPath, StoreError> {
-    rel_of(vault, path).ok_or_else(|| StoreError::UnusableNotePath(path.to_owned()))
-}
-
-/// The notes of a vault by `earshot_id`, built with one walk and one open per note, for
-/// exporting many meetings at once ([`export_notes`]). Where several notes carry the same
-/// id, the first in sorted path order is kept (the same note a single export's walk finds).
-#[derive(Debug, Clone)]
-pub(crate) struct VaultIndex {
-    by_id: std::collections::BTreeMap<EntityId, PathBuf>,
-    built: std::time::Instant,
-    /// A miss rebuilds the index once it is this old ([`INDEX_MAX_AGE`]).
-    max_age: std::time::Duration,
-}
-
-impl VaultIndex {
-    /// Walks every non-hidden folder of `vault`.
-    fn build(vault: &Path) -> Self {
-        let mut all = Vec::new();
-        markdown_files(vault, &mut all);
-        let mut by_id = std::collections::BTreeMap::new();
-        for p in all {
-            if let Some(id) = note_id(&p) {
-                by_id.entry(id).or_insert(p);
-            }
-        }
-        VaultIndex {
-            by_id,
-            built: std::time::Instant::now(),
-            max_age: INDEX_MAX_AGE,
-        }
-    }
-}
-
-/// How step 2 searches the vault after the cheap checks.
-enum Search {
-    /// Walk the vault now (single export).
-    Walk,
-    /// Use the batch's index, built on first need.
-    Batch(Option<VaultIndex>),
-}
-
-/// Finds the meeting's note (see the module docs, step 2).
-fn find_note(
-    vault: &Path,
-    meeting: EntityId,
-    recorded: Option<&VaultPath>,
-    rendered: &VaultPath,
-    search: &mut Search,
-    search_starts: &mut dyn FnMut(),
-) -> Result<Option<VaultPath>, StoreError> {
-    for rel in recorded.into_iter().chain(std::iter::once(rendered)) {
-        if note_id(&join(vault, rel)) == Some(meeting) {
-            return Ok(Some(rel.clone()));
-        }
-    }
-    if let Some(p) = siblings(vault, rendered)
-        .into_iter()
-        .find(|p| note_id(p) == Some(meeting))
-    {
-        return found_rel(vault, &p).map(Some);
-    }
-    let walk = |vault: &Path| {
-        let mut all = Vec::new();
-        markdown_files(vault, &mut all);
-        all.into_iter().find(|p| note_id(p) == Some(meeting))
-    };
-    let hit = match search {
-        Search::Walk => {
-            search_starts();
-            walk(vault)
-        }
-        Search::Batch(index) => {
-            let index = index.get_or_insert_with(|| {
-                search_starts();
-                VaultIndex::build(vault)
-            });
-            match index.by_id.get(&meeting) {
-                // Still that meeting's note: use it.
-                Some(p) if note_id(p) == Some(meeting) => Some(p.clone()),
-                // Moved or edited since the index was built: walk, and remember the result.
-                Some(_) => {
-                    search_starts();
-                    let hit = walk(vault);
-                    match &hit {
-                        Some(p) => index.by_id.insert(meeting, p.clone()),
-                        None => index.by_id.remove(&meeting),
-                    };
-                    hit
-                }
-                // Not indexed: trust that only while the index is younger than its limit.
-                None if index.built.elapsed() >= index.max_age => {
-                    search_starts();
-                    let max_age = index.max_age;
-                    *index = VaultIndex::build(vault);
-                    index.max_age = max_age;
-                    index.by_id.get(&meeting).cloned()
-                }
-                None => None,
-            }
-        }
-    };
-    hit.map(|p| found_rel(vault, &p)).transpose()
 }
 
 /// The render's path, or `<stem> (n).md` for the first `n >= 2` that is free.
@@ -800,10 +613,10 @@ pub trait ExportDb {
         f: impl FnOnce(&mut Store) -> Result<T, StoreError>,
     ) -> Result<T, StoreError>;
 
-    /// Called just before the export walks or indexes the vault, outside any
-    /// [`ExportDb::with_store`] call. Default: nothing (tests use it to prove the walk runs
-    /// without the caller's store lock).
-    fn vault_search_starts(&mut self) {}
+    /// Called just before the export reads or writes the note in the vault, outside any
+    /// [`ExportDb::with_store`] call. Default: nothing (tests use it to prove the vault work
+    /// runs without the caller's store lock).
+    fn vault_work_starts(&mut self) {}
 
     /// Called, outside any [`ExportDb::with_store`] call, each time the export finds its
     /// meeting's lease held by another export and waits. Default: nothing (tests use it to
@@ -874,9 +687,8 @@ fn stamp_of(path: &Path) -> std::io::Result<(u64, SystemTime)> {
 /// # Errors
 /// [`StoreError::Vault`] for an unusable vault; [`StoreError::Repo`] if the meeting does not
 /// exist or is deleted (also when it is deleted while the export runs: no record is written);
-/// [`StoreError::Export`] when the existing note's region markers are ambiguous;
 /// [`StoreError::ConcurrentEdit`] (retryable) when the note changed while it was being
-/// merged. In every error case the user's note is left as it was. I/O and SQLite errors.
+/// replaced. In every error case the user's note is left as it was. I/O and SQLite errors.
 pub fn export_note<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     store: &mut D,
     vault: &Path,
@@ -896,7 +708,6 @@ pub fn export_note<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
         clock,
         rng,
         &mut |_| Ok(()),
-        &mut Search::Walk,
         &mut TempFiles::new(),
     )
 }
@@ -911,9 +722,7 @@ pub struct ExportItem<'a> {
 }
 
 /// Exports many meetings ("export all" / "export changed"): the vault is validated once and
-/// searched through one shared vault index (see the module docs), built only if some
-/// meeting's note is not at its recorded or rendered path; each folder's stale temps are
-/// swept once for the whole batch. Each meeting gets its own result; one failure does not
+/// each folder's stale temps are swept once for the whole batch. Each meeting gets its own result; one failure does not
 /// stop the others.
 ///
 /// # Errors
@@ -928,7 +737,6 @@ pub fn export_notes<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     rng: &mut R,
 ) -> Result<Vec<Result<ExportReport, StoreError>>, StoreError> {
     validate_vault(vault).map_err(StoreError::Vault)?;
-    let mut search = Search::Batch(None);
     let mut temps = TempFiles::new();
     Ok(items
         .iter()
@@ -942,7 +750,6 @@ pub fn export_notes<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
                 clock,
                 rng,
                 &mut |_| Ok(()),
-                &mut search,
                 &mut temps,
             )
         })
@@ -962,7 +769,6 @@ fn export_with_hook<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     clock: &C,
     rng: &mut R,
     before_commit: &mut dyn FnMut(&Path) -> std::io::Result<()>,
-    search: &mut Search,
     temps: &mut TempFiles,
 ) -> Result<ExportReport, StoreError> {
     export_with_timing(
@@ -974,15 +780,13 @@ fn export_with_hook<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
         clock,
         rng,
         before_commit,
-        search,
         temps,
         LeaseTiming::DEFAULT,
     )
 }
 
 /// [`export_with_hook`] under the meeting's export lease with `timing` (module docs,
-/// "Serialisation"): held from the record read through the search to the final record
-/// write.
+/// "Serialisation"): held from the record read to the final record write.
 #[allow(clippy::too_many_arguments)]
 fn export_with_timing<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     store: &mut D,
@@ -993,7 +797,6 @@ fn export_with_timing<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     clock: &C,
     rng: &mut R,
     before_commit: &mut dyn FnMut(&Path) -> std::io::Result<()>,
-    search: &mut Search,
     temps: &mut TempFiles,
     timing: LeaseTiming,
 ) -> Result<ExportReport, StoreError> {
@@ -1015,7 +818,6 @@ fn export_with_timing<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
                 clock,
                 rng,
                 before_commit,
-                search,
                 temps,
             )
         },
@@ -1046,7 +848,6 @@ fn export_leased<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     clock: &C,
     rng: &mut R,
     before_commit: &mut dyn FnMut(&Path) -> std::io::Result<()>,
-    search: &mut Search,
     temps: &mut TempFiles,
 ) -> Result<ExportReport, StoreError> {
     let record = store.with_store(|s| {
@@ -1058,14 +859,18 @@ fn export_leased<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     let new_id = record
         .as_ref()
         .map_or_else(|| EntityId::generate(clock, rng), |r| r.id);
-    let found = find_note(
-        vault,
-        meeting,
-        record.as_ref().map(|r| &r.path),
-        &rendered.path,
-        search,
-        &mut || store.vault_search_starts(),
-    )?;
+    // Where the note goes (module docs, step 2): the recorded path; without a record, the
+    // render's path when the file there is this meeting's note (a record lost with the
+    // database), else a new note at the first free name. No other file is read.
+    store.vault_work_starts();
+    let found = match &record {
+        Some(r) => Some(r.path.clone()),
+        None if note_id(&join(vault, &rendered.path)) == Some(meeting) => {
+            Some(rendered.path.clone())
+        }
+        None => None,
+    };
+    let content = rendered.to_file();
     // Re-read in the same store access: a record another export wrote since keeps its id.
     let put_record = |store: &mut D, rel: &VaultPath| -> Result<u64, StoreError> {
         store.with_store(|s| {
@@ -1090,20 +895,35 @@ fn export_leased<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
     };
 
     let (rel, action) = match found {
+        Some(rel) if !join(vault, &rel).exists() => {
+            // The recorded note was moved or deleted: it is written again where it was
+            // recorded (a note the user moved is theirs now, T14.63). A file that appears at
+            // the name meanwhile is never replaced: retryable.
+            let path = join(vault, &rel);
+            let tmp = OwnedTemp::new(temps.write(&path, content.as_bytes())?);
+            before_commit(&path).inspect_err(|_| tmp.crashed())?;
+            match rename_noreplace(tmp.path(), &path) {
+                Ok(()) => tmp.renamed(),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(StoreError::ConcurrentEdit(path));
+                }
+                Err(e) => return Err(e.into()),
+            }
+            sync_dir(path.parent().unwrap_or(vault))?;
+            (rel, ExportAction::Created)
+        }
         Some(rel) => {
             let path = join(vault, &rel);
             let before = stamp_of(&path)?;
             let existing = std::fs::read(&path)?;
-            let text = String::from_utf8(existing.clone())
-                .map_err(|_| StoreError::Corrupt(format!("{} is not UTF-8", path.display())))?;
-            let merged = merge(&text, rendered).map_err(StoreError::Export)?;
-            if merged.as_bytes() == existing.as_slice() {
+            // The whole note is the render (T14.63): nothing of the old file is kept.
+            if content.as_bytes() == existing.as_slice() {
                 (rel, ExportAction::Unchanged)
             } else {
-                let tmp = OwnedTemp::new(temps.write(&path, merged.as_bytes())?);
+                let tmp = OwnedTemp::new(temps.write(&path, content.as_bytes())?);
                 before_commit(&path).inspect_err(|_| tmp.crashed())?;
                 // Last look before replacing: a change since the read means a concurrent
-                // edit (Obsidian, LiveSync) that the merge did not see.
+                // edit (Obsidian, LiveSync) in flight; stop rather than replace it unseen.
                 if stamp_of(&path).ok() != Some(before) || std::fs::read(&path)? != existing {
                     return Err(StoreError::ConcurrentEdit(path));
                 }
@@ -1114,25 +934,12 @@ fn export_leased<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
             }
         }
         None => {
-            let content = rendered.to_file();
             let mut rel = free_path(vault, &rendered.path)?;
             let tmp = OwnedTemp::new(temps.write(&join(vault, &rel), content.as_bytes())?);
             let mut attempt = 0;
-            // The record as this export last saw it: read before the search, then its own
-            // claim.
+            // The record as this export last saw it: read at the start, then its own claim.
             let mut seen = record.as_ref().map(|r| r.path.clone());
             loop {
-                // Another export of this meeting (store access is not held across the
-                // search) may have created its note since the search: it can only be the
-                // render's path or one of its `<stem> (n).md` variants, and it is checked
-                // after this attempt's name was chosen and before the record names it.
-                // Never a second note for one earshot_id: retryable, a retry merges.
-                if let Some(p) = siblings(vault, &rendered.path)
-                    .into_iter()
-                    .find(|p| note_id(p) == Some(meeting))
-                {
-                    return Err(StoreError::ConcurrentEdit(p));
-                }
                 // The record names the intended note before it exists, so a crash after the
                 // rename leaves a recorded note, never an orphan. It is also this export's
                 // claim: written only if nobody recorded another path since this export
@@ -1187,6 +994,13 @@ fn export_leased<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
                         break;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        // This meeting's own note appeared at the name (another export of it
+                        // created it at the recorded path): never a second note for one
+                        // earshot_id, retryable, and a retry writes to it. Only this one
+                        // file is read.
+                        if note_id(&target) == Some(meeting) {
+                            return Err(StoreError::ConcurrentEdit(target));
+                        }
                         attempt += 1;
                         if attempt >= CREATE_ATTEMPTS {
                             return Err(e.into());
@@ -1201,10 +1015,6 @@ fn export_leased<D: ExportDb + ?Sized, C: Clock + ?Sized, R: Rng + ?Sized>(
         }
     };
 
-    if let Search::Batch(Some(index)) = search {
-        // The vault view changed under the index: remember this meeting's note.
-        index.by_id.insert(meeting, join(vault, &rel));
-    }
     let now = put_record(store, &rel)?;
     Ok(ExportReport {
         path: rel,
@@ -1225,11 +1035,6 @@ mod tests {
     use super::*;
 
     const DEVICE: DeviceId = DeviceId::from_bytes([0xd5; 16]);
-
-    thread_local! {
-        /// Notes opened by `note_id` on this test's thread.
-        pub(super) static NOTE_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
 
     struct W {
         vault: PathBuf,
@@ -1305,15 +1110,12 @@ mod tests {
                 &self.clock,
                 &mut self.rng,
                 hook,
-                &mut Search::Walk,
                 &mut TempFiles::new(),
             )
         }
 
         fn md_count(&self) -> usize {
-            let mut all = Vec::new();
-            markdown_files(&self.vault, &mut all);
-            all.len()
+            markdown_names(&self.vault).len()
         }
     }
 
@@ -1328,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn export_aborts_when_the_note_is_edited_during_the_merge() {
+    fn export_aborts_when_the_note_is_edited_during_the_write() {
         let mut w = W::new("edit");
         let r1 = w.render("one");
         let first = w.export(&r1, &mut no_hook).unwrap();
@@ -1353,11 +1155,11 @@ mod tests {
             1,
             "temp removed"
         );
-        // A retry merges on top of the edit.
-        let rep = w.export(&w.render("two"), &mut no_hook).unwrap();
+        // A retry replaces the note, the edit included (T14.63: export is export).
+        let r2 = w.render("two");
+        let rep = w.export(&r2, &mut no_hook).unwrap();
         assert_eq!(rep.action, ExportAction::Updated);
-        let now = std::fs::read_to_string(&path).unwrap();
-        assert!(now.contains("  - two\n") && now.ends_with("typed during export\n"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), r2.to_file());
     }
 
     #[test]
@@ -1479,42 +1281,6 @@ mod tests {
         assert!(!old.exists(), "a stale temp is removed");
     }
 
-    #[test]
-    fn export_without_a_record_adopts_a_moved_note_anywhere_in_the_vault() {
-        let mut w = W::new("farnote");
-        let r = w.render("one");
-        std::fs::create_dir_all(w.vault.join("Far").join("Away")).unwrap();
-        std::fs::write(w.vault.join("Far").join("Away").join("x.md"), r.to_file()).unwrap();
-        let rep = w.export(&r, &mut no_hook).unwrap();
-        assert_eq!(rep.action, ExportAction::Unchanged);
-        assert_eq!(rep.path.as_str(), "Far/Away/x.md");
-        assert_eq!(w.md_count(), 1, "never duplicated");
-        let rec = w
-            .store
-            .export_record(w.meeting.id, DEVICE)
-            .unwrap()
-            .unwrap();
-        assert_eq!(rec.path, rep.path);
-    }
-
-    #[test]
-    fn export_without_a_record_prefers_the_note_beside_the_target() {
-        let mut w = W::new("norecord");
-        let r = w.render("one");
-        // Copies in two places: the one beside the target wins over the vault walk.
-        std::fs::create_dir_all(w.vault.join("Far")).unwrap();
-        std::fs::write(w.vault.join("Far").join("x.md"), r.to_file()).unwrap();
-        let target = join(&w.vault, &r.path);
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(&target, "---\ntitle: theirs\n---\n").unwrap();
-        let stem = target.file_stem().unwrap().to_string_lossy().into_owned();
-        let sibling = target.with_file_name(format!("{stem} (2).md"));
-        std::fs::write(&sibling, r.to_file()).unwrap();
-        let rep = w.export(&r, &mut no_hook).unwrap();
-        assert_eq!(rep.action, ExportAction::Unchanged);
-        assert!(rep.path.as_str().ends_with(" (2).md"));
-    }
-
     // ---- T5.4c ----
 
     fn render_for(m: &Meeting) -> RenderedExport {
@@ -1533,118 +1299,6 @@ mod tests {
             &ExportOptions::default(),
         )
         .unwrap()
-    }
-
-    fn opens() -> usize {
-        NOTE_OPENS.with(std::cell::Cell::get)
-    }
-
-    #[test]
-    fn export_batch_walks_the_vault_once() {
-        let mut w = W::new("batch");
-        // 30 unrelated notes elsewhere in the vault.
-        let other = w.vault.join("Other");
-        std::fs::create_dir_all(&other).unwrap();
-        let foreign = w.render("x").to_file().replace(
-            &w.meeting.id.to_string(),
-            "01920000-0000-7000-8000-00000000ffff",
-        );
-        for i in 0..30 {
-            std::fs::write(other.join(format!("n{i:02}.md")), &foreign).unwrap();
-        }
-        // Six meetings, none exported yet; the last one's note was moved by the user.
-        let mut items = Vec::new();
-        for i in 0..6u64 {
-            let mut hlc = Hlc::new(DEVICE);
-            let m = Meeting::new(
-                format!("Batch {i}"),
-                1_792_209_900_000 + i * 3_600_000,
-                0,
-                Template::General,
-                &mut Stamp {
-                    clock: &w.clock,
-                    hlc: &mut hlc,
-                    rng: &mut w.rng,
-                },
-            );
-            w.store.put_meeting(m.clone()).unwrap();
-            items.push((m.id, render_for(&m)));
-        }
-        let moved = w.vault.join("Archive").join("kept.md");
-        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
-        std::fs::write(&moved, items[5].1.to_file()).unwrap();
-        let batch: Vec<ExportItem<'_>> = items
-            .iter()
-            .map(|(id, r)| ExportItem {
-                meeting: *id,
-                rendered: r,
-            })
-            .collect();
-
-        NOTE_OPENS.with(|n| n.set(0));
-        let out =
-            export_notes(&mut w.store, &w.vault, DEVICE, &batch, &w.clock, &mut w.rng).unwrap();
-        let reports: Vec<ExportReport> = out.into_iter().map(Result::unwrap).collect();
-        assert_eq!(
-            reports[5].path.as_str(),
-            "Archive/kept.md",
-            "moved note adopted"
-        );
-        assert_eq!(reports[5].action, ExportAction::Unchanged);
-        assert!(
-            reports[..5]
-                .iter()
-                .all(|r| r.action == ExportAction::Created)
-        );
-        // One walk (31 notes) plus a re-check of the indexed hit; a walk per meeting would
-        // open about 6 x 31 notes.
-        assert!(opens() <= 31 + 6, "{} note opens for a batch of 6", opens());
-    }
-
-    #[test]
-    fn export_single_still_finds_a_moved_note_by_walking() {
-        let mut w = W::new("single-walk");
-        let r = w.render("one");
-        let moved = w.vault.join("A").join("B").join("c.md");
-        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
-        std::fs::write(&moved, r.to_file()).unwrap();
-        let rep = w.export(&r, &mut no_hook).unwrap();
-        assert_eq!(rep.path.as_str(), "A/B/c.md");
-    }
-
-    /// A file name the platform allows but a `VaultPath` cannot hold.
-    fn unusable_name() -> std::ffi::OsString {
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStringExt;
-            // An unpaired surrogate: valid on NTFS, not valid Unicode.
-            let mut v: Vec<u16> = "note-".encode_utf16().collect();
-            v.push(0xD800);
-            v.extend(".md".encode_utf16());
-            std::ffi::OsString::from_wide(&v)
-        }
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::ffi::OsStringExt;
-            std::ffi::OsString::from_vec(b"note-\xff.md".to_vec())
-        }
-    }
-
-    #[test]
-    fn export_a_found_note_at_an_unusable_path_is_an_error_not_a_duplicate() {
-        let mut w = W::new("unusable");
-        let r = w.render("one");
-        let dir = w.vault.join("Odd");
-        std::fs::create_dir_all(&dir).unwrap();
-        let odd = dir.join(unusable_name());
-        std::fs::write(&odd, r.to_file()).unwrap();
-        let err = w.export(&r, &mut no_hook).unwrap_err();
-        assert!(
-            matches!(err, StoreError::UnusableNotePath(ref p) if *p == odd),
-            "{err}"
-        );
-        assert_eq!(w.md_count(), 1, "no second note was created");
-        assert_eq!(w.store.export_record(w.meeting.id, DEVICE).unwrap(), None);
     }
 
     #[test]
@@ -1740,7 +1394,6 @@ mod tests {
                 &self.clock,
                 &mut self.rng,
                 &mut no_hook,
-                &mut Search::Walk,
                 temps,
             )
         }
@@ -1869,7 +1522,6 @@ mod tests {
         CLOCK_CALLS.with(|c| c.set(0));
         let mut temps = temps_with(fake_clock, (0..50).collect());
         w.export_with(&first, &mut temps).unwrap();
-        let mut search = Search::Walk;
         export_with_hook(
             &mut w.store,
             &w.vault,
@@ -1879,7 +1531,6 @@ mod tests {
             &w.clock,
             &mut w.rng,
             &mut no_hook,
-            &mut search,
             &mut temps,
         )
         .unwrap();
@@ -1961,84 +1612,8 @@ mod tests {
         assert!(!live.exists());
     }
 
-    #[test]
-    fn export_batch_index_learns_its_own_writes_and_walks() {
-        let mut w = W::new("index-learn");
-        let r = w.render("one");
-        let mut search = Search::Batch(None);
-        let rep = export_with_hook(
-            &mut w.store,
-            &w.vault,
-            DEVICE,
-            w.meeting.id,
-            &r,
-            &w.clock,
-            &mut w.rng,
-            &mut no_hook,
-            &mut search,
-            &mut TempFiles::new(),
-        )
-        .unwrap();
-        let Search::Batch(Some(index)) = &search else {
-            panic!("index built")
-        };
-        assert_eq!(
-            index.by_id.get(&w.meeting.id),
-            Some(&join(&w.vault, &rep.path))
-        );
-        // The user moves it; the stale entry falls back to a walk whose result is kept.
-        let moved = w.vault.join("Moved").join("m.md");
-        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
-        std::fs::rename(join(&w.vault, &rep.path), &moved).unwrap();
-        let found = find_note(
-            &w.vault,
-            w.meeting.id,
-            None,
-            &r.path,
-            &mut search,
-            &mut || {},
-        )
-        .unwrap();
-        assert_eq!(found.unwrap().as_str(), "Moved/m.md");
-        let Search::Batch(Some(index)) = &search else {
-            panic!("index kept")
-        };
-        assert_eq!(index.by_id.get(&w.meeting.id), Some(&moved));
-    }
-
-    #[test]
-    fn export_batch_index_is_rebuilt_when_an_old_index_misses() {
-        let w = W::new("index-age");
-        let r = w.render("one");
-        // The index was built before this meeting's note arrived in the vault.
-        let mut index = VaultIndex::build(&w.vault);
-        assert_eq!(index.max_age, INDEX_MAX_AGE);
-        let far = w.vault.join("Synced").join("arrived.md");
-        std::fs::create_dir_all(far.parent().unwrap()).unwrap();
-        std::fs::write(&far, r.to_file()).unwrap();
-        // Younger than its limit: the documented race, not seen.
-        let mut fresh = Search::Batch(Some(index.clone()));
-        assert_eq!(
-            find_note(
-                &w.vault,
-                w.meeting.id,
-                None,
-                &r.path,
-                &mut fresh,
-                &mut || {}
-            )
-            .unwrap(),
-            None
-        );
-        // At its limit (here: zero): rebuilt once and found.
-        index.max_age = std::time::Duration::ZERO;
-        let mut old = Search::Batch(Some(index));
-        let found = find_note(&w.vault, w.meeting.id, None, &r.path, &mut old, &mut || {}).unwrap();
-        assert_eq!(found.unwrap().as_str(), "Synced/arrived.md");
-    }
-
-    /// An [`ExportDb`] that logs each store access and, when the vault search starts,
-    /// writes a record for the meeting as a concurrent export would.
+    /// An [`ExportDb`] that logs each store access and, when the vault work starts, writes
+    /// a record for the meeting as a concurrent export would.
     struct Logged<'a> {
         store: &'a mut Store,
         log: Vec<&'static str>,
@@ -2054,8 +1629,8 @@ mod tests {
             f(self.store)
         }
 
-        fn vault_search_starts(&mut self) {
-            self.log.push("search");
+        fn vault_work_starts(&mut self) {
+            self.log.push("vault");
             if let Some(r) = self.concurrent.take() {
                 self.store.put_export_record(r).unwrap();
             }
@@ -2063,7 +1638,7 @@ mod tests {
     }
 
     #[test]
-    fn export_reaches_the_store_only_around_the_vault_search() {
+    fn export_reaches_the_store_only_around_the_vault_work() {
         let mut w = W::new("logged");
         let r = w.render("logged");
         let concurrent = ExportRecord {
@@ -2088,13 +1663,14 @@ mod tests {
             &mut w.rng,
         )
         .unwrap_err();
-        // The meeting's export lease taken, one read (meeting check + record), the walk
-        // with no store access in progress, then the claim, which finds the path recorded
-        // meanwhile: another export is creating this meeting's note there, so this one
-        // stops (retryable) and leaves the record and the vault alone; the lease released.
+        // The meeting's export lease taken, one read (meeting check + record), the vault
+        // work with no store access in progress, then the claim, which finds the path
+        // recorded meanwhile: another export is creating this meeting's note there, so this
+        // one stops (retryable) and leaves the record and the vault alone; the lease
+        // released.
         assert!(matches!(err, StoreError::ConcurrentEdit(_)), "{err}");
         assert!(err.is_retryable());
-        assert_eq!(db.log, ["store", "store", "search", "store", "store"]);
+        assert_eq!(db.log, ["store", "store", "vault", "store", "store"]);
         assert!(markdown_names(&w.vault).is_empty());
         assert!(temps_left(join(&w.vault, &r.path).parent().unwrap()).is_empty());
         let rec = db
@@ -2103,9 +1679,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(rec.path.as_str(), "Elsewhere/other.md");
-        // A retry (the other export never created its note) claims and creates: the lease,
-        // the read, the search, the claim, the last look before the rename, the final
-        // record write and the lease release.
+        // A retry (the other export never created its note) writes it at the recorded path
+        // (T14.63): the lease, the read, the vault work, the final record write and the
+        // lease release; no claim, since the record already names the path.
         db.log.clear();
         let report = export_note(
             &mut db,
@@ -2118,12 +1694,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.action, ExportAction::Created);
-        assert_eq!(
-            db.log,
-            [
-                "store", "store", "search", "store", "store", "store", "store"
-            ]
-        );
+        assert_eq!(report.path.as_str(), "Elsewhere/other.md");
+        assert_eq!(db.log, ["store", "store", "vault", "store", "store"]);
+        assert_eq!(markdown_names(&w.vault), ["Elsewhere/other.md"]);
         // The record keeps its id; the path is the note just created.
         let rec = w
             .store
@@ -2148,7 +1721,7 @@ mod tests {
     }
 
     /// Runs export B of `w`'s meeting; `during_b` runs while B is about to rename its new
-    /// note into place (after its search found nothing and its record was written).
+    /// note into place (after its record was written).
     fn export_b_with(
         w: &mut W,
         cell: &std::cell::RefCell<Store>,
@@ -2170,17 +1743,27 @@ mod tests {
                 }
                 Ok(())
             },
-            &mut Search::Walk,
             &mut TempFiles::new(),
         )
     }
 
+    /// Every `.md` file under `vault`, vault-relative with `/`, sorted.
     fn markdown_names(vault: &Path) -> Vec<String> {
-        let mut all = Vec::new();
-        markdown_files(vault, &mut all);
-        all.iter()
-            .map(|p| rel_of(vault, p).unwrap().as_str().to_owned())
-            .collect()
+        fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(base, &p, out);
+                } else if p.extension().is_some_and(|x| x == "md") {
+                    let rel = p.strip_prefix(base).unwrap().to_string_lossy();
+                    out.push(rel.replace('\\', "/"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(vault, vault, &mut out);
+        out.sort();
+        out
     }
 
     fn temps_left(dir: &Path) -> Vec<String> {
@@ -2196,9 +1779,9 @@ mod tests {
 
     #[test]
     fn export_two_concurrent_creates_of_one_meeting_leave_one_note() {
-        // Neither export of a never-exported meeting finds a note; A creates it while B is
-        // about to rename its own at the same name. B must not pick a free name and write a
-        // second note with the same earshot_id.
+        // Neither export of a never-exported meeting has a note; A (reading B's claim)
+        // creates it while B is about to rename its own at the same name. B must not pick a
+        // free name and write a second note with the same earshot_id.
         let mut w = W::new("concurrent-create");
         let r = w.render("concurrent");
         let store = std::mem::replace(&mut w.store, Store::open_in_memory().unwrap());
@@ -2234,7 +1817,7 @@ mod tests {
         assert_eq!(rec.path, a.path);
         let dir = join(&vault, &a.path).parent().unwrap().to_owned();
         assert!(temps_left(&dir).is_empty(), "{:?}", temps_left(&dir));
-        // A retry merges into the one note.
+        // A retry replaces the one note.
         let again = export_b_with(&mut w, &cell, &r, &mut || {}).unwrap();
         assert_eq!(again.path, a.path);
         assert_eq!(markdown_names(&vault), [a.path.as_str()]);
@@ -2286,11 +1869,11 @@ mod tests {
     }
 
     #[test]
-    fn export_two_creates_of_different_renders_claim_one_note_when_the_later_searched_first() {
-        // A searched the vault (nothing there) before B, with another title, created the
-        // note and recorded it; A's claim then finds B's path recorded since its search and
-        // stops (retryable) instead of creating a second note under its own title.
-        let mut w = W::new("claim-searched-first");
+    fn export_two_creates_of_different_renders_claim_one_note_when_the_later_read_first() {
+        // A read no record before B, with another title, created the note and recorded it;
+        // A's claim then finds B's path recorded since its read and stops (retryable)
+        // instead of creating a second note under its own title.
+        let mut w = W::new("claim-read-first");
         let (r_a, r_b) = (retitled(&w, "Planning"), retitled(&w, "Planning v2"));
         assert_ne!(r_a.path, r_b.path);
         let store = std::mem::replace(&mut w.store, Store::open_in_memory().unwrap());
@@ -2301,8 +1884,8 @@ mod tests {
         let mut db = BeforeAccess {
             cell: &cell,
             calls: 0,
-            // Access 1 takes A's export lease, access 2 reads the record before the
-            // search; access 3 is A's claim. (B runs on this thread inside A's lease, as
+            // Access 1 takes A's export lease, access 2 reads the record; access 3 is A's
+            // claim. (B runs on this thread inside A's lease, as
             // a nested export, so the lease does not hold it back here.)
             at: 3,
             before: Some(Box::new(|| {
@@ -2338,7 +1921,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(rec.path, b.path);
-        // A retry merges into B's note.
+        // A retry replaces B's note.
         let again = export_note(
             &mut Shared(&cell),
             &vault,
@@ -2354,10 +1937,12 @@ mod tests {
     }
 
     #[test]
-    fn export_two_creates_of_different_renders_leave_one_note_when_the_later_claimed_last() {
+    fn export_two_creates_of_different_renders_leave_one_note_when_one_runs_inside_the_others_claim()
+     {
         // B claimed its path and is about to rename its note into place; A, with another
-        // title, searches (B's note is not there yet), claims over B's record and creates
-        // its note. B's last look before the rename finds A's claim and stops (retryable).
+        // title, reads B's record and writes the note at B's recorded path (T14.63: a
+        // recorded path is where the note goes). B's rename then finds this meeting's note at
+        // its name and stops (retryable) rather than taking a free name: one note.
         let mut w = W::new("claim-claimed-last");
         let (r_a, r_b) = (retitled(&w, "Planning"), retitled(&w, "Planning v2"));
         assert_ne!(r_a.path, r_b.path);
@@ -2383,7 +1968,7 @@ mod tests {
         .unwrap_err();
         let a = a_report.expect("export A ran inside B");
         assert_eq!(a.action, ExportAction::Created);
-        assert_eq!(a.path, r_a.path);
+        assert_eq!(a.path, r_b.path, "A wrote to B's recorded path");
         assert!(matches!(err, StoreError::ConcurrentEdit(_)), "{err}");
         assert!(err.is_retryable());
         assert_eq!(markdown_names(&vault), [a.path.as_str()]);
@@ -2395,7 +1980,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(rec.path, a.path);
-        // A retry of B merges into A's note.
+        // A retry of B replaces A's note.
         let again = export_b_with(&mut w, &cell, &r_b, &mut || {}).unwrap();
         assert_eq!(again.path, a.path);
         assert_eq!(markdown_names(&vault), [a.path.as_str()]);
@@ -2559,10 +2144,9 @@ mod tests {
     #[test]
     fn export_two_exports_with_different_renders_of_one_meeting_leave_one_note() {
         // T6.4c (review A8): the title changed between two exports of a never-exported
-        // meeting, so their renders name different notes and the sibling check of one
-        // cannot see the other's note. The per-meeting lease serialises them: B holds it
-        // from its search to its rename, A (another connection, as another process would)
-        // waits, then finds B's note and merges into it.
+        // meeting, so their renders name different notes. The per-meeting lease serialises
+        // them: B holds it from its record read to its rename, A (another connection, as
+        // another process would) waits, then reads B's record and replaces B's note.
         let mut w = W::new("lease-two-renders");
         let (a_store, b_store, db) = on_disk(&mut w);
         let (r_a, r_b) = (render_titled(&w, "Planning"), render_titled(&w, "Roadmap"));
@@ -2606,14 +2190,13 @@ mod tests {
                     .is_ok();
                 Ok(())
             },
-            &mut Search::Walk,
             &mut TempFiles::new(),
         )
         .unwrap();
         assert!(waited, "A must wait for B's lease");
         let a = a.join().unwrap().unwrap();
         assert_eq!(b.action, ExportAction::Created);
-        assert_eq!(a.path, b.path, "A merged into B's note");
+        assert_eq!(a.path, b.path, "A replaced B's note");
         assert_eq!(markdown_names(&w.vault), [b.path.as_str()]);
         assert_eq!(
             b_db.store.local_value(&lease_key(meeting)).unwrap(),
@@ -2653,7 +2236,6 @@ mod tests {
             &w.clock,
             &mut w.rng,
             &mut no_hook,
-            &mut Search::Walk,
             &mut TempFiles::new(),
             short,
         )
@@ -2780,7 +2362,6 @@ mod tests {
                         }
                         Ok(())
                     },
-                    &mut Search::Walk,
                     &mut TempFiles::new(),
                 )
                 .unwrap_err()
@@ -2854,7 +2435,6 @@ mod tests {
             &w.clock,
             &mut ChaCha8Rng::seed_from_u64(41),
             &mut no_hook,
-            &mut Search::Walk,
             &mut TempFiles::new(),
         )
     }
@@ -2862,7 +2442,7 @@ mod tests {
     #[test]
     fn export_of_a_meeting_deleted_just_before_the_claim_leaves_no_record() {
         // Access 1 takes the lease, access 2 reads the record, access 3 is the claim: the
-        // meeting is deleted between the search and the claim, so the claim's meeting
+        // meeting is deleted between the read and the claim, so the claim's meeting
         // check refuses and nothing names the deleted meeting.
         let mut w = W::new("deleted-at-claim");
         let r = w.render("deleted");
@@ -2904,7 +2484,6 @@ mod tests {
                     &w.clock,
                     &mut w.rng,
                     &mut no_hook,
-                    &mut Search::Walk,
                     &mut TempFiles::new(),
                 )
                 .unwrap();

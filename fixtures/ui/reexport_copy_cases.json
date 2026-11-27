@@ -1,0 +1,8 @@
+{
+  "_comment": "T14.63: the question before exporting a meeting again, since a re-export replaces the whole Obsidian note. earshot_runtime::export (the CLI prints `single` and goes ahead) and the UI's one copy (detail/reexportCopy.ts) say them; both suites check against this table, so a copy change edits it. `batch_many` holds {count}, the number of the chosen meetings exported before.",
+  "single": "This meeting has already been exported. Exporting again replaces the whole note, including anything you ticked, changed or added there.",
+  "batch_one": "1 of these meetings has already been exported. Exporting again replaces its whole note, including anything you ticked, changed or added there.",
+  "batch_many": "{count} of these meetings have already been exported. Exporting again replaces their whole notes, including anything you ticked, changed or added there.",
+  "confirm": "Export again",
+  "cancel": "Cancel"
+}

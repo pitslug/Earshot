@@ -103,8 +103,7 @@ pub(super) fn neutralise(s: &str) -> String {
 /// `\\![x](u)`, an image), and `\<!--` still holds the marker's bytes. An entity is never
 /// part of Markdown structure, whatever comes before it. Plain links (`[text](url)`,
 /// `[[Note]]`) are left as written: they fetch nothing until clicked. The function is
-/// idempotent (it never writes a trigger), and `merge::plain_form` undoes every escape it
-/// writes.
+/// idempotent (it never writes a trigger).
 pub(super) fn neutralise_generated(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();

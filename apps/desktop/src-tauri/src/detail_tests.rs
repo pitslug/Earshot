@@ -1772,6 +1772,29 @@ fn detail_export_without_a_vault_is_no_vault_and_with_one_writes_the_note() {
 }
 
 #[test]
+fn detail_exported_says_whether_this_computer_exported_the_meeting() {
+    // T14.63: the page asks before a re-export only for a meeting exported before.
+    let dir = TempDir::new("detail-exported");
+    let svc = services(&dir);
+    let f = call_meeting(&svc, 51);
+    let other = call_meeting(&svc, 52);
+    assert!(!meeting_detail(&svc, f.meeting).unwrap().exported);
+    // A refused export (no vault) exports nothing.
+    assert!(export(&svc, f.meeting).is_err());
+    assert!(!meeting_detail(&svc, f.meeting).unwrap().exported);
+    let vault = dir.0.join("vault");
+    std::fs::create_dir_all(&vault).unwrap();
+    earshot_runtime::export_settings::set_obsidian_settings(&svc, &vault.display().to_string(), "")
+        .unwrap();
+    export(&svc, f.meeting).unwrap();
+    assert!(meeting_detail(&svc, f.meeting).unwrap().exported);
+    assert!(!meeting_detail(&svc, other.meeting).unwrap().exported);
+    // Serialised for the page under its own name.
+    let json = serde_json::to_value(meeting_detail(&svc, f.meeting).unwrap()).unwrap();
+    assert_eq!(json["exported"], serde_json::Value::Bool(true));
+}
+
+#[test]
 fn detail_delete_is_meeting_busy_while_a_job_holds_the_meeting() {
     let dir = TempDir::new("detail-delete");
     let svc = services(&dir);

@@ -282,7 +282,7 @@ fn export_changed_sees_every_kind_of_edit_and_only_that_meeting() {
 }
 
 #[test]
-fn export_all_leaves_the_store_free_during_its_vault_walk() {
+fn export_all_leaves_the_store_free_during_its_vault_work() {
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -291,12 +291,12 @@ fn export_all_leaves_the_store_free_during_its_vault_walk() {
     let vault = vault(&dir);
     let a = meeting(&svc, "Alpha", 30);
     let b = meeting(&svc, "Beta", 31);
-    // Never exported: the batch builds its vault index, which is the walk.
-    let key = "export-test/written-during-walk";
+    // Never exported: each meeting's vault work creates its note.
+    let key = "export-test/written-during-vault-work";
     let (go_tx, go_rx) = mpsc::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel::<()>();
     let svc_ref = &svc;
-    let (searches, written) = std::thread::scope(|s| {
+    let (starts, written) = std::thread::scope(|s| {
         // Stands in for a live session writing to the store.
         s.spawn(move || {
             if go_rx.recv().is_ok() {
@@ -304,13 +304,13 @@ fn export_all_leaves_the_store_free_during_its_vault_walk() {
                 let _ = done_tx.send(());
             }
         });
-        let mut searches = 0;
+        let mut starts = 0;
         let mut written = None;
-        let mut on_search = || {
-            searches += 1;
-            if searches == 1 {
+        let mut on_vault = || {
+            starts += 1;
+            if starts == 1 {
                 go_tx.send(()).unwrap();
-                // Bounded rendezvous: the write finishes while the walk waits, which it
+                // Bounded rendezvous: the write finishes while the vault work waits, which it
                 // cannot while the export holds the store lock.
                 written = Some(done_rx.recv_timeout(Duration::from_secs(60)).is_ok());
             }
@@ -321,20 +321,20 @@ fn export_all_leaves_the_store_free_during_its_vault_walk() {
             ExportSelection::All,
             &ExportOptions::default(),
             &mut ChaCha8Rng::seed_from_u64(32),
-            &mut on_search,
+            &mut on_vault,
         )
         .unwrap();
         let ids: Vec<_> = out.iter().map(|(m, _)| *m).collect();
         assert!(ids.contains(&a) && ids.contains(&b), "{ids:?}");
         assert!(out.iter().all(|(_, r)| r.is_ok()), "{out:?}");
         drop(go_tx);
-        (searches, written)
+        (starts, written)
     });
-    assert!(searches >= 1, "the batch never searched the vault");
+    assert_eq!(starts, 2, "one vault step per meeting");
     assert_eq!(
         written,
         Some(true),
-        "a store write waited for the vault walk"
+        "a store write waited for the vault work"
     );
     assert_eq!(
         svc.store().local_value(key).unwrap().as_deref(),
@@ -472,4 +472,126 @@ fn export_note_groups_actions_once_the_user_has_a_name() {
         export_changed(&svc, &vault, 3).is_empty(),
         "the batch renders the same note"
     );
+}
+
+// ---- T14.63: a re-export replaces the note ----
+
+/// Stores a summary of `id` with one invented action item, `- [ ] Send the slides (Robin
+/// Vale)` in the note.
+fn put_one_action(svc: &Services, id: EntityId, seed: u64) {
+    let svc_clock = std::sync::Arc::clone(&svc.clock);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut db = svc.store();
+    let (store, hlc) = db.parts();
+    let mut stamp = Stamp {
+        clock: &*svc_clock,
+        hlc,
+        rng: &mut rng,
+    };
+    let summary = earshot_core::summary::SummaryV1 {
+        title: "Planning".into(),
+        tldr: "Planned.".into(),
+        enhanced_notes: vec![],
+        decisions: vec![],
+        action_items: vec![earshot_core::summary::ActionItem {
+            owner: "Robin Vale".into(),
+            task: "Send the slides".into(),
+            due: None,
+            source_segment_ids: vec![],
+        }],
+        open_questions: vec![],
+        topics: vec![],
+    };
+    let row = earshot_core::model::Summary::new(
+        id,
+        earshot_core::prompt::Template::General,
+        Some("m".into()),
+        summary,
+        &mut stamp,
+    );
+    store.put_summary(row).unwrap();
+}
+
+#[test]
+fn export_again_replaces_a_ticked_line_and_the_users_own_lines() {
+    let dir = TempDir::new("export");
+    let (svc, _) = services(&dir);
+    let vault = vault(&dir);
+    let id = meeting(&svc, "Planning", 40);
+    put_one_action(&svc, id, 41);
+    assert!(!was_exported(&svc.store(), id).unwrap(), "never exported");
+    let export = |seed| {
+        export_meeting(
+            &svc,
+            &vault,
+            id,
+            &ExportOptions::default(),
+            &mut ChaCha8Rng::seed_from_u64(seed),
+        )
+        .unwrap()
+    };
+    assert_eq!(export(42).action, ExportAction::Created);
+    assert!(was_exported(&svc.store(), id).unwrap());
+    let path = vault.join("Meetings").join(notes_in(&vault).remove(0));
+    let first = std::fs::read_to_string(&path).unwrap();
+    let line = "- [ ] Send the slides (Robin Vale)\n";
+    assert!(first.contains(line), "{first}");
+    // The user ticks the action and adds lines of their own, inside and after the body.
+    let edited = first
+        .replace(line, "- [x] Send the slides (Robin Vale)\n")
+        .replace("## TL;DR\n", "## TL;DR\n\nMy line inside.\n")
+        + "\nMy own follow-up.\n";
+    assert!(edited.contains("My line inside."), "{edited}");
+    std::fs::write(&path, &edited).unwrap();
+    // Exporting again writes the note as rendered: the tick and the user's lines are gone.
+    assert_eq!(export(43).action, ExportAction::Updated);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+    assert_eq!(notes_in(&vault).len(), 1, "one note, no duplicate");
+}
+
+#[test]
+fn export_was_exported_reads_only_this_devices_record() {
+    let dir = TempDir::new("export");
+    let (svc, _) = services(&dir);
+    let vault = vault(&dir);
+    let (a, b) = (meeting(&svc, "One", 50), meeting(&svc, "Two", 51));
+    export_meeting(
+        &svc,
+        &vault,
+        a,
+        &ExportOptions::default(),
+        &mut ChaCha8Rng::seed_from_u64(52),
+    )
+    .unwrap();
+    let db = svc.store();
+    assert!(was_exported(&db, a).unwrap());
+    assert!(!was_exported(&db, b).unwrap());
+    assert!(!was_exported(&db, EntityId::from_bytes([9; 16])).unwrap());
+}
+
+#[test]
+fn export_reexport_copy_is_the_shared_table() {
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/ui/reexport_copy_cases.json"
+    ))
+    .unwrap();
+    let text = |k: &str| table[k].as_str().unwrap().to_owned();
+    assert_eq!(REEXPORT_WARNING, text("single"));
+    assert_eq!(REEXPORT_CONFIRM, text("confirm"));
+    assert_eq!(reexport_batch_warning(0), None);
+    assert_eq!(reexport_batch_warning(1), Some(text("batch_one")));
+    for n in [2, 7, 120] {
+        assert_eq!(
+            reexport_batch_warning(n),
+            Some(text("batch_many").replace("{count}", &n.to_string())),
+            "{n}"
+        );
+    }
+    // Fixed copy: no em dash, no run of spaces.
+    for k in ["single", "batch_one", "batch_many", "confirm", "cancel"] {
+        assert!(
+            !text(k).contains('\u{2014}') && !text(k).contains("  "),
+            "{k}"
+        );
+    }
 }

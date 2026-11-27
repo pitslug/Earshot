@@ -1669,6 +1669,8 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       if (target.vault === "") fail("no_vault", "Set your Obsidian vault in Settings to export.");
       const title = d.header.title.trim() === "" ? "Untitled meeting" : d.header.title;
       const folder = target.folder === "" ? "" : `${target.folder}/`;
+      // The export record now exists (T14.63: the next export asks first).
+      update(meeting, (x) => ({ ...x, exported: true }));
       return { note_path: `${folder}${title.replace(/[:\\/]/g, " -")}.md` };
     },
     // T12.38: the rules of `deletion::ask` and `deletion::delete`, with their copy.

@@ -44,17 +44,11 @@ pub enum StoreError {
     Audio(String),
     /// The vault path is unusable.
     Vault(crate::export::VaultError),
-    /// The existing note cannot be merged (ambiguous region markers).
-    Export(earshot_core::export::ExportError),
     /// SQLite could not finish an operation because another connection holds the
     /// database (for example a WAL checkpoint with an active reader). Retry.
     Busy(String),
-    /// A note carrying the meeting's `earshot_id` exists at a path that cannot be stored as
-    /// a vault path (for example a file name that is not valid Unicode). Nothing is written,
-    /// so the note is not duplicated; rename it in the vault and export again.
-    UnusableNotePath(std::path::PathBuf),
     /// The note was changed by someone else (Obsidian, a sync client) while it was being
-    /// merged; nothing was written. Retry the export.
+    /// exported; nothing was written. Retry the export.
     ConcurrentEdit(std::path::PathBuf),
 }
 
@@ -97,13 +91,7 @@ impl fmt::Display for StoreError {
             StoreError::Repo(e) => write!(f, "{e}"),
             StoreError::Audio(m) => write!(f, "audio: {m}"),
             StoreError::Vault(e) => write!(f, "{e}"),
-            StoreError::Export(e) => write!(f, "export: {e}"),
             StoreError::Busy(m) => write!(f, "database busy: {m}"),
-            StoreError::UnusableNotePath(p) => write!(
-                f,
-                "the meeting's note at {} has a name Earshot cannot record; rename it",
-                p.display()
-            ),
             StoreError::ConcurrentEdit(p) => write!(
                 f,
                 "{} changed while it was being exported; try again",

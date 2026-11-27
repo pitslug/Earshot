@@ -1464,6 +1464,12 @@ export type MeetingDetail = {
 	 */
 	audio_kept: boolean,
 	/**
+	 *  This computer exported the meeting to Obsidian before (its export record,
+	 *  `earshot_runtime::export::was_exported`): exporting again replaces the whole note, so
+	 *  the page asks first (T14.63).
+	 */
+	exported: boolean,
+	/**
 	 *  Every time a summary of this meeting handed text to Claude Code (T7.4ga) or Codex
 	 *  (T7.4gc), oldest first (PLAN.md 3.9: when and how much, never text; empty for any
 	 *  other summary and for a record this version cannot read).

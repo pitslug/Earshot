@@ -1338,6 +1338,12 @@ pub fn run_meeting(
 
     // 5. Export, on request only.
     if let Some(vault) = &opts.export_vault {
+        // A re-export replaces the whole note (T14.63): say so, then go ahead.
+        if earshot_runtime::export::was_exported(&svc.store(), meeting)
+            .map_err(|e| runtime(RuntimeError::Store(e)))?
+        {
+            writeln!(out, "{}", earshot_runtime::export::REEXPORT_WARNING)?;
+        }
         let r = earshot_runtime::export::export_meeting(
             &svc,
             vault,
