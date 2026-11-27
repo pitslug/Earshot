@@ -1455,7 +1455,7 @@ fn export_merge_appended_text_never_hides_an_owner_list() {
     let r = render_items(vec![item("Casey Lane", "Book", None, 20)], Some(casey()));
     let merged = merged_from(
         &r,
-        "### My actions\n\n- [x] Book the room (with Ada Lovelace)\n",
+        "### My actions\n\n- [x] Book the room (with Ada Lovelace)\n\n### Other actions\n\n",
     );
     assert!(!merged.contains("- [x]"), "{merged}");
     let merged = merged_from(
@@ -1471,7 +1471,7 @@ fn export_merge_appended_text_never_hides_an_owner_list() {
     );
     let merged = merged_from(
         &r,
-        "### My actions\n\n- [x] Send numbers (with Ada Lovelace) \u{2705} 2026-11-20\n",
+        "### My actions\n\n- [x] Send numbers (with Ada Lovelace) \u{2705} 2026-11-20\n\n### Other actions\n\n",
     );
     assert!(!merged.contains("- [x]"), "{merged}");
     // The control: the same owner set with the date after it carries.
@@ -1549,6 +1549,13 @@ fn export_merge_reads_one_list_lines_as_one_list_only_without_subheadings() {
         "{merged}"
     );
     assert_eq!(merged.matches("- [x]").count(), 1, "{merged}");
+    // The same line ticked above the Other heading and unticked under it: which one the
+    // user meant is unknown, so nothing carries.
+    let merged = merged_from(
+        &r,
+        "- [x] Send numbers (Ada Lovelace)\n\n### Other actions\n\n- [ ] Send numbers (Ada Lovelace)\n",
+    );
+    assert!(!merged.contains("- [x]"), "{merged}");
     // Both deleted: a one list again. An owner list carries; a line with none is not the
     // user's own.
     let merged = merged_from(

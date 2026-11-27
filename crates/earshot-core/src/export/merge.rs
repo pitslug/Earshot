@@ -443,9 +443,12 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
         .filter_map(|(l, p)| task_line(l).map(|(m, t)| Some((m, plain_form(t), *p))))
         .collect();
     let old_marks: Vec<char> = old.iter().flatten().map(|(m, _, _)| *m).collect();
+    // Read for `Single` old lines only while the new render is one list: with subheadings in
+    // the new render every old `Single` line is `Loose` below.
     let subheadings = old_places
         .iter()
         .any(|p| matches!(p, Place::Mine | Place::Other));
+    let new_places = places(new_region);
     // Place trust. With a user name the render always writes "### My actions" then
     // "### Other actions" (an empty group holds "_None_", not a task line). When the new
     // render has them, an old action line is trusted by its place only if the old region
@@ -457,8 +460,7 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
     // (not deleted) is still trusted, the same "identical text is the same action" limit
     // as pass 1, across groups. Without a user name the new render is one list and the
     // `Place::compatible` rules apply as they stand.
-    let new_lines_places = places(new_region);
-    if new_lines_places
+    if new_places
         .iter()
         .any(|p| matches!(p, Place::Mine | Place::Other))
     {
@@ -476,7 +478,6 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
         return new_region.to_owned();
     }
     let lines: Vec<&str> = new_region.split_inclusive('\n').collect();
-    let new_places = places(new_region);
     let new: Vec<Option<(char, String, Place)>> = lines
         .iter()
         .zip(&new_places)
@@ -533,6 +534,7 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
         };
         let mut collected: Vec<usize> = Vec::new();
         let mut per_owner: Vec<usize> = Vec::new();
+        let mut whole: Vec<usize> = Vec::new();
         let mut named: Vec<String> = Vec::new();
         for (j, o) in old.iter().enumerate() {
             let Some((_, text, place)) = o else { continue };
@@ -540,13 +542,20 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
                 continue;
             }
             match action.matches(text, *place) {
-                OldMatch::Whole if collected.is_empty() => collected.push(j),
+                OldMatch::Whole => whole.push(j),
                 OldMatch::PerOwner(names) => {
                     per_owner.push(j);
                     named.extend(names);
                 }
                 _ => {}
             }
+        }
+        // One whole line is taken; when several old lines read as this action with different
+        // marks, which one the user meant is unknown, so none carries (ambiguity never does).
+        let mut ambiguous = false;
+        if let Some(&first) = whole.first() {
+            ambiguous = whole.iter().any(|&j| old_marks[j] != old_marks[first]);
+            collected.push(first);
         }
         named.sort();
         named.dedup();
@@ -563,7 +572,7 @@ fn carry_task_marks(old_region: &str, new_region: &str, actions: &[RenderedActio
         // Every line the shared action absorbs must be ticked: one unticked part means the
         // whole is not done, and carrying a tick then would invent one on that part.
         let marks: Vec<char> = collected.iter().map(|&j| old_marks[j]).collect();
-        taken[i] = Some(if marks.iter().all(|m| *m != ' ') {
+        taken[i] = Some(if !ambiguous && marks.iter().all(|m| *m != ' ') {
             marks[0]
         } else {
             ' '
