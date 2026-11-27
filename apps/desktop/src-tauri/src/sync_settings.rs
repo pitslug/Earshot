@@ -29,9 +29,11 @@ use crate::ipc::{AppState, IpcError, blocking};
 /// The IPC error kind of a sync problem.
 pub const SYNC_ERROR_KIND: &str = "sync";
 
-/// Shown when the last sync skipped queued items it could not read (T12.77b8: a damaged voice
-/// sample row); names no content (`unsendable_note` in `fixtures/ui/sync_copy_cases.json`).
-pub const UNSENDABLE_NOTE: &str = "Some items on this computer are damaged and could not be sent, so they were skipped. Everything else syncs as usual.";
+/// Shown when the last sync skipped rows here that do not read: queued ones it could not send
+/// (T12.77b8) or ones a page left as they are (T14.57, docs/sync-spec.md 16.7). One note for
+/// both, never two, and no count (the two counts are of different sets); names no content
+/// (`damaged_note` in `fixtures/ui/sync_copy_cases.json`).
+pub const DAMAGED_NOTE: &str = "Some items on this computer are damaged, so sync left them as they are. Everything else syncs as usual.";
 
 /// Shown when the last sync left one queued item unsent because it cannot be sealed (T14.43:
 /// over the size limit, or holding an audio file's signature); names no content
@@ -621,8 +623,8 @@ pub struct SyncView {
     /// Rows changed here and not yet sent (damaged ones the last sync skipped and ones it could
     /// not seal left out).
     pub waiting: u64,
-    /// [`UNSENDABLE_NOTE`] when the last sync skipped damaged queued rows.
-    pub unsendable_note: Option<String>,
+    /// [`DAMAGED_NOTE`] when the last sync skipped damaged rows (queued or pulled).
+    pub damaged_note: Option<String>,
     /// [`refused_note`] when the last sync left queued rows unsent because they cannot be sealed
     /// (too large, or holding an audio file's signature): fixed copy with their count (T14.43).
     pub refused_note: Option<String>,
@@ -653,7 +655,8 @@ fn view_of(o: SyncOverview, running: bool) -> SyncView {
         stopped: o.status.problem.is_some_and(SyncProblem::stops),
         unreadable: o.status.unreadable,
         waiting: o.waiting,
-        unsendable_note: (o.status.unsendable > 0).then(|| UNSENDABLE_NOTE.to_owned()),
+        damaged_note: (o.status.unsendable > 0 || o.status.damaged_skipped > 0)
+            .then(|| DAMAGED_NOTE.to_owned()),
         refused_note: refused_note(o.status.refused),
         held: o.held,
         offers_summaries: o.settings.offers_summaries,

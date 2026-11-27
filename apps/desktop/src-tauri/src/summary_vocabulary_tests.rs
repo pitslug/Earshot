@@ -276,6 +276,17 @@ fn summary_vocabulary_refusals_of_t11_3e_follow_the_shared_table() {
     let stale = refusal(SetVocabularyError::Stale);
     assert_eq!(stale.kind, "invalid_setting");
     assert_eq!(Some(stale.message.as_str()), m["stale_list"].as_str());
+    // T14.57: a word row that does not read refuses every Dictionary edit with fixed copy,
+    // its words chosen by whether Dictionary sync is on.
+    for (syncing, key) in [(false, "sync_off"), (true, "sync_on")] {
+        let damaged = refusal(SetVocabularyError::Damaged { syncing });
+        assert_eq!(damaged.kind, "invalid_setting");
+        assert_eq!(
+            Some(damaged.message.as_str()),
+            m["dictionary_damaged"][key].as_str(),
+            "{key}"
+        );
+    }
 }
 
 #[test]

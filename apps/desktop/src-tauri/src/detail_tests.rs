@@ -1251,7 +1251,7 @@ fn detail_mark_me_returns_the_persons_named_after_the_user_to_merge() {
     assert!(theirs.person.as_ref().unwrap().has_voiceprint);
     assert!(!theirs.needs_name && !theirs.can_ignore);
     assert_eq!(theirs.name, "Casey Lane");
-    let listed = persons(&svc).unwrap();
+    let listed = persons(&svc).unwrap().persons;
     assert!(listed.iter().all(|p| p.id != twin.to_string()));
     assert!(listed.iter().any(|p| p.is_me && p.has_voiceprint));
     let e = IpcError::from(edit::merge_into_me(&svc, twin).unwrap_err());
@@ -1410,6 +1410,7 @@ fn detail_edits_go_through_the_runtime_and_refusals_arrive_as_user_copy() {
     assert!(
         persons(&svc)
             .unwrap()
+            .persons
             .iter()
             .any(|p| p.id == id && p.name == "Sam Lee")
     );
@@ -1435,7 +1436,13 @@ fn detail_edits_go_through_the_runtime_and_refusals_arrive_as_user_copy() {
     )
     .unwrap_err();
     assert_eq!(e.kind, "me_is_the_user");
-    assert!(!persons(&svc).unwrap().iter().any(|p| p.name == "Sky Moss"));
+    assert!(
+        !persons(&svc)
+            .unwrap()
+            .persons
+            .iter()
+            .any(|p| p.name == "Sky Moss")
+    );
     // The bad id from the UI.
     assert_eq!(parse_id("not an id").unwrap_err().kind, "invalid_id");
 }
@@ -1869,7 +1876,7 @@ fn detail_persons_say_how_many_meetings_each_is_in() {
     let svc = services(&dir);
     call_meeting(&svc, 90);
     let other = person_with(&svc, "Priya Shah", false, false, 91);
-    let listed = persons(&svc).unwrap();
+    let listed = persons(&svc).unwrap().persons;
     let priyas: Vec<(&str, u32)> = listed
         .iter()
         .filter(|p| p.name == "Priya Shah")
@@ -2477,5 +2484,77 @@ fn detail_timing_long_meeting_prints_its_cost() {
         times[0],
         times[times.len() - 1],
         json.len()
+    );
+}
+
+/// T14.57 (docs/sync-spec.md 16.7, test 14): the People page with a damaged person row and a
+/// damaged speaker link lists everyone else and says so; Remove and Forget voice succeed and
+/// say a damaged row was left; the refusal for a member whose `is_me` does not read is the
+/// table's fixed copy; and no serialised result holds the damaged row's invented name.
+/// Control: the damaged name is found in the store file by the same search.
+#[test]
+fn detail_people_with_a_damaged_row_list_remove_and_forget_with_fixed_copy() {
+    let people: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/people_copy_cases.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        Some(REMOVE_UNREADABLE_COPY),
+        people["remove_unreadable"].as_str()
+    );
+    assert_eq!(
+        edit_error(&EditError::PersonUnreadable(EntityId::from_bytes([1; 16]))).message,
+        REMOVE_UNREADABLE_COPY
+    );
+    let dir = TempDir::new("detail-people-damaged");
+    let svc = services(&dir);
+    let named = |name: &str, seed: u8| {
+        let clock = Arc::clone(&svc.clock);
+        let mut db = svc.store();
+        let (store, hlc) = db.parts();
+        let p = Person {
+            id: EntityId::from_bytes([
+                0x01, 0x93, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, seed, 1,
+            ]),
+            meta: earshot_core::identity::SyncMeta::new(hlc, &*clock),
+            display_name: name.into(),
+            is_me: false,
+            merged_into: None,
+        };
+        store.put_person(p.clone()).unwrap();
+        p.id
+    };
+    let keep = named("Invented Quorra", 1);
+    let gone = named("Invented Zephyrine", 2);
+    // The control: before the damage the same search finds the name in the result.
+    let before = serde_json::to_string(&persons(&svc).unwrap()).unwrap();
+    assert!(before.contains("Zephyrine"), "{before}");
+    let db = dir.0.join("data").join("earshot.db");
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute(
+            "UPDATE person SET display_name = CAST(X'FF00FE' AS TEXT), created_wall = -1 WHERE id = ?1",
+            rusqlite::params![gone.as_uuid().as_bytes().to_vec()],
+        )
+        .unwrap();
+    }
+    let list = persons(&svc).unwrap();
+    assert!(list.damaged, "the list says a damaged row was left out");
+    assert_eq!(list.persons.len(), 1);
+    assert_eq!(list.persons[0].id, keep.to_string());
+    let forgot =
+        VoicesForgottenView::of(earshot_runtime::edit::forget_person_voices(&svc, keep).unwrap());
+    let removed = earshot_runtime::edit::remove_person(&svc, keep).unwrap();
+    let json = serde_json::to_string(&(
+        &list,
+        &forgot,
+        PersonRemovedView {
+            damaged: removed.damaged_skipped > 0,
+        },
+    ))
+    .unwrap();
+    assert!(
+        !json.contains("Zephyrine") && !json.contains(&gone.to_string()),
+        "{json}"
     );
 }

@@ -228,8 +228,8 @@ fn store_dictionary_after_apply_runs_inside_the_page_and_its_error_rolls_it_back
     )];
     // The hook sees the page's rows before the commit.
     let seen = Cell::new(0usize);
-    let count = |tx: &mut earshot_store::StoreTx<'_>| {
-        seen.set(tx.dictionary_words().map_err(StoreError::from)?.len());
+    let count = |g: &mut earshot_store::GuardedTx<'_, '_>| {
+        seen.set(g.dictionary_words_or_damaged()?.0.len());
         Ok(())
     };
     let with_hook = ApplyRules {
@@ -241,7 +241,8 @@ fn store_dictionary_after_apply_runs_inside_the_page_and_its_error_rolls_it_back
 
     // A failing hook rolls the whole page back.
     let mut store = Store::open_in_memory().unwrap();
-    let fail = |_: &mut earshot_store::StoreTx<'_>| Err(StoreError::Corrupt("refused".into()));
+    let fail =
+        |_: &mut earshot_store::GuardedTx<'_, '_>| Err(StoreError::Corrupt("refused".into()));
     let failing = ApplyRules {
         after: Some(&fail),
         ..rules(true)

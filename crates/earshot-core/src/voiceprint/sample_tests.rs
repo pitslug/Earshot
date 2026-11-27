@@ -850,7 +850,10 @@ fn voiceprint_forget_erases_samples_by_person_and_by_print() {
         n,
         Forgotten {
             voiceprints: 1,
-            samples: 5
+            samples: 5,
+            entries: 0,
+            zeroed: 0,
+            skipped: 0,
         }
     );
     assert_eq!(n.total(), 6);

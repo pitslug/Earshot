@@ -44,7 +44,7 @@
     "vault"
   ],
   "secret_missing": "Enter the server's setup secret.",
-  "unsendable_note": "Some items on this computer are damaged and could not be sent, so they were skipped. Everything else syncs as usual.",
+  "damaged_note": "Some items on this computer are damaged, so sync left them as they are. Everything else syncs as usual.",
   "refused_note": {
     "one": "1 item on this computer cannot be synced because it is too large or looks like audio, so it was not sent. Your other computers do not get it. Everything else syncs as usual.",
     "many": "{count} items on this computer cannot be synced because they are too large or look like audio, so they were not sent. Your other computers do not get them. Everything else syncs as usual."

@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import PEOPLE_COPY from "../../../../fixtures/ui/people_copy_cases.json";
 import {
   type SpeakerTimingChoice,
   type SpeakersView,
@@ -163,10 +164,16 @@ export function useSpeakers(): SpeakersPageState {
     setBusy(true);
     setNotice(null);
     try {
-      await ipc.forgetMyVoice();
+      const done = await ipc.forgetMyVoice();
       setView(await ipc.speakers());
       setSample({ status: "idle" });
-      setForgotten("Your voice was forgotten. Earshot no longer recognises you from your voice.");
+      // T14.57: a damaged row is said in fixed copy, never named (docs/sync-spec.md 16.7).
+      const extra = done.incomplete
+        ? ` ${PEOPLE_COPY.forget_my_voice_incomplete}`
+        : done.damaged
+          ? ` ${PEOPLE_COPY.forget_damaged_note}`
+          : "";
+      setForgotten(`Your voice was forgotten. Earshot no longer recognises you from your voice.${extra}`);
     } catch (e) {
       setNotice({ kind: "voice", title: "Your voice was not forgotten", message: errorText(e) });
     } finally {

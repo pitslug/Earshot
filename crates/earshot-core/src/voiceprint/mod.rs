@@ -591,13 +591,29 @@ pub struct Forgotten {
     pub voiceprints: usize,
     /// Voice samples tombstoned (no body left).
     pub samples: usize,
+    /// Speaker identity entries (centroids) dropped from the meetings' device-local records
+    /// (the store's erasure, docs/sync-spec.md 16.7; core's own erasure drops none).
+    pub entries: usize,
+    /// Of [`Forgotten::voiceprints`], prints whose stored vector did not read and was zeroed
+    /// (docs/sync-spec.md 16.4, the owner's decided case).
+    pub zeroed: usize,
+    /// Rows that did not read and were left as they are (docs/sync-spec.md 16.2 R3). Counts
+    /// only.
+    pub skipped: usize,
 }
 
 impl Forgotten {
-    /// Every biometric row erased: what decides a checkpoint and what is shown.
+    /// The voices erased, what is shown: voiceprints and voice samples.
     #[must_use]
     pub fn total(self) -> usize {
         self.voiceprints + self.samples
+    }
+
+    /// Every biometric item erased, identity entries included: what decides a checkpoint
+    /// (docs/sync-spec.md 16.7).
+    #[must_use]
+    pub fn erased(self) -> usize {
+        self.voiceprints + self.samples + self.entries
     }
 }
 
@@ -605,6 +621,9 @@ impl std::ops::AddAssign for Forgotten {
     fn add_assign(&mut self, other: Self) {
         self.voiceprints += other.voiceprints;
         self.samples += other.samples;
+        self.entries += other.entries;
+        self.zeroed += other.zeroed;
+        self.skipped += other.skipped;
     }
 }
 

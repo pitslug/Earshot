@@ -551,3 +551,143 @@ fn store_sync_a_repair_runs_only_for_a_page_that_wrote_its_kind_or_when_all_are_
     assert_eq!(live_mes(&d), 1);
     assert!(d.store.meeting(id(1)).unwrap().is_some());
 }
+
+/// A speaker row of `meeting` linked to `person` (or unlinked), live or a tombstone.
+fn speaker_row(
+    n: u8,
+    meeting: u8,
+    person: Option<u8>,
+    meta: SyncMeta,
+) -> earshot_core::model::Speaker {
+    earshot_core::model::Speaker {
+        id: id(n),
+        meta,
+        meeting_id: id(meeting),
+        role: if n.is_multiple_of(5) {
+            earshot_core::diar::SpeakerRole::Me
+        } else {
+            earshot_core::diar::SpeakerRole::Remote
+        },
+        display_name: if meta.deleted {
+            String::new()
+        } else {
+            format!("Invented speaker {n}")
+        },
+        person_id: person.map(id),
+        ignored: n.is_multiple_of(7),
+    }
+}
+
+const SPEAKERS: std::ops::Range<u8> = 80..96;
+
+/// T14.57 test 12 (docs/sync-spec.md 16.9): with no damaged row anywhere, removals, Forget
+/// voice, merges, enrolments and pages over generated stores (merges, voices, tombstoned "Me"
+/// people, speaker rows linked to people and their identity entries) leave exactly the rows and
+/// answers they left before T14.57. The digest was captured from the commit before the change
+/// (57f0369), never from the new code.
+#[test]
+fn store_sync_damaged_same_answers_without_damage_as_before() {
+    use sha2::Digest;
+    let mut all = sha2::Sha256::new();
+    let (mut ops, mut removed) = (0, 0);
+    for seed in 0..6u64 {
+        let mut dice = Dice(0xD4A6_0000 + seed);
+        let mut d = Device::new("damaged-baseline", false);
+        let mut seq = 0;
+        let mut first: Vec<Incoming> = Vec::new();
+        for n in MEETINGS {
+            seq += 1;
+            first.push(incoming(
+                seq,
+                SyncedRow::Meeting(meeting(n, dice.meta(T0, false))),
+            ));
+        }
+        for n in PERSONS {
+            seq += 1;
+            let mut p = person(&mut dice, n, T0);
+            p.meta.deleted = false;
+            p.merged_into = None;
+            first.push(incoming(seq, SyncedRow::Person(p)));
+        }
+        for n in PRINTS {
+            seq += 1;
+            let p = Voiceprint::from_stored(
+                id(n),
+                dice.meta(T0, false),
+                id(PERSONS.start + n % (PERSONS.end - PERSONS.start)),
+                model(),
+                vec![0.5, 0.5, 0.0],
+                u32::try_from(dice.roll(3)).unwrap(),
+                3_000,
+            );
+            first.push(incoming(seq, SyncedRow::Voiceprint(p)));
+        }
+        for n in SPEAKERS {
+            seq += 1;
+            let deleted = dice.one_in(5);
+            let person = (!dice.one_in(4)).then(|| dice.pick(PERSONS));
+            let meta = dice.meta(T0, deleted);
+            let meeting = dice.pick(MEETINGS);
+            first.push(incoming(
+                seq,
+                SyncedRow::Speaker(speaker_row(n, meeting, person, meta)),
+            ));
+        }
+        all.update(format!("{}", d.apply(&first).is_ok()));
+        // Identity entries for every meeting: some given a person, some naming a row, one
+        // naming no row.
+        for m in MEETINGS {
+            let speakers = (0..4u8)
+                .map(|k| {
+                    let row = dice.pick(SPEAKERS);
+                    let given_person = dice.one_in(2).then(|| id(dice.pick(PERSONS)));
+                    earshot_store::identities::SpeakerIdentity {
+                        speaker: id(if k == 3 { 250 } else { row }),
+                        track: TrackId::Mic,
+                        centroid: Embedding::new(model(), vec![0.1, 0.2, 0.3]),
+                        given_name: format!("Invented given {k}"),
+                        given_person,
+                        given_stamp: None,
+                        user_edited: false,
+                        enrolled: false,
+                        ignored: false,
+                    }
+                })
+                .collect();
+            let record = earshot_store::identities::IdentityRecord { speakers };
+            d.store
+                .set_local_value(
+                    &earshot_store::identities::record_key(id(m)),
+                    &earshot_store::identities::encode(&record),
+                )
+                .unwrap();
+        }
+        for step in 0..60u64 {
+            let base = T0 + step * 4;
+            // Only the rows and whether each step succeeded are pinned: the counts reported
+            // gain fields in T14.57, and the rows are what every count describes.
+            if dice.one_in(3) {
+                let (what, a, b) = (dice.roll(4), dice.pick(PERSONS), dice.pick(PERSONS));
+                let out = d.local(what, a, b, seed * 1000 + step);
+                all.update(format!("{what} {}", out.starts_with("Ok")));
+                if what == 0 && out.starts_with("Ok") {
+                    removed += 1;
+                }
+                all.update(format!("{:?}", d.dump()));
+                ops += 1;
+            }
+            let page = page(&mut dice, &mut seq, base);
+            all.update(format!("{}", d.apply(&page).is_ok()));
+            all.update(format!("{:?}", d.dump()));
+        }
+    }
+    assert!(
+        ops > 60 && removed > 10,
+        "{ops} local operations, {removed} removals"
+    );
+    let digest: String = all.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        digest, "9d8564a2f41d1562c5e1bfb5e3e30b8113da5791c8809420729927ee995fed77",
+        "the rows and answers of the generated stores"
+    );
+}

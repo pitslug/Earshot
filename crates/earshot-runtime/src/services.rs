@@ -87,6 +87,162 @@ impl DerefMut for Db {
     }
 }
 
+/// The store lock held for a guarded root's reads ([`Services::guarded_read`]). It gives no
+/// decoding reader: only [`ServicesRead::read`].
+pub struct ServicesRead<'s> {
+    db: MutexGuard<'s, Db>,
+}
+
+impl ServicesRead<'_> {
+    /// A guarded read of the store.
+    #[must_use]
+    pub fn read(&self) -> earshot_store::GuardedRead<'_> {
+        self.db.store.guarded_read()
+    }
+
+    /// This device's id.
+    #[must_use]
+    pub fn device(&self) -> DeviceId {
+        self.db.device
+    }
+}
+
+/// The store lock and the HLC held for a guarded root's whole closure
+/// ([`Services::guarded_write`]).
+pub struct ServicesWrite<'s> {
+    db: MutexGuard<'s, Db>,
+    clock: SharedClock,
+}
+
+impl ServicesWrite<'_> {
+    /// A guarded read of the store.
+    #[must_use]
+    pub fn read(&self) -> earshot_store::GuardedRead<'_> {
+        self.db.store.guarded_read()
+    }
+
+    /// This device's id.
+    #[must_use]
+    pub fn device(&self) -> DeviceId {
+        self.db.device
+    }
+
+    /// One guarded transaction with a stamp from the services clock, the device's HLC and a
+    /// fresh OS-seeded RNG; lines it wrote go out before the cleared rows they replaced, as
+    /// every edit's do (`crate::edit::write`).
+    ///
+    /// # Errors
+    /// `f`'s error; store errors.
+    pub fn transaction<T, E: From<earshot_store::StoreError>>(
+        &mut self,
+        f: impl FnOnce(
+            &mut earshot_store::GuardedTx<'_, '_>,
+            &mut crate::edit::DynStamp<'_, '_>,
+        ) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let clock = Arc::clone(&self.clock);
+        let mut rng = os_seeded_rng();
+        let (store, hlc) = self.db.parts();
+        store.guarded_transaction(|g| {
+            let mut stamp: crate::edit::DynStamp<'_, '_> = earshot_core::model::Stamp {
+                clock: &*clock,
+                hlc,
+                rng: &mut *rng,
+            };
+            let out = f(g, &mut stamp)?;
+            g.send_lines_first(stamp.hlc, stamp.clock)?;
+            Ok(out)
+        })
+    }
+
+    /// [`earshot_store::Store::remove_person`]: its own transaction, then a checkpoint, under
+    /// this lock.
+    ///
+    /// # Errors
+    /// As the store's.
+    pub fn remove_person(
+        &mut self,
+        person: EntityId,
+    ) -> Result<earshot_store::PersonRemoval, earshot_store::StoreError> {
+        let clock = Arc::clone(&self.clock);
+        let (store, hlc) = self.db.parts();
+        store.remove_person(person, hlc, &*clock)
+    }
+
+    /// [`earshot_store::Store::forget_voiceprints_of`]: its own transaction, then a checkpoint,
+    /// under this lock.
+    ///
+    /// # Errors
+    /// As the store's: `Busy` after the commit means every deletion is committed.
+    pub fn forget_voiceprints_of(
+        &mut self,
+        persons: &[EntityId],
+    ) -> Result<earshot_core::voiceprint::Forgotten, earshot_store::StoreError> {
+        let clock = Arc::clone(&self.clock);
+        let (store, hlc) = self.db.parts();
+        store.forget_voiceprints_of(persons, hlc, &*clock)
+    }
+
+    /// A pulled page applied ([`earshot_store::Store::apply_remote`], or with every repair, or
+    /// as the release of the two holds), then a checkpoint when it erased anything, under this
+    /// lock.
+    ///
+    /// # Errors
+    /// As the store's.
+    pub fn apply_remote(
+        &mut self,
+        page: &[earshot_store::Incoming],
+        rules: &earshot_store::ApplyRules<'_>,
+        how: ApplyHow<'_>,
+    ) -> Result<earshot_store::Applied, earshot_store::StoreError> {
+        let clock = Arc::clone(&self.clock);
+        let (store, hlc) = self.db.parts();
+        let applied = match how {
+            ApplyHow::Plain => store.apply_remote(page, rules, hlc, &*clock)?,
+            ApplyHow::EveryRepair => store.apply_remote_every_repair(page, rules, hlc, &*clock)?,
+            ApplyHow::Releasing(blocked) => {
+                store.apply_remote_releasing(page, rules, blocked, hlc, &*clock)?
+            }
+        };
+        // Every erased biometric item counts, identity entries included (`Forgotten::erased`),
+        // so a removal that dropped only centroids is checkpointed too (docs/sync-spec.md 16.7).
+        if applied.biometrics_forgotten > 0 {
+            // A Busy here means the erasure is committed; the next checkpoint erases it.
+            let _ = store.flush_erasures();
+        }
+        Ok(applied)
+    }
+
+    /// [`earshot_store::Store::outbox_sent`] (its own guarded transaction) under this lock.
+    ///
+    /// # Errors
+    /// As the store's.
+    pub fn outbox_sent(
+        &mut self,
+        sent: &[(&str, EntityId, earshot_core::identity::HlcTimestamp)],
+    ) -> Result<usize, earshot_store::StoreError> {
+        self.db.store.outbox_sent(sent)
+    }
+
+    /// [`earshot_store::Store::flush_erasures`] under this lock.
+    ///
+    /// # Errors
+    /// As the store's.
+    pub fn flush_erasures(&self) -> Result<(), earshot_store::StoreError> {
+        self.db.store.flush_erasures()
+    }
+}
+
+/// How [`ServicesWrite::apply_remote`] applies a page.
+pub enum ApplyHow<'a> {
+    /// Each repair only for the kinds the page wrote.
+    Plain,
+    /// Every repair (the first page a client applies).
+    EveryRepair,
+    /// The release of the two holds, with its `blocked`.
+    Releasing(&'a dyn Fn(EntityId, EntityId) -> bool),
+}
+
 /// What a job holding a [`MeetingLease`] does with its meeting (for
 /// [`Services::meeting_activity`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -392,6 +548,23 @@ impl Services {
     /// commit), so the lock is recovered rather than reported.
     pub fn store(&self) -> MutexGuard<'_, Db> {
         self.db.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The store lock for a guarded root's reads (T14.57, docs/sync-spec.md 16.3): offers only
+    /// an `earshot_store::GuardedRead`.
+    pub fn guarded_read(&self) -> ServicesRead<'_> {
+        ServicesRead { db: self.store() }
+    }
+
+    /// The store lock and the HLC for a guarded root's whole closure (T14.57, docs/sync-spec.md
+    /// 16.3): guarded reads, guarded transactions (several may run in turn under the one lock)
+    /// and the store's guarded erasures, which commit and then checkpoint under the lock.
+    pub fn guarded_write<T>(&self, f: impl FnOnce(&mut ServicesWrite<'_>) -> T) -> T {
+        let mut w = ServicesWrite {
+            db: self.store(),
+            clock: Arc::clone(&self.clock),
+        };
+        f(&mut w)
     }
 
     /// Claims `meeting` for a job (a live session, a final pass, an export) until the lease

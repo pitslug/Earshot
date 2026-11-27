@@ -17,6 +17,7 @@ import {
   type SpeakersView,
   type VoiceEvent,
   type VoiceResult,
+  type VoicesForgottenView,
 } from "./ipc";
 import type { SampleMachine } from "./mockModels";
 
@@ -95,7 +96,7 @@ export interface SettingsMock {
   setMyName(name: string): Promise<SpeakersView>;
   startVoiceSample(): Promise<void>;
   cancelVoiceSample(): Promise<void>;
-  forgetMyVoice(): Promise<number>;
+  forgetMyVoice(): Promise<VoicesForgottenView>;
   obsidianSettings(): Promise<ObsidianSettingsView>;
   setObsidianSettings(settings: ObsidianSettingsValue): Promise<ObsidianSettingsView>;
   pickObsidianVault(start: string): Promise<string | null>;
@@ -282,7 +283,7 @@ const voice = () => ({ saved: speechMs > 0, speech_ms: speechMs, sample_ms: VOIC
     forgetMyVoice: async () => {
       const n = speechMs > 0 ? 1 : 0;
       speechMs = 0;
-      return n;
+      return { forgotten: n, damaged: false, incomplete: false };
     },
     obsidianSettings: async () => obsidian(),
     setObsidianSettings: async (s) => {

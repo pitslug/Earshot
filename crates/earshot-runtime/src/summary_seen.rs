@@ -118,23 +118,39 @@ pub fn mark_seen(
 /// # Errors
 /// Store errors.
 pub fn mark_existing_once(services: &Services) -> Result<usize, RuntimeError> {
-    let mut db = services.store();
-    db.transaction(|tx| -> Result<usize, RuntimeError> {
-        if tx.local_value(SEEN_START_KEY)?.is_some() {
+    services.guarded_write(mark_existing_once_in)
+}
+
+/// [`mark_existing_once`]'s root (T14.57, docs/sync-spec.md 16.5 item 25): meetings read by
+/// their id and `deleted` alone and each current summary by its id alone, so a meeting whose
+/// current summary's id does not read is left unmarked (it may show "new summary" once) and the
+/// start goes on.
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn mark_existing_once_in(
+    w: &mut crate::services::ServicesWrite<'_>,
+) -> Result<usize, RuntimeError> {
+    use earshot_store::{Col, Deleted};
+    w.transaction(|g, _| -> Result<usize, RuntimeError> {
+        if g.local_value(SEEN_START_KEY)?.is_some() {
             return Ok(0);
         }
         let mut marked = 0;
-        for m in tx.meetings()?.iter().filter(|m| !m.meta.deleted) {
-            let key = record_key(m.id);
-            if tx.local_value(key.as_str())?.is_some() {
+        for m in g.meetings_lenient()? {
+            let (Col::Read(id), Deleted::No) = (m.id, m.deleted) else {
+                continue;
+            };
+            let key = record_key(id);
+            if g.local_value(key.as_str())?.is_some() {
                 continue;
             }
-            if let Some(current) = tx.current_summary_id(m.id)? {
-                crate::local::set_tx(tx, &key, &encode(current)?)?;
+            if let Some(Col::Read(current)) = g.current_summary_id_lenient(id)? {
+                crate::local::set_guarded(g, &key, &encode(current)?)?;
                 marked += 1;
             }
         }
-        crate::local::set_tx(tx, &DeviceRecord::SummarySeenStart.key(), b"done")?;
+        crate::local::set_guarded(g, &DeviceRecord::SummarySeenStart.key(), b"done")?;
         Ok(marked)
     })
 }

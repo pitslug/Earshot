@@ -530,13 +530,7 @@ impl Store {
         hlc: &mut Hlc,
         clock: &C,
     ) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
-        let n = self.transaction(|tx| {
-            let mut n = earshot_core::voiceprint::Forgotten::default();
-            for &person in persons {
-                n += crate::identities::forget_identity_biometrics(tx, person, hlc, clock)?;
-            }
-            Ok::<_, StoreError>(n)
-        })?;
+        let n = self.guarded_transaction(|g| forget_voiceprints_in(g, persons, hlc, clock))?;
         self.checkpoint_with_retry(CHECKPOINT_ATTEMPTS)?;
         Ok(n)
     }
@@ -693,6 +687,30 @@ impl Drop for Store {
     fn drop(&mut self) {
         let _ = self.checkpoint_with_retry(CHECKPOINT_ATTEMPTS);
     }
+}
+
+/// [`Store::forget_voiceprints_of`]'s transaction (docs/sync-spec.md 16.5 item 22): the
+/// store-side erasure of each identity, a user-started one.
+///
+/// # Errors
+/// Store errors other than a row that does not read.
+pub fn forget_voiceprints_in<C: Clock + ?Sized>(
+    g: &mut crate::GuardedTx<'_, '_>,
+    persons: &[EntityId],
+    hlc: &mut Hlc,
+    clock: &C,
+) -> Result<earshot_core::voiceprint::Forgotten, StoreError> {
+    let mut n = earshot_core::voiceprint::Forgotten::default();
+    for &person in persons {
+        n += crate::identities::forget_identity_biometrics(
+            g,
+            person,
+            hlc,
+            clock,
+            crate::identities::Erasure::User,
+        )?;
+    }
+    Ok(n)
 }
 
 #[cfg(test)]

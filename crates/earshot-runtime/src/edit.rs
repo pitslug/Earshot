@@ -137,6 +137,9 @@ pub enum EditError {
     MeIsTheUser(EntityId),
     /// The user's own person cannot be removed (their name and voice have their own controls).
     PersonIsTheUser(EntityId),
+    /// A person of this identity has an `is_me` that does not read on this computer, so it may
+    /// be the user: Remove is refused until the row reads again (docs/sync-spec.md 16.5 item 18).
+    PersonUnreadable(EntityId),
     /// This meeting (the id) is not in-room, or the voice is not a voice of the room: a
     /// voice can be marked as the user only in an in-room meeting ([`records_in_room`]). In a
     /// call "Me" comes from the mic track.
@@ -272,6 +275,12 @@ impl fmt::Display for EditError {
                 write!(f, "speaker {id} is \"Me\" and can be linked only to you")
             }
             Self::PersonIsTheUser(id) => write!(f, "person {id} is you and cannot be removed"),
+            Self::PersonUnreadable(id) => {
+                write!(
+                    f,
+                    "person {id} has details on this computer that do not read"
+                )
+            }
             Self::NotInRoom(id) => write!(
                 f,
                 "meeting {id} is not an in-room meeting, so no voice in it can be marked as you"
@@ -1834,21 +1843,42 @@ pub fn user_has_voiceprint<R: VoiceprintRepo + ?Sized>(repo: &R) -> Result<bool,
 /// # Errors
 /// Store errors.
 pub fn named_after_me(services: &Services) -> Result<Vec<PersonInfo>, RuntimeError> {
-    named_after_me_in(&services.store())
+    named_after_me_in(&services.guarded_read().read())
 }
 
-/// [`named_after_me`] from a store the caller has locked.
+/// [`named_after_me`] from a store the caller has locked: a guarded reader (T14.57), the
+/// user's name key read through the person links and the persons that read.
 ///
 /// # Errors
 /// Store errors.
-pub fn named_after_me_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>, RuntimeError> {
-    let Some(name) = user_name_key(repo)? else {
+pub fn named_after_me_in(
+    r: &earshot_store::GuardedRead<'_>,
+) -> Result<Vec<PersonInfo>, RuntimeError> {
+    let Some(name) = guarded_user_name_key(r)? else {
         return Ok(Vec::new());
     };
-    Ok(list_persons_in(repo)?
+    Ok(list_persons_in(r)?
+        .persons
         .into_iter()
         .filter(|p| !p.is_me && name_key(&p.name) == name)
         .collect())
+}
+
+/// [`user_name_key`] through a guarded read: the user is the live `is_me` person with the
+/// smallest id among those that read, as [`existing_me`] finds it.
+fn guarded_user_name_key(
+    r: &earshot_store::GuardedRead<'_>,
+) -> Result<Option<String>, RuntimeError> {
+    let Some(me) = r
+        .persons_or_damaged()?
+        .into_iter()
+        .filter(|p| p.is_me && p.is_live())
+        .min_by_key(|p| p.id)
+    else {
+        return Ok(None);
+    };
+    let name = me.display_name.trim();
+    Ok((name != DEFAULT_ME_NAME && !name.is_empty()).then(|| name_key(name)))
 }
 
 /// The user's name as [`named_after_me`] compares it, `None` without a user or a name.
@@ -2140,42 +2170,64 @@ pub fn person_name_matches(name: &str, query: &str) -> bool {
 ///
 /// # Errors
 /// Store errors.
-pub fn list_persons(services: &Services) -> Result<Vec<PersonInfo>, RuntimeError> {
-    list_persons_in(&services.store())
+pub fn list_persons(services: &Services) -> Result<PersonList, RuntimeError> {
+    list_persons_in(&services.guarded_read().read())
 }
 
-/// [`list_persons`] from a store the caller has locked (one snapshot with other reads).
+/// The People list ([`list_persons`]) and how many rows that did not read it left out
+/// (docs/sync-spec.md 16.7). Iterates as its persons.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PersonList {
+    /// The persons listed.
+    pub persons: Vec<PersonInfo>,
+    /// Rows that did not read and were left out (persons, and (person, meeting) pairs). Counts
+    /// only.
+    pub damaged_skipped: usize,
+}
+
+impl std::ops::Deref for PersonList {
+    type Target = Vec<PersonInfo>;
+    fn deref(&self) -> &Vec<PersonInfo> {
+        &self.persons
+    }
+}
+
+impl IntoIterator for PersonList {
+    type Item = PersonInfo;
+    type IntoIter = std::vec::IntoIter<PersonInfo>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.persons.into_iter()
+    }
+}
+
+/// [`list_persons`] from a store the caller has locked (one snapshot with other reads): a
+/// guarded reader (T14.57, docs/sync-spec.md 16.5 item 23). A person row that does not read is
+/// left off the list, a (person, meeting) pair whose ids do not read is left out of the counts,
+/// and "has a voice" is today's fold over the prints and samples that read
+/// (`GuardedRead::has_voice`); each is counted.
 ///
 /// # Errors
 /// Store errors.
-pub fn list_persons_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>, RuntimeError> {
+pub fn list_persons_in(r: &earshot_store::GuardedRead<'_>) -> Result<PersonList, RuntimeError> {
     let mut out = Vec::new();
     let mut meetings_of: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
-    for (person, meeting) in repo.person_meetings()? {
+    let (pairs, bad_pairs) = r.person_meetings_lenient()?;
+    for (person, meeting) in pairs {
         meetings_of.entry(person).or_default().push(meeting);
     }
-    for p in repo.persons().map_err(voiceprint_err)? {
+    let links = r.person_links()?;
+    for p in r.persons_or_damaged()? {
         if !p.is_live() {
             continue;
         }
-        let identity = identity_of(repo, p.id).map_err(voiceprint_err)?;
+        let identity = earshot_store::identity_of_links(&links, p.id).members;
         let meetings: BTreeSet<EntityId> = identity
             .iter()
             .filter_map(|id| meetings_of.get(id))
             .flatten()
             .copied()
             .collect();
-        let mut has_voiceprint = false;
-        for id in identity {
-            if live_prints_of(repo, id)
-                .map_err(voiceprint_err)?
-                .iter()
-                .any(|(_, e)| e.count() > 0)
-            {
-                has_voiceprint = true;
-                break;
-            }
-        }
+        let has_voiceprint = r.has_voice(&identity)?;
         out.push(PersonInfo {
             id: p.id,
             name: p.display_name,
@@ -2190,7 +2242,10 @@ pub fn list_persons_in(repo: &earshot_store::Store) -> Result<Vec<PersonInfo>, R
             .cmp(&b.name.to_ascii_lowercase())
             .then(a.id.cmp(&b.id))
     });
-    Ok(out)
+    Ok(PersonList {
+        persons: out,
+        damaged_skipped: r.damaged_skipped() + bad_pairs,
+    })
 }
 
 /// What [`remember_voices`] did for one speaker.
@@ -2827,14 +2882,41 @@ pub fn not_this_person(
 /// [`EditError::PersonNotFound`] for an id that was never a person; `StoreError::Busy`
 /// (retryable, [`RuntimeError::is_retryable`]) when another connection blocked the
 /// checkpoint (the deletion is committed); store errors.
-pub fn forget_person_voices(services: &Services, person: EntityId) -> Result<usize, RuntimeError> {
-    let clock = Arc::clone(&services.clock);
-    let mut db = services.store();
-    if db.person(person).map_err(voiceprint_err)?.is_none() {
+pub fn forget_person_voices(services: &Services, person: EntityId) -> Result<Forgot, RuntimeError> {
+    services.guarded_write(|w| forget_person_voices_in(w, person))
+}
+
+/// What Forget voice or Forget my voice did (docs/sync-spec.md 16.7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Forgot {
+    /// The voices forgotten: voiceprints and voice samples (`Forgotten::total`).
+    pub voices: usize,
+    /// Rows that did not read and were left as they are. Counts only.
+    pub damaged: usize,
+    /// Forget my voice only: a person whose `is_me` or `id` does not read was not reached, so
+    /// not all of the user's voice may have been forgotten (16.5 item 23a).
+    pub incomplete: bool,
+}
+
+/// [`forget_person_voices`]'s root (T14.57): the target read through a guarded read (a row
+/// that does not read is [`EditError::PersonNotFound`], 16.5 item 22), then the store's
+/// guarded erasure and its checkpoint under the same lock.
+///
+/// # Errors
+/// As [`forget_person_voices`].
+pub(crate) fn forget_person_voices_in(
+    w: &mut crate::services::ServicesWrite<'_>,
+    person: EntityId,
+) -> Result<Forgot, RuntimeError> {
+    if !matches!(w.read().person_or_damaged(person)?, Some(Ok(_))) {
         return Err(EditError::PersonNotFound(person).into());
     }
-    let (store, hlc) = db.parts();
-    Ok(store.forget_voiceprints(person, hlc, &*clock)?.total())
+    let n = w.forget_voiceprints_of(&[person])?;
+    Ok(Forgot {
+        voices: n.total(),
+        damaged: n.skipped,
+        incomplete: false,
+    })
 }
 
 /// Removes a person from this computer (the Speakers page, T9.1u): their name, voiceprints and
@@ -2848,46 +2930,68 @@ pub fn remove_person(
     services: &Services,
     person: EntityId,
 ) -> Result<earshot_store::PersonRemoval, RuntimeError> {
-    let clock = Arc::clone(&services.clock);
-    let mut db = services.store();
-    let row = db
-        .person(person)
-        .map_err(voiceprint_err)?
-        .filter(Person::is_live)
-        .ok_or(EditError::PersonNotFound(person))?;
-    if row.is_me {
-        return Err(EditError::PersonIsTheUser(person).into());
-    }
-    let store: &earshot_store::Store = &db;
-    for id in identity_of(store, person).map_err(voiceprint_err)? {
-        if store
-            .person(id)
-            .map_err(voiceprint_err)?
-            .is_some_and(|p| p.is_me)
-        {
+    services.guarded_write(|w| remove_person_in(w, person))
+}
+
+/// [`remove_person`]'s root (T14.57, docs/sync-spec.md 16.3 and 16.5 items 17 to 19): the
+/// target, the refusal and the names read through guarded reads, then the store's removal (its
+/// own transaction and checkpoint) and the names marks' transaction, all under one lock. A
+/// target whose row does not read is [`EditError::PersonNotFound`]; a member whose `is_me` does
+/// not read refuses with [`EditError::PersonUnreadable`].
+///
+/// # Errors
+/// As [`remove_person`].
+pub(crate) fn remove_person_in(
+    w: &mut crate::services::ServicesWrite<'_>,
+    person: EntityId,
+) -> Result<earshot_store::PersonRemoval, RuntimeError> {
+    use earshot_store::{Col, Deleted};
+    let before = {
+        let r = w.read();
+        let row = match r.person_or_damaged(person)? {
+            Some(Ok(row)) if row.is_live() => row,
+            _ => return Err(EditError::PersonNotFound(person).into()),
+        };
+        if row.is_me {
             return Err(EditError::PersonIsTheUser(person).into());
         }
-    }
-    // The rows the removal sends back to "Speaker N", read first so a summary that used the
-    // person's name is marked as a naming edit would (T12.82), under the same lock.
-    let identity = identity_of(store, person).map_err(voiceprint_err)?;
-    let mut rows: std::collections::BTreeMap<EntityId, BTreeSet<EntityId>> =
-        std::collections::BTreeMap::new();
-    for m in store.meetings()? {
-        if m.meta.deleted {
-            continue;
-        }
-        for s in store.speakers(m.id)? {
-            if !s.meta.deleted && s.person_id.is_some_and(|p| identity.contains(&p)) {
-                rows.entry(m.id).or_default().insert(s.id);
+        let links = r.person_links()?;
+        let identity = earshot_store::identity_of_links(&links, person).members;
+        for id in &identity {
+            match links
+                .iter()
+                .find(|l| l.id == Col::Read(*id))
+                .map(|l| l.is_me)
+            {
+                Some(Col::Read(true)) => return Err(EditError::PersonIsTheUser(person).into()),
+                Some(Col::Unreadable) => return Err(EditError::PersonUnreadable(person).into()),
+                _ => {}
             }
         }
-    }
-    let before = crate::summary_names::names_before(store, &rows)?;
-    let (store, hlc) = db.parts();
-    let removal = store.remove_person(person, hlc, &*clock)?;
+        // The rows the removal sends back to "Speaker N", read first so a summary that used
+        // the person's name is marked as a naming edit would (T12.82), under the same lock.
+        let live_meetings: BTreeSet<EntityId> = r
+            .meetings_lenient()?
+            .into_iter()
+            .filter(|m| m.deleted == Deleted::No)
+            .filter_map(|m| m.id.read())
+            .collect();
+        let mut rows: std::collections::BTreeMap<EntityId, BTreeSet<EntityId>> =
+            std::collections::BTreeMap::new();
+        for l in r.speaker_links(None)? {
+            if let (Col::Read(id), Col::Read(m), Col::Read(Some(p)), Deleted::No) =
+                (l.id, l.meeting_id, l.person_id, l.deleted)
+                && identity.contains(&p)
+                && live_meetings.contains(&m)
+            {
+                rows.entry(m).or_default().insert(id);
+            }
+        }
+        crate::summary_names::names_before(&r, &rows)?
+    };
+    let removal = w.remove_person(person)?;
     // A second transaction, still under the lock: a crash between the two loses only the mark.
-    store.transaction(|tx| crate::summary_names::names_changed_tx(tx, &before))?;
+    w.transaction(|g, _| crate::summary_names::names_changed_tx(g, &before))?;
     Ok(removal)
 }
 

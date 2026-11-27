@@ -32,6 +32,41 @@ const CLEAR_BY_ROWID: &str = "UPDATE segment SET deleted = 1, text = '', words =
      confidence = 1.0, speaker_id = NULL, \
      updated_wall = ?1, updated_logical = ?2, updated_node = ?3 WHERE rowid = ?4";
 
+/// The rowid of a segment row (`rowid_of`).
+const ROWID_OF_SQL: &str = "SELECT rowid FROM segment WHERE id = ?1";
+/// Whether a track is the meeting's (`track_of_meeting`).
+const TRACK_OF_MEETING_SQL: &str = "SELECT 1 FROM track WHERE id = ?1 AND meeting_id = ?2";
+/// A track's live final rows (`has_readable_live_final`).
+const LIVE_FINAL_ROWIDS_SQL: &str = "SELECT rowid FROM segment WHERE meeting_id = ?1 AND track_id = ?2 \
+     AND pass = 'final' AND deleted = 0 AND (?3 IS NULL OR id <> ?3) ORDER BY rowid";
+/// The tracks with queued cleared rows (`note_every_cleared_track`).
+const CLEARED_TRACKS_SQL: &str = "SELECT DISTINCT s.meeting_id, s.track_id FROM segment s \
+     JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
+     WHERE s.deleted = 1 AND s.text = '' AND s.words = '[]' AND s.confidence = 1.0";
+/// The lowest stamp of a track's queued cleared rows (`lowest_queued_cleared`).
+const LOWEST_QUEUED_CLEARED_SQL: &str = "SELECT s.updated_wall, s.updated_logical, s.updated_node FROM segment s \
+     JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
+     WHERE s.meeting_id = ?1 AND s.track_id = ?2 AND s.deleted = 1 AND s.text = '' \
+     AND s.words = '[]' AND s.confidence = 1.0 \
+     ORDER BY s.updated_wall, s.updated_logical, s.updated_node LIMIT 1";
+/// A live final row of the track that is not queued (`lines_go_first`).
+const UNQUEUED_LIVE_FINAL_SQL: &str = "SELECT 1 FROM segment s WHERE s.meeting_id = ?1 AND s.track_id = ?2 \
+     AND s.pass = 'final' AND s.deleted = 0 \
+     AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.tbl = 'segment' AND o.id = s.id)";
+/// Queued live final rows stamped below a stamp (`lines_go_first`).
+const QUEUED_LIVE_FINALS_BELOW_SQL: &str = "SELECT s.id FROM segment s JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
+     WHERE s.meeting_id = ?1 AND s.track_id = ?2 AND s.pass = 'final' AND s.deleted = 0 \
+     AND (s.updated_wall, s.updated_logical, s.updated_node) < (?3, ?4, ?5) \
+     ORDER BY s.updated_wall, s.updated_logical, s.updated_node";
+/// A track's queued cleared rows (`restamp_cleared`).
+const QUEUED_CLEARED_ROWIDS_SQL: &str = "SELECT s.rowid FROM segment s JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
+     WHERE s.meeting_id = ?1 AND s.track_id = ?2 AND s.deleted = 1 AND s.text = '' \
+     AND s.words = '[]' AND s.confidence = 1.0 \
+     ORDER BY s.updated_wall, s.updated_logical, s.updated_node";
+/// A row stamped again, its content unchanged (`restamp_cleared`).
+const RESTAMP_BY_ROWID_SQL: &str = "UPDATE segment SET updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
+     WHERE rowid = ?4";
+
 /// A meeting deletion's erasure of one segment row, as `delete.rs` writes it.
 const ERASE_BY_ROWID: &str = "UPDATE segment SET text = '', words = '[]', confidence = 0.0, \
      speaker_id = NULL, deleted = 1, \
@@ -118,12 +153,12 @@ pub(crate) fn erase_rowid(
 
 /// The rowid of the segment row `id`.
 pub(crate) fn rowid_of(c: &Connection, id: EntityId) -> Result<Option<i64>, StoreError> {
-    Ok(c.query_row(
-        "SELECT rowid FROM segment WHERE id = ?1",
-        params![&id.as_uuid().as_bytes()[..]],
-        |r| r.get(0),
+    Ok(
+        c.query_row(ROWID_OF_SQL, params![&id.as_uuid().as_bytes()[..]], |r| {
+            r.get(0)
+        })
+        .optional()?,
     )
-    .optional()?)
 }
 
 /// Whether `track` is a Track row of `meeting` here (a row naming another meeting's track is
@@ -135,7 +170,7 @@ pub(crate) fn track_of_meeting(
 ) -> Result<bool, StoreError> {
     any(
         c,
-        "SELECT 1 FROM track WHERE id = ?1 AND meeting_id = ?2",
+        TRACK_OF_MEETING_SQL,
         &[
             &&track.as_uuid().as_bytes()[..],
             &&meeting.as_uuid().as_bytes()[..],
@@ -153,10 +188,7 @@ pub(crate) fn has_readable_live_final(
 ) -> Result<bool, StoreError> {
     let except = except.map(|e| e.as_uuid().as_bytes().to_vec());
     let rowids: Vec<i64> = {
-        let mut st = c.prepare(
-            "SELECT rowid FROM segment WHERE meeting_id = ?1 AND track_id = ?2 \
-             AND pass = 'final' AND deleted = 0 AND (?3 IS NULL OR id <> ?3) ORDER BY rowid",
-        )?;
+        let mut st = c.prepare(LIVE_FINAL_ROWIDS_SQL)?;
         st.query_map(
             params![
                 &meeting.as_uuid().as_bytes()[..],
@@ -316,11 +348,7 @@ impl StoreTx<'_> {
 
     /// Notes every meeting and track with queued cleared rows (a re-queue, 15.2).
     pub(crate) fn note_every_cleared_track(&self) -> Result<(), StoreError> {
-        let mut st = self.conn.prepare(
-            "SELECT DISTINCT s.meeting_id, s.track_id FROM segment s \
-             JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
-             WHERE s.deleted = 1 AND s.text = '' AND s.words = '[]' AND s.confidence = 1.0",
-        )?;
+        let mut st = self.conn.prepare(CLEARED_TRACKS_SQL)?;
         let pairs: Vec<([u8; 16], [u8; 16])> = st
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .filter_map(Result::ok)
@@ -382,11 +410,7 @@ fn lowest_queued_cleared(
     track: EntityId,
 ) -> Result<Option<(i64, i64, Vec<u8>)>, StoreError> {
     Ok(c.query_row(
-        "SELECT s.updated_wall, s.updated_logical, s.updated_node FROM segment s \
-         JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
-         WHERE s.meeting_id = ?1 AND s.track_id = ?2 AND s.deleted = 1 AND s.text = '' \
-         AND s.words = '[]' AND s.confidence = 1.0 \
-         ORDER BY s.updated_wall, s.updated_logical, s.updated_node LIMIT 1",
+        LOWEST_QUEUED_CLEARED_SQL,
         params![
             &meeting.as_uuid().as_bytes()[..],
             &track.as_uuid().as_bytes()[..]
@@ -413,22 +437,11 @@ pub(crate) fn lines_go_first(
         meeting.as_uuid().as_bytes().to_vec(),
         track.as_uuid().as_bytes().to_vec(),
     );
-    if any(
-        c,
-        "SELECT 1 FROM segment s WHERE s.meeting_id = ?1 AND s.track_id = ?2 \
-         AND s.pass = 'final' AND s.deleted = 0 \
-         AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.tbl = 'segment' AND o.id = s.id)",
-        &[&m, &t],
-    )? {
+    if any(c, UNQUEUED_LIVE_FINAL_SQL, &[&m, &t])? {
         return Ok(true);
     }
     let ids: Vec<[u8; 16]> = {
-        let mut st = c.prepare(
-            "SELECT s.id FROM segment s JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
-             WHERE s.meeting_id = ?1 AND s.track_id = ?2 AND s.pass = 'final' AND s.deleted = 0 \
-             AND (s.updated_wall, s.updated_logical, s.updated_node) < (?3, ?4, ?5) \
-             ORDER BY s.updated_wall, s.updated_logical, s.updated_node",
-        )?;
+        let mut st = c.prepare(QUEUED_LIVE_FINALS_BELOW_SQL)?;
         st.query_map(params![m, t, wall, logical, node], |r| r.get(0))?
             .collect::<Result<_, _>>()?
     };
@@ -452,12 +465,7 @@ fn restamp_cleared(
     next: &mut dyn FnMut() -> HlcTimestamp,
 ) -> Result<usize, StoreError> {
     let rowids: Vec<i64> = {
-        let mut st = c.prepare(
-            "SELECT s.rowid FROM segment s JOIN sync_outbox o ON o.tbl = 'segment' AND o.id = s.id \
-             WHERE s.meeting_id = ?1 AND s.track_id = ?2 AND s.deleted = 1 AND s.text = '' \
-             AND s.words = '[]' AND s.confidence = 1.0 \
-             ORDER BY s.updated_wall, s.updated_logical, s.updated_node",
-        )?;
+        let mut st = c.prepare(QUEUED_CLEARED_ROWIDS_SQL)?;
         st.query_map(
             params![
                 &meeting.as_uuid().as_bytes()[..],
@@ -469,11 +477,7 @@ fn restamp_cleared(
     };
     for rowid in &rowids {
         let (wall, logical, node) = stamp_params(next())?;
-        c.execute(
-            "UPDATE segment SET updated_wall = ?1, updated_logical = ?2, updated_node = ?3 \
-             WHERE rowid = ?4",
-            params![wall, logical, node, rowid],
-        )?;
+        c.execute(RESTAMP_BY_ROWID_SQL, params![wall, logical, node, rowid])?;
     }
     Ok(rowids.len())
 }

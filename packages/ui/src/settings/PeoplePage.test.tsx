@@ -2,6 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
+import PEOPLE_COPY from "../../../../fixtures/ui/people_copy_cases.json";
 import { type Ipc, type MockIpcData, createMockIpc } from "../ipc";
 import { VOICE_SAMPLE_MS, VOICE_STEP_MS, voiceMessage } from "../ipc/mockSettings";
 import { openSettings, renderApp } from "../test/app";
@@ -75,7 +76,7 @@ describe("Settings, People, people", () => {
     await s.user.click(within(screen.getByRole("region", { name: "People" })).getByRole("button", { name: "Save" }));
     await screen.findByText("Bo Renamed");
     expect(screen.queryByText("Bo Example")).toBeNull();
-    expect((await s.ipc.listPersons()).find((p) => p.id === "b")?.name).toBe("Bo Renamed");
+    expect((await s.ipc.listPersons()).persons.find((p) => p.id === "b")?.name).toBe("Bo Renamed");
   });
 
   it("keeps the name being typed when a rename is refused", async () => {
@@ -98,7 +99,7 @@ describe("Settings, People, people", () => {
     expect(await screen.findByText(FORGET_PERSON_EXPLAINED)).toBeTruthy();
     await s.user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByText(FORGET_PERSON_EXPLAINED)).toBeNull());
-    expect((await s.ipc.listPersons()).find((p) => p.id === "a")?.has_voiceprint).toBe(true);
+    expect((await s.ipc.listPersons()).persons.find((p) => p.id === "a")?.has_voiceprint).toBe(true);
 
     await s.user.click(await screen.findByRole("button", { name: "Forget the voice of Alex Sample" }));
     const dialog = await screen.findByRole("alertdialog");
@@ -106,7 +107,7 @@ describe("Settings, People, people", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Forget the voice of Alex Sample" })).toBeNull(),
     );
-    expect((await s.ipc.listPersons()).find((p) => p.id === "a")?.has_voiceprint).toBe(false);
+    expect((await s.ipc.listPersons()).persons.find((p) => p.id === "a")?.has_voiceprint).toBe(false);
   });
 
   it("asks before removing a person, and Cancel changes nothing", async () => {
@@ -115,14 +116,37 @@ describe("Settings, People, people", () => {
     expect(await screen.findByText(REMOVE_PERSON_EXPLAINED)).toBeTruthy();
     await s.user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByText(REMOVE_PERSON_EXPLAINED)).toBeNull());
-    expect((await s.ipc.listPersons()).some((p) => p.id === "b")).toBe(true);
+    expect((await s.ipc.listPersons()).persons.some((p) => p.id === "b")).toBe(true);
 
     await s.user.click(await screen.findByRole("button", { name: "Remove Bo Example" }));
     const dialog = await screen.findByRole("alertdialog");
     await s.user.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Remove Bo Example" })).toBeNull());
-    expect((await s.ipc.listPersons()).some((p) => p.id === "b")).toBe(false);
+    expect((await s.ipc.listPersons()).persons.some((p) => p.id === "b")).toBe(false);
     expect(screen.getByRole("button", { name: "Remove Alex Sample" })).toBeTruthy();
+  });
+
+  it("says in fixed copy when damaged rows were left out or left as they are (T14.57)", async () => {
+    const s = await open({ persons: people, personsDamaged: true });
+    expect(await screen.findByText(PEOPLE_COPY.list_damaged_note)).toBeTruthy();
+    await s.user.click(await screen.findByRole("button", { name: "Remove Bo Example" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await s.user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    expect(await screen.findByText(PEOPLE_COPY.remove_damaged_note)).toBeTruthy();
+    await s.user.click(await screen.findByRole("button", { name: "Forget the voice of Alex Sample" }));
+    const forget = await screen.findByRole("alertdialog");
+    await s.user.click(within(forget).getByRole("button", { name: "Forget voice" }));
+    expect(await screen.findByText(PEOPLE_COPY.forget_damaged_note)).toBeTruthy();
+  });
+
+  it("shows no damaged note without damaged rows", async () => {
+    const s = await open({ persons: people });
+    await s.user.click(await screen.findByRole("button", { name: "Remove Bo Example" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await s.user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Remove Bo Example" })).toBeNull());
+    expect(screen.queryByText(PEOPLE_COPY.list_damaged_note)).toBeNull();
+    expect(screen.queryByText(PEOPLE_COPY.remove_damaged_note)).toBeNull();
   });
 
   it("offers no way to remove you", async () => {

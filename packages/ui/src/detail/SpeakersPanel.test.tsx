@@ -133,7 +133,7 @@ describe("MeetingDetailView", () => {
     await user.click(await within(panel()).findByRole("button", { name: "Keep separate" }));
     expect(within(panel()).queryByRole("button", { name: "Merge into me" })).toBeNull();
     expect(calls.some((c) => c[0] === "mergeIntoMe")).toBe(false);
-    expect((await ipc.listPersons()).some((p) => p.id === TWIN.id)).toBe(true);
+    expect((await ipc.listPersons()).persons.some((p) => p.id === TWIN.id)).toBe(true);
     // The mock refuses anyone else, as the runtime does.
     await expect(ipc.mergeIntoMe(samplePersons()[1].id)).rejects.toMatchObject({
       error: { kind: "not_named_after_user" },
@@ -575,7 +575,7 @@ describe("MeetingDetailView", () => {
     await expect(ipc.saveVoice(ITEM.id, SAMPLE_SPEAKERS.me, { kind: "New", name: "Sky Moss" })).rejects.toMatchObject({
       error: { kind: "me_is_the_user" },
     });
-    expect((await ipc.listPersons()).some((p) => p.name === "Sky Moss")).toBe(false);
+    expect((await ipc.listPersons()).persons.some((p) => p.name === "Sky Moss")).toBe(false);
   });
 
   it("stays closed when no voice needs a name, with recognised voices marked, and the header button toggles it", async () => {

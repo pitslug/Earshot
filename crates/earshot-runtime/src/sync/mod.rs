@@ -437,14 +437,17 @@ impl SyncSettings {
     }
 }
 
-fn on_setting(store: &Store, key: &str) -> Result<bool, SyncProblem> {
+/// How the sync records are read: one device-local value by key (a `Store`, or a guarded read).
+pub(crate) type LocalRead<'a> =
+    &'a dyn Fn(&str) -> Result<Option<Vec<u8>>, earshot_store::StoreError>;
+
+fn on_setting(store: LocalRead<'_>, key: &str) -> Result<bool, SyncProblem> {
     on_setting_or(store, key, false)
 }
 
 /// A stored `on`/`off` switch; absent or unreadable is `default`.
-fn on_setting_or(store: &Store, key: &str, default: bool) -> Result<bool, SyncProblem> {
-    Ok(store
-        .local_value(key)?
+fn on_setting_or(store: LocalRead<'_>, key: &str, default: bool) -> Result<bool, SyncProblem> {
+    Ok(store(key)?
         .and_then(|b| local::on_off(&String::from_utf8_lossy(&b)))
         .unwrap_or(default))
 }
@@ -454,16 +457,21 @@ fn on_setting_or(store: &Store, key: &str, default: bool) -> Result<bool, SyncPr
 /// # Errors
 /// [`SyncProblem::Store`].
 pub fn sync_settings(store: &Store) -> Result<SyncSettings, SyncProblem> {
-    let address = store
-        .local_value(SYNC_SERVER_KEY)?
-        .map(|b| check_address(&String::from_utf8_lossy(&b)));
+    sync_settings_of(&|k| store.local_value(k))
+}
+
+/// [`sync_settings`] read through `store` (a guarded read, T14.57).
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub(crate) fn sync_settings_of(store: LocalRead<'_>) -> Result<SyncSettings, SyncProblem> {
+    let address = store(SYNC_SERVER_KEY)?.map(|b| check_address(&String::from_utf8_lossy(&b)));
     Ok(SyncSettings {
         address,
         on: on_setting(store, SYNC_ON_KEY)?,
         voiceprints: on_setting(store, SYNC_VOICEPRINTS_KEY)?,
         dictionary: on_setting_or(store, SYNC_DICTIONARY_KEY, true)?,
-        device_name: store
-            .local_value(DEVICE_NAME_KEY)?
+        device_name: store(DEVICE_NAME_KEY)?
             .and_then(|b| clean_name(&String::from_utf8_lossy(&b)))
             .unwrap_or_else(computer_name),
         offers_summaries: on_setting(store, OFFER_SUMMARIES_KEY)?,
@@ -529,7 +537,7 @@ pub fn set_sync_on(services: &Services, on: bool) -> Result<(), SyncProblem> {
 /// [`SyncProblem::Store`].
 pub fn set_sync_voiceprints(services: &Services, on: bool) -> Result<(), SyncProblem> {
     let mut db = services.store();
-    let was = on_setting(&db, SYNC_VOICEPRINTS_KEY)?;
+    let was = on_setting(&|k| db.local_value(k), SYNC_VOICEPRINTS_KEY)?;
     db.transaction(|tx| -> Result<(), SyncProblem> {
         local::set_tx(tx, &DeviceRecord::SyncVoiceprints.key(), on_off_word(on))?;
         if on && !was {
@@ -629,7 +637,12 @@ fn decode_cursor(bytes: Option<Vec<u8>>) -> Cursor {
 /// The stored cursor record; the default (the start of the vault, no epoch seen) when none is
 /// stored or it cannot be read.
 pub(crate) fn cursor_record(store: &Store) -> Result<Cursor, SyncProblem> {
-    Ok(decode_cursor(store.local_value(SYNC_CURSOR_KEY)?))
+    cursor_of(&|k| store.local_value(k))
+}
+
+/// [`cursor_record`] read through `store`.
+pub(crate) fn cursor_of(store: LocalRead<'_>) -> Result<Cursor, SyncProblem> {
+    Ok(decode_cursor(store(SYNC_CURSOR_KEY)?))
 }
 
 /// The relay sequence number pulled up to; 0 when none is stored or it cannot be read (a
@@ -644,19 +657,25 @@ pub fn pull_cursor(store: &Store) -> Result<u64, SyncProblem> {
 /// Moves the cursor from `after` to `to` only if it still reads `after` (the caller holds the
 /// store lock across both): a reset made while the page was on the way wins. Returns whether
 /// it moved. What the record holds beside the cursor is kept.
-fn advance_cursor(store: &mut Store, after: u64, to: u64) -> Result<bool, SyncProblem> {
-    let mut cursor = cursor_record(store)?;
-    if cursor.pull_seq != after {
-        return Ok(false);
-    }
-    cursor.pull_seq = to;
-    cursor.seen_seq = cursor.seen_seq.max(to);
-    local::set(
-        store,
-        &DeviceRecord::SyncCursor.key(),
-        &encode_cursor_record(&cursor),
-    )?;
-    Ok(true)
+pub(crate) fn advance_cursor(
+    w: &mut crate::services::ServicesWrite<'_>,
+    after: u64,
+    to: u64,
+) -> Result<bool, SyncProblem> {
+    w.transaction(|g, _| -> Result<bool, SyncProblem> {
+        let mut cursor = cursor_of(&|k| g.local_value(k))?;
+        if cursor.pull_seq != after {
+            return Ok(false);
+        }
+        cursor.pull_seq = to;
+        cursor.seen_seq = cursor.seen_seq.max(to);
+        local::set_guarded(
+            g,
+            &DeviceRecord::SyncCursor.key(),
+            &encode_cursor_record(&cursor),
+        )?;
+        Ok(true)
+    })
 }
 
 /// Inside `tx`: the pull starts over (a switch was turned on), keeping what the record holds of
@@ -748,17 +767,18 @@ pub(crate) fn judge_vault(stored: &Cursor, seen: VaultSeen<'_>, now_ms: u64) -> 
 ///
 /// # Errors
 /// [`SyncProblem::Server`] when the history changed too often; [`SyncProblem::Store`].
-pub(crate) fn observe_vault(services: &Services, seen: VaultSeen<'_>) -> Result<bool, SyncProblem> {
-    let now_ms = services.clock.now_unix_ms();
-    let clock = std::sync::Arc::clone(&services.clock);
-    let mut db = services.store();
-    let (store, hlc) = db.parts();
-    store.transaction(|tx| -> Result<bool, SyncProblem> {
+pub(crate) fn observe_vault(
+    w: &mut crate::services::ServicesWrite<'_>,
+    seen: VaultSeen<'_>,
+    now_ms: u64,
+) -> Result<bool, SyncProblem> {
+    // The transaction sends re-queued cleared rows after a line of their track (15.2).
+    w.transaction(|tx, _| -> Result<bool, SyncProblem> {
         let stored = decode_cursor(tx.local_value(SYNC_CURSOR_KEY)?);
         match judge_vault(&stored, seen, now_ms) {
             VaultVerdict::Same(None) => Ok(false),
             VaultVerdict::Same(Some(next)) => {
-                local::set_tx(
+                local::set_guarded(
                     tx,
                     &DeviceRecord::SyncCursor.key(),
                     &encode_cursor_record(&next),
@@ -766,14 +786,12 @@ pub(crate) fn observe_vault(services: &Services, seen: VaultSeen<'_>) -> Result<
                 Ok(false)
             }
             VaultVerdict::Reset(next) => {
-                local::set_tx(
+                local::set_guarded(
                     tx,
                     &DeviceRecord::SyncCursor.key(),
                     &encode_cursor_record(&next),
                 )?;
                 tx.queue_every_row()?;
-                // Re-queued cleared rows go out after a line of their track (15.2).
-                tx.send_lines_first(hlc, &*clock)?;
                 Ok(true)
             }
             VaultVerdict::TooOften => Err(SyncProblem::Server),
@@ -799,6 +817,11 @@ pub struct SyncStatus {
     /// tick (T14.43). Left out of the record when 0, as [`Self::unsendable`] is.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refused: u64,
+    /// Rows here that did not read and that the last completed tick's pages skipped
+    /// (docs/sync-spec.md 16.7). Left out of the record when 0, so a status without any reads
+    /// as before and an older build reads a newer record.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub damaged_skipped: u64,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
@@ -948,8 +971,12 @@ pub(crate) fn devices_of(
 /// # Errors
 /// [`SyncProblem::Store`].
 pub fn sync_status(store: &Store) -> Result<SyncStatus, SyncProblem> {
-    Ok(store
-        .local_value(SYNC_STATUS_KEY)?
+    sync_status_of(&|k| store.local_value(k))
+}
+
+/// [`sync_status`] read through `store`.
+pub(crate) fn sync_status_of(store: LocalRead<'_>) -> Result<SyncStatus, SyncProblem> {
+    Ok(store(SYNC_STATUS_KEY)?
         .and_then(|b| {
             let (v, payload) = split_version(&b)?;
             (v == STATUS_VERSION)
@@ -957,6 +984,19 @@ pub fn sync_status(store: &Store) -> Result<SyncStatus, SyncProblem> {
                 .flatten()
         })
         .unwrap_or_default())
+}
+
+/// [`set_sync_status`] under a guarded write.
+///
+/// # Errors
+/// [`SyncProblem::Store`].
+pub(crate) fn set_sync_status_in(
+    w: &mut crate::services::ServicesWrite<'_>,
+    status: &SyncStatus,
+) -> Result<(), SyncProblem> {
+    let bytes = encode_versioned(STATUS_VERSION, status).expect("a status serialises");
+    w.transaction(|g, _| local::set_guarded(g, &DeviceRecord::SyncStatus.key(), &bytes))?;
+    Ok(())
 }
 
 fn set_sync_status(store: &mut Store, status: &SyncStatus) -> Result<(), SyncProblem> {

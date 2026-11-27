@@ -711,7 +711,7 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
     // Forgetting: no live voiceprint, vector zeroed, the meeting's centroid entry gone.
     assert!(identity_speakers(&svc, m).contains(&remote[0].id));
     assert_eq!(
-        forget_person_voices(&svc, dana).unwrap(),
+        forget_person_voices(&svc, dana).unwrap().voices,
         2,
         "the print and its sample"
     );
@@ -725,7 +725,7 @@ fn edit_remember_voices_enrols_linked_speakers_and_forget_removes_them() {
     }));
     assert!(!identity_speakers(&svc, m).contains(&remote[0].id));
     assert!(!list_persons(&svc).unwrap().iter().any(|p| p.has_voiceprint));
-    assert_eq!(forget_person_voices(&svc, dana).unwrap(), 0);
+    assert_eq!(forget_person_voices(&svc, dana).unwrap().voices, 0);
     // With the centroid gone there is nothing to remember.
     let after = remember_voices_with(&svc, m, &[remote[0].id], &any).unwrap();
     assert_eq!(after[0].1, Remembered::NoStoredVoice);

@@ -816,7 +816,7 @@ export function MeetingDetailView({
       const before = voicesBefore.current;
       voicesBefore.current = needing;
       setSpeakersOpen((open) => (open === null ? needing > 0 : needing > before ? true : open));
-      setPersons(p);
+      setPersons(p.persons);
       // A newer read that failed still says so.
       if (read === asked.current) setLoadError(null);
     } catch (e) {

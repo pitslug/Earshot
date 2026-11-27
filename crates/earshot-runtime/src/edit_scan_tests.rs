@@ -32,8 +32,8 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/earshot-store/src/delete.rs",
-        "remove_person",
-        "forgets every sample of the identity in the same transaction",
+        "unlink_speakers_tx",
+        "Remove's unlink (T14.57): the identity's samples are forgotten in the same transaction",
     ),
     (
         "crates/earshot-core/src/model/repo.rs",

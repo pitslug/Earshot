@@ -26,7 +26,9 @@ import type {
   ModelSettingsValue,
   ModelSettingsView,
   ModelsView,
-  PersonItem,
+  PersonListView,
+  PersonRemovedView,
+  VoicesForgottenView,
   SavedVoiceResult,
   LinkResult,
   MarkedMeResult,
@@ -178,8 +180,8 @@ export interface IpcCommands
   unmarkMe(meeting: string, speaker: string): Promise<void>;
   /** Renames a person and their speaker rows in every meeting. */
   renamePerson(person: string, name: string): Promise<number>;
-  /** Every person, by name. */
-  listPersons(): Promise<PersonItem[]>;
+  /** Every person, by name, and whether a damaged row on this computer was left out (T14.57). */
+  listPersons(): Promise<PersonListView>;
   /** "Save" on a voice that needs a name (T12.19): names it, links it to that person and
    * remembers the voice, in one step. */
   saveVoice(meeting: string, speaker: string, choice: LinkChoice): Promise<SavedVoiceResult>;
@@ -192,9 +194,11 @@ export interface IpcCommands
    * ignored in this meeting. Rejects with `user_row`, `no_person` or a retryable
    * `meeting_busy`. Resolves with what was taken back of the voice (T12.77b7). */
   notThisPerson(meeting: string, speaker: string): Promise<NotThisPersonResult>;
-  /** Forgets every voiceprint of a person. */
-  forgetPersonVoices(person: string): Promise<number>;
-  removePerson(person: string): Promise<void>;
+  /** Forgets every voiceprint of a person; says whether a damaged row was left (T14.57). */
+  forgetPersonVoices(person: string): Promise<VoicesForgottenView>;
+  /** Removes a person; says whether a damaged row was left (T14.57). Rejects with
+   * person_unreadable while a member's details on this computer are damaged. */
+  removePerson(person: string): Promise<PersonRemovedView>;
   /** The Updates section's state. */
   updateStatus(): Promise<UpdateView>;
   /** Asks the update host for the latest version; `UpdateEvent`s follow. */
@@ -284,8 +288,9 @@ export interface IpcCommands
   startVoiceSample(): Promise<void>;
   /** Cancels the voice sample; nothing is saved. */
   cancelVoiceSample(): Promise<void>;
-  /** Forgets your voice; resolves with how many voiceprints were forgotten. */
-  forgetMyVoice(): Promise<number>;
+  /** Forgets your voice; resolves with how many voiceprints were forgotten, and whether a
+   * damaged row was left or not all of it may have been reached (T14.57). */
+  forgetMyVoice(): Promise<VoicesForgottenView>;
   /** The Obsidian page settings. */
   obsidianSettings(): Promise<ObsidianSettingsView>;
   /** Checks and stores the Obsidian page settings. Rejects with `invalid_setting`. */

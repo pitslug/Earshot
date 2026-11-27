@@ -1211,14 +1211,22 @@ fn sync_a_meeting_edited_here_after_it_was_deleted_elsewhere_is_deleted_everywhe
 #[test]
 fn sync_cursor_moves_only_from_where_the_page_was_pulled() {
     let a = Device::new("sync-cursor");
-    let mut db = a.svc.store();
-    assert_eq!(pull_cursor(&db).unwrap(), 0);
-    assert!(advance_cursor(&mut db, 0, 500).unwrap());
-    assert_eq!(pull_cursor(&db).unwrap(), 500);
+    assert_eq!(pull_cursor(&a.svc.store()).unwrap(), 0);
+    assert!(a.svc.guarded_write(|w| advance_cursor(w, 0, 500)).unwrap());
+    assert_eq!(pull_cursor(&a.svc.store()).unwrap(), 500);
     // A reset while a page after 500 was on the way: the page does not undo it.
-    crate::local::set(&mut db, &DeviceRecord::SyncCursor.key(), &encode_cursor(0)).unwrap();
-    assert!(!advance_cursor(&mut db, 500, 700).unwrap());
-    assert_eq!(pull_cursor(&db).unwrap(), 0);
+    crate::local::set(
+        &mut a.svc.store(),
+        &DeviceRecord::SyncCursor.key(),
+        &encode_cursor(0),
+    )
+    .unwrap();
+    assert!(
+        !a.svc
+            .guarded_write(|w| advance_cursor(w, 500, 700))
+            .unwrap()
+    );
+    assert_eq!(pull_cursor(&a.svc.store()).unwrap(), 0);
 }
 
 #[test]
@@ -1232,6 +1240,8 @@ fn sync_cursor_and_status_bytes_are_pinned() {
         unreadable: 2,
         unsendable: 0,
         refused: 0,
+        // T14.57: left out of the record when 0, so the bytes below are as before.
+        damaged_skipped: 0,
     };
     set_sync_status(&mut db, &status).unwrap();
     assert_eq!(
@@ -2520,9 +2530,11 @@ fn dictionary_sync_switched_off_inside_the_apply_leaves_the_list_alone() {
     let rebuilt = a
         .svc
         .store()
-        .transaction(|tx| crate::vocabulary::rebuild_tx(tx, crate::vocabulary::OverRefused::Keep))
+        .guarded_transaction(|g| {
+            crate::vocabulary::rebuild_tx(g, crate::vocabulary::OverRefused::Keep)
+        })
         .unwrap();
-    assert_eq!(rebuilt, None);
+    assert_eq!(rebuilt, crate::vocabulary::Rebuild::Nothing);
     assert_eq!(words(&a), ["Ostrelby"]);
 }
 
@@ -5132,3 +5144,144 @@ mod edits;
 
 #[path = "sync_replaced_tests.rs"]
 mod replaced;
+
+/// The device's database file (for damage made by SQL in a test).
+fn db_path(dev: &Device) -> std::path::PathBuf {
+    earshot_store::DataDir::new(dev._dir.0.join("data")).db_path()
+}
+
+/// Runs `sql` with `?1` the id `id` on `dev`'s database from a second connection.
+fn damage(dev: &Device, sql: &str, id: earshot_core::identity::EntityId) {
+    let c = rusqlite::Connection::open(db_path(dev)).unwrap();
+    let n = c
+        .execute(sql, rusqlite::params![id.as_uuid().as_bytes().to_vec()])
+        .unwrap();
+    assert!(n >= 1, "{sql}");
+}
+
+/// T14.57 test 2 (docs/sync-spec.md 16.9): a page that renames two speakers of a meeting with
+/// a summary that used both names commits on a device holding a damaged copy of one of them:
+/// the readable row's earlier name is recorded and the damaged row's is not. With the current
+/// summary itself damaged no name is recorded. Control: on an undamaged device both are.
+#[test]
+fn sync_damaged_names_marks_skip_only_what_does_not_read() {
+    use rand_core::SeedableRng;
+    for case in ["speaker", "summary", "none"] {
+        let relay = relay();
+        let (a, b) = pair(&relay);
+        let (ca, cb) = (a.client(), b.client());
+        let m = meeting(&a.svc, "Planning", 11);
+        let bryn = crate::edit::write(&a.svc, |tx, stamp| {
+            let s = earshot_core::model::Speaker::new(
+                m,
+                earshot_core::diar::SpeakerRole::Remote,
+                "Bryn",
+                None,
+                stamp,
+            );
+            tx.put_speaker(s.clone())?;
+            Ok(s.id)
+        })
+        .unwrap();
+        let v = crate::view::MeetingView::load_named(&a.svc.store(), m)
+            .unwrap()
+            .unwrap();
+        let mut s = summary_of("Planning");
+        s.tldr = "Alice and Bryn will send the plan.".into();
+        crate::summary::store_summary(
+            &a.svc,
+            &v,
+            "test-model".into(),
+            &s,
+            &mut rand_chacha::ChaCha8Rng::seed_from_u64(12),
+        )
+        .unwrap();
+        ca.tick().unwrap();
+        cb.tick().unwrap();
+        match case {
+            "speaker" => damage(&b, "UPDATE speaker SET role = 'bogus' WHERE id = ?1", bryn),
+            "summary" => damage(
+                &b,
+                "UPDATE summary SET template = 'bogus' WHERE meeting_id = ?1",
+                m,
+            ),
+            _ => {}
+        }
+        let alice = v
+            .speakers
+            .iter()
+            .find(|s| s.display_name == "Alice")
+            .unwrap()
+            .id;
+        a.clock.advance_ms(1_000);
+        crate::edit::rename_speaker(&a.svc, m, alice, "Alicia").unwrap();
+        crate::edit::rename_speaker(&a.svc, m, bryn, "Bree").unwrap();
+        ca.tick().unwrap();
+        let report = cb.tick().unwrap();
+        let mut names: Vec<String> = crate::summary_names::read(&b.svc.store(), m)
+            .unwrap()
+            .into_values()
+            .flatten()
+            .collect();
+        names.sort();
+        let expected: &[&str] = match case {
+            "speaker" => &["Alice"],
+            "summary" => &[],
+            _ => &["Alice", "Bryn"],
+        };
+        assert_eq!(names, expected, "case {case}");
+        assert_eq!(
+            report.damaged_skipped > 0,
+            case != "none",
+            "case {case}: {report:?}"
+        );
+    }
+}
+
+/// T14.57 test 11 (docs/sync-spec.md 16.9): healing through the relay. One device damages a
+/// speaker row it holds; the other renames that speaker. The damaged device's pages commit, and
+/// after the pull its copy reads again and both devices hold the same rows. Control: before the
+/// pull the damaged device cannot read the row the other holds.
+#[test]
+fn sync_damaged_a_row_heals_from_the_other_device() {
+    let relay = relay();
+    let (a, b) = pair(&relay);
+    let (ca, cb) = (a.client(), b.client());
+    let m = meeting(&a.svc, "Review", 21);
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    assert_eq!(a.rows(), b.rows());
+    let alice = a
+        .svc
+        .store()
+        .speakers(m)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.display_name == "Alice")
+        .unwrap()
+        .id;
+    damage(
+        &b,
+        "UPDATE speaker SET display_name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+        alice,
+    );
+    // The control: the damaged copy does not read, so the devices differ on it.
+    assert!(b.svc.store().speakers(m).is_err());
+    a.clock.advance_ms(1_000);
+    crate::edit::rename_speaker(&a.svc, m, alice, "Alicia").unwrap();
+    ca.tick().unwrap();
+    cb.tick().unwrap();
+    assert_eq!(
+        a.rows(),
+        b.rows(),
+        "the pulled copy replaced the damaged one"
+    );
+    assert!(
+        b.svc
+            .store()
+            .speakers(m)
+            .unwrap()
+            .iter()
+            .any(|s| s.display_name == "Alicia")
+    );
+}

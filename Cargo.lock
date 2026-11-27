@@ -1351,6 +1351,7 @@ dependencies = [
  "earshot-update",
  "rand_chacha",
  "rand_core",
+ "rusqlite",
  "serde",
  "serde_json",
  "specta",
