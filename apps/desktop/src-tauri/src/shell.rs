@@ -35,6 +35,8 @@ use crate::sync_settings::{QUIT_GONE_WAIT, SyncHost};
 
 /// The argument of the `Run` value: started by Windows, stay in the tray.
 pub const AUTOSTART_ARG: &str = "--autostart";
+/// The tray menu's last item, also the taskbar jump list's (T14.71).
+pub const QUIT_LABEL: &str = "Quit Earshot";
 /// The global shortcut, as the page and the notifications write it.
 pub const SHORTCUT_TEXT: &str = "Ctrl+Alt+Shift+R";
 /// The label of the main window (`tauri.conf.json`).
@@ -991,6 +993,9 @@ pub struct Shell {
     end_already_told: AtomicBool,
     #[cfg(windows)]
     toasts: crate::toast_win::Toaster,
+    /// The taskbar jump list (T14.71), once [`Shell::start_jump_list`] has started it.
+    #[cfg(windows)]
+    jump: std::sync::OnceLock<crate::jumplist_win::JumpList>,
 }
 
 impl Shell {
@@ -1012,6 +1017,8 @@ impl Shell {
             end_already_told: AtomicBool::new(false),
             #[cfg(windows)]
             toasts: crate::toast_win::Toaster::default(),
+            #[cfg(windows)]
+            jump: std::sync::OnceLock::new(),
         }
     }
 
@@ -1039,7 +1046,7 @@ impl Shell {
             None::<&str>,
         )?;
         let separator = PredefinedMenuItem::separator(app)?;
-        let quit = MenuItem::with_id(app, "quit", "Quit Earshot", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", QUIT_LABEL, true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&open, &toggle, &separator, &quit])?;
         let base =
             app.default_window_icon()
@@ -1337,6 +1344,12 @@ impl Shell {
         true
     }
 
+    /// A second start of Earshot (the single-instance plugin): a jump list entry acts as the
+    /// tray's item does (T14.71); any other start opens the window.
+    pub fn second_start(self: &Arc<Self>, args: &[String]) {
+        crate::jumplist::second_start(args, &ShellStarts(self));
+    }
+
     /// "Quit Earshot": at once with no meeting, else the window asks first.
     pub fn quit(&self) {
         match quit_action(self.driver().phase()) {
@@ -1421,6 +1434,20 @@ impl Shell {
 
     fn refresh_tray(&self) {
         self.tray.refresh(|| self.tracker().phase());
+        // The jump list follows the tray's meeting item; its thread sets it, with no lock held.
+        #[cfg(windows)]
+        if let Some(jump) = self.jump.get() {
+            jump.show(self.tracker().phase());
+        }
+    }
+
+    /// Sets the taskbar jump list (T14.71) and keeps it following the tray. Its thread does the
+    /// work; a list the shell refuses costs nothing.
+    pub fn start_jump_list(&self) {
+        #[cfg(windows)]
+        if let Some(jump) = crate::jumplist_win::JumpList::start(self.tracker().phase()) {
+            let _ = self.jump.set(jump);
+        }
     }
 
     /// Shows `toast`; `meeting` is what its clicks open. Never blocks the caller (the meeting
@@ -1553,6 +1580,21 @@ pub async fn quit_app(app: AppHandle, driver: State<'_, MeetingDriver>) -> Resul
         Ok(())
     })
     .await
+}
+
+/// A second start's actions on this shell: the tray's own paths.
+struct ShellStarts<'a>(&'a Arc<Shell>);
+
+impl crate::jumplist::SecondStart for ShellStarts<'_> {
+    fn show_window(&self) {
+        self.0.show_window();
+    }
+    fn meeting(&self) {
+        self.0.toggle();
+    }
+    fn quit(&self) {
+        self.0.quit();
+    }
 }
 
 #[cfg(test)]

@@ -30,6 +30,9 @@ mod general;
 mod headless;
 mod ipc;
 mod jobs;
+mod jumplist;
+#[cfg(windows)]
+mod jumplist_win;
 mod keep_local;
 mod llama_probe;
 mod meeting;
@@ -71,6 +74,14 @@ use std::time::Instant;
 use tauri::Manager;
 use tauri_specta::Event;
 
+/// Whether an Earshot already runs (asked only by a jump list start).
+fn app_running() -> bool {
+    #[cfg(windows)]
+    return jumplist_win::app_running();
+    #[cfg(not(windows))]
+    false
+}
+
 /// A sink that sends each event to this app's own webview (nothing leaves the device).
 fn emitter<E>(app: &tauri::AppHandle) -> Arc<dyn Fn(E) + Send + Sync>
 where
@@ -86,6 +97,12 @@ fn main() {
     // The hidden model check mode runs and exits before anything of the app (Tauri, the
     // store, the window) is built.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // A taskbar jump list entry (T14.71) with no Earshot running exits before anything else:
+    // no window, tray, store or log. With one running, the single-instance plugin below hands
+    // the arguments over and ends this process.
+    if let Some(code) = jumplist::early_exit(&args, app_running) {
+        std::process::exit(code);
+    }
     // Crash logs (T9.1e) go to the app's data folder, also from the check; the replay mode keeps
     // them in its own `--data` once that is checked.
     if !headless::asked(&args) {
@@ -105,17 +122,22 @@ fn main() {
     if let Some(code) = headless::main_if_asked(&args) {
         std::process::exit(code);
     }
+    // The app's own id before any window: the taskbar button, the notifications and the jump
+    // list are one app however Earshot was started (T14.71).
+    #[cfg(windows)]
+    jumplist_win::use_app_id();
     // Only the app itself: a child may be running while an earlier crash's dump is being written.
     crash::remove_old_dumps();
+    let jump_start = jumplist::JumpAction::of(&args).is_some();
     let by_windows = shell::started_by_windows(&args);
     let builder = ipc::specta_builder();
     let gate = activity::WorkGate::for_app();
     tauri::Builder::default()
         // First, as its docs ask: a second start of Earshot opens this one's window instead of
         // a second recorder and tray icon.
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if let Some(shell) = app.try_state::<Arc<shell::Shell>>() {
-                shell.show_window();
+                shell.second_start(&args);
             }
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -126,6 +148,11 @@ fn main() {
             }
         })
         .setup(move |app| {
+            // A jump list start that got here is the only Earshot: the one it was meant for
+            // ended between the check in `main` and the plugin. It starts nothing either.
+            if jump_start {
+                std::process::exit(0);
+            }
             builder.mount_events(app);
             // Opening the store runs migrations once; a failure is kept and reported by the
             // commands that need the store, so the window still opens.
@@ -402,6 +429,7 @@ fn main() {
             let shell = Arc::new(shell::Shell::new(app.handle().clone()));
             app.manage(Arc::clone(&shell));
             let tray = shell.build_tray();
+            shell.start_jump_list();
             shell.register_shortcut();
             shell.spawn_call_start_watch();
             // The window starts hidden: started by Windows it stays so (T7.5), unless there is

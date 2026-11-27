@@ -1963,8 +1963,11 @@ fn check_update(all: &mut bool, nsis: &Path, work: &Path, names: &Installed) -> 
 ///   crash report list, the value `earshot.exe` and the check's invented neighbour. Other values
 ///   on that list are neither saved nor changed.
 /// - Not restored: the uninstaller also clears the taskbar jump list of the app id
-///   `earshot` (`DeleteAppUserModelId`), shared with an installed Earshot; the app
-///   sets no jump list of its own, so at most Windows's recent items for it are lost.
+///   `earshot` (`DeleteAppUserModelId`: `ICustomDestinationList::DeleteList` and
+///   `IApplicationDestinations::RemoveAllDestinations`), shared with an installed Earshot. The
+///   app sets its list (T14.71) again at every start, so the owner's Earshot loses its
+///   "Start meeting" and "Quit Earshot" entries only until it next starts, and Windows's recent
+///   items for it are lost. The same step is why an ordinary uninstall leaves no jump list behind.
 /// - Not covered: a process killed mid-run restores nothing, and the next run refuses until the
 ///   saved files in `<repo>\target\bundle-check-registry` are dealt with. Until then `Run\Earshot`
 ///   may hold the sentinel, which fails harmlessly at logon, and the owner's `earshot.exe` may be
