@@ -265,8 +265,10 @@ pub struct LiveConfig {
     pub title: String,
     /// Summary template.
     pub template: Template,
-    /// The user's UTC offset at the start, for display.
-    pub utc_offset_minutes: i32,
+    /// Where the meeting's stored UTC offset comes from (T14.67, docs/sync-spec.md 18.4): an
+    /// explicit 0 by default (replays, the benchmark, tests); only the recording funnel
+    /// `backends::start_wasapi_session_on` asks for this computer's.
+    pub utc_offset: UtcOffset,
     /// Clock domain of the capture timestamps (QPC for WASAPI, replay for a file).
     pub clock_domain: ClockDomain,
     /// Core pipeline settings. The default raises `max_gap` to
@@ -361,6 +363,74 @@ impl Default for LiveTranscription {
     }
 }
 
+/// Where a new meeting's stored UTC offset comes from (T14.67, docs/sync-spec.md 18.4).
+///
+/// A stored 0 means unknown or UTC, never "recorded in UTC": the outputs read it as this
+/// computer's zone at the meeting's start (`crate::view::shown_offset`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UtcOffset {
+    /// Stored as given. The default is `Fixed(0)`, so replays and tests stay deterministic.
+    Fixed(i32),
+    /// This computer's offset at the meeting's start instant, DST included
+    /// (`earshot_proc::utc_offset_minutes_at`); 0 when it cannot be read. Set only by the
+    /// recording funnel `backends::start_wasapi_session_on`.
+    ThisComputer,
+}
+
+impl Default for UtcOffset {
+    fn default() -> Self {
+        Self::Fixed(0)
+    }
+}
+
+impl UtcOffset {
+    /// The offset to store for a meeting that starts at `started_unix_ms`, `zone` being this
+    /// computer's reader (asked only for [`UtcOffset::ThisComputer`], at that instant).
+    #[must_use]
+    pub fn resolve(self, started_unix_ms: u64, zone: impl FnOnce(u64) -> Option<i32>) -> i32 {
+        match self {
+            Self::Fixed(minutes) => minutes,
+            Self::ThisComputer => zone(started_unix_ms).unwrap_or(0),
+        }
+    }
+}
+
+/// The zone reader `start_live` passes to [`UtcOffset::resolve`]: this computer's, or in a test
+/// the fake installed on its thread ([`fake_zone`]).
+fn zone_reader() -> Box<dyn FnOnce(u64) -> Option<i32>> {
+    #[cfg(test)]
+    if let Some(answer) = FAKE_ZONE.with(|f| f.borrow().as_ref().map(|(a, _)| *a)) {
+        return Box::new(move |at| {
+            FAKE_ZONE.with(|f| {
+                if let Some((_, asked)) = f.borrow_mut().as_mut() {
+                    asked.push(at);
+                }
+            });
+            answer
+        });
+    }
+    Box::new(earshot_proc::utc_offset_minutes_at)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's fake zone: its answer and every instant it was asked.
+    static FAKE_ZONE: std::cell::RefCell<Option<(Option<i32>, Vec<u64>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Installs a fake zone answering `answer` on this thread (until [`fake_zone_asked`]).
+#[cfg(test)]
+pub(crate) fn fake_zone(answer: Option<i32>) {
+    FAKE_ZONE.with(|f| *f.borrow_mut() = Some((answer, Vec::new())));
+}
+
+/// Removes this thread's fake zone and returns the instants it was asked.
+#[cfg(test)]
+pub(crate) fn fake_zone_asked() -> Vec<u64> {
+    FAKE_ZONE.with(|f| f.borrow_mut().take().map(|(_, a)| a).unwrap_or_default())
+}
+
 /// How far behind a speech-stretch worker may fall before it stops (D20: nothing is
 /// deferred later than 30 minutes).
 pub const STRETCH_MAX_BACKLOG: Duration = Duration::from_secs(30 * 60);
@@ -370,7 +440,7 @@ impl Default for LiveConfig {
         Self {
             title: String::new(),
             template: Template::default(),
-            utc_offset_minutes: 0,
+            utc_offset: UtcOffset::default(),
             clock_domain: ClockDomain::Qpc,
             pipeline: PipelineConfig {
                 max_gap: LIVE_MAX_GAP,
@@ -992,10 +1062,13 @@ where
             hlc,
             rng: &mut *rng,
         };
+        // The offset is read at the very instant that becomes `started_unix_ms` (T14.67).
+        let started = clock.now_unix_ms();
+        let utc_offset = cfg.utc_offset.resolve(started, zone_reader());
         let mut meeting = Meeting::new(
             cfg.title.clone(),
-            clock.now_unix_ms(),
-            cfg.utc_offset_minutes,
+            started,
+            utc_offset,
             cfg.template,
             &mut stamp,
         );

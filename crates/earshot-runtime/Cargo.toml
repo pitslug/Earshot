@@ -18,7 +18,6 @@ engines = [
     "dep:earshot-llm-local",
     "dep:earshot-hardware",
     "dep:earshot-update",
-    "dep:earshot-proc",
     "dep:claxon",
     "dep:toml",
     "dep:bzip2",
@@ -73,8 +72,10 @@ earshot-net = { path = "../earshot-net" }
 # are found on PATH under `cargo test`/`cargo run` (earshot-llm-local's build script); a
 # shipped exe carries them next to it (T6.21b).
 earshot-llm-local = { path = "../earshot-llm-local", optional = true }
-# GPU summaries in a child process (T9.3): the workspace's one kill-on-close job object.
-earshot-proc = { path = "../earshot-proc", optional = true }
+# GPU summaries in a child process (T9.3): the workspace's one kill-on-close job object; and
+# this computer's UTC offset (T14.67), which the ungated `live` and `view` need. Not behind
+# `engines`: the worker's graph already holds it through earshot-llm.
+earshot-proc = { path = "../earshot-proc" }
 # A current-thread runtime per summary service drives the async LLM client (time driver
 # required). Same features as earshot-llm-replay already brings into the workspace.
 tokio = { version = "1.53.3", default-features = false, features = ["rt", "time"] }
@@ -129,8 +130,6 @@ earshot-update = { path = "../earshot-update", features = ["sign"] }
 # Loopback mock LLM endpoint (test support only; the ci `net` step fails if a shipped
 # crate depends on it normally).
 earshot-llm-replay = { path = "../earshot-llm-replay" }
-# Peak memory in the `bench` example (T8.1).
-earshot-proc = { path = "../earshot-proc" }
 # The sync tests run the real relay in process (`LocalRelay`, T11.3). A dev edge only: the ci
 # `net` step refuses a normal or build edge to it.
 earshot-sync-server = { path = "../earshot-sync-server" }

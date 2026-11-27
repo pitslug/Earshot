@@ -1889,11 +1889,25 @@ pub fn evaluation_input(view: &MeetingView) -> SummaryInput {
 
 /// The prompt input of a meeting view with the user's summary style and own words.
 fn input_of(view: &MeetingView, settings: &PromptSettings) -> SummaryInput {
+    input_of_with(view, settings, earshot_proc::utc_offset_minutes_at)
+}
+
+/// [`input_of`] with the zone a stored 0 offset is read in (T14.67, docs/sync-spec.md 18.3):
+/// `started` is local by [`crate::view::shown_offset_of`]. Only [`input_of`] calls it in
+/// shipped code.
+fn input_of_with(
+    view: &MeetingView,
+    settings: &PromptSettings,
+    zone: impl FnOnce(u64) -> Option<i32>,
+) -> SummaryInput {
     let m = &view.meeting;
     SummaryInput {
         meeting: MeetingInfo {
             title: (!m.title.trim().is_empty()).then(|| m.title.clone()),
-            started: Some(format_local(m.started_unix_ms, m.utc_offset_minutes)),
+            started: Some(format_local(
+                m.started_unix_ms,
+                crate::view::shown_offset_of(m, zone),
+            )),
             duration_ms: m.duration_ms.unwrap_or(0),
             attendees: view.attendees(),
         },

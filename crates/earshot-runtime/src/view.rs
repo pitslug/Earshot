@@ -318,6 +318,31 @@ pub fn distinct_names(people: &[(EntityId, &str)]) -> Vec<String> {
         .collect()
 }
 
+/// The UTC offset an output (the export, the summary input) shows a meeting in (T14.67,
+/// docs/sync-spec.md 18.3). A stored offset means "unknown or UTC" when it is 0, never
+/// "recorded in UTC": every build before 0.9.2 stored 0. So a stored non-zero offset is used
+/// as stored and `zone` is not asked; a stored 0 is `zone(started_unix_ms)`, this computer's
+/// offset at the meeting's own start, or 0 when `zone` cannot say (the worker: UTC).
+#[must_use]
+pub fn shown_offset(
+    stored: i32,
+    started_unix_ms: u64,
+    zone: impl FnOnce(u64) -> Option<i32>,
+) -> i32 {
+    if stored != 0 {
+        return stored;
+    }
+    zone(started_unix_ms).unwrap_or(0)
+}
+
+/// [`shown_offset`] of `meeting` with `zone` (production passes this computer's,
+/// `earshot_proc::utc_offset_minutes_at`): the only shipped reader of the stored offset for
+/// output.
+#[must_use]
+pub fn shown_offset_of(meeting: &Meeting, zone: impl FnOnce(u64) -> Option<i32>) -> i32 {
+    shown_offset(meeting.utc_offset_minutes, meeting.started_unix_ms, zone)
+}
+
 /// `unix_ms` shifted by `utc_offset_minutes`, as `YYYY-MM-DD HH:MM` (proleptic Gregorian;
 /// days-to-civil after H. Hinnant, "chrono-Compatible Low-Level Date Algorithms").
 #[must_use]
@@ -362,6 +387,26 @@ pub fn cites_only(summary: &earshot_core::summary::SummaryV1, ids: &BTreeSet<Ent
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn view_shown_offset_reads_a_stored_zero_as_this_computers_zone() {
+        // T14.67: a stored 0 is this computer's offset at the meeting's own start.
+        let mut asked = Vec::new();
+        let shown = super::shown_offset(0, 42, |at| {
+            asked.push(at);
+            Some(600)
+        });
+        assert_eq!((shown, asked), (600, vec![42]));
+        // The control: a stored non-zero offset is kept and the zone is never asked.
+        let mut asked = Vec::new();
+        let shown = super::shown_offset(-300, 42, |at| {
+            asked.push(at);
+            Some(600)
+        });
+        assert_eq!((shown, asked), (-300, vec![]));
+        // No reader (the worker): a stored 0 stays 0, UTC.
+        assert_eq!(super::shown_offset(0, 42, |_| None), 0);
+    }
+
     use super::format_local;
 
     #[test]

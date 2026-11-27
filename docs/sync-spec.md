@@ -1532,7 +1532,7 @@ T14.62's draft put Repair on the Sync page and "Remove damaged items" beside eac
 
 ## 18. A meeting records its local time zone (T14.67)
 
-Status: design revision 2, spec review 2 clear (2026-11-28, six advisories folded in). Spec review 1 blocked revision 1's once-per-device synced rewrite of stored meetings: a whole-row rewrite stamped now beats every edit to that row not yet pushed from another device. The owner chose this shape on 2026-11-28 (PLAN.md T14.67): nothing stored is rewritten, and a stored 0 is read as this computer's zone. No row changes shape: `ENVELOPE_FORMAT` stays 4, with no migration, no relay change, no wire field, no device record and nothing sent that was not sent before.
+Status: design revision 2, spec review 2 clear (2026-11-28, six advisories folded in), built (T14.67). Spec review 1 blocked revision 1's once-per-device synced rewrite of stored meetings: a whole-row rewrite stamped now beats every edit to that row not yet pushed from another device. The owner chose this shape on 2026-11-28 (PLAN.md T14.67): nothing stored is rewritten, and a stored 0 is read as this computer's zone. No row changes shape: `ENVELOPE_FORMAT` stays 4, with no migration, no relay change, no wire field, no device record and nothing sent that was not sent before.
 
 ### 18.1 The defect
 

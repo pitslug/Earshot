@@ -2958,8 +2958,11 @@ pub fn start_wasapi_session_on(
 ) -> Result<crate::live::LiveSession, RuntimeError> {
     let source = earshot_capture_wasapi::wasapi::WasapiSource::start_on(mic_role, mode, devices)
         .map_err(|e| crate::capture_start_error(&e))?;
+    // A real recording: QPC timestamps, and this computer's UTC offset at the start (T14.67,
+    // docs/sync-spec.md 18.4). No replay comes through here, so replays keep the explicit 0.
     let mut config = crate::live::LiveConfig {
         clock_domain: earshot_core::model::ClockDomain::Qpc,
+        utc_offset: crate::live::UtcOffset::ThisComputer,
         ..config
     };
     // The audio check's delay for the pair and microphone signal opened (T7.4j, T12.36): a
