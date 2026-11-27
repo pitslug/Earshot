@@ -22,9 +22,11 @@ describe("mock IPC", () => {
   });
 
   it("returns deterministic sample meetings, newest first", async () => {
-    const a = await createMockIpc({ now: 1_800_000_000_000 }).listMeetings();
+    const listed = await createMockIpc({ now: 1_800_000_000_000 }).listMeetings();
     const b = await createMockIpc({ now: 1_800_000_000_000 }).listMeetings();
-    expect(a).toEqual(b);
+    expect(listed).toEqual(b);
+    expect(listed.damaged).toBe(false);
+    const a = listed.meetings;
     expect(a.length).toBeGreaterThanOrEqual(3);
     expect(a.length).toBeLessThanOrEqual(4);
     const starts = a.map((m) => m.started_at_ms);
@@ -39,11 +41,11 @@ describe("mock IPC", () => {
       { id: "2", title: "New", started_at_ms: 20, duration_ms: null, state: "Recording" as const, folder_id: null, new_summary: false },
     ];
     const ipc = createMockIpc({ meetings });
-    const listed = await ipc.listMeetings();
+    const listed = (await ipc.listMeetings()).meetings;
     expect(listed.map((m) => m.id)).toEqual(["2", "1"]);
     listed[0].title = "changed";
-    expect((await ipc.listMeetings())[0].title).toBe("New");
-    expect(await createMockIpc({ meetings: [] }).listMeetings()).toEqual([]);
+    expect((await ipc.listMeetings()).meetings[0].title).toBe("New");
+    expect((await createMockIpc({ meetings: [] }).listMeetings()).meetings).toEqual([]);
   });
 
   it("answers app info", async () => {
@@ -58,12 +60,12 @@ describe("mock IPC", () => {
       const events: MeetingEvent[] = [];
       await ipc.onMeetingEvent((e) => events.push(e));
       const id = await ipc.startMeeting("Call", "Pump order", false);
-      expect((await ipc.listMeetings())[0]).toMatchObject({ id, state: "Recording", title: "Pump order" });
+      expect((await ipc.listMeetings()).meetings[0]).toMatchObject({ id, state: "Recording", title: "Pump order" });
       timer.advance(10_000);
       await ipc.stopMeeting();
-      expect((await ipc.listMeetings())[0]).toMatchObject({ state: "Processing", duration_ms: 10_000 });
+      expect((await ipc.listMeetings()).meetings[0]).toMatchObject({ state: "Processing", duration_ms: 10_000 });
       timer.advance((POST_STEPS.length + 1) * POST_STEP_MS);
-      expect((await ipc.listMeetings())[0].state).toBe("Ready");
+      expect((await ipc.listMeetings()).meetings[0].state).toBe("Ready");
       return { id, events };
     };
     const { id, events } = await play();
@@ -401,7 +403,7 @@ describe("mock speech helpers (T9.1f)", () => {
   it("folders: the sample meetings sit in the sample folders, listed by name", async () => {
     const ipc = createMockIpc();
     expect((await ipc.listFolders()).map((f) => f.name)).toEqual(["Planning", "Supplier calls"]);
-    const filed = (await ipc.listMeetings()).filter((m) => m.folder_id !== null);
+    const filed = (await ipc.listMeetings()).meetings.filter((m) => m.folder_id !== null);
     expect(filed.map((m) => m.folder_id).sort()).toEqual(SAMPLE_FOLDERS.map((f) => f.id).sort());
     // Meetings given without folders come with none.
     expect(await createMockIpc({ meetings: [] }).listFolders()).toEqual([]);
@@ -433,10 +435,10 @@ describe("mock speech helpers (T9.1f)", () => {
     });
     await ipc.stopMeeting();
     await ipc.moveToFolder(meeting, id);
-    expect((await ipc.listMeetings())[0].folder_id).toBe(id);
+    expect((await ipc.listMeetings()).meetings[0].folder_id).toBe(id);
     expect((await refusal(ipc.moveToFolder(meeting, "gone"))).kind).toBe("folder_not_found");
     await ipc.moveToFolder(meeting, null);
-    expect((await ipc.listMeetings())[0].folder_id).toBeNull();
+    expect((await ipc.listMeetings()).meetings[0].folder_id).toBeNull();
   });
 
   it("folders: deleting keeps or deletes the meetings, and a busy one keeps the folder", async () => {
@@ -461,7 +463,7 @@ describe("mock speech helpers (T9.1f)", () => {
       meetings_left: 0,
       meetings_unfiled: 2,
     });
-    expect((await ipc.listMeetings()).filter((m) => m.folder_id === null)).toHaveLength(3);
+    expect((await ipc.listMeetings()).meetings.filter((m) => m.folder_id === null)).toHaveLength(3);
 
     await ipc.retranscribe("m3");
     expect(await ipc.deleteFolderWithMeetings("f2")).toEqual({
@@ -471,7 +473,7 @@ describe("mock speech helpers (T9.1f)", () => {
       meetings_unfiled: 0,
     });
     expect((await ipc.listFolders()).map((f) => f.id)).toEqual(["f2"]);
-    expect((await ipc.listMeetings()).map((m) => m.id)).toEqual(["m5", "m3", "m2", "m1"]);
+    expect((await ipc.listMeetings()).meetings.map((m) => m.id)).toEqual(["m5", "m3", "m2", "m1"]);
   });
 
   it("folders: a newer database refuses the lists with newer_data", async () => {
@@ -550,7 +552,7 @@ describe("mock summary seen (T14.51)", () => {
       // Seen once: never a change again.
       expect(await ipc.markSummarySeen(m.id, m.summary)).toBe(false);
     }
-    expect((await ipc.listMeetings()).some((m) => m.new_summary)).toBe(false);
+    expect((await ipc.listMeetings()).meetings.some((m) => m.new_summary)).toBe(false);
     // A summary stored in this session is new to the record: true the first time it is seen.
     const timer = createManualTimer(1_000);
     const later = createMockIpc({ meetings: plain, now: 1_000, timer });

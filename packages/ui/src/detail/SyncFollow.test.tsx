@@ -52,7 +52,7 @@ async function waitingSetup(data: MockIpcData = {}, waiting = true) {
     listMeetings: async () => {
       lists += 1;
       const all = await base.listMeetings();
-      return deleted ? all.filter((m) => m.id !== ITEM.id) : all;
+      return deleted ? { ...all, meetings: all.meetings.filter((m) => m.id !== ITEM.id) } : all;
     },
     getMeeting: async (id) => {
       reads.push(id);

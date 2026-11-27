@@ -80,7 +80,9 @@ fn export_all_then_changed_exports_only_new_or_edited_meetings() {
     let mut rng = ChaCha8Rng::seed_from_u64(6);
 
     clock.advance_ms(1_000);
-    let all = export_meetings(&svc, &vault, ExportSelection::All, &opts, &mut rng).unwrap();
+    let all = export_meetings(&svc, &vault, ExportSelection::All, &opts, &mut rng)
+        .unwrap()
+        .results;
     let ids: Vec<_> = all.iter().map(|(m, _)| *m).collect();
     assert_eq!(ids.len(), 2);
     assert!(ids.contains(&a) && ids.contains(&b));
@@ -92,7 +94,9 @@ fn export_all_then_changed_exports_only_new_or_edited_meetings() {
 
     // Nothing changed since: nothing to export.
     clock.advance_ms(1_000);
-    let none = export_meetings(&svc, &vault, ExportSelection::Changed, &opts, &mut rng).unwrap();
+    let none = export_meetings(&svc, &vault, ExportSelection::Changed, &opts, &mut rng)
+        .unwrap()
+        .results;
     assert!(none.is_empty(), "{none:?}");
 
     // A note added to Beta later: only Beta is exported again.
@@ -115,7 +119,9 @@ fn export_all_then_changed_exports_only_new_or_edited_meetings() {
         store.put_note(note).unwrap();
     }
     clock.advance_ms(1_000);
-    let changed = export_meetings(&svc, &vault, ExportSelection::Changed, &opts, &mut rng).unwrap();
+    let changed = export_meetings(&svc, &vault, ExportSelection::Changed, &opts, &mut rng)
+        .unwrap()
+        .results;
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].0, b);
     assert!(matches!(&changed[0].1, Ok(rep) if rep.action == ExportAction::Updated));
@@ -136,7 +142,9 @@ fn export_all_then_changed_exports_only_new_or_edited_meetings() {
         store.put_meeting(m).unwrap();
     }
     clock.advance_ms(1_000);
-    let all = export_meetings(&svc, &vault, ExportSelection::All, &opts, &mut rng).unwrap();
+    let all = export_meetings(&svc, &vault, ExportSelection::All, &opts, &mut rng)
+        .unwrap()
+        .results;
     assert_eq!(all.iter().map(|(m, _)| *m).collect::<Vec<_>>(), [b]);
 }
 
@@ -173,6 +181,7 @@ fn export_changed(
         &mut ChaCha8Rng::seed_from_u64(seed),
     )
     .unwrap()
+    .results
     .into_iter()
     .map(|(m, r)| {
         r.unwrap();
@@ -323,7 +332,8 @@ fn export_all_leaves_the_store_free_during_its_vault_work() {
             &mut ChaCha8Rng::seed_from_u64(32),
             &mut on_vault,
         )
-        .unwrap();
+        .unwrap()
+        .results;
         let ids: Vec<_> = out.iter().map(|(m, _)| *m).collect();
         assert!(ids.contains(&a) && ids.contains(&b), "{ids:?}");
         assert!(out.iter().all(|(_, r)| r.is_ok()), "{out:?}");

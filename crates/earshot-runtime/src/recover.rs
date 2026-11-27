@@ -135,10 +135,9 @@ fn interrupted_meetings(services: &Services) -> Result<Vec<(EntityId, Vec<Track>
     let mut listed = Vec::new();
     {
         let db = services.store();
-        for m in db.meetings()? {
-            if m.meta.deleted {
-                continue;
-            }
+        // A meeting row that does not read is left out (T14.64): it cannot be recovered, and
+        // the others still are.
+        for m in db.live_meetings_or_damaged()?.0 {
             let tracks: Vec<Track> = db
                 .tracks(m.id)?
                 .into_iter()

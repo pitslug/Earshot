@@ -345,7 +345,7 @@ fn list_meetings_returns_live_meetings_newest_first_without_deleted_ones() {
     let mid = meeting(&svc, "", T0 + 1_800_000, Some(900_000), 4);
     svc.delete_meeting(gone).unwrap();
 
-    let list = meeting_list(&svc).unwrap();
+    let list = meeting_list(&svc).unwrap().meetings;
     let ids: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
     assert_eq!(ids, [new.to_string(), mid.to_string(), old.to_string()]);
     assert_eq!(list[0].title, "Design sync");
@@ -356,6 +356,209 @@ fn list_meetings_returns_live_meetings_newest_first_without_deleted_ones() {
     assert_eq!(list[0].duration_ms, None);
     assert_eq!(list[1].title, "");
     assert_eq!(list[1].duration_ms, Some(900_000));
+}
+
+/// T14.64: a meeting row that does not read (a title that is not UTF-8) beside readable ones:
+/// the list holds the readable ones, says one was left out, and never names it; a search and
+/// the folder map read past it too. Control: with no damage the list says nothing was left out.
+/// The copy the window shows for it is the fixture's.
+#[test]
+fn list_meetings_a_damaged_meeting_row_is_left_out_and_said() {
+    let copy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/meeting_list_copy_cases.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        copy["list_damaged_note"].as_str(),
+        Some("Some meetings or folders on this computer are damaged and are not shown.")
+    );
+    for damaged in [true, false] {
+        let dir = TempDir::new("list-damaged");
+        let svc = services(&dir);
+        let first = meeting(&svc, "Invented planning", T0, Some(60_000), 71);
+        let broken = meeting(
+            &svc,
+            "Invented Wrenfield review",
+            T0 + 60_000,
+            Some(60_000),
+            72,
+        );
+        let last = meeting(&svc, "Invented retro", T0 + 120_000, Some(60_000), 73);
+        let folder = earshot_runtime::folders::create(&svc, "Invented folder").unwrap();
+        earshot_runtime::folders::move_meeting(&svc, first, Some(folder)).unwrap();
+        if damaged {
+            let c = rusqlite::Connection::open(dir.0.join("data").join("earshot.db")).unwrap();
+            let changed = c
+                .execute(
+                    "UPDATE meeting SET title = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    rusqlite::params![broken.as_uuid().as_bytes().to_vec()],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
+        }
+        let view = meeting_list(&svc).unwrap();
+        assert_eq!(view.damaged, damaged);
+        let mut want = vec![last.to_string()];
+        if !damaged {
+            want.push(broken.to_string());
+        }
+        want.push(first.to_string());
+        let ids: Vec<String> = view.meetings.iter().map(|m| m.id.clone()).collect();
+        assert_eq!(ids, want);
+        assert_eq!(
+            view.meetings.last().unwrap().folder_id,
+            Some(folder.to_string())
+        );
+        let json = serde_json::to_string(&view).unwrap();
+        assert_eq!(json.contains(&broken.to_string()), !damaged, "{json}");
+        let found = meeting_search(&svc, "invented", &CancelToken::new()).unwrap();
+        assert_eq!(found.items.len(), if damaged { 2 } else { 3 });
+        assert_eq!(found.unreadable, u32::from(damaged));
+    }
+}
+
+/// T14.64: a folder row that does not read (a name that is not UTF-8): the meeting list still
+/// lists every meeting, the one filed in it reads as in no folder, the list says something was
+/// left out (also with no meeting at all), and the folder list lists the other folders and never
+/// names it. Control: with no damage nothing is said and the meeting keeps its folder.
+#[test]
+fn list_meetings_a_damaged_folder_row_is_left_out_and_said() {
+    for damaged in [true, false] {
+        let dir = TempDir::new("list-damaged-folder");
+        let svc = services(&dir);
+        let broken = earshot_runtime::folders::create(&svc, "Invented Quillmere").unwrap();
+        let kept = earshot_runtime::folders::create(&svc, "Invented archive").unwrap();
+        let damage = || {
+            let c = rusqlite::Connection::open(dir.0.join("data").join("earshot.db")).unwrap();
+            let changed = c
+                .execute(
+                    "UPDATE folder SET name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    rusqlite::params![broken.as_uuid().as_bytes().to_vec()],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
+        };
+        if damaged {
+            damage();
+        }
+        // No meeting yet: the list still says a folder was left out.
+        let empty = meeting_list(&svc).unwrap();
+        assert!(empty.meetings.is_empty());
+        assert_eq!(empty.damaged, damaged);
+        let filed = meeting(&svc, "Invented planning", T0, Some(60_000), 81);
+        let loose = meeting(&svc, "Invented retro", T0 + 60_000, Some(60_000), 82);
+        if damaged {
+            // A move into a damaged folder is not something this test checks: file it first.
+            let c = rusqlite::Connection::open(dir.0.join("data").join("earshot.db")).unwrap();
+            c.execute(
+                "UPDATE meeting SET folder_id = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    broken.as_uuid().as_bytes().to_vec(),
+                    filed.as_uuid().as_bytes().to_vec()
+                ],
+            )
+            .unwrap();
+        } else {
+            earshot_runtime::folders::move_meeting(&svc, filed, Some(broken)).unwrap();
+        }
+        let view = meeting_list(&svc).unwrap();
+        assert_eq!(view.damaged, damaged);
+        let ids: Vec<String> = view.meetings.iter().map(|m| m.id.clone()).collect();
+        assert_eq!(ids, [loose.to_string(), filed.to_string()]);
+        let want = (!damaged).then(|| broken.to_string());
+        assert_eq!(view.meetings[1].folder_id, want);
+        let folders = crate::folders::folder_list(&svc).unwrap();
+        let listed: Vec<String> = folders.iter().map(|f| f.id.clone()).collect();
+        let mut expect = vec![kept.to_string()];
+        if !damaged {
+            expect.push(broken.to_string());
+        }
+        assert_eq!(listed, expect);
+        let json = serde_json::to_string(&(&view, &folders)).unwrap();
+        assert_eq!(json.contains(&broken.to_string()), !damaged, "{json}");
+    }
+}
+
+/// T14.64 review: with a damaged folder row and a damaged meeting row, folders can still be
+/// created and renamed (a new name may clash with the damaged folder's, which cannot be read),
+/// and deleting a folder fails closed with the fixture's fixed copy, changing nothing. Control:
+/// with no damage the folder is deleted.
+#[test]
+fn list_meetings_damaged_rows_let_folders_be_named_but_not_deleted() {
+    let copy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/ui/meeting_list_copy_cases.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        copy["folder_blocked_by_damage"].as_str(),
+        Some(crate::detail::FOLDER_BLOCKED_BY_DAMAGE_COPY)
+    );
+    assert_eq!(
+        copy["rename_blocked_by_damage"].as_str(),
+        Some(crate::detail::RENAME_BLOCKED_BY_DAMAGE_COPY)
+    );
+    let refused = IpcError::from(RuntimeError::Edit(
+        earshot_runtime::edit::EditError::RenameBlockedByDamage(EntityId::from_bytes([3; 16])),
+    ));
+    assert_eq!(
+        (refused.kind.as_str(), refused.message.as_str()),
+        (
+            "rename_blocked_by_damage",
+            crate::detail::RENAME_BLOCKED_BY_DAMAGE_COPY
+        )
+    );
+    for damaged in [true, false] {
+        let dir = TempDir::new("folders-damaged");
+        let svc = services(&dir);
+        let broken_folder = earshot_runtime::folders::create(&svc, "Invented Quillmere").unwrap();
+        let broken_meeting = meeting(&svc, "Invented review", T0, Some(60_000), 91);
+        let filed = meeting(&svc, "Invented planning", T0 + 1, Some(60_000), 92);
+        if damaged {
+            let c = rusqlite::Connection::open(dir.0.join("data").join("earshot.db")).unwrap();
+            for (sql, id) in [
+                (
+                    "UPDATE folder SET name = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    broken_folder,
+                ),
+                (
+                    "UPDATE meeting SET title = CAST(X'FF00FE' AS TEXT) WHERE id = ?1",
+                    broken_meeting,
+                ),
+            ] {
+                let changed = c
+                    .execute(sql, rusqlite::params![id.as_uuid().as_bytes().to_vec()])
+                    .unwrap();
+                assert_eq!(changed, 1);
+            }
+        }
+        // The damaged folder's name cannot be checked, so the same name is accepted then.
+        let same = crate::folders::create(&svc, "Invented Quillmere");
+        assert_eq!(same.is_ok(), damaged, "{same:?}");
+        let other = crate::folders::create(&svc, "Invented archive").unwrap();
+        crate::folders::rename(&svc, &other, "Invented archive two").unwrap();
+        let other_id: EntityId = other.parse().unwrap();
+        earshot_runtime::folders::move_meeting(&svc, filed, Some(other_id)).unwrap();
+        for with_meetings in [false, true] {
+            let out = crate::folders::delete(&svc, &other, with_meetings);
+            if damaged {
+                let e = out.unwrap_err();
+                assert_eq!(e.kind, "folder_blocked_by_damage");
+                assert_eq!(e.message, crate::detail::FOLDER_BLOCKED_BY_DAMAGE_COPY);
+                // Nothing changed: the folder and its meeting are still there.
+                let listed = crate::folders::folder_list(&svc).unwrap();
+                assert!(listed.iter().any(|f| f.id == other));
+                assert_eq!(
+                    earshot_runtime::folders::meeting_folders(&svc)
+                        .unwrap()
+                        .get(&filed),
+                    Some(&other_id)
+                );
+            } else {
+                assert!(out.is_ok(), "{out:?}");
+                break;
+            }
+        }
+    }
 }
 
 #[test]
@@ -377,6 +580,7 @@ fn list_meetings_states_follow_the_runtime_activity() {
 
     let states: Vec<(String, MeetingState)> = meeting_list(&svc)
         .unwrap()
+        .meetings
         .into_iter()
         .map(|m| (m.title, m.state))
         .collect();
@@ -393,6 +597,7 @@ fn list_meetings_states_follow_the_runtime_activity() {
     drop(_proc);
     let after: Vec<MeetingState> = meeting_list(&svc)
         .unwrap()
+        .meetings
         .into_iter()
         .map(|m| m.state)
         .collect();
@@ -451,7 +656,7 @@ fn list_meetings_final_transcript_answer_equals_loading_the_segments() {
     let silent = meeting(&svc, "Final pass, no speech", T0 + 1_000, Some(60_000), 36);
     final_pass_ran(&svc, silent);
 
-    let list = meeting_list(&svc).unwrap();
+    let list = meeting_list(&svc).unwrap().meetings;
     let states: Vec<(&str, MeetingState)> =
         list.iter().map(|m| (m.title.as_str(), m.state)).collect();
     assert_eq!(
@@ -531,6 +736,7 @@ fn list_meetings_marks_a_summary_this_device_has_not_opened() {
     let new = |svc: &Services| -> Vec<(String, bool)> {
         meeting_list(svc)
             .unwrap()
+            .meetings
             .into_iter()
             .map(|m| (m.title, m.new_summary))
             .collect()
@@ -570,7 +776,7 @@ fn list_meetings_resolves_folders_as_the_runtime_does_in_the_same_read() {
         db.put_meeting(m).unwrap();
     }
     let by_runtime = earshot_runtime::folders::meeting_folders(&svc).unwrap();
-    let list = meeting_list(&svc).unwrap();
+    let list = meeting_list(&svc).unwrap().meetings;
     assert_eq!(list.len(), 3);
     // Newest first, as before.
     let titles: Vec<&str> = list.iter().map(|m| m.title.as_str()).collect();
@@ -704,7 +910,7 @@ fn ipc_blocking_is_the_only_spawn_blocking_of_the_app() {
 #[test]
 fn list_meetings_of_an_empty_store_is_empty() {
     let dir = TempDir::new("empty");
-    assert_eq!(meeting_list(&services(&dir)).unwrap(), []);
+    assert_eq!(meeting_list(&services(&dir)).unwrap().meetings, []);
 }
 
 #[test]
@@ -791,7 +997,10 @@ fn app_state_opens_and_reports_the_store() {
     let state = AppState::open(DataDir::new(dir.0.join("fresh")));
     assert!(state.services.is_ok());
     assert!(dir.0.join("fresh").join("earshot.db").is_file());
-    assert_eq!(meeting_list(&state.services().unwrap()).unwrap(), []);
+    assert_eq!(
+        meeting_list(&state.services().unwrap()).unwrap().meetings,
+        []
+    );
 }
 
 #[test]

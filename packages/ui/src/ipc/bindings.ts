@@ -9,10 +9,11 @@ export const commands = {
 	/**  The app version and data directory. */
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	/**
-	 *  The live meetings, newest first, with what is happening to each. Runs off the main
-	 *  thread; the store lock is held only for each read.
+	 *  The live meetings, newest first, with what is happening to each, and whether a damaged
+	 *  meeting was left out (T14.64). Runs off the main thread; the store lock is held only for
+	 *  each read.
 	 */
-	listMeetings: () => typedError<MeetingListItem[], IpcError>(__TAURI_INVOKE("list_meetings")),
+	listMeetings: () => typedError<MeetingListView, IpcError>(__TAURI_INVOKE("list_meetings")),
 	/**
 	 *  The live meetings whose title, transcript or summary contains `query`, newest first (T9.7).
 	 *  Runs off the main thread; the store lock is held only for each meeting's read. A newer
@@ -1648,6 +1649,18 @@ export type MeetingListItem = {
 };
 
 /**
+ *  The meeting list (T14.64): the meetings, and whether a damaged meeting or folder row on this
+ *  computer was left out (`list_damaged_note` in `fixtures/ui/meeting_list_copy_cases.json`). Never
+ *  names a damaged row.
+ */
+export type MeetingListView = {
+	/**  The live meetings, newest first. */
+	meetings: MeetingListItem[],
+	/**  Some damaged meeting or folder row was left out. */
+	damaged: boolean,
+};
+
+/**
  *  What a window that has just loaded needs to show the meetings in progress (T14.51): built only
  *  from the [`MeetingEvent`]s the driver has sent ([`SentRecord`]), so it says nothing those events
  *  did not. Transcript text is not in it: lines already shown are not kept. A start whose
@@ -2195,8 +2208,8 @@ export type SearchResultsView = {
 	/**  Whether more meetings matched than `items` holds. */
 	capped: boolean,
 	/**
-	 *  Transcript lines and summaries left out of the search because they could not be read
-	 *  (`SearchResults::unreadable`): a count only, 0 normally.
+	 *  Transcript lines, summaries and meetings left out of the search because they could not
+	 *  be read (`SearchResults::unreadable`): a count only, 0 normally.
 	 */
 	unreadable: number,
 };

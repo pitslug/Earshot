@@ -16,7 +16,7 @@ import type {
   LinkChoice,
   MeetingDetail,
   MeetingEvent,
-  MeetingListItem,
+  MeetingListView,
   MeetingSnapshot,
   DeleteAsk,
   ModelJobEvent,
@@ -82,8 +82,9 @@ export interface IpcCommands
     SummaryOrderCommands {
   /** The app version and data directory. */
   appInfo(): Promise<AppInfo>;
-  /** The meetings, newest first. Rejects with an `IpcFailure`. */
-  listMeetings(): Promise<MeetingListItem[]>;
+  /** The meetings, newest first, and whether a damaged meeting was left out (T14.64). Rejects
+   * with an `IpcFailure`. */
+  listMeetings(): Promise<MeetingListView>;
   /** The meetings whose title, transcript or summary contains `query`, newest first. An empty
    * query finds nothing. Rejects with an `IpcFailure`. */
   searchMeetings(query: string): Promise<SearchResultsView>;

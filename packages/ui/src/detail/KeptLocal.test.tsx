@@ -43,7 +43,7 @@ describe("keeping a meeting on this computer", () => {
         timer.advance(0);
       });
       await screen.findByRole("region", { name: "Meeting" });
-      const id = (await ipc.listMeetings()).find((m) => m.state === "Recording")!.id;
+      const id = (await ipc.listMeetings()).meetings.find((m) => m.state === "Recording")!.id;
       expect((await ipc.getMeeting(id)).kept_local !== null).toBe(tick);
       cleanup();
     }

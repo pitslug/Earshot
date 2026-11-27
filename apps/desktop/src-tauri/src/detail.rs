@@ -443,6 +443,15 @@ impl VoicesForgottenView {
     }
 }
 
+/// The fixed copy for a folder that a damaged meeting row stops from being deleted (T14.64,
+/// `folder_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`).
+pub const FOLDER_BLOCKED_BY_DAMAGE_COPY: &str =
+    "This folder can't be deleted because some meetings on this computer are damaged.";
+
+/// The fixed copy for a person a damaged speaker row stops from being renamed everywhere
+/// (T14.64, `rename_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`).
+pub const RENAME_BLOCKED_BY_DAMAGE_COPY: &str = "This person can't be renamed everywhere because some of their details on this computer are damaged.";
+
 /// The fixed copy for a person whose details do not read (`remove_unreadable`).
 pub const REMOVE_UNREADABLE_COPY: &str =
     "This person can't be removed because some of their details on this computer are damaged.";
@@ -688,6 +697,14 @@ pub fn edit_error(e: &EditError) -> IpcError {
         EditError::FolderNotFound(_) => err("folder_not_found", "This folder no longer exists."),
         EditError::FolderNameTaken(_) => {
             err("folder_name_taken", "Another folder already has this name.")
+        }
+        // T14.64: `folder_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`.
+        // T14.64: `rename_blocked_by_damage` in `fixtures/ui/meeting_list_copy_cases.json`.
+        EditError::RenameBlockedByDamage(_) => {
+            err("rename_blocked_by_damage", RENAME_BLOCKED_BY_DAMAGE_COPY)
+        }
+        EditError::FolderBlockedByDamage(_) => {
+            err("folder_blocked_by_damage", FOLDER_BLOCKED_BY_DAMAGE_COPY)
         }
         EditError::MeetingRecording(_) => err(
             "meeting_recording",

@@ -525,6 +525,59 @@ pub(crate) mod lenient {
         Ok(ok.pop().map(Ok).or_else(|| bad.pop().map(Err)))
     }
 
+    /// The meeting rows that are not tombstones, in [`all_meetings`]' order (T14.64: what a
+    /// list of every meeting reads). A row whose `deleted` column holds 1 is a tombstone and is
+    /// left out whether or not its other values read; any other row that does not read comes
+    /// back by its rowid.
+    pub(crate) fn live_meetings(c: &Connection) -> Result<(Vec<Meeting>, Vec<i64>), RepoError> {
+        let (ok, bad) = split_rows(
+            c,
+            "meeting",
+            synced_cols(&MEETING),
+            "WHERE deleted IS NOT 1 ORDER BY started_unix_ms, id",
+            &[],
+            meeting_row,
+        )?;
+        Ok((ok.into_iter().filter(|m| !m.meta.deleted).collect(), bad))
+    }
+
+    /// The ids of every meeting row that is not a tombstone, chosen by the `deleted` column
+    /// alone, so a row whose other values do not read is still listed (T14.64: what a write
+    /// that must reach every row tied to an entity selects its meetings by). An id that is not
+    /// 16 bytes cannot name a meeting and is left out.
+    pub(crate) fn non_tombstone_meeting_ids(c: &Connection) -> Result<Vec<EntityId>, RepoError> {
+        let ids = query(
+            c,
+            "SELECT id FROM meeting WHERE deleted IS NOT 1 ORDER BY rowid",
+            &[],
+            |r| {
+                Ok(match r.get_ref(0)? {
+                    rusqlite::types::ValueRef::Blob(b) => <[u8; 16]>::try_from(b).ok(),
+                    _ => None,
+                })
+            },
+        )?;
+        Ok(ids
+            .into_iter()
+            .flatten()
+            .map(EntityId::from_bytes)
+            .collect())
+    }
+
+    /// The folder rows that are not tombstones, in [`all_folders`]' order (T14.64), split as
+    /// [`live_meetings`] splits meeting rows.
+    pub(crate) fn live_folders(c: &Connection) -> Result<(Vec<Folder>, Vec<i64>), RepoError> {
+        let (ok, bad) = split_rows(
+            c,
+            "folder",
+            synced_cols(&FOLDER),
+            "WHERE deleted IS NOT 1 ORDER BY created_wall, created_logical, created_node, id",
+            &[],
+            folder_row,
+        )?;
+        Ok((ok.into_iter().filter(|f| !f.meta.deleted).collect(), bad))
+    }
+
     /// `meeting`'s speaker rows in [`speakers_of`]'s order, each with its rowid.
     pub(crate) fn speakers_in_order(
         c: &Connection,

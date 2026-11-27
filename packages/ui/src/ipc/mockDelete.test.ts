@@ -22,10 +22,10 @@ describe("mock meeting deletion", () => {
     const refused = await ipc.deleteMeeting(id).catch((e: unknown) => e);
     expect(refused).toBeInstanceOf(IpcFailure);
     expect((refused as IpcFailure).error).toMatchObject({ kind: "meeting_finishing", retryable: true });
-    expect((await ipc.listMeetings()).map((m) => m.id)).toEqual([id]);
+    expect((await ipc.listMeetings()).meetings.map((m) => m.id)).toEqual([id]);
 
     await ipc.deleteMeeting(id, true);
-    expect(await ipc.listMeetings()).toEqual([]);
+    expect((await ipc.listMeetings()).meetings).toEqual([]);
     // Its one summary event says the work was stopped, and nothing follows it.
     const summaries = events.filter((e) => e.type === "Summary");
     expect(summaries).toEqual([{ type: "Summary", meeting: id, result: { kind: "PostCancelled" } }]);
@@ -38,7 +38,7 @@ describe("mock meeting deletion", () => {
     const ipc = createMockIpc({ timer });
     const jobEvents: JobEvent[] = [];
     await ipc.onJobEvent((e) => jobEvents.push(e));
-    const [first] = await ipc.listMeetings();
+    const [first] = (await ipc.listMeetings()).meetings;
     await ipc.resummarise(first.id);
     expect(await ipc.meetingDeletion(first.id)).toBe("Resummarising");
     await expect(ipc.deleteMeeting(first.id)).rejects.toMatchObject({
@@ -46,7 +46,7 @@ describe("mock meeting deletion", () => {
     });
     expect(jobEvents).toEqual([]);
     await ipc.deleteMeeting(first.id, true);
-    expect((await ipc.listMeetings()).map((m) => m.id)).not.toContain(first.id);
+    expect((await ipc.listMeetings()).meetings.map((m) => m.id)).not.toContain(first.id);
     expect(jobEvents).toEqual([{ type: "Cancelled", meeting: first.id, job: "Resummarise" }]);
     // The cancelled job's own ending never comes.
     timer.advance(20 * POST_STEP_MS);
@@ -58,7 +58,7 @@ describe("mock meeting deletion", () => {
     const ipc = createMockIpc({ timer });
     const jobEvents: JobEvent[] = [];
     await ipc.onJobEvent((e) => jobEvents.push(e));
-    const [first] = await ipc.listMeetings();
+    const [first] = (await ipc.listMeetings()).meetings;
     await ipc.cancelJob(first.id);
     expect(jobEvents).toEqual([]);
     await ipc.retranscribe(first.id);

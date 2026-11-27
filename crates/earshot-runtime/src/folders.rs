@@ -62,6 +62,20 @@ impl LiveFolders {
         ))
     }
 
+    /// The live folders of `store` that read, and how many folder rows that are not tombstones
+    /// do not (T14.64): a damaged folder is left out, so a meeting in it reads as in no folder,
+    /// as for a tombstoned one. What every list of folders reads.
+    ///
+    /// # Errors
+    /// Storage errors.
+    pub fn read_lenient(store: &earshot_store::Store) -> Result<(Self, usize), RuntimeError> {
+        let (folders, damaged) = store.live_folders_or_damaged()?;
+        Ok((
+            Self(folders.into_iter().map(|f| (f.id, f)).collect()),
+            damaged,
+        ))
+    }
+
     /// The folder a meeting with `folder_id` is in: `None` for no folder, and for an id
     /// naming a tombstoned or unknown folder.
     #[must_use]
@@ -108,12 +122,13 @@ pub fn name_order(name: &str) -> (String, String) {
     (base, folded)
 }
 
-/// Every live folder, sorted by name ([`name_order`]).
+/// Every live folder, sorted by name ([`name_order`]). A folder row that does not read is left
+/// out (T14.64: the meeting list says so).
 ///
 /// # Errors
 /// Storage errors.
 pub fn list(services: &Services) -> Result<Vec<FolderItem>, RuntimeError> {
-    Ok(LiveFolders::read(&**services.store())?.sorted())
+    Ok(LiveFolders::read_lenient(&services.store())?.0.sorted())
 }
 
 /// The folder `meeting` is in: `None` for no folder, a dangling or tombstoned `folder_id`,
@@ -129,7 +144,7 @@ pub fn folder_of(
     let Some(m) = db.meeting(meeting)?.filter(|m| !m.meta.deleted) else {
         return Ok(None);
     };
-    let folders = LiveFolders::read(&**db)?;
+    let (folders, _damaged) = LiveFolders::read_lenient(&db)?;
     Ok(folders.resolve(m.folder_id).map(|f| FolderItem {
         id: f.id,
         name: f.name.clone(),
@@ -143,24 +158,37 @@ pub fn folder_of(
 /// # Errors
 /// Storage errors.
 pub fn meeting_folders(services: &Services) -> Result<BTreeMap<EntityId, EntityId>, RuntimeError> {
-    meeting_folders_in(&**services.store())
+    meeting_folders_in(&services.store())
 }
 
 /// [`meeting_folders`] in a store the caller already holds (a host listing meetings under
-/// its own one lock): the one rule both use.
+/// its own one lock): the one rule both use. A meeting or folder row that does not read is left
+/// out (T14.64: the list it serves leaves it out too and says so); a meeting in a folder left out
+/// is absent, as for a tombstoned folder.
 ///
 /// # Errors
 /// Storage errors.
-pub fn meeting_folders_in<R: MeetingRepo + FolderRepo + ?Sized>(
-    repo: &R,
+pub fn meeting_folders_in(
+    store: &earshot_store::Store,
 ) -> Result<BTreeMap<EntityId, EntityId>, RuntimeError> {
-    let folders = LiveFolders::read(repo)?;
-    Ok(repo
-        .meetings()?
+    Ok(meeting_folders_counted_in(store)?.0)
+}
+
+/// [`meeting_folders_in`] with how many folder rows that are not tombstones did not read
+/// (T14.64), for a list that says when something was left out.
+///
+/// # Errors
+/// Storage errors.
+pub fn meeting_folders_counted_in(
+    store: &earshot_store::Store,
+) -> Result<(BTreeMap<EntityId, EntityId>, usize), RuntimeError> {
+    let (folders, damaged) = LiveFolders::read_lenient(store)?;
+    let (meetings, _damaged_meetings) = store.live_meetings_or_damaged()?;
+    let map = meetings
         .into_iter()
-        .filter(|m| !m.meta.deleted)
         .filter_map(|m| Some((m.id, folders.resolve(m.folder_id)?.id)))
-        .collect())
+        .collect();
+    Ok((map, damaged))
 }
 
 /// The live folder `folder` in a transaction.
@@ -170,30 +198,32 @@ fn live_folder<R: FolderRepo + ?Sized>(repo: &R, folder: EntityId) -> Result<Fol
         .ok_or_else(|| EditError::FolderNotFound(folder).into())
 }
 
-/// Refuses `name` when a live folder other than `except` has it, ignoring case.
-fn check_free<R: FolderRepo + ?Sized>(
-    repo: &R,
-    name: &str,
-    except: Option<EntityId>,
-) -> Result<(), RuntimeError> {
+/// Refuses `name` when a live folder other than `except` has it, ignoring case. Folder rows are
+/// read leniently (T14.64), so a damaged folder never stops creating or renaming one; its name
+/// cannot be read, so a new name may clash with it (accepted: the list does not show it, and
+/// the clash rule is a convenience, not an invariant sync relies on).
+fn check_free(tx: &StoreTx<'_>, name: &str, except: Option<EntityId>) -> Result<(), RuntimeError> {
     let folded: String = fold_case(name).collect();
-    for f in repo.folders()? {
-        if !f.meta.deleted && Some(f.id) != except && fold_case(&f.name).eq(folded.chars()) {
+    for f in tx.live_folders_or_damaged()?.0 {
+        if Some(f.id) != except && fold_case(&f.name).eq(folded.chars()) {
             return Err(EditError::FolderNameTaken(f.id).into());
         }
     }
     Ok(())
 }
 
-/// The live meetings filed in `folder` (by their stored `folder_id`).
-fn members<R: MeetingRepo + ?Sized>(
-    repo: &R,
-    folder: EntityId,
-) -> Result<Vec<Meeting>, RuntimeError> {
-    Ok(repo
-        .meetings()?
+/// The live meetings filed in `folder` (by their stored `folder_id`), from a lenient read of
+/// every meeting (`(meetings, damaged)`). Fails closed (T14.64): with a damaged meeting row
+/// anywhere, which meetings are in the folder cannot be told, so the folder is not deleted
+/// ([`EditError::FolderBlockedByDamage`]).
+fn members(read: (Vec<Meeting>, usize), folder: EntityId) -> Result<Vec<Meeting>, RuntimeError> {
+    let (meetings, damaged) = read;
+    if damaged > 0 {
+        return Err(EditError::FolderBlockedByDamage(folder).into());
+    }
+    Ok(meetings
         .into_iter()
-        .filter(|m| !m.meta.deleted && m.folder_id == Some(folder))
+        .filter(|m| m.folder_id == Some(folder))
         .collect())
 }
 
@@ -296,7 +326,7 @@ fn close_folder(
     folder: EntityId,
 ) -> Result<usize, RuntimeError> {
     delete_folder(&mut *tx, folder, stamp.hlc, stamp.clock)?;
-    let filed = members(&*tx, folder)?;
+    let filed = members(tx.live_meetings_or_damaged()?, folder)?;
     let unfiled = filed.len();
     for mut m in filed {
         m.folder_id = None;
@@ -372,7 +402,10 @@ pub(crate) fn delete_with_meetings_using(
     let filed: Vec<EntityId> = {
         let db = services.store();
         live_folder(&**db, folder)?;
-        members(&**db, folder)?.iter().map(|m| m.id).collect()
+        members(db.live_meetings_or_damaged()?, folder)?
+            .iter()
+            .map(|m| m.id)
+            .collect()
     };
     let mut out = FolderDeletion::default();
     let mut failed = 0;
@@ -390,7 +423,7 @@ pub(crate) fn delete_with_meetings_using(
         after_each(meeting);
     }
     if failed > 0 {
-        out.meetings_left = members(&**services.store(), folder)?.len();
+        out.meetings_left = members(services.store().live_meetings_or_damaged()?, folder)?.len();
         return Ok(out);
     }
     out.meetings_unfiled = write(services, |tx, stamp| close_folder(tx, stamp, folder))?;

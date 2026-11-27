@@ -81,6 +81,7 @@ import { useCollapsedGroups } from "./collapsedGroups";
 import { type SettingsSection, SettingsView } from "../settings/SettingsView";
 import { useThemeChoice } from "../theme/EarshotThemeProvider";
 import { type Timer, realTimer } from "../time";
+import MEETING_LIST_COPY from "../../../../fixtures/ui/meeting_list_copy_cases.json";
 import { MeetingSearchBox, MeetingSearchResults, useMeetingSearch } from "./MeetingSearch";
 import { ALL_MEETINGS_KEY, type FolderEdit, FolderGroup, NEW_FOLDER_KEY } from "./Folders";
 import { folderDeletionCopy, meetingCount, meetingsInFolder } from "./folderRules";
@@ -327,8 +328,15 @@ type Load =
   // The data folder could not be opened at the start (T9.23): Try again restarts Earshot.
   | { status: "dataFolder"; message: string }
   // `stale`: why the latest read failed, in the app's words (T14.16). The meetings and folders
-  // are then the last ones read: a read that fails takes nothing off the screen.
-  | { status: "loaded"; meetings: MeetingListItem[]; folders: FolderListItem[]; stale: string | null };
+  // are then the last ones read: a read that fails takes nothing off the screen. `damaged`: the
+  // latest read left out a damaged meeting row (T14.64).
+  | {
+      status: "loaded";
+      meetings: MeetingListItem[];
+      folders: FolderListItem[];
+      damaged: boolean;
+      stale: string | null;
+    };
 
 /** A problem with a folder change, shown above the meeting pane until dismissed. */
 interface FolderNotice {
@@ -756,18 +764,21 @@ export function AppShell({
     if (!syncHeard) return;
     let current = true;
     Promise.all([ipc.listMeetings(), ipc.listFolders()]).then(
-      ([meetings, folders]) => {
+      ([{ meetings, damaged }, folders]) => {
         if (!current) return;
         // Rows that say what they said before stay the objects they were, and a read that
         // changed nothing changes no state: the rows are memoised on them (T9.24), and the list
         // is read again after every sync pass (T14.16).
         setLoad((was) => {
-          if (was.status !== "loaded") return { status: "loaded", meetings, folders, stale: null };
+          if (was.status !== "loaded") return { status: "loaded", meetings, folders, damaged, stale: null };
           const keptMeetings = keepUnchanged(was.meetings, meetings);
           const keptFolders = keepUnchanged(was.folders, folders);
-          return keptMeetings === was.meetings && keptFolders === was.folders && was.stale === null
+          return keptMeetings === was.meetings &&
+            keptFolders === was.folders &&
+            was.damaged === damaged &&
+            was.stale === null
             ? was
-            : { status: "loaded", meetings: keptMeetings, folders: keptFolders, stale: null };
+            : { status: "loaded", meetings: keptMeetings, folders: keptFolders, damaged, stale: null };
         });
         setSelectedId((sel) =>
           sel !== null && meetings.some((m) => m.id === sel) ? sel : (meetings[0]?.id ?? null),
@@ -1457,6 +1468,9 @@ export function AppShell({
                 else folderButtons.current.delete(key);
               }}
             />
+          )}
+          {!search.active && load.status === "loaded" && load.damaged && (
+            <Caption1 className={styles.emptyFolder}>{MEETING_LIST_COPY.list_damaged_note}</Caption1>
           )}
           {!search.active && selectedFolder !== null && visible.length === 0 && (
             <Caption1 className={styles.emptyFolder}>No meetings in this folder.</Caption1>

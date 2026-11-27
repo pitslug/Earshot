@@ -388,7 +388,8 @@ fn delete_meeting_export_skips_a_meeting_being_deleted() {
         &ExportOptions::default(),
         &mut ChaCha8Rng::seed_from_u64(1),
     )
-    .unwrap();
+    .unwrap()
+    .results;
     assert!(all.is_empty(), "{all:?}");
     drop(claim);
 }

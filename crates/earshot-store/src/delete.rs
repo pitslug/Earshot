@@ -14,8 +14,8 @@
 use earshot_core::identity::{Clock, EntityId, Hlc};
 use earshot_core::identity::{DeviceId, HlcTimestamp, SyncMeta};
 use earshot_core::model::{
-    AudioFileRepo, Meeting, MeetingRepo, Note, RepoError, SegmentRow, Speaker, Summary, Track,
-    delete_meeting,
+    AudioFileRepo, Folder, Meeting, MeetingRepo, Note, RepoError, SegmentRow, Speaker, Summary,
+    Track, delete_meeting,
 };
 use earshot_core::prompt::Template;
 use earshot_core::summary::SummaryV1;
@@ -399,6 +399,28 @@ impl Store {
         Ok(for_deletion::meeting(&self.conn, meeting)?.map(|r| r.map_err(|_| ())))
     }
 
+    /// Every live meeting row that reads, in [`MeetingRepo::meetings`]' order, and how many
+    /// meeting rows that are not tombstones do not read (T14.64): what a list of every meeting
+    /// reads, so one damaged row is left out and counted, never failing the list.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_meetings_or_damaged(&self) -> Result<(Vec<Meeting>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_meetings(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
+    /// Every live folder row that reads, in `FolderRepo::folders`' order, and how many folder
+    /// rows that are not tombstones do not read (T14.64): a damaged folder row is left out and
+    /// counted, never failing the meeting list or the folder list.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_folders_or_damaged(&self) -> Result<(Vec<Folder>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_folders(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
     /// Whether `meeting`'s row is a tombstone, read from that one column, so a row whose other
     /// values do not read still answers (T14.26: after a deletion whose checkpoint was
     /// `Busy`). `false` for an unknown meeting.
@@ -413,6 +435,48 @@ impl Store {
 }
 
 impl StoreTx<'_> {
+    /// The ids of every meeting row that is not a tombstone, chosen by its `deleted` column
+    /// alone, damaged rows included (T14.64). A write that must reach every row tied to an
+    /// entity (a person's speaker rows) selects meetings with this, never with
+    /// [`StoreTx::live_meetings_or_damaged`], which leaves damaged meetings out.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn non_tombstone_meeting_ids(&self) -> Result<Vec<EntityId>, StoreError> {
+        Ok(crate::repo::lenient::non_tombstone_meeting_ids(&self.conn)?)
+    }
+
+    /// `meeting`'s speaker rows that read, and how many do not (T14.64): a write that must reach
+    /// every speaker row of an entity checks the count and fails closed rather than skip one.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn speakers_or_damaged(
+        &self,
+        meeting: EntityId,
+    ) -> Result<(Vec<Speaker>, usize), StoreError> {
+        let (ok, bad) = for_deletion::speakers(&self.conn, meeting)?;
+        Ok((ok, bad.len()))
+    }
+
+    /// [`Store::live_folders_or_damaged`] inside the transaction.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_folders_or_damaged(&self) -> Result<(Vec<Folder>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_folders(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
+    /// [`Store::live_meetings_or_damaged`] inside the transaction.
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn live_meetings_or_damaged(&self) -> Result<(Vec<Meeting>, usize), StoreError> {
+        let (ok, bad) = crate::repo::lenient::live_meetings(&self.conn)?;
+        Ok((ok, bad.len()))
+    }
+
     /// [`Store::local_keys`] inside the transaction.
     ///
     /// # Errors

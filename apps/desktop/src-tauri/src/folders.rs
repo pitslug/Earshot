@@ -110,7 +110,8 @@ pub fn move_meeting(
 /// offers) or deleting them too.
 ///
 /// # Errors
-/// `invalid_id`, `folder_not_found`; store errors.
+/// `invalid_id`, `folder_not_found`, `folder_blocked_by_damage` (a damaged meeting row on this
+/// computer, T14.64); store errors.
 pub fn delete(
     services: &Services,
     folder: &str,
