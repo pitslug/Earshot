@@ -187,6 +187,11 @@ pub const EXTERNAL_SQL_OWNERS: &[(&str, &str, &str)] = &[
         "put_held_replaced_keys",
     ),
     ("sync.rs", "PUT_HELD_REPLACED_SQL", "put_held_replaced_keys"),
+    // T14.49d (docs/sync-spec.md 7A.2 C1): the extra push's id restriction of the outbox read.
+    ("sync.rs", "PUSH_ONLY_CREATE_SQL", "fill_push_only"),
+    ("sync.rs", "PUSH_ONLY_INSERT_SQL", "fill_push_only"),
+    ("sync.rs", "PUSH_ONLY_DROP_SQL", "drop_push_only"),
+    ("sync.rs", "PUSH_ONLY_JOIN_SQL", "push_only_join"),
 ];
 
 // ---- lenient values ----
@@ -1182,6 +1187,20 @@ impl GuardedRead<'_> {
         kinds: crate::SyncKinds,
     ) -> Result<crate::OutboxPage, StoreError> {
         self.store.outbox_page(limit, meetings, kinds)
+    }
+
+    /// [`Store::outbox_page_only`] (docs/sync-spec.md 7A.2 C1).
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_page_only(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        kinds: crate::SyncKinds,
+        only: Option<&BTreeSet<EntityId>>,
+    ) -> Result<crate::OutboxPage, StoreError> {
+        self.store.outbox_page_only(limit, meetings, kinds, only)
     }
 
     /// [`Store::held_page`].

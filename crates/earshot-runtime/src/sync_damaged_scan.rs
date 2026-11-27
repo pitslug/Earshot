@@ -60,6 +60,11 @@ const ROOTS: &[(&str, &str)] = &[
         "crates/earshot-runtime/src/summary_names.rs",
         "names_changed_tx",
     ),
+    // T14.49d (docs/sync-spec.md 7A.9): the widened set of `names_before`.
+    (
+        "crates/earshot-runtime/src/summary_names.rs",
+        "rows_removal_may_rename",
+    ),
     ("crates/earshot-runtime/src/summary_names.rs", "record_tx"),
     (
         "crates/earshot-runtime/src/sync/engine.rs",
@@ -180,6 +185,10 @@ const GLUE: &[&str] = &[
     "release_holds",
     "holds_rows_for_retry",
     "apply_with",
+    // T14.49d (docs/sync-spec.md 7A.2): the page's body, the first start's repair and C1.
+    "apply_now",
+    "repair_all_once",
+    "extra_push",
     "meetings_deleted_elsewhere",
 ];
 

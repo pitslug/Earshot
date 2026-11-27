@@ -202,6 +202,111 @@ pub(crate) fn names_before(
     Ok(out)
 }
 
+/// The live speaker rows here, by meeting, that a pulled page's removal rules can rename outside
+/// the page's own speaker rows (docs/sync-spec.md 7A.9, "Names"): rows linked to a person that
+/// is tombstoned, or whose `merged_into` chain ends at a tombstone that is not the user's (P4),
+/// counting both the copy here and the page's copy of each person (P1's second case and P2 turn
+/// a live person here into a tombstone; P3 renames the rows linked to one). On a page applied
+/// with every repair (`every`) every such person counts; otherwise only one whose chain reaches
+/// a person the page holds a row for, so a person merely held by the page (live, not chaining to
+/// a tombstone) adds nothing. Picked by guarded reads (`person_links`, `speaker_links`); a row
+/// whose id, meeting, link or `deleted` does not read is left out, and [`names_before`] skips a
+/// damaged row of the meetings it gives (16.5 items 12 and 14).
+///
+/// # Errors
+/// Store errors.
+pub(crate) fn rows_removal_may_rename(
+    g: &GuardedRead<'_>,
+    page: &[earshot_store::Incoming],
+    every: bool,
+) -> Result<BTreeMap<EntityId, BTreeSet<EntityId>>, StoreError> {
+    use earshot_store::{Col, Deleted, SyncedRow};
+    let pulled: BTreeMap<EntityId, &earshot_core::voiceprint::Person> = page
+        .iter()
+        .filter_map(|inc| match &inc.row {
+            Some(SyncedRow::Person(p)) => Some((p.id, p)),
+            _ => None,
+        })
+        .collect();
+    let mut out: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
+    if pulled.is_empty() && !every {
+        return Ok(out);
+    }
+    let here: BTreeMap<EntityId, earshot_store::PersonLink> = g
+        .person_links()?
+        .into_iter()
+        .filter_map(|l| match l.id {
+            Col::Read(id) => Some((id, l)),
+            Col::Unreadable => None,
+        })
+        .collect();
+    // Whether `start`'s chain ends at a removal (with the page's copies when `overlay`), and
+    // whether it passed a person the page holds a row for. A loop, a person known nowhere or a
+    // step that does not read ends it as no removal.
+    let walk = |start: EntityId, overlay: bool| -> (bool, bool) {
+        let mut seen = BTreeSet::new();
+        let mut cur = start;
+        let mut touched = false;
+        loop {
+            if !seen.insert(cur) {
+                return (false, touched);
+            }
+            let local = here.get(&cur);
+            let theirs = if overlay { pulled.get(&cur) } else { None };
+            touched |= theirs.is_some();
+            if local.is_none() && theirs.is_none() {
+                return (false, touched);
+            }
+            // P4: the copy here decides `is_me` when it reads, else the pulled copy.
+            let is_me = match local.map(|l| l.is_me) {
+                Some(Col::Read(v)) => Some(v),
+                _ => theirs.map(|p| p.is_me),
+            };
+            let tomb = local.is_some_and(|l| l.deleted == Deleted::Yes)
+                || theirs.is_some_and(|p| p.meta.deleted);
+            if tomb {
+                return (is_me == Some(false), touched);
+            }
+            let next = match (theirs, local) {
+                (Some(p), _) => p.merged_into,
+                (None, Some(l)) if l.deleted == Deleted::No => match l.merged_into {
+                    Col::Read(n) => n,
+                    Col::Unreadable => return (false, touched),
+                },
+                _ => return (false, touched),
+            };
+            match next {
+                Some(n) => cur = n,
+                None => return (false, touched),
+            }
+        }
+    };
+    let persons: BTreeSet<EntityId> = here.keys().chain(pulled.keys()).copied().collect();
+    let removed: BTreeSet<EntityId> = persons
+        .into_iter()
+        .filter(|p| {
+            let (ends, touched) = walk(*p, true);
+            if every {
+                ends || walk(*p, false).0
+            } else {
+                ends && touched
+            }
+        })
+        .collect();
+    if removed.is_empty() {
+        return Ok(out);
+    }
+    for s in g.speaker_links(None)? {
+        if let (Col::Read(id), Col::Read(meeting), Col::Read(Some(person)), Deleted::No) =
+            (s.id, s.meeting_id, s.person_id, s.deleted)
+            && removed.contains(&person)
+        {
+            out.entry(meeting).or_default().insert(id);
+        }
+    }
+    Ok(out)
+}
+
 /// Records every name of `before` that has changed since, against the summary that was current
 /// then and only while it still is (a summary the change brought in is new and records
 /// nothing). Run in the change's transaction after its writes. Returns how many names were

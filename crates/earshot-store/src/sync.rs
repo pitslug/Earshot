@@ -517,6 +517,42 @@ const DELETE_HELD_REPLACED_SQL: &str = "DELETE FROM local_state WHERE key = ?1";
 const PUT_HELD_REPLACED_SQL: &str = "INSERT INTO local_state (key, value) VALUES (?1, ?2) \
      ON CONFLICT(key) DO UPDATE SET value = excluded.value";
 
+/// C1's id restriction (docs/sync-spec.md 7A.2): the temporary table `outbox_page_only` joins,
+/// made and filled inside the read's own transaction (`fill_push_only`).
+const PUSH_ONLY_CREATE_SQL: &str =
+    "CREATE TEMP TABLE IF NOT EXISTS push_only (id BLOB PRIMARY KEY)";
+/// One id of the restriction (`fill_push_only`).
+const PUSH_ONLY_INSERT_SQL: &str = "INSERT OR IGNORE INTO temp.push_only (id) VALUES (?1)";
+/// The restriction dropped after the read (`drop_push_only`).
+const PUSH_ONLY_DROP_SQL: &str = "DROP TABLE IF EXISTS temp.push_only";
+/// The join that restricts an outbox read to the table's ids (`push_only_join`).
+const PUSH_ONLY_JOIN_SQL: &str = " JOIN temp.push_only p ON p.id = o.id";
+
+/// Makes `temp.push_only` and fills it with `ids`. The table never outlives its transaction:
+/// it is dropped before the commit, and a transaction that fails is rolled back with it.
+fn fill_push_only(
+    c: &rusqlite::Connection,
+    ids: &std::collections::BTreeSet<EntityId>,
+) -> Result<(), StoreError> {
+    c.execute(PUSH_ONLY_CREATE_SQL, [])?;
+    let mut st = c.prepare_cached(PUSH_ONLY_INSERT_SQL)?;
+    for id in ids {
+        st.execute(params![&id.as_uuid().as_bytes()[..]])?;
+    }
+    Ok(())
+}
+
+/// Drops `temp.push_only`.
+fn drop_push_only(c: &rusqlite::Connection) -> Result<(), StoreError> {
+    c.execute(PUSH_ONLY_DROP_SQL, [])?;
+    Ok(())
+}
+
+/// The join of [`PUSH_ONLY_JOIN_SQL`], for the outbox read's query.
+const fn push_only_join() -> &'static str {
+    PUSH_ONLY_JOIN_SQL
+}
+
 pub(crate) fn held_replaced_keys(
     c: &rusqlite::Connection,
 ) -> Result<std::collections::BTreeSet<[u8; 16]>, StoreError> {
@@ -1241,6 +1277,43 @@ impl Store {
         meetings: &[EntityId],
         kinds: SyncKinds,
     ) -> Result<OutboxPage, StoreError> {
+        self.outbox_page_only(limit, meetings, kinds, None)
+    }
+
+    /// [`Store::outbox_page`], restricted to the rows whose ids are in `only` when given
+    /// (docs/sync-spec.md 7A.2 C1, the extra push): the restriction is applied in the same
+    /// query, after the same filters and in the same oldest-stamp-first order, through a
+    /// temporary table (`temp.push_only`) filled and joined inside the read's own transaction
+    /// and dropped after it, never a bound `IN` list (`only` may be larger than SQLite's limit
+    /// on bound parameters). An id that is no longer queued is simply not found.
+    ///
+    /// # Errors
+    /// Store errors.
+    pub fn outbox_page_only(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        kinds: SyncKinds,
+        only: Option<&std::collections::BTreeSet<EntityId>>,
+    ) -> Result<OutboxPage, StoreError> {
+        let Some(only) = only else {
+            return self.outbox_page_in(limit, meetings, kinds, "");
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        fill_push_only(&tx, only)?;
+        let page = self.outbox_page_in(limit, meetings, kinds, push_only_join());
+        drop_push_only(&tx)?;
+        tx.commit()?;
+        page
+    }
+
+    fn outbox_page_in(
+        &self,
+        limit: usize,
+        meetings: &[EntityId],
+        kinds: SyncKinds,
+        join: &str,
+    ) -> Result<OutboxPage, StoreError> {
         let mut rows = Vec::new();
         let mut unreadable = 0;
         let limit_sql = i64::try_from(limit).unwrap_or(i64::MAX);
@@ -1265,7 +1338,7 @@ impl Store {
                 _ => String::new(),
             };
             let sql = format!(
-                "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id WHERE o.tbl = ?{except} \
+                "SELECT o.id FROM sync_outbox o JOIN {table} r ON r.id = o.id{join} WHERE o.tbl = ?{except} \
                  ORDER BY r.updated_wall, r.updated_logical, r.updated_node LIMIT ?"
             );
             let mut values: Vec<&dyn rusqlite::ToSql> = vec![&table];
