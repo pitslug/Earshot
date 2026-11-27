@@ -382,6 +382,25 @@ The local failure kinds of 11.13 add `words.too_long` ("too long"), `words.reply
 21. **Kind words in the order.** `failure_word(Local, ..)` gives the kind's word for each kind and `failed` for `Other`; the `step_moved` line and the end banner use it. Control: endpoint and agent-CLI failures still give `failed`.
 22. **Pinned copy.** `runtime_text(LocalSummary(..))` gives each kind's `local_failures` sentence. A kind added to the enum fails to compile until it is mapped (no wildcard).
 
+### 11.14 Confirmations on the Summary tab hide by themselves (owner addition 9)
+
+**What the owner saw.** "New summary ready." and "Exported to <path>" (success, Dismiss only) stayed on the Summary tab.
+
+**What the code does today.** `autoHide.ts`'s header comment lists "the Summary tab's banners" among those that never hide. But no code applies a tab rule:
+- The page notice (`noticeHold`, which shows "Exported to") and the job bar (`jobHold`, which shows `STORED_TEXT`) both use `hidesByItself` whatever the tab.
+- Only `SummaryBanners` gets no hold: the stale bar, the run note and kept-local.
+- `autoHide.test.tsx` already hides "Exported to" on the default tab, which is `summary`.
+
+So the comment is wrong, but it is not what kept the banners. Narrowing it alone fixes nothing the owner saw, and a test of it would pass before the change.
+
+**Build steps.**
+1. **Reproduce first** in the real app or the Vite preview, on the Summary tab, and find why the countdown never ran. Two causes the code allows:
+   - **A hold that never lets go.** `useAutoHide` takes the hold from `el.matches(":hover")` or focus inside the bar when `shown` changes. A pinned bar that appears under a resting pointer holds until the pointer moves off it and back.
+   - **`watched` false while the owner looks.** `useWindowWatched` comes from `shell::window_watched`. A wrong reading stops every countdown on every tab.
+   The fix goes where the repro points. A test that fails before it (a hold or a watched state jsdom can set) comes first.
+2. **Make the rule explicit.** Rewrite the comment as the owner states it. A Summary-tab banner that is success or info, with only Dismiss and not progress, hides after `BANNER_HIDE_MS`. Its notes stay: out of date, stale names, run note, kept-local and waiting for another computer, plus every warning, error and banner with an action.
+3. **Tests.** On the Summary tab, "New summary ready." and "Exported to" hide after the delay, under the repro's condition. Control: each kept note stays (the stale bar, the run note, kept-local, waiting), with the existing tests kept.
+
 ### 11.13 Local summary failures say which kind (owner addition 8)
 
 Today `plain_text::runtime_text` maps every `LocalSummaryError` except a cancel to `LOCAL_SUMMARY_FAILED`, and `run::local_word` maps every one to `failed`.
