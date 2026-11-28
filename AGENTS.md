@@ -172,7 +172,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 - **Models** live in `%LOCALAPPDATA%\Earshot\models` (dev override `EARSHOT_MODELS`). Always fetch through `cargo xtask fetch-models`.
 - **LLM endpoint for optional live tests:** `EARSHOT_LLM_URL` (and `EARSHOT_LLM_MODEL`). Live LLM tests never gate a task. Never call any other remote LLM.
 - **Obsidian output in tests** goes to a temp dir. Never write to a real vault.
-- **Network** is allowed only for crate/npm registries, fixture/model downloads listed in the manifests, `EARSHOT_LLM_URL`, and PyPI for xtask developer tooling only: hash-pinned wheels (`--require-hashes --no-deps --only-binary :all:`) installed into a throwaway venv under `target/`, with `PIP_DISABLE_PIP_VERSION_CHECK=1`, never in shipped code or at runtime (today: `cargo xtask qnn-convert`). Adding a new download source means adding it to a manifest with a licence and checksum.
+- **Network** is allowed only for crate/npm registries, fixture/model downloads listed in the manifests, `EARSHOT_LLM_URL`, and PyPI for xtask developer tooling only: hash-pinned wheels (`--require-hashes --no-deps --only-binary :all:`) installed into a throwaway venv under `target/`, with `PIP_DISABLE_PIP_VERSION_CHECK=1`, never in shipped code or at runtime (today: `cargo xtask qnn-convert`), and Gradle's for the Android build only (PLAN D26: services.gradle.org with the wrapper pinned by `distributionSha256Sum`, Google's Maven, Maven Central; dependency versions fixed in `apps/android`). Adding a new download source means adding it to a manifest with a licence and checksum.
 
 ---
 
