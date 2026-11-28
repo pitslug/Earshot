@@ -12,14 +12,26 @@ import { STORED_TEXT, jobNotice } from "./MeetingDetailView";
 const menuButton = () => screen.getByRole("button", { name: /: choose who writes it$/ });
 
 describe("Meeting detail, re-summarise by the order or one writer", () => {
-  it("offers Use my order and the writers that can run here, and runs a writer by name", async () => {
+  it("offers no online writer when none is picked, though Claude Code and Codex are installed", async () => {
     const s = await setup({ machine: "desktop" });
     await s.user.click(menuButton());
+    expect(await screen.findByRole("menuitem", { name: ORDER_COPY.steps.local })).toBeInTheDocument();
+    for (const name of [ORDER_COPY.steps.claude_code, ORDER_COPY.steps.codex]) {
+      expect(screen.queryByRole("menuitem", { name })).toBeNull();
+    }
+  });
+
+  it("offers Use my order and the writers that can run here, and runs a writer by name", async () => {
+    // On the desktop sample Claude Code and Codex are installed; no endpoint is set. Claude Code
+    // is the online service picked, not ticked in the order (T14.72, docs/summary-order.md 12.9).
+    const s = await setup({ machine: "desktop", onlineService: "claude-code" });
+    await s.user.click(menuButton());
     expect(await screen.findByRole("menuitem", { name: ORDER_COPY.resummarise.order })).toBeInTheDocument();
-    // On the desktop sample Claude Code and Codex are installed; no endpoint is set.
     const claude = await screen.findByRole("menuitem", { name: ORDER_COPY.steps.claude_code });
     expect(screen.getByRole("menuitem", { name: ORDER_COPY.steps.local })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: ORDER_COPY.steps.endpoint_unset })).toBeNull();
+    // Codex is installed but not the service picked: never offered.
+    expect(screen.queryByRole("menuitem", { name: ORDER_COPY.steps.codex })).toBeNull();
     await s.user.click(claude);
     await waitFor(() =>
       expect(s.calls).toContainEqual(["resummariseWith", ITEM.id, { kind: "ClaudeCode" }]),
@@ -35,7 +47,7 @@ describe("Meeting detail, re-summarise by the order or one writer", () => {
   });
 
   it("disables the writers that send a kept meeting elsewhere, with the reason", async () => {
-    const s = await setup({ machine: "desktop", keptLocal: [ITEM.id] });
+    const s = await setup({ machine: "desktop", keptLocal: [ITEM.id], onlineService: "claude-code" });
     await s.user.click(menuButton());
     const claude = await screen.findByRole("menuitem", { name: new RegExp(`^${ORDER_COPY.steps.claude_code.replace(/[()]/g, "\\$&")}`) });
     expect(claude).toHaveAttribute("aria-disabled", "true");

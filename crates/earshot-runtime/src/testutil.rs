@@ -238,3 +238,117 @@ pub fn meeting(svc: &Services, title: &str, seed: u64) -> EntityId {
     store.put_note(note).unwrap();
     m.id
 }
+
+/// Picks the online service `order`'s online writer names (the endpoint's by `provider`), as the
+/// Summaries page's picker does before that writer can be ticked (T14.72).
+fn pick_for(
+    store: &mut Store,
+    order: &crate::summary_order::SummaryOrder,
+    provider: crate::summary_settings::EndpointProvider,
+) {
+    use crate::summary_order::{Service, set_online_service};
+    if let Some((_, w)) = order.online_writer()
+        && let Some(service) = Service::of_step(w, provider)
+    {
+        set_online_service(store, service).unwrap();
+    }
+}
+
+/// Stores `order` (with `settings` when given) the way the Summaries page reaches it since
+/// T14.72: the order's online writer is picked first (the endpoint's service by the provider of
+/// `settings`, else of the stored settings), then the order is stored. The one setup helper for
+/// runtime tests that put an online writer in the order.
+pub fn store_order(
+    store: &mut Store,
+    order: &crate::summary_order::SummaryOrder,
+    settings: Option<&crate::summary_settings::SummarySettings>,
+) -> crate::summary_order::SummaryOrder {
+    let provider = match settings {
+        Some(s) => s.provider,
+        None => {
+            crate::summary_settings::summary_settings(store)
+                .unwrap()
+                .0
+                .provider
+        }
+    };
+    pick_for(store, order, provider);
+    crate::summary_order::set_summary_order(store, order, settings).unwrap()
+}
+
+/// Picks the online service `settings` name, as the Summaries page's picker does before they
+/// can be saved (T14.72): the endpoint service of `settings.provider` when it differs from the
+/// stored provider (the only way the provider changes), then the writer's own service when the
+/// writer is online.
+pub fn pick_for_settings(store: &mut Store, settings: &crate::summary_settings::SummarySettings) {
+    use crate::summary_order::{Service, WriterStep, set_online_service};
+    let stored = crate::summary_settings::summary_settings(store)
+        .unwrap()
+        .0
+        .provider;
+    if settings.provider != stored
+        && let Some(service) = Service::of_step(WriterStep::Endpoint, settings.provider)
+    {
+        set_online_service(store, service).unwrap();
+    }
+    if let Some(w) = WriterStep::of_writer(settings.writer).filter(|w| w.is_online())
+        && let Some(service) = Service::of_step(w, settings.provider)
+    {
+        set_online_service(store, service).unwrap();
+    }
+}
+
+/// Saves `settings` after [`pick_for_settings`] with `settings.writer` as the order's first
+/// writer step, as the Summaries page's one writer did before T14.72 (`with_writer`, gone from
+/// the runtime): no summary keeps only the computers; any other writer replaces the first writer
+/// step (or is added) and leaves elsewhere; then the order is stored with the settings. Returns
+/// the settings as they read back.
+///
+/// # Errors
+/// What [`crate::summary_order::set_summary_order`] refuses (the picks stay).
+pub fn save_settings_after_pick(
+    store: &mut Store,
+    settings: &crate::summary_settings::SummarySettings,
+) -> Result<crate::summary_settings::SummarySettings, crate::summary_order::SummaryOrderError> {
+    use crate::summary_order::{OrderStep, SummaryOrder, WriterStep, summary_order};
+    let step = WriterStep::of_writer(settings.writer);
+    let (order, _) = summary_order(store)?;
+    let steps: Vec<OrderStep> = match step {
+        None => order
+            .steps()
+            .iter()
+            .copied()
+            .filter(|s| matches!(s, OrderStep::Computer(_)))
+            .collect(),
+        Some(w) => {
+            let new = OrderStep::Writer(w);
+            let mut steps = Vec::new();
+            let mut placed = false;
+            for s in order.steps() {
+                match s {
+                    OrderStep::Writer(_) if !placed => {
+                        steps.push(new);
+                        placed = true;
+                    }
+                    s if *s == new => {}
+                    s => steps.push(*s),
+                }
+            }
+            if !placed {
+                steps.truncate(crate::summary_order::MAX_STEPS - 1);
+                steps.push(new);
+            }
+            steps
+        }
+    };
+    let (order, _) = SummaryOrder::new(steps)?.normalised();
+    crate::summary_order::set_summary_order(store, &order, Some(settings))?;
+    Ok(crate::summary_settings::summary_settings(store)?.0)
+}
+
+/// [`pick_for_settings`] then [`save_settings_after_pick`]: the one setup helper for runtime
+/// tests that set a writer through the settings (before T14.72, `set_summary_settings`).
+pub fn store_settings(store: &mut Store, settings: &crate::summary_settings::SummarySettings) {
+    pick_for_settings(store, settings);
+    save_settings_after_pick(store, settings).unwrap();
+}

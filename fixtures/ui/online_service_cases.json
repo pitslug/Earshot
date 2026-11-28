@@ -1,0 +1,191 @@
+{
+  "about": "The one online service (T14.72, docs/summary-order.md 12.4, 12.5 and 12.7), run by earshot-runtime (summary_order/online_tests.rs, through summary_order, online_service and set_online_service over a store holding exactly these values) and by the UI mock. Steps are the StepChoice kinds (Local, Endpoint, ClaudeCode, Codex), providers the ProviderChoice values (OpenAiCompatible, Anthropic), services the ServiceChoice values (ClaudeCode, Codex, AnthropicApi, OwnServer). `key` is the stored settings/online-service text (null: nothing stored). pick: the service read with that order, provider and key (null: none), and `note` the fixed note it gives (the page copy key, null: none). normalise: a stored order, read as `reads` with or without the note page.second_online_dropped (`endpoint_set_up` false: no usable endpoint is stored). switch: the order and endpoint as stored, then the service picked; `after` is what the store reads after it. Every address and model name is invented. Public copy only.",
+  "pick": [
+    {
+      "name": "the order's online writer, whatever the key says",
+      "order": ["Local", "ClaudeCode"],
+      "provider": "OpenAiCompatible",
+      "key": "codex",
+      "pick": "ClaudeCode",
+      "note": null
+    },
+    {
+      "name": "an endpoint in the order on Anthropic",
+      "order": ["Endpoint", "Local"],
+      "provider": "Anthropic",
+      "key": null,
+      "pick": "AnthropicApi",
+      "note": null
+    },
+    {
+      "name": "an endpoint in the order on a model server",
+      "order": ["Endpoint"],
+      "provider": "OpenAiCompatible",
+      "key": "endpoint",
+      "pick": "OwnServer",
+      "note": null
+    },
+    {
+      "name": "no online writer: the key",
+      "order": ["Local"],
+      "provider": "OpenAiCompatible",
+      "key": "codex",
+      "pick": "Codex",
+      "note": null
+    },
+    {
+      "name": "no online writer: the endpoint key by the stored provider",
+      "order": ["Local"],
+      "provider": "Anthropic",
+      "key": "endpoint",
+      "pick": "AnthropicApi",
+      "note": null
+    },
+    {
+      "name": "neither: none",
+      "order": ["Local"],
+      "provider": "OpenAiCompatible",
+      "key": null,
+      "pick": null,
+      "note": null
+    },
+    {
+      "name": "a key this version does not know",
+      "order": ["Local"],
+      "provider": "OpenAiCompatible",
+      "key": "an-invented-newer-service",
+      "pick": null,
+      "note": "unknown_service"
+    },
+    {
+      "name": "the local model is not an online service",
+      "order": [],
+      "provider": "OpenAiCompatible",
+      "key": "local",
+      "pick": null,
+      "note": "unknown_service"
+    }
+  ],
+  "normalise": [
+    {
+      "name": "a second online writer is dropped",
+      "stored": ["ClaudeCode", "Local", "Codex"],
+      "endpoint_set_up": false,
+      "reads": ["ClaudeCode", "Local"],
+      "note": true
+    },
+    {
+      "name": "dropped before the read checks, so an unusable endpoint never makes it unreadable",
+      "stored": ["ClaudeCode", "Endpoint"],
+      "endpoint_set_up": false,
+      "reads": ["ClaudeCode"],
+      "note": true
+    },
+    {
+      "name": "three online writers keep the first",
+      "stored": ["Endpoint", "Codex", "ClaudeCode"],
+      "endpoint_set_up": true,
+      "reads": ["Endpoint"],
+      "note": true
+    },
+    {
+      "name": "one online writer reads unchanged",
+      "stored": ["Local", "Codex"],
+      "endpoint_set_up": false,
+      "reads": ["Local", "Codex"],
+      "note": false
+    }
+  ],
+  "switch": [
+    {
+      "name": "Anthropic API to your own server clears the address and model and leaves the order",
+      "order": ["Local", "Endpoint"],
+      "provider": "Anthropic",
+      "url": "https://api.anthropic.com",
+      "model": "an-invented-model",
+      "service": "OwnServer",
+      "after": {
+        "order": ["Local"],
+        "provider": "OpenAiCompatible",
+        "url": "",
+        "model": "",
+        "pick": "OwnServer"
+      }
+    },
+    {
+      "name": "your own server to Anthropic API: no address is filled in",
+      "order": ["Endpoint", "Local"],
+      "provider": "OpenAiCompatible",
+      "url": "http://127.0.0.1:8080/v1",
+      "model": "an-invented-model",
+      "service": "AnthropicApi",
+      "after": {
+        "order": ["Local"],
+        "provider": "Anthropic",
+        "url": "",
+        "model": "",
+        "pick": "AnthropicApi"
+      }
+    },
+    {
+      "name": "Claude Code to Codex keeps its place and the endpoint as stored",
+      "order": ["Local", "ClaudeCode"],
+      "provider": "Anthropic",
+      "url": "https://api.anthropic.com",
+      "model": "an-invented-model",
+      "service": "Codex",
+      "after": {
+        "order": ["Local", "Codex"],
+        "provider": "Anthropic",
+        "url": "https://api.anthropic.com",
+        "model": "an-invented-model",
+        "pick": "Codex"
+      }
+    },
+    {
+      "name": "Claude Code to the endpoint service of the stored provider, set up: in its place",
+      "order": ["ClaudeCode", "Local"],
+      "provider": "Anthropic",
+      "url": "https://api.anthropic.com",
+      "model": "an-invented-model",
+      "service": "AnthropicApi",
+      "after": {
+        "order": ["Endpoint", "Local"],
+        "provider": "Anthropic",
+        "url": "https://api.anthropic.com",
+        "model": "an-invented-model",
+        "pick": "AnthropicApi"
+      }
+    },
+    {
+      "name": "Claude Code to the other endpoint service: the clear, and the step leaves",
+      "order": ["ClaudeCode", "Local"],
+      "provider": "Anthropic",
+      "url": "https://api.anthropic.com",
+      "model": "an-invented-model",
+      "service": "OwnServer",
+      "after": {
+        "order": ["Local"],
+        "provider": "OpenAiCompatible",
+        "url": "",
+        "model": "",
+        "pick": "OwnServer"
+      }
+    },
+    {
+      "name": "no online writer in the order: only the key changes",
+      "order": ["Local"],
+      "provider": "OpenAiCompatible",
+      "url": "",
+      "model": "",
+      "service": "ClaudeCode",
+      "after": {
+        "order": ["Local"],
+        "provider": "OpenAiCompatible",
+        "url": "",
+        "model": "",
+        "pick": "ClaudeCode"
+      }
+    }
+  ]
+}

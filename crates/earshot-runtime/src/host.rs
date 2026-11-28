@@ -1120,6 +1120,16 @@ impl crate::summary_order::run::StepWriters for SettingsWriters<'_> {
         // The run applies the meeting's privacy itself (docs/summary-order.md 4.2).
         let settings = {
             let db = services.store();
+            // T14.72 (docs/summary-order.md 12.9a): an online step runs only when it is the one
+            // online service picked, read under the same lock as the settings it is built from.
+            if step.is_online() {
+                match crate::summary_order::online_service(&db) {
+                    Ok((pick, _))
+                        if pick.map(crate::summary_order::Service::step) == Some(step) => {}
+                    Ok(_) => return Built::Skip(SkipReason::NotChosen),
+                    Err(e) => return Built::Stop(e),
+                }
+            }
             summary_for_writer(
                 &db,
                 step.writer(),

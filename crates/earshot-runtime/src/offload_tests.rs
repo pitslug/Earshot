@@ -422,15 +422,13 @@ fn offload_writer_kinds_have_stable_words_and_follow_the_summary_writer() {
     }
     let dir = TempDir::new("offload-writer");
     let (svc, _) = services(&dir);
-    use crate::summary_settings::{
-        EndpointProvider, SummarySettings, SummaryWriter, set_summary_settings,
-    };
+    use crate::summary_settings::{EndpointProvider, SummarySettings, SummaryWriter};
     let set = |writer: SummaryWriter, provider: EndpointProvider| {
         let url = match provider {
             EndpointProvider::Anthropic => "https://api.anthropic.com",
             EndpointProvider::OpenAiCompatible => "https://llm.example.com/v1",
         };
-        set_summary_settings(
+        crate::testutil::store_settings(
             &mut svc.store(),
             &SummarySettings {
                 writer,
@@ -439,8 +437,7 @@ fn offload_writer_kinds_have_stable_words_and_follow_the_summary_writer() {
                 model: "an-invented-model".into(),
                 ..SummarySettings::default()
             },
-        )
-        .unwrap();
+        );
     };
     let kind = || WriterKind::of_settings(&svc.store()).unwrap();
     assert_eq!(
@@ -2537,7 +2534,7 @@ mod order_steps {
         assert_eq!(host.here()[0].continuation, Continuation::Legacy);
         assert_eq!(host.here()[0].request, request);
         // The legacy job writes with the order's first writer step and records an ended run.
-        set_summary_order(&mut a.svc.store(), &order(&[CLAUDE, LOCAL]), None).unwrap();
+        crate::testutil::store_order(&mut a.svc.store(), &order(&[CLAUDE, LOCAL]), None);
         let good = MockServer::start(vec![reply("Written here")]).unwrap();
         let writers = Writers::default().mock(WriterStep::ClaudeCode, &good);
         let result = start(&a, m, RunStart::Legacy, &writers);

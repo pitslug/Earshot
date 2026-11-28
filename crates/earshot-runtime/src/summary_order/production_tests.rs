@@ -12,11 +12,11 @@ use earshot_core::identity::DeviceId;
 use super::*;
 use crate::host::{SettingsWriters, SkipReason, SummaryResult};
 use crate::keep_local::SummaryPrivacy;
-use crate::summary_order::{SummaryOrder, set_summary_order};
+use crate::summary_order::{Service, SummaryOrder, set_online_service};
 use crate::summary_settings::{
     ApiKey, ApiKeyError, ApiKeyStore, EndpointProvider, SummarySettings,
 };
-use crate::testutil::{TempDir, meeting, services};
+use crate::testutil::{TempDir, meeting, services, store_order};
 
 const DESK: DeviceId = DeviceId::from_bytes([7; 16]);
 const LOCAL: OrderStep = OrderStep::LOCAL;
@@ -84,12 +84,14 @@ fn summary_order_production_writers_read_no_key_and_probe_no_cli_for_dropped_ste
     let (svc, _) = services(&dir);
     let m = meeting(&svc, "Planning", 21);
     kept_local(&svc, m);
-    set_summary_order(
+    store_order(
         &mut svc.store(),
-        &order(&[ENDPOINT, CLAUDE, CODEX]),
+        &order(&[ENDPOINT]),
         Some(&anthropic_endpoint()),
-    )
-    .unwrap();
+    );
+    // Since T14.72 an order holds one online writer; three are what a run copied on an older
+    // build holds (docs/summary-order.md 12.9a), passed to the run as its steps.
+    let copied = order(&[ENDPOINT, CLAUDE, CODEX]);
     // An empty models folder: no local model is installed.
     let models = crate::backends::ModelDir::new(dir.0.join("no-models"));
     let (keys, claude, codex) = (
@@ -113,12 +115,10 @@ fn summary_order_production_writers_read_no_key_and_probe_no_cli_for_dropped_ste
         local_not_now: &|| false,
         order: None,
     };
-    let (stored, _) = crate::summary_order::summary_order(&svc.store()).unwrap();
-    assert_eq!(stored, order(&[ENDPOINT, CLAUDE, CODEX]));
     let out = run_summary_order(
         &svc,
         m,
-        RunStart::Order(stored.clone()),
+        RunStart::Order(copied.clone()),
         &plan,
         &CancelToken::new(),
     );
@@ -145,20 +145,38 @@ fn summary_order_production_writers_read_no_key_and_probe_no_cli_for_dropped_ste
         }
     ));
     assert_eq!((count(&keys.0), count(&claude.0)), (0, 0));
-    // The negative control: the same order for a meeting not kept here reads the key and probes
-    // both CLIs, each when its step is tried.
+    // The negative control: the same steps for a meeting not kept here read the key or probe a
+    // CLI when that step is tried, and only for the service picked (T14.72, 12.9a): every other
+    // online step is skipped as not chosen without being built.
     let open = meeting(&svc, "Planning", 22);
-    let out = run_summary_order(
-        &svc,
-        open,
-        RunStart::Order(stored),
-        &plan,
-        &CancelToken::new(),
-    );
-    assert_eq!(count(&keys.0), 1);
-    assert_eq!(count(&claude.0), 1);
-    assert_eq!(count(&codex.0), 1);
-    assert_eq!(out.steps.len(), 3);
+    for (pick, want) in [
+        (Service::AnthropicApi, (1, 0, 0)),
+        (Service::ClaudeCode, (1, 1, 0)),
+        (Service::Codex, (1, 1, 1)),
+    ] {
+        if pick != Service::AnthropicApi {
+            set_online_service(&mut svc.store(), pick).unwrap();
+        }
+        let out = run_summary_order(
+            &svc,
+            open,
+            RunStart::Order(copied.clone()),
+            &plan,
+            &CancelToken::new(),
+        );
+        assert_eq!(
+            (count(&keys.0), count(&claude.0), count(&codex.0)),
+            want,
+            "{pick:?}"
+        );
+        assert_eq!(out.steps.len(), 3);
+        let not_chosen = out
+            .steps
+            .iter()
+            .filter(|v| v.result == StepResult::Moved(OutcomeWord::NotChosen))
+            .count();
+        assert_eq!(not_chosen, 2, "{pick:?}: {:?}", out.steps);
+    }
 }
 
 #[test]

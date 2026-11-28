@@ -8,8 +8,11 @@
 //!   `after`, through [`SummaryProbes`] and [`with_writers`]); a summary written by a later step,
 //!   or none, says why in banner [`STEPS_BANNER_KEY`] ([`steps_text`]); a step known to fail at
 //!   the start says so once ([`start_banners`]).
-//! - Re-summarise offers "Use my order" and every writer that can run here now
-//!   ([`resummarise_view`]); a writer named there is a named run with no next step.
+//! - Re-summarise offers "Use my order", the local model and the one online service picked
+//!   when they can run here now ([`resummarise_view`]); a writer named there is a named run with
+//!   no next step, and an online writer that is not the pick is refused ([`named_step_allowed`]).
+//! - The one online service (T14.72, docs/summary-order.md 12): the page's Online service row
+//!   ([`OnlineRowView`]) and its picker ([`pick_service`]); the rules are the runtime's.
 //! - The meeting detail shows the last run's account: interrupted, a named computer's hand-back,
 //!   or the steps ([`run_note`]).
 //!
@@ -31,7 +34,9 @@ use earshot_runtime::offload::{OffloadChoice, WriterKind};
 use earshot_runtime::summary_order::run::{
     OutcomeWord, RunOrigin, RunStepView, RunView, StepResult,
 };
-use earshot_runtime::summary_order::{OrderStep, SummaryOrder, SummaryOrderError, WriterStep};
+use earshot_runtime::summary_order::{
+    OrderStep, Service, SummaryOrder, SummaryOrderError, WriterStep,
+};
 use earshot_runtime::summary_settings::{ApiKeyStore, EndpointProvider, SummarySettings};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -121,6 +126,20 @@ pub struct PageTexts {
     pub reading: String,
     /// The order could not be read.
     pub not_read: String,
+    /// The Online service row with no service picked (T14.72).
+    pub online_service: String,
+    /// Its hint while no service is picked.
+    pub choose_service: String,
+    /// The picker's label.
+    pub service_label: String,
+    /// The note of a stored order that held more than one online service.
+    pub second_online_dropped: String,
+    /// The note of a stored service this version does not know.
+    pub unknown_service: String,
+    /// The refusal of an online writer that is not the one picked.
+    pub not_the_service: String,
+    /// The refusal of settings read before the service changed.
+    pub settings_changed: String,
 }
 
 /// The re-summarise button's texts (`order` and `choose` are the UI's).
@@ -919,13 +938,114 @@ pub struct SummaryOrderView {
     pub none: bool,
     /// The steps in order (empty with `none`).
     pub steps: Vec<StepView>,
-    /// Every step the page can offer: the four writers, then each computer that writes
-    /// summaries for the others, or is in the order.
+    /// Every step the page can offer besides the online service: the local model, then each
+    /// computer that writes summaries for the others, or is in the order (T14.72).
     pub offered: Vec<StepView>,
+    /// The one Online service row (T14.72, docs/summary-order.md 12.8).
+    pub online: OnlineRowView,
     /// What the user is told about the stored order (fixed copy).
     pub notes: Vec<String>,
     /// The most steps an order holds.
     pub max_steps: u32,
+}
+
+/// A service the Online service row's picker names (T14.72; the runtime's `Service`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum ServiceChoice {
+    /// Claude through Claude Code.
+    ClaudeCode,
+    /// OpenAI through Codex.
+    Codex,
+    /// The endpoint on the Anthropic API.
+    AnthropicApi,
+    /// The endpoint on the user's own server.
+    OwnServer,
+}
+
+impl ServiceChoice {
+    /// The choice of `service`.
+    #[must_use]
+    pub fn of(service: Service) -> Self {
+        match service {
+            Service::ClaudeCode => Self::ClaudeCode,
+            Service::Codex => Self::Codex,
+            Service::AnthropicApi => Self::AnthropicApi,
+            Service::OwnServer => Self::OwnServer,
+        }
+    }
+
+    /// The service of this choice.
+    #[must_use]
+    pub fn service(self) -> Service {
+        match self {
+            Self::ClaudeCode => Service::ClaudeCode,
+            Self::Codex => Service::Codex,
+            Self::AnthropicApi => Service::AnthropicApi,
+            Self::OwnServer => Service::OwnServer,
+        }
+    }
+}
+
+/// The one Online service row (T14.72, docs/summary-order.md 12.8): never an online writer that
+/// is not the pick.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct OnlineRowView {
+    /// The service picked; `null` before one is.
+    pub service: Option<ServiceChoice>,
+    /// The step the row ticks; `null` while it cannot be ticked (no service picked, or an
+    /// endpoint service not set up).
+    pub step: Option<StepChoice>,
+    /// Why it cannot be ticked (fixed copy); `null` when it can.
+    pub reason: Option<String>,
+    /// The picked service's step label, as a [`StepView`] of its step carries it
+    /// ([`step_label`]); `null` with no pick.
+    pub label: Option<String>,
+    /// Where the picked service sends the transcript, as a [`StepView`] of its step carries it
+    /// ([`destination`]); `null` with no pick.
+    pub destination: Option<String>,
+}
+
+/// The Online service row of `services`' store, and the notes about the pick (fixed copy).
+///
+/// # Errors
+/// Store errors.
+pub fn online_row(services: &Services) -> Result<(OnlineRowView, Vec<String>), IpcError> {
+    let (pick, notes, settings) = {
+        let db = services.store();
+        let (pick, notes) = earshot_runtime::summary_order::online_service(&db)?;
+        let (settings, _) = earshot_runtime::summary_settings::summary_settings(&db)?;
+        (pick, notes, settings)
+    };
+    // The same functions as every StepView, so the UI keeps no name rule.
+    let cx = StepContext::of(&settings);
+    let picked = pick.map(|s| {
+        let mut view = step_view(OrderStep::Writer(s.step()), &cx);
+        // An Anthropic pick with no address yet is still Anthropic (docs/summary-order.md 12.8):
+        // the step rule names any endpoint without a host "Your own server".
+        if s == Service::AnthropicApi && cx.host.is_none() {
+            view.label = COPY.steps.endpoint_anthropic.clone();
+            view.destination = COPY.destinations.endpoint_anthropic.clone();
+        }
+        view
+    });
+    let step = pick
+        .filter(|s| s.step() != WriterStep::Endpoint || settings.has_endpoint())
+        .map(|s| StepChoice::of(OrderStep::Writer(s.step())));
+    let reason = match (pick, &step) {
+        (None, _) => Some(COPY.page.choose_service.clone()),
+        (Some(_), None) => Some(COPY.page.not_set_up.clone()),
+        (Some(_), Some(_)) => None,
+    };
+    Ok((
+        OnlineRowView {
+            service: pick.map(ServiceChoice::of),
+            step,
+            reason,
+            label: picked.as_ref().map(|v| v.label.clone()),
+            destination: picked.map(|v| v.destination),
+        },
+        notes,
+    ))
 }
 
 fn step_view(step: OrderStep, cx: &StepContext) -> StepView {
@@ -946,21 +1066,26 @@ pub fn order_view(services: &Services, host: &SyncHost) -> Result<SummaryOrderVi
     // Reading the computers also remembers their names and writer kinds.
     let helpers = crate::offload::helpers_view(services, host)?;
     let cx = StepContext::read(services);
-    let mut offered: Vec<OrderStep> = WriterStep::ALL.into_iter().map(OrderStep::Writer).collect();
+    let (online, pick_notes) = online_row(services)?;
+    let mut offered: Vec<OrderStep> = vec![OrderStep::LOCAL];
     for h in &helpers.helpers {
         if let Ok(d) = crate::offload::device_id(&h.id) {
             offered.push(OrderStep::Computer(d));
         }
     }
     for s in order.steps() {
-        if !offered.contains(s) {
+        // The online writer is the Online service row, never an offered step.
+        if !offered.contains(s) && !matches!(s, OrderStep::Writer(w) if w.is_online()) {
             offered.push(*s);
         }
     }
+    let mut notes = notes;
+    notes.extend(pick_notes);
     Ok(SummaryOrderView {
         none: order.is_none(),
         steps: order.steps().iter().map(|s| step_view(*s, &cx)).collect(),
         offered: offered.into_iter().map(|s| step_view(s, &cx)).collect(),
+        online,
         notes,
         max_steps: u32::try_from(earshot_runtime::summary_order::MAX_STEPS).unwrap_or(u32::MAX),
     })
@@ -972,6 +1097,10 @@ pub fn order_error(e: SummaryOrderError) -> IpcError {
     match e {
         SummaryOrderError::Store(e) => IpcError::from(e),
         SummaryOrderError::Settings(e) => crate::summaries::settings_error(e),
+        SummaryOrderError::StaleProvider => IpcError::invalid(COPY.page.settings_changed.clone()),
+        SummaryOrderError::NotThePick | SummaryOrderError::TwoOnline => {
+            IpcError::invalid(COPY.page.not_the_service.clone())
+        }
         other => IpcError::invalid(crate::summaries::sentence(&other.to_string())),
     }
 }
@@ -1028,6 +1157,47 @@ pub async fn set_summary_order(
     let services = state.services()?;
     let host = Arc::clone(&sync);
     crate::ipc::blocking(move || set_order(&services, &host, &steps, settings.as_ref())).await
+}
+
+/// What picking a service returns: both views the Summaries page caches (T12.63b's rule: the
+/// hook replaces both before it releases busy).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct OnlineServiceSaved {
+    /// The settings as stored.
+    pub settings: crate::summaries::SummarySettingsView,
+    /// The order as stored.
+    pub order: SummaryOrderView,
+}
+
+/// Picks `service` as the one online service (docs/summary-order.md 12.6, through
+/// `summary_order::set_online_service`); returns both views as stored.
+///
+/// # Errors
+/// `invalid_setting` (nothing stored); store errors.
+pub fn pick_service(
+    services: &Services,
+    host: &SyncHost,
+    service: ServiceChoice,
+) -> Result<OnlineServiceSaved, IpcError> {
+    earshot_runtime::summary_order::set_online_service(&mut services.store(), service.service())
+        .map_err(order_error)?;
+    Ok(OnlineServiceSaved {
+        settings: crate::summaries::settings_view(services)?,
+        order: order_view(services, host)?,
+    })
+}
+
+/// Picks the one online service; returns the settings and the order as stored.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_online_service(
+    state: tauri::State<'_, crate::ipc::AppState>,
+    sync: tauri::State<'_, Arc<SyncHost>>,
+    service: ServiceChoice,
+) -> Result<OnlineServiceSaved, IpcError> {
+    let services = state.services()?;
+    let host = Arc::clone(&sync);
+    crate::ipc::blocking(move || pick_service(&services, &host, service)).await
 }
 
 // ---- re-summarise ----
@@ -1115,10 +1285,11 @@ pub fn local_installed(services: &Services, models: &ModelDir) -> bool {
     })
 }
 
-/// The re-summarise menu's writers for `meeting` (docs/summary-order.md 5): the local model if
-/// installed; the endpoint if set (with a saved key when it needs one); Claude Code and Codex when
-/// installed. For a meeting kept on this computer the remote ones are disabled with the reason
-/// until "Allow".
+/// The re-summarise menu's writers for `meeting` (docs/summary-order.md 5 and 12.9): the local
+/// model if installed; the one online service picked, ticked or not, when it can run by today's
+/// rule (Claude Code or Codex installed; the endpoint set, with a key saved for its address when
+/// it is Anthropic). No other online writer is offered. For a meeting kept on this computer the
+/// online one is disabled with the reason until "Allow".
 ///
 /// # Errors
 /// Store errors.
@@ -1141,16 +1312,19 @@ pub fn resummarise_view(
         Ok(here.key_saved()
             && earshot_runtime::summary_settings::api_key_bound(&services.store(), &settings)?)
     };
-    if settings.has_endpoint()
-        && (settings.provider != EndpointProvider::Anthropic || key_usable()?)
-    {
-        steps.push(WriterStep::Endpoint);
-    }
-    if here.claude_installed() {
-        steps.push(WriterStep::ClaudeCode);
-    }
-    if here.codex_installed() {
-        steps.push(WriterStep::Codex);
+    let (pick, _) = earshot_runtime::summary_order::online_service(&services.store())?;
+    match pick.map(Service::step) {
+        Some(WriterStep::Endpoint)
+            if settings.has_endpoint()
+                && (settings.provider != EndpointProvider::Anthropic || key_usable()?) =>
+        {
+            steps.push(WriterStep::Endpoint);
+        }
+        Some(WriterStep::ClaudeCode) if here.claude_installed() => {
+            steps.push(WriterStep::ClaudeCode);
+        }
+        Some(WriterStep::Codex) if here.codex_installed() => steps.push(WriterStep::Codex),
+        _ => {}
     }
     Ok(ResummariseView {
         writers: steps
@@ -1182,8 +1356,27 @@ pub async fn resummarise_writers(
     .await
 }
 
+/// Whether a re-summarise may name `step` (docs/summary-order.md 12.9): an online writer only
+/// when it is the service picked, read now. The menu is not the check: a menu read before the
+/// pick changed may still name another.
+///
+/// # Errors
+/// `invalid_setting` with `page.not_the_service`; store errors.
+pub fn named_step_allowed(services: &Services, step: OrderStep) -> Result<(), IpcError> {
+    if let OrderStep::Writer(w) = step
+        && w.is_online()
+    {
+        let (pick, _) = earshot_runtime::summary_order::online_service(&services.store())?;
+        if pick.map(Service::step) != Some(w) {
+            return Err(IpcError::invalid(COPY.page.not_the_service.clone()));
+        }
+    }
+    Ok(())
+}
+
 /// Starts a re-summary of `meeting` by the one writer `step` names (a named run: no next step).
-/// A computer is asked through `ask_summary_helper`.
+/// A computer is asked through `ask_summary_helper`. An online writer that is not the service
+/// picked is refused before a job starts ([`named_step_allowed`]).
 #[tauri::command]
 #[specta::specta]
 pub async fn resummarise_with(
@@ -1193,20 +1386,35 @@ pub async fn resummarise_with(
     step: StepChoice,
 ) -> Result<(), IpcError> {
     let services = state.services()?;
+    let jobs = jobs.inner().clone();
+    crate::ipc::blocking(move || resummarise_named(&services, &jobs, &meeting, &step)).await
+}
+
+/// The body of [`resummarise_with`] (its only caller, and the tests'): a writer step only (a
+/// computer goes through `ask_summary_helper`), an online writer only when it is the pick
+/// ([`named_step_allowed`]), then the job.
+///
+/// # Errors
+/// `invalid_setting` with `page.not_the_service`; a meeting id that is not one; the job
+/// runner's refusals (busy); store errors.
+pub fn resummarise_named(
+    services: &Services,
+    jobs: &crate::jobs::JobRunner,
+    meeting: &str,
+    step: &StepChoice,
+) -> Result<(), IpcError> {
     let step = match step.step()? {
         OrderStep::Writer(w) => OrderStep::Writer(w),
         OrderStep::Computer(_) => return Err(IpcError::internal()),
     };
-    let (jobs, meeting) = (jobs.inner().clone(), crate::detail::parse_id(&meeting)?);
-    crate::ipc::blocking(move || {
-        jobs.start_summary(
-            &services,
-            meeting,
-            crate::jobs::SummaryStart::Named(step),
-            None,
-        )
-    })
-    .await
+    let meeting = crate::detail::parse_id(meeting)?;
+    named_step_allowed(services, step)?;
+    jobs.start_summary(
+        services,
+        meeting,
+        crate::jobs::SummaryStart::Named(step),
+        None,
+    )
 }
 
 #[cfg(test)]

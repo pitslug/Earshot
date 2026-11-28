@@ -10,7 +10,7 @@ use crate::local::DeviceRecord;
 use crate::summary_settings::{
     EndpointProvider, SummarySettings, SummaryWriter, set_summary_settings, summary_settings,
 };
-use crate::testutil::{TempDir, services};
+use crate::testutil::{TempDir, services, store_order};
 
 const DESK: DeviceId = DeviceId::from_bytes([7; 16]);
 const LAPTOP: DeviceId = DeviceId::from_bytes([9; 16]);
@@ -191,7 +191,7 @@ fn summary_order_is_stored_with_its_mirror() {
     let (svc, _) = services(&dir);
     let mut db = svc.store();
     let o = order(&[LOCAL, OrderStep::Computer(DESK), CLAUDE]);
-    set_summary_order(&mut db, &o, None).unwrap();
+    store_order(&mut db, &o, None);
     assert_eq!(summary_order(&db).unwrap(), (o.clone(), vec![]));
     assert_eq!(raw(&db, SUMMARY_WRITER_KEY).as_deref(), Some("local"));
     assert_eq!(
@@ -205,7 +205,7 @@ fn summary_order_is_stored_with_its_mirror() {
     );
     assert_eq!(crate::offload::chosen_helper(&db).unwrap(), None);
     let first = order(&[OrderStep::Computer(DESK), CODEX]);
-    set_summary_order(&mut db, &first, None).unwrap();
+    store_order(&mut db, &first, None);
     assert_eq!(raw(&db, SUMMARY_WRITER_KEY).as_deref(), Some("codex"));
     assert_eq!(crate::offload::chosen_helper(&db).unwrap(), Some(DESK));
     assert_eq!(summary_order(&db).unwrap().0, first);
@@ -220,17 +220,16 @@ fn summary_order_endpoint_fields_are_required_wherever_the_endpoint_sits() {
     let (svc, _) = services(&dir);
     let mut db = svc.store();
     let o = order(&[LOCAL, ENDPOINT]);
+    // Your own server is picked first (T14.72); the refused order itself stores nothing.
+    set_online_service(&mut db, Service::OwnServer).unwrap();
+    let before = raw(&db, SUMMARY_ORDER_KEY);
     assert!(matches!(
         set_summary_order(&mut db, &o, None),
         Err(SummaryOrderError::Settings(
             SummarySettingsError::MissingUrl
         ))
     ));
-    assert_eq!(
-        db.local_value(SUMMARY_ORDER_KEY).unwrap(),
-        None,
-        "nothing stored"
-    );
+    assert_eq!(raw(&db, SUMMARY_ORDER_KEY), before, "nothing stored");
     // With the page's endpoint fields given in the same write, it is stored.
     set_summary_order(&mut db, &o, Some(&with_endpoint())).unwrap();
     assert_eq!(summary_order(&db).unwrap().0, o);
@@ -261,7 +260,7 @@ fn summary_order_old_keys_win_after_a_downgrade_edit() {
     let dir = TempDir::new("summary-order-downgrade");
     let (svc, _) = services(&dir);
     let mut db = svc.store();
-    set_summary_order(&mut db, &order(&[LOCAL, CLAUDE]), None).unwrap();
+    store_order(&mut db, &order(&[LOCAL, CLAUDE]), None);
     // An older build changes the writer: its choice is read, never the stale order.
     crate::local::set(&mut db, &DeviceRecord::SummaryWriter.key(), b"codex").unwrap();
     assert_eq!(summary_order(&db).unwrap(), (order(&[CODEX]), vec![]));
@@ -316,10 +315,13 @@ fn summary_order_and_its_mirror_are_one_transaction() {
     let (svc, _) = services(&dir);
     let mut db = svc.store();
     set_summary_order(&mut db, &order(&[LOCAL]), None).unwrap();
+    // Codex is picked (as on the page) before it can be ticked.
+    set_online_service(&mut db, Service::Codex).unwrap();
     let before = (
         raw(&db, SUMMARY_ORDER_KEY),
         raw(&db, SUMMARY_WRITER_KEY),
         raw(&db, crate::offload::OFFLOAD_DEVICE_KEY),
+        raw(&db, ONLINE_SERVICE_KEY),
     );
     fault::fail_after_order();
     let refused = set_summary_order(&mut db, &order(&[OrderStep::Computer(DESK), CODEX]), None);
@@ -328,20 +330,21 @@ fn summary_order_and_its_mirror_are_one_transaction() {
         raw(&db, SUMMARY_ORDER_KEY),
         raw(&db, SUMMARY_WRITER_KEY),
         raw(&db, crate::offload::OFFLOAD_DEVICE_KEY),
+        raw(&db, ONLINE_SERVICE_KEY),
     );
     assert_eq!(after, before, "neither the order nor the mirror changed");
     assert_eq!(summary_order(&db).unwrap().0, order(&[LOCAL]));
 }
 
 #[test]
-fn summary_order_the_page_writer_and_helper_go_through_the_order() {
+fn summary_order_the_settings_never_change_the_order_and_the_helper_goes_through_it() {
     let dir = TempDir::new("summary-order-page");
     let (svc, _) = services(&dir);
     {
         let mut db = svc.store();
-        set_summary_order(&mut db, &order(&[LOCAL, CODEX, CLAUDE]), None).unwrap();
-        // The page's one writer replaces the first writer step and keeps the others.
-        set_summary_settings(
+        store_order(&mut db, &order(&[LOCAL, CODEX]), None);
+        // T14.72 (12.7a): a settings save stores the order as read, whatever writer it names.
+        let saved = set_summary_settings(
             &mut db,
             &SummarySettings {
                 writer: SummaryWriter::ClaudeCode,
@@ -349,32 +352,47 @@ fn summary_order_the_page_writer_and_helper_go_through_the_order() {
             },
         )
         .unwrap();
-        assert_eq!(summary_order(&db).unwrap().0, order(&[CLAUDE, CODEX]));
-        assert_eq!(raw(&db, SUMMARY_WRITER_KEY).as_deref(), Some("claude-code"));
+        assert_eq!(summary_order(&db).unwrap().0, order(&[LOCAL, CODEX]));
+        assert_eq!(raw(&db, SUMMARY_WRITER_KEY).as_deref(), Some("local"));
+        assert_eq!(raw(&db, ONLINE_SERVICE_KEY).as_deref(), Some("codex"));
+        assert_eq!(
+            saved.writer,
+            SummaryWriter::OnThisComputer,
+            "the order's mirror"
+        );
     }
     // The helper becomes the step-1 computer, then goes.
     crate::offload::set_chosen_helper(&svc, Some(DESK)).unwrap();
     assert_eq!(
         summary_order(&svc.store()).unwrap().0,
-        order(&[OrderStep::Computer(DESK), CLAUDE, CODEX])
+        order(&[OrderStep::Computer(DESK), LOCAL, CODEX])
     );
     crate::offload::set_chosen_helper(&svc, Some(LAPTOP)).unwrap();
     assert_eq!(
         summary_order(&svc.store()).unwrap().0,
-        order(&[OrderStep::Computer(LAPTOP), CLAUDE, CODEX])
+        order(&[OrderStep::Computer(LAPTOP), LOCAL, CODEX])
     );
     crate::offload::set_chosen_helper(&svc, None).unwrap();
     assert_eq!(
         summary_order(&svc.store()).unwrap().0,
-        order(&[CLAUDE, CODEX])
+        order(&[LOCAL, CODEX])
+    );
+    // The helper keeps the pick.
+    assert_eq!(
+        online_service(&svc.store()).unwrap().0,
+        Some(Service::Codex)
     );
     // No summary keeps a computer (an older build read writer none with a helper the same way).
     crate::offload::set_chosen_helper(&svc, Some(DESK)).unwrap();
     let mut db = svc.store();
+    set_summary_order(&mut db, &order(&[OrderStep::Computer(DESK)]), None).unwrap();
+    assert_eq!(raw(&db, SUMMARY_WRITER_KEY).as_deref(), Some("none"));
+    assert_eq!(crate::offload::chosen_helper(&db).unwrap(), Some(DESK));
+    // A settings save with "no summary" in it leaves the order alone too.
     set_summary_settings(
         &mut db,
         &SummarySettings {
-            writer: SummaryWriter::NoSummary,
+            writer: SummaryWriter::OnThisComputer,
             ..SummarySettings::default()
         },
     )
@@ -383,8 +401,6 @@ fn summary_order_the_page_writer_and_helper_go_through_the_order() {
         summary_order(&db).unwrap().0,
         order(&[OrderStep::Computer(DESK)])
     );
-    assert_eq!(raw(&db, SUMMARY_WRITER_KEY).as_deref(), Some("none"));
-    assert_eq!(crate::offload::chosen_helper(&db).unwrap(), Some(DESK));
 }
 
 #[test]
@@ -487,7 +503,7 @@ fn summary_order_benchmark_runs_the_local_step_when_it_is_the_first_writer_here(
         prepare_bench_summary(&read(&svc), &models, svc.clock.clone(), &[]).unwrap(),
         BenchSummary::Skipped(BenchSkip::NotInstalled { .. })
     ));
-    set_summary_order(&mut svc.store(), &order(&[CLAUDE, LOCAL]), None).unwrap();
+    store_order(&mut svc.store(), &order(&[CLAUDE, LOCAL]), None);
     assert!(matches!(
         prepare_bench_summary(&read(&svc), &models, svc.clock.clone(), &[]).unwrap(),
         BenchSummary::Skipped(BenchSkip::NotOnThisComputer { .. })
@@ -506,16 +522,15 @@ fn summary_order_writer_kind_is_the_first_writer_step() {
     let dir = TempDir::new("summary-order-kind");
     let (svc, _) = services(&dir);
     let mut db = svc.store();
-    set_summary_order(
+    store_order(
         &mut db,
         &order(&[OrderStep::Computer(DESK), CODEX, LOCAL]),
         None,
-    )
-    .unwrap();
+    );
     assert_eq!(WriterKind::of_order(&db).unwrap(), Some(WriterKind::Codex));
     set_summary_order(&mut db, &order(&[OrderStep::Computer(DESK)]), None).unwrap();
     assert_eq!(WriterKind::of_order(&db).unwrap(), None);
-    set_summary_order(&mut db, &order(&[ENDPOINT]), Some(&with_endpoint())).unwrap();
+    store_order(&mut db, &order(&[ENDPOINT]), Some(&with_endpoint()));
     assert_eq!(
         WriterKind::of_order(&db).unwrap(),
         Some(WriterKind::OpenaiCompatible)

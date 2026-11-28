@@ -82,6 +82,9 @@ pub enum SkipReason {
     /// The order's local step would have run beside a newer meeting the meeting queue did not
     /// hold for it, and no later step wrote the summary (T12.63a, docs/summary-order.md 4.5).
     NotNow,
+    /// An online writer that is not the one online service picked (T14.72,
+    /// docs/summary-order.md 12.9a): a run tries only the pick, never another online service.
+    NotChosen,
 }
 
 /// Where a stored summary was made.

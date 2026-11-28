@@ -126,11 +126,14 @@ pub enum OutcomeWord {
     WrongBackend,
     /// The local model: the CUDA files changed after the start.
     CudaChanged,
+    /// An online writer that is not the online service picked (T14.72, docs/summary-order.md
+    /// 12.9a). An older build does not know this word, so it reads such a record as unreadable.
+    NotChosen,
 }
 
 impl OutcomeWord {
     /// Every word.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Offline,
         Self::Recording,
         Self::NotOffering,
@@ -152,6 +155,7 @@ impl OutcomeWord {
         Self::LoadStuck,
         Self::WrongBackend,
         Self::CudaChanged,
+        Self::NotChosen,
     ];
 
     /// The words the user reads.
@@ -179,6 +183,7 @@ impl OutcomeWord {
             Self::LoadStuck => "an earlier load is stuck",
             Self::WrongBackend => "loaded on the wrong device",
             Self::CudaChanged => "CUDA files changed",
+            Self::NotChosen => "not chosen",
         }
     }
 }
@@ -434,6 +439,7 @@ pub fn skip_word(reason: &SkipReason) -> Option<OutcomeWord> {
         SkipReason::ClaudeCodeUnavailable(e) => claude_code_word(e),
         SkipReason::CodexUnavailable(e) => codex_word(e),
         SkipReason::NotNow => Some(OutcomeWord::NotNow),
+        SkipReason::NotChosen => Some(OutcomeWord::NotChosen),
         SkipReason::NotRequested | SkipReason::PostFailed => None,
     }
 }

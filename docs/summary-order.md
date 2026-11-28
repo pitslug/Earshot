@@ -632,7 +632,7 @@ These rules join, and where they differ override, the sections above.
 
 ## 12. T14.72: one online service
 
-Status: proposed, not built. Task T14.72, PLAN.md section 8. Where this section differs from sections 2, 3, 4.3, 4.4, 5, 6 and 7, it overrides them.
+Status: built (2026-11-28). Task T14.72, PLAN.md section 8. Where this section differs from sections 2, 3, 4.3, 4.4, 5, 6 and 7, it overrides them.
 
 ### 12.1 What went wrong
 
@@ -673,12 +673,12 @@ Status: proposed, not built. Task T14.72, PLAN.md section 8. Where this section 
 
 ### 12.6 Changing the pick
 
-`set_online_service(store, service)` is a desktop command that is `async` plus `ipc::blocking` (it reaches the store). It ships with a mock and regenerated bindings in the same commit. It goes through `write_order` (one transaction, re-reading the order inside it). It always writes the order as read, with `keep_order` and `keep_writer` false, as a tick on the page does. So when the stored order is unreadable, or the old keys win (section 3), the order as read is stored in their place, and the pick cannot be overruled by rule 1 afterwards. The command returns the settings view and the order view, and the page's hook replaces both in its cache before it releases busy (T12.63b's rule).
+`set_online_service(store, service)` is a desktop command that is `async` plus `ipc::blocking` (it reaches the store). It ships with a mock and regenerated bindings in the same commit. It goes through `write_order`: the order, the pick and the settings are read under the caller's `&mut Store` (the services lock) before its one transaction, which is safe because every writer of these keys holds that lock. It always writes the order as read, with `keep_order` and `keep_writer` false, as a tick on the page does. So when the stored order is unreadable, or the old keys win (section 3), the order as read is stored in their place, and the pick cannot be overruled by rule 1 afterwards. The command returns the settings view and the order view, and the page's hook replaces both in its cache before it releases busy (T12.63b's rule).
 
 - **The order holds no online writer.** It stores the key, and for an endpoint service the provider (12.7). The order is stored unchanged.
 - **The order holds the old pick, and the new service can be a step.** Claude Code and Codex always can be: they are tickable whatever their sign-in (section 2). The old step is replaced by the new one at the same position, and the key and mirror are written in the same transaction.
 - **The order holds the old pick, and the new service cannot be a step yet** (an endpoint service whose fields do not validate after 12.7). The step is removed from the order (unticked), the key is stored, and the page opens the new service's setup section. Saving that form ticks it last when there is room (section 2's rule). Its old position is lost: see question Q1 in 12.12.
-- **Picking the service already picked** stores nothing.
+- **Picking the service already picked** stores nothing when the stored order already reads as itself; otherwise (unreadable, old keys that win, a second online writer, or nothing stored) it writes the order as read.
 
 The picker applies at once, like every choice on the page, with one exception: the endpoint's fields still need their Save. The Summaries settings fixture's save-rule test gains the picker as a choice.
 

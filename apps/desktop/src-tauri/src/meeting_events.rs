@@ -1229,6 +1229,8 @@ pub fn skip_copy(reason: &SkipReason) -> String {
         }
         // T12.63b: the copy table's.
         SkipReason::NotNow => crate::summary_order::COPY.not_now.clone(),
+        // T14.72: an online writer that is not the one picked.
+        SkipReason::NotChosen => crate::summary_order::COPY.page.not_the_service.clone(),
     }
 }
 

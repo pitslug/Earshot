@@ -208,12 +208,7 @@ fn offload_continuation_tries_the_copied_steps_not_the_order_now() {
     let m = meeting_with_final(&svc, 22, 2);
     let request = waiting_run(&svc, m, &[OrderStep::Computer(DESK), OrderStep::LOCAL]);
     // The order changes meanwhile to Claude Code alone.
-    earshot_runtime::summary_order::set_summary_order(
-        &mut svc.store(),
-        &SummaryOrder::new(vec![OrderStep::Writer(WriterStep::ClaudeCode)]).unwrap(),
-        None,
-    )
-    .unwrap();
+    crate::testutil::store_order(&svc, &[OrderStep::Writer(WriterStep::ClaudeCode)], None);
     let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
     let vault = crate::credentials::MemoryVault::default();
     let done = crate::jobs::summarise_run_with(

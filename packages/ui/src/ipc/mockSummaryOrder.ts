@@ -2,14 +2,19 @@
 // in memory with the Rust rules (`earshot_runtime::summary_order`: at most three steps, nothing
 // twice, not this computer, an endpoint step needs its fields), the old writer setting mirrored
 // from it, and every label, destination and refusal from `fixtures/ui/summary_order_cases.json`,
-// the table the desktop's own tests pin to its Rust copy.
+// the table the desktop's own tests pin to its Rust copy. The one online service (T14.72,
+// docs/summary-order.md 12) follows `summary_order::{online_service, set_online_service}`: the
+// pick read, the normalising and the provider switch are pinned by
+// `fixtures/ui/online_service_cases.json`, which this mock's tests and the runtime's own run.
 
 import table from "../../../../fixtures/ui/summary_order_cases.json";
 import { IpcFailure } from "./ipc";
-import type { SummariesMock } from "./mockSummaries";
+import { type SummariesMock, checkSummarySettings } from "./mockSummaries";
 import type { SummaryHelpersView } from "./sync";
 import type {
+  OnlineRowView,
   ResummariseItem,
+  ServiceChoice,
   StepChoice,
   StepView,
   SummaryOrderCommands,
@@ -18,48 +23,13 @@ import type {
 import { fillCopy, isRemoteWriter, mirrorWriter, sameStep } from "./summaryOrder";
 
 export { mirrorWriter };
-import type { SummarySettingsValue, WriterChoice } from "./bindings";
+import type { ProviderChoice, SummarySettingsValue, WriterChoice } from "./bindings";
 
 /** The most steps an order holds (`summary_order::MAX_STEPS`). */
 export const MAX_ORDER_STEPS = 3;
 
 /** A UUID as the app reads a device id. */
 const UUID = /^(?:[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})$/i;
-
-/** The writer step of the old writer setting (`WriterStep::of_writer`). */
-function stepOfWriter(writer: WriterChoice): StepChoice | null {
-  switch (writer) {
-    case "OnThisComputer":
-      return { kind: "Local" };
-    case "OwnEndpoint":
-      return { kind: "Endpoint" };
-    case "ClaudeCode":
-      return { kind: "ClaudeCode" };
-    case "Codex":
-      return { kind: "Codex" };
-    case "NoSummary":
-      return null;
-  }
-}
-
-/** `steps` with `writer` as its first writer step (`SummaryOrder::with_writer`). */
-export function withWriter(steps: StepChoice[], writer: WriterChoice): StepChoice[] {
-  const w = stepOfWriter(writer);
-  if (w === null) return steps.filter((s) => s.kind === "Computer");
-  const out: StepChoice[] = [];
-  let placed = false;
-  for (const s of steps) {
-    if (s.kind !== "Computer" && !placed) {
-      out.push(w);
-      placed = true;
-    } else if (!sameStep(s, w)) out.push(s);
-  }
-  if (!placed) {
-    if (out.length >= MAX_ORDER_STEPS) out.length = MAX_ORDER_STEPS - 1;
-    out.push(w);
-  }
-  return out;
-}
 
 /** Whether summarising during the meeting runs with `steps` (`live_summaries_allowed`). */
 export function liveAllowed(steps: StepChoice[]): boolean {
@@ -120,6 +90,75 @@ function invalid(message: string): never {
   throw new IpcFailure({ kind: "invalid_setting", message, retryable: false });
 }
 
+/** The writer step of the old writer setting (`WriterStep::of_writer`): the order the mock starts
+ * with when none is given. */
+function stepOfWriter(writer: WriterChoice): StepChoice | null {
+  switch (writer) {
+    case "OnThisComputer":
+      return { kind: "Local" };
+    case "OwnEndpoint":
+      return { kind: "Endpoint" };
+    case "ClaudeCode":
+      return { kind: "ClaudeCode" };
+    case "Codex":
+      return { kind: "Codex" };
+    case "NoSummary":
+      return null;
+  }
+}
+
+/** An online writer's kind (`WriterStep::is_online`). */
+type OnlineKind = "Endpoint" | "ClaudeCode" | "Codex";
+
+/** The text `settings/online-service` holds for each online writer (`WriterStep::word`). */
+const KEY_WORD: Record<OnlineKind, string> = { Endpoint: "endpoint", ClaudeCode: "claude-code", Codex: "codex" };
+
+/** The service of online writer `kind`, the endpoint's by `provider` (`Service::of_step`). */
+export function serviceOf(kind: OnlineKind, provider: ProviderChoice): ServiceChoice {
+  if (kind === "Endpoint") return provider === "Anthropic" ? "AnthropicApi" : "OwnServer";
+  return kind;
+}
+
+/** The writer step of `service` (`Service::step`). */
+export function stepOfService(service: ServiceChoice): StepChoice {
+  return service === "ClaudeCode" || service === "Codex" ? { kind: service } : { kind: "Endpoint" };
+}
+
+/** The endpoint provider `service` stores, null for Claude Code and Codex (`Service::provider`). */
+export function providerOfService(service: ServiceChoice): ProviderChoice | null {
+  return service === "AnthropicApi" ? "Anthropic" : service === "OwnServer" ? "OpenAiCompatible" : null;
+}
+
+/** `steps` with every online writer after the first dropped, and whether any was
+ * (`SummaryOrder::normalised`). */
+export function normalised(steps: StepChoice[]): { steps: StepChoice[]; dropped: boolean } {
+  let seen = false;
+  let dropped = false;
+  const kept = steps.filter((s) => {
+    if (!isRemoteWriter(s)) return true;
+    const keep = !seen;
+    seen = true;
+    if (!keep) dropped = true;
+    return keep;
+  });
+  return { steps: kept, dropped };
+}
+
+/** The online service picked, as read (`summary_order::online_service`): the order's online
+ * writer (the endpoint's by `provider`), else the stored key, else none; a key this version does
+ * not know reads as none with the `unknown_service` note. `steps` is the order as read. */
+export function pickOf(
+  steps: StepChoice[],
+  provider: ProviderChoice,
+  key: string | null,
+): { pick: ServiceChoice | null; note: "unknown_service" | null } {
+  const online = steps.find(isRemoteWriter);
+  if (online !== undefined) return { pick: serviceOf(online.kind as OnlineKind, provider), note: null };
+  if (key === null) return { pick: null, note: null };
+  const kind = (Object.keys(KEY_WORD) as OnlineKind[]).find((k) => KEY_WORD[k] === key.trim());
+  return kind === undefined ? { pick: null, note: "unknown_service" } : { pick: serviceOf(kind, provider), note: null };
+}
+
 /** What the order mock reads from the rest of the mock. */
 export interface SummaryOrderDeps {
   summaries: SummariesMock;
@@ -133,26 +172,40 @@ export interface SummaryOrderDeps {
 
 /** The order part of the mock, plus what the rest of the mock reads. */
 export interface SummaryOrderMock extends Omit<SummaryOrderCommands, "resummariseWith"> {
-  /** The order now. */
+  /** The order now, as read (normalised). */
   steps(): Promise<StepChoice[]>;
-  /** The writer setting was stored through the Summaries page's own save: the order follows it
-   * (`set_summary_settings` through `SummaryOrder::with_writer`). */
-  writerSaved(writer: WriterChoice): Promise<void>;
+  /** The online service picked, as read. */
+  pick(): Promise<ServiceChoice | null>;
+  /** Stores every Summaries setting with the order as read (`set_summary_settings` through
+   * `set_settings_with_order`): never changes the order or the provider. */
+  saveSettings(settings: SummarySettingsValue): Promise<void>;
+  /** The order and key as stored (the shared case table checks that a read writes nothing). */
+  stored(): { order: StepChoice[] | null; key: string | null };
 }
 
 /** The order of summary writers of the mock `Ipc`; `initial` overrides the order the writer
- * setting reads as. */
-export function createSummaryOrderMock(deps: SummaryOrderDeps, initial?: StepChoice[]): SummaryOrderMock {
+ * setting reads as, `initialKey` is the text stored at `settings/online-service` (null: none). */
+export function createSummaryOrderMock(
+  deps: SummaryOrderDeps,
+  initial?: StepChoice[],
+  initialKey: string | null = null,
+): SummaryOrderMock {
   let order: StepChoice[] | null = initial ? [...initial] : null;
-  const steps = async (): Promise<StepChoice[]> => {
+  let key: string | null = initialKey;
+  const settingsNow = async () => (await deps.summaries.summarySettings()).value;
+  // The stored order, before the read normalises it.
+  const raw = async (): Promise<StepChoice[]> => {
     if (order === null) {
-      const w = stepOfWriter((await deps.summaries.summarySettings()).value.writer);
+      const w = stepOfWriter((await settingsNow()).writer);
       order = w === null ? [] : [w];
     }
     return order;
   };
+  const read = async () => normalised(await raw());
+  const steps = async (): Promise<StepChoice[]> => (await read()).steps;
+  const readPick = async () => pickOf(await steps(), (await settingsNow()).provider, key);
   const context = async (): Promise<Context> => {
-    const settings = (await deps.summaries.summarySettings()).value;
+    const settings = await settingsNow();
     const helpers = await deps.helpers();
     return {
       provider: settings.provider,
@@ -165,59 +218,137 @@ export function createSummaryOrderMock(deps: SummaryOrderDeps, initial?: StepCho
     label: mockStepLabel(step, cx),
     destination: mockDestination(step, cx),
   });
-  const view = async (): Promise<SummaryOrderView> => {
-    const now = await steps();
+  // The Online service row (`summary_order::online_row`).
+  const online = async (): Promise<OnlineRowView> => {
+    const settings = await settingsNow();
+    const { pick } = await readPick();
+    if (pick === null)
+      return { service: null, step: null, reason: table.page.choose_service, label: null, destination: null };
+    const step = stepOfService(pick);
     const cx = await context();
-    const offered: StepChoice[] = [{ kind: "Local" }, { kind: "Endpoint" }, { kind: "ClaudeCode" }, { kind: "Codex" }];
+    // An Anthropic pick with no address yet is still Anthropic (12.8): the step rule names any
+    // endpoint without a host "Your own server".
+    const anthropicUnset = pick === "AnthropicApi" && cx.host === null;
+    const label = anthropicUnset ? table.steps.endpoint_anthropic : mockStepLabel(step, cx);
+    const destination = anthropicUnset ? table.destinations.endpoint_anthropic : mockDestination(step, cx);
+    const ready = step.kind !== "Endpoint" || (settings.url !== "" && settings.model !== "");
+    return ready
+      ? { service: pick, step, reason: null, label, destination }
+      : { service: pick, step: null, reason: table.page.not_set_up, label, destination };
+  };
+  const view = async (): Promise<SummaryOrderView> => {
+    const { steps: now, dropped } = await read();
+    const { note } = await readPick();
+    const cx = await context();
+    const offered: StepChoice[] = [{ kind: "Local" }];
     for (const id of cx.computers.keys()) offered.push({ kind: "Computer", device: id });
-    for (const s of now) if (!offered.some((o) => sameStep(o, s))) offered.push(s);
+    // The online writer is the Online service row, never an offered step.
+    for (const s of now) if (!offered.some((o) => sameStep(o, s)) && !isRemoteWriter(s)) offered.push(s);
+    const notes: string[] = [];
+    if (dropped) notes.push(table.page.second_online_dropped);
+    if (note !== null) notes.push(table.page[note]);
     return {
       none: now.length === 0,
       steps: now.map((s) => stepView(s, cx)),
       offered: offered.map((s) => stepView(s, cx)),
-      notes: [],
+      online: await online(),
+      notes,
       max_steps: MAX_ORDER_STEPS,
     };
   };
+  // `write_order`: the checks in the Rust order, then the order, its mirror, the key and (for a
+  // new endpoint service) the provider with its clear, all or nothing.
+  const write = async (wanted: StepChoice[], settings: SummarySettingsValue | null, newPick: ServiceChoice | null) => {
+    for (const s of wanted) {
+      // Rust's copy (`offload::device_id`), not in a table.
+      if (s.kind === "Computer" && !UUID.test(s.device)) invalid("That computer is not one Earshot knows.");
+    }
+    if (wanted.length > MAX_ORDER_STEPS) invalid(table.refusals.too_many_steps);
+    if (wanted.some((s, i) => wanted.slice(0, i).some((t) => sameStep(s, t)))) invalid(table.refusals.twice);
+    const stored = await settingsNow();
+    const { pick: readP } = await readPick();
+    // The provider has one writer (12.7a).
+    if (settings !== null && settings.provider !== stored.provider) invalid(table.page.settings_changed);
+    const onlines = wanted.filter(isRemoteWriter);
+    if (onlines.length > 1) invalid(table.page.not_the_service);
+    const pick = newPick ?? readP;
+    if (onlines.length === 1 && (pick === null || !sameStep(stepOfService(pick), onlines[0]))) {
+      invalid(table.page.not_the_service);
+    }
+    if (wanted.some((s) => s.kind === "Computer" && s.device === deps.thisDevice)) invalid(table.refusals.this_device);
+    const provider = newPick === null ? null : providerOfService(newPick);
+    const providerChange = provider !== null && provider !== stored.provider ? provider : null;
+    const base = settings ?? stored;
+    const candidate: SummarySettingsValue =
+      providerChange === null ? { ...base } : { ...base, provider: providerChange, url: "", model: "" };
+    const writer = mirrorWriter(wanted);
+    // The endpoint rules wherever the step sits, then every setting with the mirrored writer:
+    // the Summaries mock's own checks, which store nothing on a refusal.
+    if (wanted.some((s) => s.kind === "Endpoint")) checkSummarySettings({ ...candidate, writer: "OwnEndpoint" });
+    checkSummarySettings({ ...candidate, writer });
+    await deps.summaries.setSummarySettings({ ...candidate, writer });
+    order = wanted.map((s) => ({ ...s }));
+    // The key follows the order's online writer, else the new pick, else the pick as read: an
+    // untick never changes the pick (12.4).
+    const keyStep = onlines[0] ?? (pick === null ? null : stepOfService(pick));
+    if (keyStep !== null) key = KEY_WORD[keyStep.kind as OnlineKind];
+  };
   return {
     steps,
-    writerSaved: async (writer) => {
-      order = withWriter(await steps(), writer);
+    pick: async () => (await readPick()).pick,
+    stored: () => ({ order: order === null ? null : order.map((s) => ({ ...s })), key }),
+    saveSettings: async (settings) => {
+      await write(await steps(), settings, null);
     },
     summaryOrder: async () => view(),
     setSummaryOrder: async (wanted, settings) => {
-      // `SummaryOrder::new`, then `validate`, in the Rust order.
-      for (const s of wanted) {
-        // Rust's copy (`offload::device_id`), not in a table.
-        if (s.kind === "Computer" && !UUID.test(s.device)) invalid("That computer is not one Earshot knows.");
-      }
-      if (wanted.length > MAX_ORDER_STEPS) invalid(table.refusals.too_many_steps);
-      if (wanted.some((s, i) => wanted.slice(0, i).some((t) => sameStep(s, t)))) invalid(table.refusals.twice);
-      if (wanted.some((s) => s.kind === "Computer" && s.device === deps.thisDevice)) invalid(table.refusals.this_device);
-      const stored = (await deps.summaries.summarySettings()).value;
-      const candidate = settings ?? stored;
-      if (wanted.some((s) => s.kind === "Endpoint")) {
-        // The endpoint rules wherever the step sits: the Summaries mock's own checks.
-        await deps.summaries.setSummarySettings({ ...candidate, writer: "OwnEndpoint" });
-      }
-      await deps.summaries.setSummarySettings({ ...candidate, writer: mirrorWriter(wanted) });
-      order = wanted.map((s) => ({ ...s }));
+      await write(wanted, settings, null);
       return view();
     },
+    // `set_online_service` (12.6, 12.7).
+    setOnlineService: async (service) => {
+      const now = await steps();
+      const { pick } = await readPick();
+      if (pick !== service) {
+        const stored = await settingsNow();
+        const provider = providerOfService(service);
+        const after =
+          provider !== null && provider !== stored.provider ? { ...stored, provider, url: "", model: "" } : stored;
+        let canStep = true;
+        if (service === "AnthropicApi" || service === "OwnServer") {
+          try {
+            checkSummarySettings({ ...after, writer: "OwnEndpoint" });
+          } catch {
+            canStep = false;
+          }
+        }
+        const next = [...now];
+        const i = next.findIndex(isRemoteWriter);
+        if (i >= 0) {
+          if (canStep) next[i] = stepOfService(service);
+          else next.splice(i, 1);
+        }
+        await write(next, null, service);
+      }
+      return { settings: await deps.summaries.summarySettings(), order: await view() };
+    },
+    // `resummarise_view` (12.9): the local model, and the one service picked when it can run.
     resummariseWriters: async (meeting) => {
-      const settings = (await deps.summaries.summarySettings()).value;
+      const settings = await settingsNow();
       const cx = await context();
       const kept = deps.keptLocal(meeting);
       const here: StepChoice[] = [{ kind: "Local" }];
-      if (
-        settings.url !== "" &&
-        settings.model !== "" &&
-        (settings.provider !== "Anthropic" || (await deps.summaries.hasApiKey()))
-      ) {
-        here.push({ kind: "Endpoint" });
-      }
-      if ((await deps.summaries.claudeCodeStatus()).state !== "NotInstalled") here.push({ kind: "ClaudeCode" });
-      if ((await deps.summaries.codexStatus()).state !== "NotInstalled") here.push({ kind: "Codex" });
+      const { pick } = await readPick();
+      const runs =
+        pick === "ClaudeCode"
+          ? (await deps.summaries.claudeCodeStatus()).state !== "NotInstalled"
+          : pick === "Codex"
+            ? (await deps.summaries.codexStatus()).state !== "NotInstalled"
+            : pick !== null &&
+              settings.url !== "" &&
+              settings.model !== "" &&
+              (settings.provider !== "Anthropic" || (await deps.summaries.hasApiKey()));
+      if (pick !== null && runs) here.push(stepOfService(pick));
       const writers: ResummariseItem[] = here.map((step) => ({
         step,
         label: mockStepLabel(step, cx),

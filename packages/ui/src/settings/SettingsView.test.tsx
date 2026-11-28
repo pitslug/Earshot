@@ -168,11 +168,8 @@ describe("Settings", () => {
   });
 
   it("keeps choices out of every part a Save button saves: a choice applies at once, typed text needs Save", async () => {
-    // The one exception: the endpoint's provider is saved with the address and model typed beside
-    // it, because a provider alone is not an endpoint (docs/ui-design.md "Settings").
-    const allowed = (el: Element) =>
-      el instanceof HTMLSelectElement &&
-      document.getElementById(el.getAttribute("aria-labelledby") ?? "")?.textContent === "Provider";
+    // No exception since T14.72: the endpoint's Provider select is gone, because the Online service
+    // picker is the provider and applies at once like every choice (docs/summary-order.md 12.6).
     const seen = new Set<string>();
     const checkPage = () => {
       const saves = within(screen.getByRole("main")).queryAllByRole("button", { name: /^(Save|Use this endpoint|Add$|Set up$|Join$)/ });
@@ -183,7 +180,7 @@ describe("Settings", () => {
         if (/^(Set up|Join)$/.test(button.textContent ?? "")) expect(part?.tagName).toBe("FORM");
         const choices = [
           ...(part as Element).querySelectorAll("input[type='radio'], input[type='checkbox'], select, [role='combobox']"),
-        ].filter((el) => !allowed(el));
+        ];
         expect(choices, `choices beside "${button.textContent}"`).toEqual([]);
         seen.add(button.textContent ?? "");
       }
@@ -198,13 +195,29 @@ describe("Settings", () => {
       if (section === "Notes and storage") await screen.findByRole("textbox", { name: "Vault folder" });
       checkPage();
     }
-    // The writers' own parts on Summaries: the endpoint (with the Anthropic key) and the two CLIs.
+    // The writers' own parts on Summaries: the endpoint (with the Anthropic key) and the two CLIs,
+    // each the setup section of the online service picked (T14.72).
     await goTo(s, "Summaries");
+    // The picker is a choice: it sits on the list's row, in no part a Save button saves, and it
+    // applies at once (no Save button stores it).
+    const picker = screen.getByRole("combobox", { name: ORDER_COPY.page.service_label });
+    const pickTo = async (service: string) => {
+      await s.user.selectOptions(picker, service);
+      await waitFor(async () => expect((await s.ipc.summaryOrder()).online.service).toBe(service));
+    };
+    expect(picker.closest("form, [role='group']")).toBeNull();
     // The endpoint is not set up, so its form is below the list of writers (T12.68), in a section
     // folded away until opened (T12.96): open each writer's section before reading its parts.
-    const form = await openSetup(s.user, "Your own server");
-    await s.user.selectOptions(within(form).getByRole("combobox", { name: "Provider" }), "Anthropic");
+    await pickTo("OwnServer");
+    await openSetup(s.user, ORDER_COPY.steps.endpoint_unset);
     checkPage();
+    await pickTo("AnthropicApi");
+    const anthropic = await openSetup(s.user, ORDER_COPY.steps.endpoint_anthropic);
+    // The Anthropic key's own Save sits in the same section: no Provider select beside it.
+    expect(within(anthropic).queryByRole("combobox", { name: "Provider" })).toBeNull();
+    checkPage();
+    expect(picker.closest("form, [role='group']")).toBeNull();
+    await pickTo("ClaudeCode");
     const tick = (writer: string) =>
       screen.getByRole("checkbox", { name: fillCopy(ORDER_COPY.page.use, { writer }) });
     await s.user.click(tick(ORDER_COPY.steps.claude_code));
@@ -214,7 +227,7 @@ describe("Settings", () => {
     await s.user.selectOptions(within(claude).getByRole("combobox", { name: "Model" }), "Other");
     within(claude).getByRole("button", { name: "Save model" });
     checkPage();
-    await s.user.click(tick(ORDER_COPY.steps.codex));
+    await pickTo("Codex");
     const codex = await openSetup(s.user, "OpenAI through Codex");
     checkPage();
     await s.user.selectOptions(within(codex).getByRole("combobox", { name: "Model" }), "Other");

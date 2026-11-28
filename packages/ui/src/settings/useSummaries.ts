@@ -9,6 +9,8 @@ import {
   type ClaudeCodeStatusView,
   type CodexStatusView,
   type ModelsView,
+  type OnlineServiceSaved,
+  type ServiceChoice,
   type StepChoice,
   mirrorWriter,
   type SummaryOrderView,
@@ -55,6 +57,10 @@ export interface SummariesPageState {
   /** Stores the order of `steps` (empty: no summary), with the endpoint settings when they
    * change too; resolves true when stored. */
   saveOrder(steps: StepChoice[], settings?: Partial<SummarySettingsValue>): Promise<boolean>;
+  /** Picks the one online service (T14.72, docs/summary-order.md 12.6): applied at once, the
+   * cached settings and order both replaced with what was stored before busy is released;
+   * resolves with them, or null when refused. */
+  pickService(service: ServiceChoice): Promise<OnlineServiceSaved | null>;
   /** Why the models view could not be read. */
   modelsError: string | null;
   notice: SummariesNotice | null;
@@ -159,7 +165,9 @@ export function useSummaries(): SummariesPageState {
       if (now === null) return false;
       setBusy(true);
       try {
-        setSettings(await ipc.setSummarySettings({ ...now.value, ...change }));
+        // The provider is never changed by a settings save: only the online service picker
+        // changes it (T14.72, docs/summary-order.md 12.7a).
+        setSettings(await ipc.setSummarySettings({ ...now.value, ...change, provider: now.value.provider }));
         setNotice(null);
         await refreshKeySaved();
         // The steps' labels name the endpoint's host.
@@ -186,12 +194,16 @@ export function useSummaries(): SummariesPageState {
       if (now === null || orderRef.current === null) return false;
       setBusy(true);
       try {
-        const stored = await ipc.setSummaryOrder(steps, change === undefined ? null : { ...now.value, ...change });
+        // The provider comes from the cache, never from a change (12.7a).
+        const stored = await ipc.setSummaryOrder(
+          steps,
+          change === undefined ? null : { ...now.value, ...change, provider: now.value.provider },
+        );
         setOrder(stored);
         // The writer the old setting mirrors follows the order at once, so no later save sends a
         // writer the order no longer holds (it would put that writer back first).
         const writer = mirrorWriter(stored.steps.map((v) => v.step));
-        const value = { ...now.value, ...change, writer };
+        const value = { ...now.value, ...change, provider: now.value.provider, writer };
         setSettings({ ...now, value });
         setNotice(null);
         // The live switch and the endpoint's host as stored; the order is saved either way.
@@ -205,6 +217,31 @@ export function useSummaries(): SummariesPageState {
       } catch (e) {
         setNotice({ title: "This setting was not saved", message: errorText(e) });
         return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [ipc],
+  );
+
+  const pickService = useCallback(
+    async (service: ServiceChoice) => {
+      // Never over an order or settings that were not read.
+      if (current.current === null || orderRef.current === null) return null;
+      setBusy(true);
+      try {
+        const saved = await ipc.setOnlineService(service);
+        // Both views as stored, before busy is released: a save that follows sends the new
+        // provider, never the old one (T12.63b's rule).
+        setSettings(saved.settings);
+        setOrder(saved.order);
+        setNotice(null);
+        // A saved key counts only for the address it was saved for.
+        await refreshKeySaved();
+        return saved;
+      } catch (e) {
+        setNotice({ title: "This setting was not saved", message: errorText(e) });
+        return null;
       } finally {
         setBusy(false);
       }
@@ -269,6 +306,7 @@ export function useSummaries(): SummariesPageState {
     order,
     orderError,
     saveOrder,
+    pickService,
     modelsError,
     notice,
     keyError,

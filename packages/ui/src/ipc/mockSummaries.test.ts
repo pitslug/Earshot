@@ -47,6 +47,33 @@ describe("the Summaries mock against the app's case table", () => {
     expect(wrong).toEqual([]);
   });
 
+  it("refuses a settings save whose provider is not the stored one, storing nothing (T14.72)", async () => {
+    // Only the online service picker changes the provider (docs/summary-order.md 12.7a).
+    const ipc = createMockIpc({ meetings: [] });
+    const before = (await ipc.summarySettings()).value;
+    const order = (await ipc.summaryOrder()).steps;
+    const got = await outcome(async () =>
+      (await ipc.setSummarySettings({ ...before, provider: "Anthropic", live: true })).value,
+    );
+    expect(got).toEqual({ error: table.messages.settings_changed });
+    expect((await ipc.summarySettings()).value).toEqual(before);
+    expect((await ipc.summaryOrder()).steps).toEqual(order);
+    // Control: the same save with the stored provider is stored, and the order is untouched.
+    const stored = await outcome(async () => (await ipc.setSummarySettings({ ...before, live: true })).value);
+    expect(stored).toEqual({ stored: { ...before, live: true } });
+    expect((await ipc.summaryOrder()).steps).toEqual(order);
+    // After a pick changes the provider, a save with the new provider is stored.
+    await ipc.setOnlineService("AnthropicApi");
+    const now = (await ipc.summarySettings()).value;
+    expect(now.provider).toBe("Anthropic");
+    expect(await outcome(async () => (await ipc.setSummarySettings({ ...now, live: false })).value)).toEqual({
+      stored: { ...now, live: false },
+    });
+    expect(await outcome(async () => (await ipc.setSummarySettings({ ...now, provider: "OpenAiCompatible" })).value)).toEqual({
+      error: table.messages.settings_changed,
+    });
+  });
+
   it("counts a saved API key only for the address it was saved for, as the app does (T14.31)", async () => {
     const cases = table.key_binding.cases;
     expect(cases.length).toBeGreaterThanOrEqual(7);

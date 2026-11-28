@@ -1,13 +1,13 @@
 // Settings, Summaries (docs/ui-mockups/t7-4.html, PLAN T7.4g): who writes the summary (one
-// ordered list of this computer, your own endpoint, Claude through Claude Code (T7.4ga), OpenAI
-// through Codex (T7.4gc) and your other computers, or no summary; T12.68), the summary model
-// when this computer writes (T12.5b, was on Models),
-// the endpoint with its API key for Anthropic, Claude Code's and Codex's status and model (a
-// list with Other, T12.18) and Claude Code's effort, summarising during the meeting, and the
-// summary style (T7.4b, `SummaryStyleSection`). The writers' setup sections fold away (T12.96).
-// Choices save as they change; the endpoint and a
-// model name typed under Other save with their buttons. The API key is only ever sent
-// to the app, never shown or read back.
+// ordered list of this computer, your other computers and one Online service row whose picker
+// names Claude through Claude Code (T7.4ga), OpenAI through Codex (T7.4gc), the Anthropic API or
+// your own server (T14.72, docs/summary-order.md 12), or no summary; T12.68), the summary model
+// when this computer writes (T12.5b, was on Models), the setup of the service picked (the
+// endpoint with its API key for Anthropic, or Claude Code's or Codex's status and model, a list
+// with Other, T12.18, and Claude Code's effort), summarising during the meeting, and the summary
+// style (T7.4b, `SummaryStyleSection`). The setup section folds away (T12.96). Choices, the
+// picker included, save as they change; the endpoint and a model name typed under Other save
+// with their buttons. The API key is only ever sent to the app, never shown or read back.
 
 import {
   Badge,
@@ -35,13 +35,19 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   type EffortChoice,
   ORDER_COPY,
+  type OnlineRowView,
   type ProviderChoice,
+  SERVICES,
+  type ServiceChoice,
   type StepChoice,
   type StepView,
   type SummarySettingsValue,
   type SummarySettingsView,
   fillCopy,
+  isEndpointService,
+  isRemoteWriter,
   sameStep,
+  serviceName,
   stepKey,
 } from "../ipc";
 import { endpointHost } from "../ipc/localHost";
@@ -112,6 +118,11 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: tokens.spacingVerticalXXS,
+  },
+  // The Online service row's picker, under the row's name inside the text column, so it wraps
+  // with the row and never leaves the bordered list.
+  picker: {
+    maxWidth: FIELD_WIDTH,
   },
   moves: {
     flexShrink: 0,
@@ -211,6 +222,7 @@ export function SetupSection({
   group,
   attention,
   openRequest = 0,
+  revealRequest = 0,
   fixed,
   children,
 }: {
@@ -220,6 +232,9 @@ export function SetupSection({
   group: string;
   attention: boolean;
   openRequest?: number;
+  /** Changes when the section must open without taking the focus (T14.72: a pick that left the
+   * endpoint unticked because it is not set up keeps the focus on the picker). */
+  revealRequest?: number;
   fixed: boolean;
   children: ReactNode;
 }) {
@@ -237,6 +252,9 @@ export function SetupSection({
     setOpen(true);
     focusPending.current = true;
   }, [openRequest]);
+  useEffect(() => {
+    if (revealRequest !== 0) setOpen(true);
+  }, [revealRequest]);
   // The control to focus once a requested open shows. The request is spent on the first render
   // that shows the body, whether or not it holds a control: a control that appears later (a
   // reload) never takes the focus from where the user has gone since.
@@ -284,12 +302,6 @@ export const MODEL_PLACEHOLDER: Record<ProviderChoice, string> = {
   Anthropic: "claude-opus-5-5",
 };
 
-/** The provider names in the select. */
-export const PROVIDER_LABEL: Record<ProviderChoice, string> = {
-  OpenAiCompatible: "OpenAI-compatible server",
-  Anthropic: "Anthropic (Claude)",
-};
-
 /** What the Claude Code choice says about where the meeting goes (PLAN.md 3.9 exception). */
 export const CLAUDE_CODE_PRIVACY =
   "Your meeting's transcript, title, speaker names and notes are handed to Claude Code, which sends them to Anthropic on your Claude sign-in. Earshot cannot see that request; it records only when and how much it handed over.";
@@ -319,8 +331,10 @@ const NO_SUMMARY = "NoSummary";
 /** The value of "Write summaries" on the Summaries page. */
 const WRITE = "Write";
 
-/** The endpoint form, the remote warning and the API key. `inUse`: a step of the order is the
- * endpoint; `onUse` stores the fields with the endpoint in its step. */
+/** The endpoint form, the remote warning and the API key: the setup section of the service
+ * picked when it is Anthropic API or your own server (T14.72: the picker is the provider, so the
+ * form has no provider of its own). `inUse`: a step of the order is the endpoint; `onUse` stores
+ * the fields with the endpoint in its step. */
 function EndpointForm({
   state,
   settings,
@@ -330,6 +344,7 @@ function EndpointForm({
   onUse,
   locked,
   openRequest,
+  revealRequest,
   saveOnNext,
 }: {
   state: SummariesPageState;
@@ -343,36 +358,40 @@ function EndpointForm({
   locked: boolean;
   /** Changes when the order list's "Set up" asks for the form: it opens and takes the focus. */
   openRequest: number;
+  /** Changes when a pick left the endpoint unticked because it is not set up: it opens and the
+   * focus stays where it is (docs/summary-order.md 12.6). */
+  revealRequest: number;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
   const stored = settings.value;
-  const [provider, setProvider] = useState<ProviderChoice>(stored.provider);
-  const [url, setUrl] = useState(stored.url);
+  // The provider is the service picked, as stored; nothing here changes it (12.7a).
+  const anthropic = stored.provider === "Anthropic";
+  // Anthropic's address, filled in as a draft over an empty address (12.7): nothing is stored
+  // until the form is saved, and the fill alone is not an edit.
+  const draftUrl = anthropic && stored.url === "" ? settings.anthropic_url : stored.url;
+  const [url, setUrl] = useState(draftUrl);
   const [model, setModel] = useState(stored.model);
   const [key, setKey] = useState("");
-  // The address is Anthropic's, filled in by choosing Anthropic over an empty address.
-  const [prefilled, setPrefilled] = useState(false);
-  const providerId = useId();
-  // A stored change (a save) resets the drafts to what was stored.
+  // The address is Anthropic's, filled in by picking Anthropic API over an empty address.
+  const [prefilled, setPrefilled] = useState(draftUrl !== stored.url);
+  // A stored change (a save, or another service picked) resets the drafts to what was stored.
   useEffect(() => {
-    setProvider(stored.provider);
-    setUrl(stored.url);
+    setUrl(draftUrl);
     setModel(stored.model);
-    setPrefilled(false);
-  }, [stored.provider, stored.url, stored.model]);
+    setPrefilled(draftUrl !== stored.url);
+  }, [draftUrl, stored.url, stored.model]);
 
-  const anthropic = provider === "Anthropic";
   const saves = inUse || saveOnly;
-  const changed = !saves || provider !== stored.provider || url !== stored.url || model !== stored.model;
+  const changed = !saves || url !== stored.url || model !== stored.model;
   const wizard = saveOnNext !== undefined;
   // Next saves the fields only when they differ from what is stored: an endpoint form nobody
-  // typed in (shown under the list whether or not the endpoint is set up) never holds Next.
-  // Choosing Anthropic alone fills in its address; with nothing else typed (no model, no API key)
-  // that is not an edit. A typed key makes it one, so Next asks for the model.
+  // typed in never holds Next. Picking Anthropic API alone fills in its address; with nothing
+  // else typed (no model, no API key) that is not an edit. A typed key makes it one, so Next asks
+  // for the model.
   const onlyPrefill =
     prefilled && url === settings.anthropic_url && model.trim() === "" && key.trim() === "" && stored.url === "";
-  const edited = !onlyPrefill && (provider !== stored.provider || url !== stored.url || model !== stored.model);
+  const edited = !onlyPrefill && (url !== stored.url || model !== stored.model);
   // Where the transcript would go: in the wizard the address being typed, as soon as it is one
   // (T12.79 review), else what is stored and in use.
   const typed = wizard && edited ? endpointHost(url) : null;
@@ -385,7 +404,7 @@ function EndpointForm({
         ? settings.endpoint_host
         : null;
   useSaveOnNext(saveOnNext, async () => {
-    if (edited && (locked || !(await onUse({ provider, url, model })))) return false;
+    if (edited && (locked || !(await onUse({ url, model })))) return false;
     if (!anthropic || key.trim() === "") return true;
     const saved = await state.saveKey(key);
     if (saved) setKey("");
@@ -396,42 +415,21 @@ function EndpointForm({
   const noKey = stored.provider === "Anthropic" && keySaved === false;
   const stateLine = !setUp
     ? ORDER_COPY.page.not_set_up
-    : setupState([PROVIDER_LABEL[stored.provider], stored.model, noKey ? SETUP_COPY.noApiKey : null]);
+    : setupState([stored.model, noKey ? SETUP_COPY.noApiKey : null]);
+  // The section is named as the picker names the service.
+  const name = serviceName(anthropic ? "AnthropicApi" : "OwnServer");
 
   return (
     <SetupSection
-      name="Your own server"
+      name={name}
       state={stateLine}
-      group="Your own server"
+      group={name}
       attention={inUse && (!setUp || noKey)}
       openRequest={openRequest}
+      revealRequest={revealRequest}
       fixed={wizard}
     >
       <div className={styles.fields}>
-        <Field label="Provider">
-          <Select
-            id={providerId}
-            value={provider}
-            onChange={(_, d) => {
-              const p = d.value as ProviderChoice;
-              setProvider(p);
-              if (p === "Anthropic" && url.trim() === "") {
-                setUrl(settings.anthropic_url);
-                setPrefilled(true);
-              } else if (p !== "Anthropic" && prefilled && url === settings.anthropic_url) {
-                // Switching back undoes the address Anthropic filled in.
-                setUrl("");
-                setPrefilled(false);
-              }
-            }}
-          >
-            {(["OpenAiCompatible", "Anthropic"] as const).map((p) => (
-              <option key={p} value={p}>
-                {PROVIDER_LABEL[p]}
-              </option>
-            ))}
-          </Select>
-        </Field>
         <Field
           label="Address"
           hint={
@@ -452,7 +450,7 @@ function EndpointForm({
         <Field label="Model" hint="The model name the endpoint expects.">
           <Input
             value={model}
-            placeholder={MODEL_PLACEHOLDER[provider]}
+            placeholder={MODEL_PLACEHOLDER[stored.provider]}
             onChange={(_, d) => setModel(d.value)}
             spellCheck={false}
           />
@@ -463,7 +461,7 @@ function EndpointForm({
           <Button
             appearance="primary"
             disabled={state.busy || locked || !changed}
-            onClick={() => void onUse({ provider, url, model })}
+            onClick={() => void onUse({ url, model })}
           >
             {saves ? "Save endpoint" : "Use this endpoint"}
           </Button>
@@ -879,30 +877,34 @@ function CodexCard({ state, settings, inUse, saveOnNext }: WriterCardProps) {
   );
 }
 
-/** The parts under the writers: the summary models when this computer writes, the endpoint form
- * (also while the endpoint is not set up, so it can be), and the Claude Code and Codex cards for
- * the writers in the order, each a setup section folded away until opened (T12.96). Nothing shows
- * while the order is unread (`locked`). */
+/** The parts under the writers: the summary models when this computer writes, and the setup
+ * section of the one online service picked (T14.72, docs/summary-order.md 12.8: the endpoint form
+ * for Anthropic API or your own server, also while it is not set up so it can be, or Claude
+ * Code's or Codex's card), folded away until opened (T12.96). The services not picked have no
+ * section. Nothing shows while the order is unread (`locked`). */
 function WriterForms({
   state,
   settings,
   keySaved,
-  stored,
+  pick,
+  onlineTicked,
   locked,
-  endpointShown,
   endpointSaveOnly = false,
   localShown,
   useEndpoint,
   localModels,
   endpointRequest,
+  endpointReveal,
   saveOnNext,
 }: {
   state: SummariesPageState;
   settings: SummarySettingsView;
   keySaved: boolean | null;
-  stored: StepChoice[];
+  /** The online service picked (null: none, or the order is unread). */
+  pick: ServiceChoice | null;
+  /** Whether the order holds the online service picked. */
+  onlineTicked: boolean;
   locked: boolean;
-  endpointShown: boolean;
   /** The endpoint form saves only its fields (a set-up endpoint not in the order). */
   endpointSaveOnly?: boolean;
   /** Whether the summary models show (this computer writes, or no summary model is installed). */
@@ -911,11 +913,12 @@ function WriterForms({
   localModels?: ModelsPageState;
   /** Changes when the order list asks to set the endpoint up. */
   endpointRequest: number;
+  /** Changes when a pick left the endpoint unticked because it is not set up. */
+  endpointReveal: number;
   saveOnNext?: SaveOnNext;
 }) {
   const styles = useStyles();
   const localLabel = useId();
-  const inOrder = (kind: StepChoice["kind"]) => stored.some((s) => s.kind === kind);
   return (
     <>
       {state.modelsError !== null && (
@@ -931,45 +934,44 @@ function WriterForms({
           )}
         </div>
       )}
-      {endpointShown && (
+      {!locked && isEndpointService(pick) && (
         <EndpointForm
           state={state}
           settings={settings}
           keySaved={keySaved}
-          inUse={inOrder("Endpoint")}
+          inUse={onlineTicked}
           saveOnly={endpointSaveOnly}
           onUse={useEndpoint}
           locked={locked}
           openRequest={endpointRequest}
+          revealRequest={endpointReveal}
           saveOnNext={saveOnNext}
         />
       )}
-      {inOrder("ClaudeCode") && (
-        <ClaudeCodeCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />
+      {!locked && pick === "ClaudeCode" && (
+        <ClaudeCodeCard state={state} settings={settings} inUse={onlineTicked} saveOnNext={saveOnNext} />
       )}
-      {inOrder("Codex") && (
-        <CodexCard state={state} settings={settings} inUse saveOnNext={saveOnNext} />
+      {!locked && pick === "Codex" && (
+        <CodexCard state={state} settings={settings} inUse={onlineTicked} saveOnNext={saveOnNext} />
       )}
     </>
   );
 }
 
-/** The writers the list always holds, in its order (the user's other computers follow). */
-const WRITERS: StepChoice[] = [{ kind: "Local" }, { kind: "Endpoint" }, { kind: "ClaudeCode" }, { kind: "Codex" }];
+/** This computer's row while the order is unread (nothing in it can be used until the order is
+ * read). */
+const UNREAD_LOCAL: StepView = {
+  step: { kind: "Local" },
+  label: ORDER_COPY.steps.local,
+  destination: ORDER_COPY.destinations.local,
+};
 
-/** A writer's row while the order is unread: the table's label and destination for a writer
- * not yet set up (nothing in it can be used until the order is read). */
-function unreadView(step: StepChoice): StepView {
-  const key =
-    step.kind === "Local"
-      ? "local"
-      : step.kind === "ClaudeCode"
-        ? "claude_code"
-        : step.kind === "Codex"
-          ? "codex"
-          : "endpoint_unset";
-  return { step, label: ORDER_COPY.steps[key], destination: ORDER_COPY.destinations[key] };
-}
+/** The Online service row while the order is unread: no service, nothing usable. */
+const UNREAD_ONLINE: OnlineRowView = { service: null, step: null, reason: null, label: null, destination: null };
+
+/** The Online service row's React key and `data-step`: a constant, so a change of service keeps
+ * the row, and the picker its focus (docs/summary-order.md 12.8, T12.68's focus rule). */
+export const ONLINE_ROW_KEY = "online";
 
 function ArrowIcon({ up }: { up: boolean }) {
   return (
@@ -982,15 +984,17 @@ function ArrowIcon({ up }: { up: boolean }) {
 /** The order list's button that opens a writer's setup form (T12.96). */
 export const SET_UP = "Set up";
 
-/** Which control of a row keeps the keyboard focus after a change (T12.68). */
-type RowControl = "tick" | "up" | "down";
+/** Which control of a row keeps the keyboard focus after a change (T12.68; the Online service
+ * row's picker, T14.72). */
+type RowControl = "tick" | "up" | "down" | "picker";
 
 /** One writer in the list: its rank while ticked ("Step n" to a screen reader), its tick box,
  * its name and kind, where it sends the transcript, what the writer does with the meeting (the
- * agent CLIs' privacy line, shown before it is ticked), why it cannot be ticked yet, and up and
- * down while ticked. */
+ * agent CLIs' privacy line, shown before it is ticked), why it cannot be ticked yet, the Online
+ * service row's picker, and up and down while ticked. */
 function WriterRow({
   view,
+  rowKey,
   kind,
   privacy,
   rank,
@@ -998,12 +1002,16 @@ function WriterRow({
   last,
   disabled,
   reason,
+  showReason = true,
   note = null,
+  picker,
   onTick,
   onMove,
   onSetUp,
 }: {
   view: StepView;
+  /** The row's `data-step` (default: its step's key). */
+  rowKey?: string;
   /** What kind of writer it is, in a lighter span after its name. */
   kind?: string;
   /** Where the meeting goes, said in full (PLAN 3.9: before it is chosen). */
@@ -1016,8 +1024,13 @@ function WriterRow({
   disabled: boolean;
   /** Why it cannot be ticked yet (null: it can). */
   reason: string | null;
+  /** Whether the reason shows as a badge beside the name (false: something else in the row
+   * already says it, as the picker's "Choose a service"). */
+  showReason?: boolean;
   /** A state shown beside its name that leaves it tickable (an agent CLI's sign-in). */
   note?: string | null;
+  /** The Online service row's picker. */
+  picker?: ReactNode;
   onTick(on: boolean): void;
   onMove(by: -1 | 1, from: RowControl): void;
   /** Opens and focuses the writer's setup form, for a writer not set up yet (T12.96). */
@@ -1029,14 +1042,15 @@ function WriterRow({
   const stepId = useId();
   const destId = useId();
   const privacyId = useId();
-  const described = [ticked ? stepId : null, destId, privacy !== undefined ? privacyId : null]
+  const hasDestination = view.destination !== "";
+  const described = [ticked ? stepId : null, hasDestination ? destId : null, privacy !== undefined ? privacyId : null]
     .filter((id) => id !== null)
     .join(" ");
   return (
     <li
       className={mergeClasses(styles.writerRow, reason !== null && !ticked && styles.writerOff)}
       data-rank={rank ?? undefined}
-      data-step={stepKey(view.step)}
+      data-step={rowKey ?? stepKey(view.step)}
     >
       {ticked ? (
         <>
@@ -1052,7 +1066,7 @@ function WriterRow({
       )}
       <Checkbox
         aria-label={fillCopy(ORDER_COPY.page.use, { writer })}
-        aria-describedby={described}
+        aria-describedby={described === "" ? undefined : described}
         data-control="tick"
         checked={ticked}
         disabled={disabled || (reason !== null && !ticked)}
@@ -1062,9 +1076,9 @@ function WriterRow({
         <span className={styles.title}>
           <Body1Strong>{writer}</Body1Strong>
           {kind !== undefined && <Caption1 className={styles.muted}>{kind}</Caption1>}
-          {(reason ?? note) !== null && (
+          {(showReason ? (reason ?? note) : note) !== null && (
             <Badge appearance="outline" color="informative" size="small">
-              {reason ?? note}
+              {showReason ? (reason ?? note) : note}
             </Badge>
           )}
           {reason !== null && !ticked && onSetUp !== undefined && (
@@ -1079,14 +1093,17 @@ function WriterRow({
             </Button>
           )}
         </span>
-        <Caption1 id={destId} className={styles.muted}>
-          {view.destination}
-        </Caption1>
+        {hasDestination && (
+          <Caption1 id={destId} className={styles.muted}>
+            {view.destination}
+          </Caption1>
+        )}
         {privacy !== undefined && (
           <Caption1 id={privacyId} className={styles.muted}>
             {privacy}
           </Caption1>
         )}
+        {picker}
       </div>
       {ticked && (
         <div className={styles.moves}>
@@ -1114,15 +1131,57 @@ function WriterRow({
   );
 }
 
+/** The Online service row's picker (T14.72, docs/summary-order.md 12.8): the four services by
+ * their step names, applied at once. With no service picked it reads "Choose a service". Not
+ * disabled while a save is in flight (a change then is ignored), so it keeps the focus. */
+function ServicePicker({
+  service,
+  disabled,
+  onPick,
+}: {
+  service: ServiceChoice | null;
+  disabled: boolean;
+  onPick(service: ServiceChoice): void;
+}) {
+  const styles = useStyles();
+  return (
+    <Field label={ORDER_COPY.page.service_label} orientation="horizontal" className={styles.picker}>
+      <Select
+        data-control="picker"
+        value={service ?? ""}
+        disabled={disabled}
+        onChange={(_, d) => {
+          if (d.value !== "") onPick(d.value as ServiceChoice);
+        }}
+      >
+        {service === null && (
+          <option value="" disabled>
+            {ORDER_COPY.page.choose_service}
+          </option>
+        )}
+        {SERVICES.map((s) => (
+          <option key={s} value={s}>
+            {serviceName(s)}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+/** A row of the list: a step (this computer or another computer), or the one Online service
+ * row. */
+type Row = { type: "step"; view: StepView } | { type: "online" };
+
 /** "Who writes the summary" on the Summaries page (T12.68, docs/summary-order.md 2): "Write
  * summaries" or "No summary", then one list of every writer this computer can use (this
- * computer, your own server, Claude Code, Codex, each other computer that offers summaries). The
- * ticked writers come first, in the order Earshot asks them, each with its rank and up and down
- * buttons; at most `max_steps` are ticked. A writer that cannot run yet (an endpoint not set up,
- * this computer with no summary model) is listed, greyed, with why, and cannot be ticked; "No
- * summary" greys the whole list. Every change saves the order at once through
- * `set_summary_order`, nothing changes while the order is unread, and the keyboard focus stays
- * on the control used, on its row wherever the row moved. */
+ * computer, each other computer that offers summaries, and one Online service row with its picker,
+ * T14.72). The ticked writers come first, in the order Earshot asks them, each with its rank and
+ * up and down buttons; at most `max_steps` are ticked. A writer that cannot run yet (no service
+ * picked, an endpoint not set up, this computer with no summary model) is listed, greyed, with
+ * why, and cannot be ticked; "No summary" greys the whole list. Every change saves at once
+ * (`set_summary_order`, the picker `set_online_service`), nothing changes while the order is
+ * unread, and the keyboard focus stays on the control used, on its row wherever the row moved. */
 function OrderSection({
   state,
   settings,
@@ -1150,15 +1209,20 @@ function OrderSection({
   const focusNext = useRef<{ key: string; control: RowControl } | null>(null);
   // A tick refused because the order is full.
   const [full, setFull] = useState(false);
-  // Counts the order list's requests to open the endpoint's form (T12.96).
+  // Counts the order list's requests to open the endpoint's form (T12.96), and the picks that
+  // left the endpoint unticked because it is not set up (T14.72). Both go back to 0 at each pick,
+  // so a form that mounts for a newly picked service neither opens nor takes the focus by itself.
   const [endpointRequest, setEndpointRequest] = useState(0);
+  const [endpointReveal, setEndpointReveal] = useState(0);
+  const reveals = useRef(0);
   const value = settings.value;
   const order = state.order;
   // Nothing is offered before the order is read: a change then would replace an order nobody
   // has seen.
   const locked = order === null;
   const stored: StepChoice[] = order !== null ? order.steps.map((s) => s.step) : [];
-  const offered: StepView[] = order?.offered ?? WRITERS.map(unreadView);
+  const offered: StepView[] = order?.offered ?? [UNREAD_LOCAL];
+  const online = order?.online ?? UNREAD_ONLINE;
   const hasEndpoint = value.url !== "" && value.model !== "";
   const maxSteps = order?.max_steps ?? 3;
   const none = !locked && stored.length === 0;
@@ -1174,33 +1238,18 @@ function OrderSection({
     models === null || !models.summary.some((m) => m.installed === "Yes")
       ? undefined
       : `${titleOf(models, models.in_use.summary)} on the ${partName(models.in_use.summary_runs_on)}`;
-  const kindOf = (step: StepChoice): string | undefined => {
-    switch (step.kind) {
-      case "Local":
-        return local;
-      case "ClaudeCode":
-        return "Uses your Claude sign-in";
-      case "Codex":
-        return "Uses your ChatGPT sign-in";
-      default:
-        return undefined;
-    }
-  };
-  const privacyOf = (step: StepChoice): string | undefined =>
-    step.kind === "ClaudeCode" ? CLAUDE_CODE_PRIVACY : step.kind === "Codex" ? CODEX_PRIVACY : undefined;
-  // Claude Code and Codex stay tickable whatever their sign-in: the CLI is asked only once its
-  // card shows, and a run that finds it signed out moves to the next writer.
-  const reasonOf = (step: StepChoice): string | null =>
-    step.kind === "Endpoint" && !hasEndpoint
-      ? ORDER_COPY.page.not_set_up
-      : step.kind === "Local" && noLocalModel
-        ? ORDER_COPY.page.not_downloaded
-        : null;
+  // The online writer in the order (at most one, and it is the service picked: 12.5).
+  const onlineAt = stored.findIndex(isRemoteWriter);
+  const onlineTicked = onlineAt >= 0;
+  const kindOfService = (service: ServiceChoice | null): string | undefined =>
+    service === "ClaudeCode" ? "Uses your Claude sign-in" : service === "Codex" ? "Uses your ChatGPT sign-in" : undefined;
+  const privacyOf = (service: ServiceChoice | null): string | undefined =>
+    service === "ClaudeCode" ? CLAUDE_CODE_PRIVACY : service === "Codex" ? CODEX_PRIVACY : undefined;
   // What the last sign-in check found, said on the row too; the writer stays tickable. Only a
   // definite answer is said: a check not run (the CLI is asked once its card shows), running or
   // unreadable says nothing here.
-  const noteOf = (step: StepChoice): string | null => {
-    const check = step.kind === "ClaudeCode" ? state.claudeCode : step.kind === "Codex" ? state.codex : null;
+  const noteOf = (service: ServiceChoice | null): string | null => {
+    const check = service === "ClaudeCode" ? state.claudeCode : service === "Codex" ? state.codex : null;
     if (check?.status !== "done") return null;
     return check.view.state === "NotSignedIn"
       ? SETUP_COPY.notSignedIn
@@ -1209,12 +1258,11 @@ function OrderSection({
         : null;
   };
   const viewOf = (step: StepChoice): StepView =>
-    order?.steps.find((v) => sameStep(v.step, step)) ??
-    offered.find((o) => sameStep(o.step, step)) ??
-    unreadView(step);
-  const rows: StepView[] = [
-    ...stored.map(viewOf),
-    ...offered.filter((o) => !stored.some((s) => sameStep(s, o.step))),
+    order?.steps.find((v) => sameStep(v.step, step)) ?? offered.find((o) => sameStep(o.step, step)) ?? UNREAD_LOCAL;
+  const rows: Row[] = [
+    ...stored.map((s): Row => (isRemoteWriter(s) ? { type: "online" } : { type: "step", view: viewOf(s) })),
+    ...offered.filter((o) => !stored.some((s) => sameStep(s, o.step))).map((view): Row => ({ type: "step", view })),
+    ...(onlineTicked ? [] : [{ type: "online" } as const]),
   ];
 
   // Back to the control used, on its row, once the change shows; an arrow that reached its end
@@ -1228,7 +1276,7 @@ function OrderSection({
     );
     const control = (c: RowControl) => row?.querySelector<HTMLElement>(`[data-control="${c}"]`) ?? null;
     let target = control(next.control);
-    if (next.control !== "tick" && (target === null || (target as HTMLButtonElement).disabled)) {
+    if ((next.control === "up" || next.control === "down") && (target === null || (target as HTMLButtonElement).disabled)) {
       target = control(next.control === "up" ? "down" : "up");
       if (target !== null && (target as HTMLButtonElement).disabled) target = null;
     }
@@ -1241,9 +1289,10 @@ function OrderSection({
     focusNext.current = focus;
     void state.saveOrder(steps);
   };
+  const keyOf = (step: StepChoice) => (isRemoteWriter(step) ? ONLINE_ROW_KEY : stepKey(step));
   const tickOne = (step: StepChoice, on: boolean) => {
     if (locked || state.busy) return;
-    const focus = { key: stepKey(step), control: "tick" as const };
+    const focus = { key: keyOf(step), control: "tick" as const };
     if (!on) {
       save(
         stored.filter((s) => !sameStep(s, step)),
@@ -1262,7 +1311,7 @@ function OrderSection({
     if (to < 0 || to >= stored.length) return;
     const next = [...stored];
     [next[index], next[to]] = [next[to], next[index]];
-    save(next, { key: stepKey(stored[index]), control: from });
+    save(next, { key: keyOf(stored[index]), control: from });
   };
   const choose = (key: string) => {
     if (locked || state.busy) return;
@@ -1270,6 +1319,22 @@ function OrderSection({
     if (key === NO_SUMMARY) void state.saveOrder([]);
     // "Write summaries" from no summary starts with this computer.
     else if (stored.length === 0) void state.saveOrder([{ kind: "Local" }]);
+  };
+  // The picker (12.6): applied at once. A pick that leaves the endpoint unticked because it is
+  // not set up opens its setup section, the focus staying on the picker.
+  const pick = (service: ServiceChoice) => {
+    if (locked || state.busy || service === online.service) return;
+    setFull(false);
+    setEndpointRequest(0);
+    setEndpointReveal(0);
+    focusNext.current = { key: ONLINE_ROW_KEY, control: "picker" };
+    void state.pickService(service).then((saved) => {
+      if (saved === null || !onlineTicked || !isEndpointService(service)) return;
+      if (!saved.order.steps.some((v) => isRemoteWriter(v.step))) {
+        reveals.current += 1;
+        setEndpointReveal(reveals.current);
+      }
+    });
   };
   const endpointTicked = stored.some((s) => s.kind === "Endpoint");
   const useEndpoint = async (change: Partial<SummarySettingsValue>) => {
@@ -1287,6 +1352,42 @@ function OrderSection({
     }
     setFull(false);
     return state.saveOrder([...stored, { kind: "Endpoint" }], change);
+  };
+
+  const onlineRow = () => {
+    const ticked = onlineTicked ? stored[onlineAt] : null;
+    const step = ticked ?? online.step;
+    const view: StepView = {
+      step: step ?? { kind: "Endpoint" },
+      label: online.label ?? ORDER_COPY.page.online_service,
+      destination: online.destination ?? "",
+    };
+    const service = online.service;
+    return (
+      <WriterRow
+        key={ONLINE_ROW_KEY}
+        view={view}
+        rowKey={ONLINE_ROW_KEY}
+        kind={kindOfService(service)}
+        privacy={privacyOf(service)}
+        rank={onlineTicked ? onlineAt + 1 : null}
+        first={onlineAt === 0}
+        last={onlineAt === stored.length - 1}
+        disabled={off}
+        reason={onlineTicked ? null : online.reason}
+        // With no service picked the picker itself says "Choose a service": said once.
+        showReason={service !== null}
+        note={noteOf(service)}
+        picker={<ServicePicker service={service} disabled={off} onPick={pick} />}
+        onTick={(on) => {
+          if (step !== null) tickOne(step, on);
+        }}
+        onMove={(by, from) => move(onlineAt, by, from)}
+        onSetUp={
+          isEndpointService(service) && online.step === null ? () => setEndpointRequest((n) => n + 1) : undefined
+        }
+      />
+    );
   };
 
   return (
@@ -1329,25 +1430,22 @@ function OrderSection({
         className={mergeClasses(styles.writerList, none && styles.writerListOff)}
         aria-labelledby={listLabel}
       >
-        {rows.map((view) => {
+        {rows.map((row) => {
+          if (row.type === "online") return onlineRow();
+          const view = row.view;
           const at = stored.findIndex((s) => sameStep(s, view.step));
           return (
             <WriterRow
               key={stepKey(view.step)}
               view={view}
-              kind={kindOf(view.step)}
-              privacy={privacyOf(view.step)}
+              kind={view.step.kind === "Local" ? local : undefined}
               rank={at < 0 ? null : at + 1}
               first={at === 0}
               last={at === stored.length - 1}
               disabled={off}
-              reason={reasonOf(view.step)}
-              note={noteOf(view.step)}
+              reason={view.step.kind === "Local" && noLocalModel ? ORDER_COPY.page.not_downloaded : null}
               onTick={(on) => tickOne(view.step, on)}
               onMove={(by, from) => move(at, by, from)}
-              onSetUp={
-                view.step.kind === "Endpoint" && !hasEndpoint ? () => setEndpointRequest((n) => n + 1) : undefined
-              }
             />
           );
         })}
@@ -1364,14 +1462,15 @@ function OrderSection({
           state={state}
           settings={settings}
           keySaved={keySaved}
-          stored={stored}
+          pick={locked ? null : online.service}
+          onlineTicked={onlineTicked}
           locked={locked}
-          endpointShown={!locked}
           endpointSaveOnly={hasEndpoint && !endpointTicked}
           localShown={stored.some((s) => s.kind === "Local") || noLocalModel}
           useEndpoint={useEndpoint}
           localModels={localModels}
           endpointRequest={endpointRequest}
+          endpointReveal={endpointReveal}
           saveOnNext={saveOnNext}
         />
       )}

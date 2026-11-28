@@ -1,7 +1,11 @@
 //! The Summaries page settings (T7.4g): who writes the summary, the endpoint of "your own
 //! endpoint" and the live summaries switch. Device-local (`local_state`, never synced, no
 //! migration), one key each, written only through [`set_summary_settings`] in one
-//! transaction.
+//! transaction, or with the order (`crate::summary_order`). Since T14.72 the writer is only the
+//! order's mirror and the endpoint's provider only the online service picked
+//! ([`crate::summary_order::set_online_service`]): saving these settings changes neither, and
+//! settings whose provider differs from the stored one are refused
+//! ([`SummarySettingsError::StaleProvider`]).
 //!
 //! - **Who writes the summary** ([`SummaryWriter`]): on this computer (the Models page's
 //!   local model, the default), your own endpoint, Claude through the user's own Claude Code
@@ -240,6 +244,11 @@ pub enum SummarySettingsError {
     BadClaudeModel(&'static str),
     /// The Codex model name cannot be passed to Codex (why).
     BadCodexModel(&'static str),
+    /// The settings were read before the online service changed: their provider differs from
+    /// the stored one (T14.72, docs/summary-order.md 12.7a).
+    StaleProvider,
+    /// The order would hold an online writer that is not the service picked (12.5).
+    NotTheService,
     /// Reading or writing the store failed.
     Store(RuntimeError),
 }
@@ -260,6 +269,8 @@ impl fmt::Display for SummarySettingsError {
             Self::BadCodexModel(why) => {
                 write!(f, "this Codex model name cannot be used: {why}")
             }
+            Self::StaleProvider => f.write_str(crate::summary_order::SETTINGS_CHANGED),
+            Self::NotTheService => f.write_str(crate::summary_order::NOT_THE_SERVICE),
             Self::Store(e) => write!(f, "{e}"),
         }
     }
@@ -607,13 +618,10 @@ pub fn summary_settings(
 }
 
 /// The stored values of every Summaries setting but the writer (which is the order's mirror,
-/// [`crate::summary_order`]), as [`set_summary_settings`] writes them.
+/// [`crate::summary_order`]) and the provider (which only the online service picked writes,
+/// T14.72), as [`set_summary_settings`] writes them.
 pub(crate) fn stored_values(s: &SummarySettings) -> Vec<(DeviceRecord, String)> {
     vec![
-        (
-            DeviceRecord::SummaryProvider,
-            s.provider.as_str().to_owned(),
-        ),
         (DeviceRecord::SummaryEndpoint, s.url.clone()),
         (DeviceRecord::SummaryEndpointModel, s.model.clone()),
         (DeviceRecord::SummaryClaudeCodeModel, s.claude_model.clone()),
@@ -630,10 +638,12 @@ pub(crate) fn stored_values(s: &SummarySettings) -> Vec<(DeviceRecord, String)> 
 }
 
 /// Checks and stores every setting (replacing earlier ones) in one transaction; returns
-/// what was stored. The writer is stored as the first writer step of the order
-/// ([`crate::summary_order::SummaryOrder::with_writer`]) through
-/// [`crate::summary_order::set_summary_order`], the one writer of `settings/summary-writer`
-/// (T12.63a).
+/// what was stored. Since T14.72 (docs/summary-order.md 12.7a) it never changes the order: the
+/// order as read is stored again with the settings
+/// (`crate::summary_order::set_settings_with_order`), the settings are checked with the order's
+/// mirror as the writer (so a stale writer in `settings` never refuses an unrelated save), and
+/// the writer returned is that mirror. The provider is never written here: settings whose
+/// provider differs from the stored one are refused.
 ///
 /// # Errors
 /// [`SummarySettingsError`]: nothing is stored on a refusal.
@@ -641,18 +651,18 @@ pub fn set_summary_settings(
     store: &mut Store,
     settings: &SummarySettings,
 ) -> Result<SummarySettings, SummarySettingsError> {
-    use crate::summary_order::{SummaryOrderError, set_summary_order, summary_order};
-    let s = validate(settings)?;
-    let (order, _) = summary_order(store)?;
-    let order = order.with_writer(s.writer);
-    set_summary_order(store, &order, Some(&s)).map_err(|e| match e {
+    use crate::summary_order::{SummaryOrderError, set_settings_with_order};
+    set_settings_with_order(store, settings).map_err(|e| match e {
         SummaryOrderError::Settings(e) => e,
         SummaryOrderError::Store(e) => SummarySettingsError::Store(e),
+        SummaryOrderError::StaleProvider => SummarySettingsError::StaleProvider,
+        SummaryOrderError::NotThePick | SummaryOrderError::TwoOnline => {
+            SummarySettingsError::NotTheService
+        }
         SummaryOrderError::TooManySteps
         | SummaryOrderError::Twice
         | SummaryOrderError::ThisDevice => SummarySettingsError::Store(RuntimeError::Internal(
             "the order of summary writers could not be kept",
         )),
-    })?;
-    Ok(s)
+    })
 }

@@ -32,7 +32,7 @@ use earshot_runtime::host::{HostOutcome, HostPost, HostStep, SummaryResult};
 use earshot_runtime::live::{LiveAsrFactory, LiveOutcome, start_live};
 use earshot_runtime::model_settings::{self, ModelPick, ModelSettings};
 use earshot_runtime::summary::SummaryRunReport;
-use earshot_runtime::summary_settings::{self, EndpointProvider, SummarySettings, SummaryWriter};
+use earshot_runtime::summary_settings::{EndpointProvider, SummarySettings, SummaryWriter};
 use earshot_store::DataDir;
 
 use crate::activity::WorkGate;
@@ -400,20 +400,37 @@ fn store_settings(services: &Services, args: &Args) -> Result<(), String> {
             },
         )
         .map_err(|e| format!("the model settings were refused: {e}"))?;
-        let summary = match &args.llm_url {
-            Some(url) => SummarySettings {
-                writer: SummaryWriter::OwnEndpoint,
-                provider: EndpointProvider::OpenAiCompatible,
-                url: url.clone(),
-                model: ENDPOINT_MODEL.into(),
-                ..SummarySettings::default()
-            },
-            None => SummarySettings {
-                writer: SummaryWriter::OnThisComputer,
-                ..SummarySettings::default()
-            },
+        // T14.72 (docs/summary-order.md 12.13 item 10a): the endpoint is picked as the one
+        // online service, then stored with the order as its one step, as the Summaries page does.
+        use earshot_runtime::summary_order::{
+            OrderStep, Service, SummaryOrder, WriterStep, set_online_service, set_summary_order,
         };
-        summary_settings::set_summary_settings(&mut db, &summary)
+        let (order, summary) = match &args.llm_url {
+            Some(url) => {
+                set_online_service(&mut db, Service::OwnServer)
+                    .map_err(|e| format!("the summary settings were refused: {e}"))?;
+                (
+                    vec![OrderStep::Writer(WriterStep::Endpoint)],
+                    SummarySettings {
+                        writer: SummaryWriter::OwnEndpoint,
+                        provider: EndpointProvider::OpenAiCompatible,
+                        url: url.clone(),
+                        model: ENDPOINT_MODEL.into(),
+                        ..SummarySettings::default()
+                    },
+                )
+            }
+            None => (
+                vec![OrderStep::LOCAL],
+                SummarySettings {
+                    writer: SummaryWriter::OnThisComputer,
+                    ..SummarySettings::default()
+                },
+            ),
+        };
+        let order = SummaryOrder::new(order)
+            .map_err(|e| format!("the summary settings were refused: {e}"))?;
+        set_summary_order(&mut db, &order, Some(&summary))
             .map_err(|e| format!("the summary settings were refused: {e}"))?;
     }
     let vault = args

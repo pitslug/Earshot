@@ -455,11 +455,14 @@ export const commands = {
 	/**  The model Codex is asked for ("" for Codex's own default). */
 	codex_model: string,
 } | null) => typedError<SummaryOrderView, IpcError>(__TAURI_INVOKE("set_summary_order", { steps, settings })),
+	/**  Picks the one online service; returns the settings and the order as stored. */
+	setOnlineService: (service: ServiceChoice) => typedError<OnlineServiceSaved, IpcError>(__TAURI_INVOKE("set_online_service", { service })),
 	/**  The re-summarise menu's writers for a meeting. */
 	resummariseWriters: (meeting: string) => typedError<ResummariseView, IpcError>(__TAURI_INVOKE("resummarise_writers", { meeting })),
 	/**
 	 *  Starts a re-summary of `meeting` by the one writer `step` names (a named run: no next step).
-	 *  A computer is asked through `ask_summary_helper`.
+	 *  A computer is asked through `ask_summary_helper`. An online writer that is not the service
+	 *  picked is refused before a job starts ([`named_step_allowed`]).
 	 */
 	resummariseWith: (meeting: string, step: StepChoice) => typedError<null, IpcError>(__TAURI_INVOKE("resummarise_with", { meeting, step })),
 	/**  Whether the app opens on the first-run wizard. */
@@ -2005,6 +2008,43 @@ export type ObsidianSettingsView = {
 	default_folder: string,
 };
 
+/**
+ *  The one Online service row (T14.72, docs/summary-order.md 12.8): never an online writer that
+ *  is not the pick.
+ */
+export type OnlineRowView = {
+	/**  The service picked; `null` before one is. */
+	service: ServiceChoice | null,
+	/**
+	 *  The step the row ticks; `null` while it cannot be ticked (no service picked, or an
+	 *  endpoint service not set up).
+	 */
+	step: StepChoice | null,
+	/**  Why it cannot be ticked (fixed copy); `null` when it can. */
+	reason: string | null,
+	/**
+	 *  The picked service's step label, as a [`StepView`] of its step carries it
+	 *  ([`step_label`]); `null` with no pick.
+	 */
+	label: string | null,
+	/**
+	 *  Where the picked service sends the transcript, as a [`StepView`] of its step carries it
+	 *  ([`destination`]); `null` with no pick.
+	 */
+	destination: string | null,
+};
+
+/**
+ *  What picking a service returns: both views the Summaries page caches (T12.63b's rule: the
+ *  hook replaces both before it releases busy).
+ */
+export type OnlineServiceSaved = {
+	/**  The settings as stored. */
+	settings: SummarySettingsView,
+	/**  The order as stored. */
+	order: SummaryOrderView,
+};
+
 /**  Where a task runs, as the settings screen offers it. */
 export type PartChoice = 
 /**  The fastest part that passed the check. */
@@ -2313,6 +2353,17 @@ export type SearchResultsView = {
 	 */
 	unreadable: number,
 };
+
+/**  A service the Online service row's picker names (T14.72; the runtime's `Service`). */
+export type ServiceChoice = 
+/**  Claude through Claude Code. */
+"ClaudeCode" | 
+/**  OpenAI through Codex. */
+"Codex" | 
+/**  The endpoint on the Anthropic API. */
+"AnthropicApi" | 
+/**  The endpoint on the user's own server. */
+"OwnServer";
 
 /**  Asks the UI to do something the tray, the shortcut or a notification cannot do alone. */
 export type ShellEvent = 
@@ -2631,10 +2682,12 @@ export type SummaryOrderView = {
 	/**  The steps in order (empty with `none`). */
 	steps: StepView[],
 	/**
-	 *  Every step the page can offer: the four writers, then each computer that writes
-	 *  summaries for the others, or is in the order.
+	 *  Every step the page can offer besides the online service: the local model, then each
+	 *  computer that writes summaries for the others, or is in the order (T14.72).
 	 */
 	offered: StepView[],
+	/**  The one Online service row (T14.72, docs/summary-order.md 12.8). */
+	online: OnlineRowView,
 	/**  What the user is told about the stored order (fixed copy). */
 	notes: string[],
 	/**  The most steps an order holds. */

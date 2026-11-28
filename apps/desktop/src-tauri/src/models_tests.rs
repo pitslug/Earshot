@@ -537,7 +537,7 @@ fn models_view_texts_name_models_only_by_their_display_names() {
 
 #[test]
 fn models_view_says_when_this_computer_does_not_write_the_summaries() {
-    use earshot_runtime::summary_settings::{SummarySettings, SummaryWriter, set_summary_settings};
+    use earshot_runtime::summary_settings::{SummarySettings, SummaryWriter};
     let dir = TempDir::new("models-view-writer");
     let svc = services(&dir);
     let models = ModelDir::new(dir.0.join("models"));
@@ -548,17 +548,13 @@ fn models_view_says_when_this_computer_does_not_write_the_summaries() {
         (SummaryWriter::Codex, false),
         (SummaryWriter::OnThisComputer, true),
     ] {
-        {
-            let mut db = svc.store();
-            set_summary_settings(
-                &mut db,
-                &SummarySettings {
-                    writer,
-                    ..SummarySettings::default()
-                },
-            )
-            .unwrap();
-        }
+        crate::testutil::store_settings(
+            &svc,
+            &SummarySettings {
+                writer,
+                ..SummarySettings::default()
+            },
+        );
         let v = models_view(&svc, &models, &hw, SURFACE, &|_| false).unwrap();
         assert_eq!(v.in_use.summaries_here, here, "{writer:?}");
     }

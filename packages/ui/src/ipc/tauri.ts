@@ -192,6 +192,7 @@ export function createTauriIpc(): Ipc {
     stopWaitingSummary: async (meeting) => unwrap(await commands.stopWaitingSummary(meeting)),
     summaryOrder: async () => unwrap(await commands.summaryOrder()),
     setSummaryOrder: async (steps, settings) => unwrap(await commands.setSummaryOrder(steps, settings)),
+    setOnlineService: async (service) => unwrap(await commands.setOnlineService(service)),
     resummariseWriters: async (meeting) => unwrap(await commands.resummariseWriters(meeting)),
     resummariseWith: async (meeting, step) => {
       unwrap(await commands.resummariseWith(meeting, step));
