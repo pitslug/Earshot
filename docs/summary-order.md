@@ -767,7 +767,7 @@ Service names reuse `steps.*`; destinations reuse `destinations.*`.
 
 **Release note** (CHANGELOG): "Summaries: the Summaries page now has one Online service row, where you choose Claude Code, Codex, the Anthropic API or your own server. Only that service is used, in your order and in Re-summarise. If your order listed more than one online service, the first is kept."
 
-### 12.12 Open questions for the owner
+### 12.12 Questions for the owner (both decided 2026-11-28: the recommended answer)
 
 - **Q1. Lost position.** Switching the pick, while it is ticked, to a service that needs setting up unticks it, and saving the setup ticks it last. Recommended: accept this (simple, and rare). Alternative: remember its position until the setup is saved.
 - **Q2. One endpoint configuration.** Switching between Anthropic API and Your own server clears the address and model (12.7). Recommended: accept this, because it keeps section 9's one configuration. Alternative: store an address and model per endpoint service (two more device-local keys), so switching back loses nothing.
