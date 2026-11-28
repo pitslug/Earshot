@@ -2953,7 +2953,7 @@ Held from the review, with the reason (not done in this batch):
 
 ### M10 - v2 Android in-person recorder
 
-- [ ] GATE-05 Android toolchain
+- [x] GATE-05 Android toolchain
   - deps: GATE-04
   - do: conditional like GATE-00: self-pass if `doctor` finds SDK, NDK, cargo-ndk and an attached device; otherwise list what to install.
 - [ ] T10.1 Android build spike
