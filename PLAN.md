@@ -2956,7 +2956,7 @@ Held from the review, with the reason (not done in this batch):
 - [x] GATE-05 Android toolchain
   - deps: GATE-04
   - do: conditional like GATE-00: self-pass if `doctor` finds SDK, NDK, cargo-ndk and an attached device; otherwise list what to install.
-- [ ] T10.1 Android build spike
+- [x] T10.1 Android build spike
   - deps: GATE-05
   - do: build core, whisper-rs and ort (`load-dynamic`, ORT Android AAR libraries bundled) for `aarch64-linux-android`; write findings to `docs/android-build.md`.
   - accept: `cargo xtask build --target aarch64-linux-android`

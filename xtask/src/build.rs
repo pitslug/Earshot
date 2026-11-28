@@ -53,6 +53,18 @@ pub const ARM64_WINDOWS: &str = "aarch64-pc-windows-msvc";
 /// ARM64 CPU baseline for whisper.cpp: ARMv8.2-A with the dot-product and int8 matrix
 /// multiply extensions ggml's quantised kernels use (Snapdragon X and later; AGENTS.md).
 pub const ARM64_CPU_ARCH: &str = "armv8.2-a+dotprod+i8mm";
+/// The Android ARM64 target (M10, T10.1, docs/android-build.md).
+pub const ANDROID_ARM64: &str = "aarch64-linux-android";
+/// The Android ABI cargo-ndk builds for [`ANDROID_ARM64`].
+pub const ANDROID_ABI: &str = "arm64-v8a";
+/// Minimum Android API level of the native build (Android 8.0): above Tauri 2's default
+/// `minSdkVersion` 24; whisper.cpp and the core build, link and run at it (docs/android-build.md).
+/// ONNX Runtime's own floor is read from its AAR in T10.2.
+pub const ANDROID_API: u32 = 26;
+/// The packages an Android build compiles: the core and the two recogniser engines (T10.1).
+/// The workspace also holds Windows-only crates (WASAPI capture, the desktop app), so an
+/// Android build never builds all of it.
+pub const ANDROID_PACKAGES: [&str; 3] = ["earshot-core", "earshot-asr-whisper", "earshot-onnx"];
 /// Features the CLI can be built with.
 pub const FEATURES: [&str; 5] = ["cuda", "onnx-cuda", "vulkan", "vulkan-summaries", "qnn"];
 /// Longest profile root (`<target-dir>`, or `<target-dir>\<triple>` for a cross target;
@@ -700,6 +712,30 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 /// # Errors
 /// An unknown feature.
 pub fn build_args(target: Option<&str>, features: &[String]) -> Result<Vec<String>> {
+    if is_android(target) {
+        ensure!(
+            features.is_empty(),
+            "an Android build takes no features (it builds {} for the CPU)",
+            ANDROID_PACKAGES.join(", ")
+        );
+        // cargo-ndk is the linker and sets the NDK's compilers for cc-built crates.
+        let mut args: Vec<String> = [
+            "ndk",
+            "-t",
+            ANDROID_ABI,
+            "-P",
+            &ANDROID_API.to_string(),
+            "build",
+            "--release",
+        ]
+        .map(String::from)
+        .to_vec();
+        for p in ANDROID_PACKAGES {
+            args.extend(["-p".into(), p.into()]);
+        }
+        // No `--target`: cargo-ndk passes `--target aarch64-linux-android` itself for `-t`.
+        return Ok(args);
+    }
     let mut args: Vec<String> = vec!["build".into(), "--release".into()];
     if features.is_empty() {
         args.extend(["--workspace", "--exclude", "xtask"].map(Into::into));
@@ -746,7 +782,16 @@ pub fn app_build_args(target: Option<&str>, features: &[String]) -> Vec<String> 
 /// ARM64 and fail when it links against x64 libraries.
 #[must_use]
 pub fn inherited_env_to_clear(target: Option<&str>) -> &'static [&'static str] {
-    if target == Some("x86_64-pc-windows-msvc") {
+    if is_android(target) {
+        // An Android build lets CMake find the NDK's clang itself ([`android_env`]).
+        &[
+            "CMAKE_C_COMPILER",
+            "CMAKE_CXX_COMPILER",
+            "CMAKE_C_COMPILER_TARGET",
+            "CMAKE_CXX_COMPILER_TARGET",
+            "CMAKE_TOOLCHAIN_FILE",
+        ]
+    } else if target == Some("x86_64-pc-windows-msvc") {
         &[
             "CMAKE_GENERATOR",
             "CMAKE_C_COMPILER",
@@ -775,6 +820,89 @@ pub fn target_env(target: Option<&str>) -> Vec<(&'static str, &'static str)> {
             ("CXXFLAGS_aarch64_pc_windows_msvc", "/EHsc"),
         ],
         _ => Vec::new(),
+    }
+}
+
+/// Whether `target` is the Android build ([`ANDROID_ARM64`]).
+#[must_use]
+pub fn is_android(target: Option<&str>) -> bool {
+    target == Some(ANDROID_ARM64)
+}
+
+/// A path as CMake reads it: forward slashes (a backslash in a value written into CMake's
+/// generated `CMakeSystem.cmake` is an escape, and its configure fails).
+fn cmake_path(p: &Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
+/// The whisper.cpp environment of an Android build (T10.1): CMake's own Android support
+/// (`CMAKE_SYSTEM_NAME=Android`, set by the `cmake` crate for the target, plus the NDK and API
+/// level here; whisper-rs-sys forwards every `CMAKE_*` variable), Ninja by full path, and
+/// bindgen pointed at the NDK's sysroot and clang headers. `CMAKE_C_FLAGS` / `CMAKE_CXX_FLAGS`
+/// are defined so the `cmake` crate adds none of its own: whisper-rs-sys 0.15.0 adds `/utf-8`
+/// whenever its build script runs on Windows, which clang reads as a file. `clang_version` is
+/// the folder under the NDK's `lib/clang` ([`ndk_clang_version`]).
+#[must_use]
+pub fn android_env(ndk: &Path, ninja: &Path, clang_version: &str) -> Vec<(String, String)> {
+    let ndk = cmake_path(ndk);
+    let toolchain = format!("{ndk}/toolchains/llvm/prebuilt/windows-x86_64");
+    let pairs = [
+        ("CMAKE_GENERATOR", "Ninja".to_owned()),
+        ("CMAKE_MAKE_PROGRAM", cmake_path(ninja)),
+        ("CMAKE_ANDROID_NDK", ndk.clone()),
+        ("CMAKE_SYSTEM_VERSION", ANDROID_API.to_string()),
+        ("CMAKE_C_FLAGS", "-fPIC".to_owned()),
+        ("CMAKE_CXX_FLAGS", "-fPIC".to_owned()),
+        (
+            "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android",
+            format!(
+                "--sysroot={toolchain}/sysroot -isystem {toolchain}/lib/clang/{clang_version}/include"
+            ),
+        ),
+    ];
+    pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
+}
+
+/// The Android NDK: `named` (`ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT` or `NDK_HOME`) when it is a
+/// folder, else the newest version under `<sdk>/ndk` (`ANDROID_HOME` / `ANDROID_SDK_ROOT`), the
+/// rule `cargo xtask doctor` reports.
+#[must_use]
+pub fn find_android_ndk(named: Option<OsString>, sdk: Option<OsString>) -> Option<PathBuf> {
+    if let Some(p) = named.map(PathBuf::from).filter(|p| p.is_dir()) {
+        return Some(p);
+    }
+    let ndk = PathBuf::from(sdk?).join("ndk");
+    let names = std::fs::read_dir(&ndk)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok());
+    crate::doctor::latest_version(names).map(|v| ndk.join(v))
+}
+
+/// The first `PATH` folder holding `exe`.
+fn which(exe: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(exe))
+        .find(|p| p.is_file())
+}
+
+/// The NDK's clang version folder (`<ndk>/toolchains/llvm/prebuilt/windows-x86_64/lib/clang/<v>`):
+/// exactly one is expected.
+fn ndk_clang_version(ndk: &Path) -> Result<String> {
+    let dir = ndk.join(r"toolchains\llvm\prebuilt\windows-x86_64\lib\clang");
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .with_context(|| format!("read {}", dir.display()))?
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    match names.as_slice() {
+        [one] => Ok(one.clone()),
+        _ => bail!(
+            "expected one clang version under {}, found {names:?}",
+            dir.display()
+        ),
     }
 }
 
@@ -820,6 +948,10 @@ pub fn app(
     features: &[String],
     target_dir: Option<&Path>,
 ) -> Result<PathBuf> {
+    ensure!(
+        !is_android(target),
+        "the desktop app does not build for Android (the Android app is T10.2)"
+    );
     let features = shipped_features(target, features);
     let pnpm_args = ["-r", "build"];
     let mut pnpm = crate::ui::pnpm_command(root, &pnpm_args);
@@ -931,6 +1063,28 @@ fn built(
     if needs_msvc_x64_env(target, features) {
         apply_msvc_x64_env(&mut cmd)?;
     }
+    if is_android(target) {
+        let ndk = ["ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "NDK_HOME"]
+            .into_iter()
+            .find_map(|v| find_android_ndk(std::env::var_os(v), None))
+            .or_else(|| {
+                let sdk = std::env::var_os("ANDROID_HOME")
+                    .or_else(|| std::env::var_os("ANDROID_SDK_ROOT"));
+                find_android_ndk(None, sdk)
+            })
+            .context(
+                "no Android NDK: set ANDROID_NDK_HOME, or install one under <ANDROID_HOME>\\ndk \
+                 (`cargo xtask doctor` checks it)",
+            )?;
+        let ninja = which("ninja.exe")
+            .context("the Android build needs ninja on PATH (`cargo xtask doctor` checks it)")?;
+        // cargo-ndk reads the NDK from here; the same folder for CMake and bindgen.
+        cmd.env("ANDROID_NDK_HOME", &ndk);
+        for (k, v) in android_env(&ndk, &ninja, &ndk_clang_version(&ndk)?) {
+            cmd.env(k, v);
+        }
+        eprintln!("xtask build: Android NDK {}", ndk.display());
+    }
     if target == Some(ARM64_WINDOWS) {
         // Checked here: a missing ninja otherwise fails deep inside whisper.cpp's CMake.
         let ninja = std::process::Command::new("ninja")
@@ -1000,6 +1154,16 @@ fn built(
         &profile,
         &crate::native_flags::clean_args(target, custom_dir),
     )?;
+    if is_android(target) {
+        // Libraries only (T10.1): no executable and no llama.cpp; the app is T10.2.
+        eprintln!(
+            "xtask build: {} built for {ANDROID_ARM64} (API {ANDROID_API}) in {}",
+            ANDROID_PACKAGES.join(", "),
+            profile.display()
+        );
+        eprintln!("xtask build: ok ({n} C/C++ builds optimised)");
+        return Ok(profile);
+    }
     // llama.cpp's DLLs beside earshot-cli.exe (T6.21b): read from the captured messages, so
     // they must be complete.
     out.require_complete("the build's cargo messages")?;
@@ -1562,5 +1726,96 @@ mod tests {
             "{} [env] must set GGML_CPU_ARM_ARCH = \"{ARM64_CPU_ARCH}\"",
             path.display()
         );
+    }
+
+    #[test]
+    fn build_android_builds_only_the_portable_crates_through_cargo_ndk() {
+        let args = build_args(Some(ANDROID_ARM64), &[]).unwrap();
+        assert_eq!(
+            args[..6],
+            ["ndk", "-t", "arm64-v8a", "-P", "26", "build"].map(String::from)
+        );
+        assert_eq!(ANDROID_API, 26);
+        for p in ANDROID_PACKAGES {
+            assert!(args.windows(2).any(|w| w == ["-p", p]), "{p} in {args:?}");
+        }
+        // cargo-ndk adds the target for `-t arm64-v8a`; a second `--target` would be a second
+        // target to cargo.
+        assert!(!args.iter().any(|a| a == "--target"));
+        assert!(args.iter().any(|a| a == "--release"));
+        // The workspace holds Windows-only crates (WASAPI, the desktop app): never all of it.
+        assert!(!args.iter().any(|a| a == "--workspace"));
+        assert!(build_args(Some(ANDROID_ARM64), &["vulkan".into()]).is_err());
+        assert!(is_android(Some(ANDROID_ARM64)));
+        assert!(!is_android(Some(ARM64_WINDOWS)));
+        assert!(!is_android(None));
+    }
+
+    #[test]
+    fn build_android_env_points_cmake_and_bindgen_at_the_ndk() {
+        let env = android_env(
+            Path::new(r"C:\Sdk\ndk\30.0.1"),
+            Path::new(r"C:\tools\ninja.exe"),
+            "21",
+        );
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_else(|| panic!("{k} not set in {env:?}"))
+        };
+        assert_eq!(get("CMAKE_GENERATOR"), "Ninja");
+        // CMake's own Android support; backslashes break its generated CMakeSystem.cmake.
+        assert_eq!(get("CMAKE_ANDROID_NDK"), "C:/Sdk/ndk/30.0.1");
+        assert_eq!(get("CMAKE_MAKE_PROGRAM"), "C:/tools/ninja.exe");
+        assert_eq!(get("CMAKE_SYSTEM_VERSION"), "26");
+        // Defining the flags keeps the cmake crate's own (with whisper-rs-sys's host-only
+        // `/utf-8`) out of the clang command lines.
+        assert_eq!(get("CMAKE_C_FLAGS"), "-fPIC");
+        assert_eq!(get("CMAKE_CXX_FLAGS"), "-fPIC");
+        assert_eq!(
+            get("BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"),
+            "--sysroot=C:/Sdk/ndk/30.0.1/toolchains/llvm/prebuilt/windows-x86_64/sysroot \
+             -isystem C:/Sdk/ndk/30.0.1/toolchains/llvm/prebuilt/windows-x86_64/lib/clang/21/include"
+        );
+        let clear = inherited_env_to_clear(Some(ANDROID_ARM64));
+        for k in [
+            "CMAKE_C_COMPILER",
+            "CMAKE_CXX_COMPILER",
+            "CMAKE_TOOLCHAIN_FILE",
+        ] {
+            assert!(clear.contains(&k), "{k}");
+        }
+        assert!(target_env(Some(ANDROID_ARM64)).is_empty());
+    }
+
+    #[test]
+    fn build_android_ndk_is_the_named_folder_else_the_newest_in_the_sdk() {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-ndk-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // 9.9.9 sorts after 30 as text: the newest is chosen by number.
+        for v in ["27.0.12077973", "30.0.16248370", "29.0.1", "9.9.9"] {
+            std::fs::create_dir_all(root.join("ndk").join(v)).unwrap();
+        }
+        let named = root.join("ndk").join("29.0.1");
+        assert_eq!(
+            find_android_ndk(
+                Some(named.clone().into_os_string()),
+                Some(root.clone().into())
+            ),
+            Some(named)
+        );
+        assert_eq!(
+            find_android_ndk(None, Some(root.clone().into())),
+            Some(root.join("ndk").join("30.0.16248370"))
+        );
+        assert_eq!(find_android_ndk(Some(root.join("gone").into()), None), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
