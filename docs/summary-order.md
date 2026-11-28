@@ -629,3 +629,189 @@ These rules join, and where they differ override, the sections above.
 8. **11.13: two kind fixes.**
    - `ChildEnd::LoadRefused` maps to `Other` unless the child sent a kind word, never to WrongBackend.
    - `Run(Model(ContextTooSmall))` maps to TooLong.
+
+## 12. T14.72: one online service
+
+Status: proposed, not built. Task T14.72, PLAN.md section 8. Where this section differs from sections 2, 3, 4.3, 4.4, 5, 6 and 7, it overrides them.
+
+### 12.1 What went wrong
+
+- The Re-summarise menu (`resummarise_view`, `apps/desktop/src-tauri/src/summary_order.rs`) offers Claude Code and Codex whenever their CLI is installed, whether or not the user ever chose them. The owner was offered OpenAI (through Codex), which they never set up.
+- The Summaries page lists the endpoint, Claude Code and Codex as three separate writers, so an order can hold two online services. The owner found that clunky.
+
+### 12.2 The decisions (the owner, 2026-11-28)
+
+- The writers are This computer, each of the user's other computers (unchanged), and one **Online service** row.
+- The row has a picker with four services: Claude (through Claude Code), OpenAI (through Codex), Anthropic API, and Your own server. Only the picked service has a setup section.
+- The picked service is the only online writer anywhere (the order, Re-summarise, the first-run wizard) until the user picks another.
+- There is no fallback from one online service to another (accepted).
+- The Online service row keeps its tick box and its up and down buttons, because other people may want it first. Ticking it adds it at the end of the order, as for every writer (section 2). Stored orders keep their positions.
+
+### 12.3 Terms
+
+- **Online writer**: the `WriterStep` values `Endpoint`, `ClaudeCode` and `Codex`. `Local` and computer steps are not online writers.
+- **Service**: what the picker names. Anthropic API and Your own server are both the one endpoint configuration, told apart by its provider (`Anthropic` or `OpenAiCompatible`). There is still exactly one endpoint configuration (section 9).
+
+### 12.4 Stored setting
+
+- New device-local key `settings/online-service` (`DeviceRecord::OnlineService`), plain text, one of `claude-code`, `codex`, `endpoint`. Which endpoint service it is comes from the endpoint's stored provider, never from this key, so the key and the provider can never disagree about it.
+- **One writer for the order, the key and the provider.** `write_order` (behind `set_summary_order`, `set_summary_order_keeping_writer` and the new `set_online_service`) reads the pick itself under its `&mut Store`, and takes an `Option<Service>` only for a new pick. In its one transaction it writes the order (unless `keep_order`), the mirror, the key, and, for a new pick, the endpoint provider with the 12.7 clear. The key it stores is the order's online writer when the order holds one, else the new pick, else the pick it read. Nothing else writes the key or the provider (12.7a).
+- **The pick, as read** (`summary_order::online_service(store)` -> `Option<Service>`, plus notes):
+  1. If the order, as read (section 3, old keys included), holds an online writer, the pick is that writer: for `Endpoint`, Anthropic API or Your own server by the stored provider.
+  2. Otherwise the stored key, if it reads.
+  3. Otherwise none: the row shows "Choose a service" and cannot be ticked.
+- On this build the key and the order's online writer are always written together, so they never differ. Rule 1 exists only to repair what an older build wrote (12.10): an older build can put another online writer in the order, or change the old keys so they win.
+- **An untick never changes the pick.** Unticking the online row stores the order without it and the key as the pick read before the write. So an order [Local, Claude Code] with no key (every upgrade) keeps Claude Code picked after the untick, and an order an older build gave Codex keeps Codex.
+- An unknown word in the key reads as no key, with a note in fixed copy that never shows the stored text (the `local::UnknownSetting` pattern).
+
+### 12.5 An order holds at most one online writer
+
+- **Reading.** `summary_order` keeps the first online writer of a stored order and drops any later ones, with a note in fixed copy. This runs right after the order decodes, before the read filter (runtime `summary_order.rs`, the `readable` filter), so [Claude Code, Endpoint] with an endpoint that is not usable reads as [Claude Code] instead of being unreadable. Reading never writes. The next write of the order stores it in this form. The old-key mirror (section 3) is unchanged, because it is computed from the order.
+- **Writing.** `set_summary_order` refuses an order that holds two online writers, or one whose online writer is not the pick as read, with `IpcError::invalid` and fixed copy. The page never sends such an order, because it offers only the pick, so the refusal guards the boundary and is not a user path. `set_online_service` passes the new pick, so its own in-place replacement (12.6) is checked against the new pick, not refused by this guard.
+- **The CLI.** `earshot-cli` builds its one-step order from its command line (`CliWriters`). It never reads the pick and is unchanged.
+- **Helpers.** A computer answering a request still runs only the writer kind its presence advertised, its own order's first writer step (4.6). An order holding one online writer leaves that rule as it is. `helper_writer` builds through `SettingsWriters`, so 12.9a's check applies to it too. If the helper's pick changed between its order read and the build, it fails closed: `Built::Skip`, the request is declined `no_writer`, and nothing is written.
+
+### 12.6 Changing the pick
+
+`set_online_service(store, service)` is a desktop command that is `async` plus `ipc::blocking` (it reaches the store). It ships with a mock and regenerated bindings in the same commit. It goes through `write_order` (one transaction, re-reading the order inside it). It always writes the order as read, with `keep_order` and `keep_writer` false, as a tick on the page does. So when the stored order is unreadable, or the old keys win (section 3), the order as read is stored in their place, and the pick cannot be overruled by rule 1 afterwards. The command returns the settings view and the order view, and the page's hook replaces both in its cache before it releases busy (T12.63b's rule).
+
+- **The order holds no online writer.** It stores the key, and for an endpoint service the provider (12.7). The order is stored unchanged.
+- **The order holds the old pick, and the new service can be a step.** Claude Code and Codex always can be: they are tickable whatever their sign-in (section 2). The old step is replaced by the new one at the same position, and the key and mirror are written in the same transaction.
+- **The order holds the old pick, and the new service cannot be a step yet** (an endpoint service whose fields do not validate after 12.7). The step is removed from the order (unticked), the key is stored, and the page opens the new service's setup section. Saving that form ticks it last when there is room (section 2's rule). Its old position is lost: see question Q1 in 12.12.
+- **Picking the service already picked** stores nothing.
+
+The picker applies at once, like every choice on the page, with one exception: the endpoint's fields still need their Save. The Summaries settings fixture's save-rule test gains the picker as a choice.
+
+### 12.7 Switching between Anthropic API and Your own server
+
+Today the endpoint form has a Provider select. That select goes, because the picker is the provider.
+
+- Picking Anthropic API stores provider `Anthropic`. Picking Your own server stores `OpenAiCompatible`.
+- **One rule for the clear:** whenever a pick's provider differs from the stored provider, the stored address and model are cleared in the same transaction, whatever the previous pick was. So Anthropic API, then Claude Code, then Your own server clears them at the third step. The endpoint then reads "Not set up" and leaves the order (12.6). This is so a transcript never goes to one service's address under the other's protocol. Without the clear, Your own server's protocol would send the transcript to Anthropic's address with no key, and Anthropic's would send it to a server's address. The Anthropic API key stays in Credential Manager, bound to its address (T14.31).
+- Picking Anthropic API over an empty address fills Anthropic's address (`settings.anthropic_url`) into the form as a draft, as the Provider select does today. Nothing is stored until the form's Save, and the fill alone is not an edit (T12.79's rule). When the key was saved for that address, it reads as bound again once the address is saved.
+- The cost: switching away from Your own server loses its address and model, and switching away from Anthropic API loses its model name. See question Q2 in 12.12.
+- Picking Claude Code or Codex changes no stored endpoint field, the provider included. The clear happens only when an endpoint service is picked whose provider differs from the one stored.
+
+### 12.7a The provider has one writer
+
+Today `set_summary_settings` (runtime `summary_settings.rs`) stores the whole cached settings value from the page (`stored_values`: provider, address, model and the rest; `useSummaries.ts` sends the cached value with every save), and it changes the order too: `order.with_writer(s.writer)` puts the value's writer in place of the order's first writer step. A save from a cache older than a pick switch would put the old provider, address and model back, undo 12.7's clear, and could put an unpicked online writer into the order.
+
+- The guard sits in `write_order`, which both `set_summary_settings` and the endpoint form's Save (`set_summary_order` with settings, `useSummaries.ts` sending `{...now.value, ...change}`) reach. `SummaryProvider` leaves `stored_values`. `write_order` stores the provider only for a pick change (12.4). It refuses settings whose provider differs from the stored one, with `IpcError::invalid` and fixed copy (`page.settings_changed`), and stores nothing on that refusal.
+- `set_summary_settings` validates with the mirror of the order as read, which is what `write_order` already substitutes, not with the caller's writer, so a stale writer in a cache never refuses an unrelated save.
+- `write_order`'s refusals are their own `SummaryOrderError` variants: `StaleProvider`, `NotThePick` and `TwoOnline`. `set_summary_settings`'s error map passes them through with their fixed copy (`page.settings_changed`, `page.not_the_service`), never as an internal store error.
+- `set_summary_settings` stops changing the order: `with_writer` goes from that path, and it stores the order as read with the pick as read. So the writer word comes only from the order's mirror, and only the order list and the picker change who writes.
+- The hook replaces its cached settings with what each command returns before it releases busy, so the refusal is reached only by a stale caller, not by the page itself.
+
+### 12.8 The Summaries page and the first-run wizard
+
+- **Rows** (`OrderSection`): This computer; each other computer that offers summaries (unchanged); one Online service row.
+  - The row's name is the picked service's step label ("Claude (through Claude Code)", "Anthropic API", "Model server (<host>)", "Your own server", "OpenAI (through Codex)"), with the picker on the row.
+  - With no pick it reads "Online service" with "Choose a service", greyed and not tickable.
+  - The rank, tick and move rules are those of any writer.
+- **Disclosure.** The picked service's destination line and, for Claude Code and Codex, its privacy line (`CLAUDE_CODE_PRIVACY`, `CODEX_PRIVACY`; PLAN 3.9) show on the row as soon as it is picked, before it can be ticked. The endpoint's remote-host warning keeps its rule.
+- **Setup sections.** Only the picked service's section shows (T12.96's `SetupSection`: folded by default, opened as today, and opened by 12.6's untick case). The others are not rendered.
+- **Sign-in check.** The Claude Code or Codex sign-in check runs when that service's card shows, as today; that is now when it is picked. It sends no meeting content.
+- **Picking alone sends nothing.** Content reaches the service only when it is ticked in the order and a summary runs, or when the user chooses it by name in Re-summarise.
+- **The first-run wizard** reuses `OrderSection` (T12.79), so it gets the same row and picker. The picker saves at once, as ticks do. The Download step still counts only This computer.
+- **Rust's offered list.** The order view's `offered` list holds This computer and the computers as `StepView`s, as today. The online row is its own field, `online: OnlineRowView { service: Option<Service>, step: Option<StepChoice>, reason: Option<String> }`, because `StepView.step` is a `StepChoice` and has no "choose" shape. It never holds an unpicked online writer. The row's React key is the constant `online`, not the step key, so changing the pick keeps the picker's focus (T12.68's focus rule).
+- **The UI mock** mirrors the pick read, the normalising and the 12.7 clear from one shared case table, `fixtures/ui/online_service_cases.json`, read by both suites.
+
+### 12.9 Re-summarise
+
+The menu (`resummarise_view`, section 5) offers:
+
+- Use my order;
+- the local model, if installed;
+- **the picked service, whether or not it is ticked in the order**, when it can run by today's rule: Claude Code or Codex installed, or the endpoint set up (an Anthropic endpoint also needs a key bound to its address);
+- each computer that offers summaries and is online (unchanged).
+
+No other online writer is offered. No sign-in probe runs when the menu opens, as today (the menu is read on every open, and `auth status` can take 5 s). A named run that finds the CLI signed out fails with today's fixed copy. On a kept-local meeting the online item is disabled until "Allow" (section 5).
+
+**The menu is not the check.** A menu read before the pick changed, or any stale caller, can still send `resummarise_with` an online writer that is no longer the pick. So:
+
+- `resummarise_with` refuses an online writer that is not the pick as read, with `IpcError::invalid` and `page.not_the_service`, before a job starts.
+- A pick changed between the command and the job's step is caught by 12.9a's check, which every named run also passes. A named run whose step reads `not chosen` fails with `page.not_the_service`, and nothing is handed over. (Round 2 dropped a check in the named start's transaction: `start` runs on a `StoreTx`, while the pick's readers take a `&Store`.)
+
+### 12.9a Runs try only the pick
+
+Runs copy their steps when they start and continue from that copy (4.1, 4.3), so a copy can hold an online writer that is not the pick: a run started on 0.9.2 that holds [Desk, Claude Code, Codex] and waits on Desk across the update, or a run waiting while the user changes the pick. This overrides 4.3 and section 7's "a run continues from the steps copied at its start" for online steps only:
+
+- **Where.** The check sits in `SettingsWriters::writer` (runtime `host.rs`), the app's builder of a writer step. It runs under the same `services.store()` guard that reads the settings the service is built from, so the pick checked and the destination built come from one snapshot. It is one short lock, with nothing nested and no transaction. It is never in `run_steps`, which `earshot-cli`'s `CliWriters` shares: the CLI never reads the pick (12.5), and `AskOnly` is untouched.
+- **What.** An online step that is not the pick is skipped with a new `SkipReason::NotChosen`, mapped by `skip_word` to the outcome word `not chosen`, and the run moves on. This applies to every app run, fresh or continued, `origin: order` or `named`.
+- So an app run tries at most one online writer, the pick at the moment it gets there, and never falls back from one online service to another.
+- `not chosen` gets arms in `steps_text` and in the one-step banner (4.4). A run record holding it is a word an older build does not know, so that build reads the record as unreadable and fails closed (4.3). The build pins this with a test.
+- Computer and local steps are unchanged.
+
+### 12.10 Older builds
+
+- An older build ignores `settings/online-service` and still reads `settings/summary-order`. An order this build writes holds at most one online writer, which any older build reads.
+- An older build can tick a second online writer. On this build the order then reads with the first kept (12.5), and the pick follows it (12.4 rule 1).
+- An older build can change the provider select. Rule 1 still holds, because the endpoint's service comes from the provider. If that leaves an address of the wrong kind, the run fails as it does today (no key bound, or the server refuses). Nothing is sent that an older build would not have sent.
+
+### 12.11 Copy
+
+New copy goes in `fixtures/ui/summary_order_cases.json`, for the owner to approve, read by both suites:
+
+| Key | Text |
+|---|---|
+| `page.online_service` | "Online service" |
+| `page.choose_service` | "Choose a service" |
+| `page.service_label` | "Service" (the picker's label) |
+| `page.second_online_dropped` | "Your order of summary writers held more than one online service, so only the first is used." |
+| `page.unknown_service` | "The stored online service is not one this version knows, so none is chosen." |
+| `page.not_the_service` | "Only the online service you chose can write summaries." |
+| `page.settings_changed` | "The summary settings changed. Check them and try again." |
+| `words.not_chosen` | "not chosen" (an outcome word, 4.4) |
+
+Service names reuse `steps.*`; destinations reuse `destinations.*`.
+
+**Release note** (CHANGELOG): "Summaries: the Summaries page now has one Online service row, where you choose Claude Code, Codex, the Anthropic API or your own server. Only that service is used, in your order and in Re-summarise. If your order listed more than one online service, the first is kept."
+
+### 12.12 Open questions for the owner
+
+- **Q1. Lost position.** Switching the pick, while it is ticked, to a service that needs setting up unticks it, and saving the setup ticks it last. Recommended: accept this (simple, and rare). Alternative: remember its position until the setup is saved.
+- **Q2. One endpoint configuration.** Switching between Anthropic API and Your own server clears the address and model (12.7). Recommended: accept this, because it keeps section 9's one configuration. Alternative: store an address and model per endpoint service (two more device-local keys), so switching back loses nothing.
+
+### 12.13 Tests (each with its control)
+
+1. **Pick read.** With an online step in the order, the pick is that step; for the endpoint, by provider. With none, the stored key. With neither, none. An unknown word gives the note. Control: old keys that win (section 3) and name an online writer different from the stored key give that writer (rule 1, "old keys included").
+2. **Normalising.** A stored order [Claude Code, Local, Codex] reads as [Claude Code, Local], with the note, and storage is unchanged until the next write. The next write stores the normal form. [Claude Code, Endpoint] with an endpoint that is not usable reads as [Claude Code], not as unreadable. Control: an order with one online writer reads unchanged, with no note.
+3. **Write refusals.** `set_summary_order` refuses two online writers, and an online writer that is not the pick. Control: the pick at any position is accepted, and so is `set_online_service`'s in-place replacement.
+4. **Pick change in place.** [Local, Claude Code] with Codex picked becomes [Local, Codex], with key and mirror in one transaction (a fault between them leaves neither). Control: an untick when the new endpoint service is not set up, with the order otherwise unchanged. With an unreadable stored order, or old keys that win, the pick change stores the order as read and the new pick reads back.
+5. **Endpoint switch.** Anthropic API to Your own server clears address and model and sets provider `OpenAiCompatible`. Anthropic API (set up), then Claude Code, then Your own server clears them at the third step and keeps the endpoint out of the order. A fault after the provider is written leaves the provider, address and model all as they were. Control: Claude Code to Codex leaves the endpoint fields as stored. The address prefill on an empty Anthropic switch is a draft, not stored and not an edit.
+6. **Untick keeps the pick.** Order [Local, Claude Code] with no key: untick Claude Code, and the pick reads Claude Code. Key `claude-code` with an order an older build gave Codex: untick Codex, and the pick reads Codex. Control: picking another service changes it.
+7. **Stale settings save.** Switch the pick from Anthropic API to Your own server, then save from a cache that still says Anthropic: the live-summaries switch, and separately the endpoint form (`[.., Endpoint]` with Anthropic's provider, address and model). Both are refused with `page.settings_changed`, nothing is stored, and the order and pick are unchanged. Control: the same saves after the hook replaced its cache are stored. `set_summary_settings` never changes the order (no `with_writer`), and a stale writer word in the cache does not refuse an unrelated save.
+8. **Re-summarise.** With Codex installed and not picked (Claude Code picked, installed), the menu has no Codex item and has Claude Code, ticked or not. Controls: with Codex picked and installed, Codex is offered; a picked Anthropic endpoint without a bound key is not offered; a picked OpenAI-compatible endpoint with no key is offered. Kept-local disables the online item.
+9. **Named start.** `resummarise_with` with Codex when Claude Code is picked is refused before a job starts. A pick changed between the command and the job's step fails the job with the same copy and no handover. Control: the picked service is accepted and runs.
+10. **Runs.** A continued run whose copied steps are [Desk, Claude Code, Codex], with Claude Code picked and Desk declining, tries Claude Code. If Claude Code fails, the run skips Codex with `not chosen` and never hands over to it. With Codex picked, it skips Claude Code and tries Codex. Control: a run whose copied online step is the pick tries it. CLI: `earshot-cli` with `--llm-url` and a stored pick of Claude Code still uses its endpoint (`CliWriters` ignores the pick).
+10a. **Callers of `set_summary_settings`.** Each moves to the new paths with no assertion weakened:
+    - the app's replay (`apps/desktop/src-tauri/src/headless.rs`, which sets its endpoint writer only through it today) uses `set_online_service` and then `set_summary_order([Endpoint], Some(..))`, so `accept m7` still reaches the mock;
+    - the tests that set a writer through it get one named setup helper: `cuda_settings_tests.rs`, `models_tests.rs`, both `keep_local_tests.rs`, `offload_tests.rs`, `benchmark_tests.rs`, `summary_order_tests.rs`, and the Anthropic cases on a fresh store in `summary_settings_tests.rs`;
+    - the UI mock drops its copy of `with_writer` (`mockSummaryOrder.ts`), and the provider refusal joins `fixtures/ui/summary_settings_cases.json`.
+10b. **Helpers.** A helper whose pick changed after its order read declines the request `no_writer` and writes nothing. Control: a helper whose order's online writer is the pick writes it.
+11. **The page.** One online row with the constant key; only the picked setup section rendered; the picker applies at once; the privacy line shows before ticking; "Choose a service" greyed with no pick; move buttons on the online row. The save-rule test lists the picker and drops the Provider exception, because the Provider select is gone. Wizard: same row; the Download step unchanged.
+12. **Privacy.** A run with Codex installed but not picked never builds a Codex step, from the order, a continuation or Re-summarise. Picking alone makes no request and hands over nothing (the fakes record no CLI run and no handover).
+13. **Older builds.** An order with two online writers and provider changes, written as a 0.9.2 build writes them, read by this build per 12.10.
+14. **Copy and the mock.** Every new key and `fixtures/ui/online_service_cases.json` read by both suites.
+
+### 12.14 Not in scope
+
+- More than one online service in an order (owner decision).
+- A per-service endpoint configuration (Q2, unless the owner chooses it).
+- Changes to how a helper computer writes (4.6).
+
+### 12.15 Spec review
+
+- **Round 1 (2026-11-28): blocked on four findings, all addressed above.**
+  1. A named re-summarise was checked only in the menu: now also in `resummarise_with` and at the run's step (12.9, 12.9a; round 2 dropped a start-transaction check).
+  2. An untick changed the pick: every order write stores the key with it (12.4).
+  3. A continued run could fall back to an unpicked online writer from its copied steps: online steps are checked against the pick when reached (12.9a).
+  4. `set_summary_settings` could restore a stale provider and change the order: the provider has one writer, and that path no longer changes the order (12.7a).
+- **Round 2 (2026-11-28): blocked on three findings, all addressed above.**
+  1. The endpoint form's Save could still write a stale provider: the guard moved into `write_order` (12.7a).
+  2. The clear ran only on a direct switch between the two endpoint services: it now runs whenever the picked provider differs from the stored one (12.7).
+  3. The run check had no place, and `run_steps` is shared with the CLI: it sits in `SettingsWriters::writer` (12.9a).
+
+- **Round 3 (2026-11-28): clear, with five advisories folded in.** Helpers pass the check and fail closed (12.5, test 10b). Settings validate with the order's mirror (12.7a). Round 1's item 1 is corrected. The refusals are named error variants (12.7a). `set_online_service` is a command (12.6).
+- **Round 2's advisories** are folded in too: the named start check dropped; `write_order` reads the pick itself; the callers of `set_summary_settings` and the mock (test 10a); `not chosen` in the banners and older builds.
+- **Round 1 advisories, folded in:** the Anthropic fill is a draft (12.7); the online row's view type and constant key (12.8); normalising before the read filter (12.5); the write used when the order is unreadable or the old keys win (12.6); the extra tests and controls (12.13); the mock's shared table; the release note (12.11).
