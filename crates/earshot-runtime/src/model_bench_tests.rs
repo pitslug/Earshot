@@ -469,8 +469,8 @@ fn model_check_trial_reports_life_only_while_its_decodes_move() {
             "no further poll, no further sign"
         );
         // It moves on again, then stops for good (stuck in one call): one more sign, then none
-        // however often it is looked at.
-        let _ = cancel.is_cancelled();
+        // however often it is looked at. One poll: two in a row can be looked at between them
+        // and read as two moves, which is the rule working, not a second stop.
         let _ = cancel.is_cancelled();
         wait_for("the second sign", || lives.load(Ordering::SeqCst) == 2);
         for _ in 0..5 {
