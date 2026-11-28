@@ -5,6 +5,7 @@
 
 pub mod accept;
 pub mod aec_rumble;
+pub mod android;
 pub mod archive;
 pub mod bench;
 pub mod bench_meeting;

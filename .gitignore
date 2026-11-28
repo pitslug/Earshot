@@ -7,6 +7,10 @@ node_modules/
 apps/desktop/dist/
 .vite/
 apps/desktop/src-tauri/gen/
+# The Android app's Vite output and Tauri's generated schemas; its Gradle project under gen/android
+# is committed (T10.2a), with its own .gitignore files for build output
+apps/android/dist/
+apps/android/src-tauri/gen/schemas/
 
 # Fixtures: large sets are fetched outside the repo; private recordings never committed
 fixtures/private/

@@ -62,6 +62,11 @@ enum Cmd {
         #[arg(long)]
         cuda_set: bool,
     },
+    /// The Android app (M10): `android build` makes its release APK for arm64-v8a.
+    Android {
+        #[command(subcommand)]
+        what: AndroidCmd,
+    },
     /// Install the NSIS build from `build --bundle` (or a given installer) into <repo>\target,
     /// replay a meeting through the installed app, and uninstall it. Only the host's own
     /// architecture is checked.
@@ -418,6 +423,13 @@ enum Cmd {
     },
 }
 
+/// `cargo xtask android` subcommands.
+#[derive(Debug, Subcommand)]
+enum AndroidCmd {
+    /// Build the release APK (apps/android, through the Tauri CLI; T10.2a).
+    Build,
+}
+
 /// `cargo xtask t613` subcommands.
 #[derive(Debug, Subcommand)]
 enum T613Cmd {
@@ -524,6 +536,12 @@ fn main() -> ExitCode {
             target.as_deref(),
             installer.as_deref(),
         ),
+        Cmd::Android {
+            what: AndroidCmd::Build,
+        } => xtask::android::build(&root).map(|apk| {
+            println!("{}", apk.display());
+            true
+        }),
         Cmd::CleanBuild { name } => xtask::build::clean_build(&name),
         Cmd::Doctor { json } => xtask::doctor::run_doctor(json),
         Cmd::Accept { milestone, backend } => {
@@ -1037,6 +1055,7 @@ mod tests {
                 "purity",
                 "public-guard",
                 "build",
+                "android",
                 "bundle-check",
                 "clean-build",
                 "doctor",

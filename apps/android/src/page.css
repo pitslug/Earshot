@@ -1,0 +1,7 @@
+/* Page frame only: the window is the app. Everything inside comes from Fluent. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}

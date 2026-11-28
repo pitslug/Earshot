@@ -1,0 +1,33 @@
+[package]
+name = "earshot-android"
+description = "Earshot on Android: the Tauri 2 mobile shell of the in-person recorder (M10, T10.2a)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "earshot_android_lib"
+# The Android app loads the cdylib; staticlib and rlib are what Tauri's mobile template builds.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# On by default (PLAN D26): Tauri compiles its dev-server proxy, the only code that calls its
+# reqwest on Android, exactly when `custom-protocol` is off (tauri's build.rs: `dev =
+# !custom-protocol`). Every build of this crate leaves it out unless the default features are
+# turned off for a dev build against the Vite server. Pinned by xtask's
+# `android_crate_builds_without_tauris_dev_proxy_by_default`.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+# Pinned with `=` to the desktop's versions (`@tauri-apps/cli` 2.12 in apps/android).
+tauri-build = { version = "=2.7.3", features = [] }
+
+[dependencies]
+# No features beyond Tauri's defaults. On Android Tauri depends on reqwest, which it calls only
+# to proxy the dev server in development builds (PLAN D26; the net guard allows it only here).
+tauri = { version = "=2.12.4", features = [] }
+
+[lints]
+workspace = true

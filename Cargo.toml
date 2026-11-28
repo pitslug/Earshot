@@ -19,6 +19,7 @@ members = [
     "crates/earshot-runtime",
     "crates/earshot-cli",
     "apps/desktop/src-tauri",
+    "apps/android/src-tauri",
     "xtask",
 ]
 

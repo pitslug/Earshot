@@ -10,8 +10,12 @@
 //!
 //! App crates listed in [`SHIPPED_TARGETS`] are left out of that run and checked instead
 //! on each target they ship to (`cargo tree -p <package> --target <triple>`), with the same
-//! rule and no exemption (Tauri 2 depends on reqwest only on Android and
-//! iOS, which the desktop app does not ship to; the Android edge is decided at T10.2).
+//! rule. The one exception is [`ALLOWED_BENEATH`] (PLAN D26): Tauri 2 depends on reqwest on
+//! Android and iOS, so in `earshot-android`'s graph on Android reqwest is allowed as a direct
+//! dependency of `tauri` and nowhere else; the desktop app's Windows graphs have no exception.
+//! The allowance rests on `earshot-android` turning on `tauri/custom-protocol` by default
+//! (Tauri compiles its dev-server proxy, the reqwest caller, only without it): re-read tauri's
+//! `src` for `reqwest` on every Tauri version change.
 //!
 //! The sync relay ([`SERVER_PACKAGE`], GATE-08 item 5) serves HTTP, so it is left out of
 //! that run and checked on its own: its graph may hold [`SERVER_SERVES_WITH`] (axum's
@@ -76,9 +80,24 @@ pub const SERVER_SERVES_WITH: &[&str] = &["hyper", "hyper-util"];
 /// Workspace members checked only on the targets they ship to, each target in its own
 /// `cargo tree` run ([`shipped_tree_args`]); every other shipped member is checked with
 /// `--target all`. Adding a package here narrows its check: it needs the owner's agreement.
-pub const SHIPPED_TARGETS: &[(&str, &[&str])] = &[(
-    "earshot-desktop",
-    &["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"],
+pub const SHIPPED_TARGETS: &[(&str, &[&str])] = &[
+    (
+        "earshot-desktop",
+        &["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"],
+    ),
+    ("earshot-android", &["aarch64-linux-android"]),
+];
+
+/// `(package, target, parent, client)`: in `package`'s graph on `target`, `client` and
+/// everything beneath it is allowed where it is a direct dependency of `parent`, and nowhere
+/// else. The one entry is PLAN D26 (the owner, 2026-11-28): Tauri 2 depends on reqwest on
+/// Android and calls it only under `cfg(all(dev, mobile))`, to proxy the dev server in
+/// development builds; a release APK (`cargo xtask android build`) never compiles that code.
+pub const ALLOWED_BENEATH: &[(&str, &str, &str, &str)] = &[(
+    "earshot-android",
+    "aarch64-linux-android",
+    "tauri",
+    "reqwest",
 )];
 
 /// Arguments of the `--target all` `cargo tree` run over the shipped members not in
@@ -219,9 +238,17 @@ pub struct Violation {
 /// not start with a depth or when no tree root is found, so a format change cannot pass
 /// silently.
 pub fn violations_in_tree(tree: &str) -> Result<Vec<Violation>> {
+    violations_allowing(tree, None)
+}
+
+/// [`violations_in_tree`], also skipping the subtree of each `client` that is a direct child of
+/// `parent` when `allowed` is `Some((parent, client))` ([`ALLOWED_BENEATH`]).
+fn violations_allowing(tree: &str, allowed: Option<(&str, &str)>) -> Result<Vec<Violation>> {
     let mut found = Vec::new();
     let mut root: Option<String> = None;
     let mut skip_deeper_than: Option<usize> = None;
+    // The name at each depth on the path to the current line.
+    let mut path: Vec<String> = Vec::new();
     for line in tree.lines() {
         if line.trim().is_empty() {
             continue;
@@ -240,10 +267,23 @@ pub fn violations_in_tree(tree: &str) -> Result<Vec<Violation>> {
             }
             skip_deeper_than = None;
         }
+        if depth > path.len() {
+            bail!("net: `cargo tree` line deeper than its parent: {line}");
+        }
+        path.truncate(depth);
+        let parent = path.last().cloned();
+        path.push(name.to_string());
         if depth == 0 {
             root = Some(name.to_string());
         }
         if name == NET_PACKAGE {
+            skip_deeper_than = Some(depth);
+            continue;
+        }
+        if let Some((allowed_parent, allowed_client)) = allowed
+            && name == allowed_client
+            && parent.as_deref() == Some(allowed_parent)
+        {
             skip_deeper_than = Some(depth);
             continue;
         }
@@ -307,6 +347,38 @@ pub fn evaluate_shipped(package: &str, args: &[&str], out: &CmdOutput) -> Result
     violations_in_tree(&out.stdout)
 }
 
+/// [`evaluate_shipped`] for `package` on one shipped `target`, with that pair's
+/// [`ALLOWED_BENEATH`] allowance. Fails closed unless `args` name `target` exactly once and no
+/// other target, so an allowance never applies to a tree of several targets.
+pub fn evaluate_shipped_on(
+    package: &str,
+    target: &str,
+    args: &[&str],
+    out: &CmdOutput,
+) -> Result<Vec<Violation>> {
+    let named: Vec<&str> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| **a == "--target" || a.starts_with("--target="))
+        .map(|(i, a)| match a.strip_prefix("--target=") {
+            Some(v) => v,
+            None => args.get(i + 1).copied().unwrap_or(""),
+        })
+        .collect();
+    if named != [target] {
+        bail!(
+            "net: `cargo {}` must name exactly the target {target}",
+            args.join(" ")
+        );
+    }
+    evaluate_shipped(package, args, out)?;
+    let allowed = ALLOWED_BENEATH
+        .iter()
+        .find(|(p, t, _, _)| *p == package && *t == target)
+        .map(|(_, _, parent, client)| (*parent, *client));
+    violations_allowing(&out.stdout, allowed)
+}
+
 fn capture(root: &Path, args: &[&str]) -> Result<CmdOutput> {
     let mut cmd = crate::ci::cargo_command();
     cmd.args(args).current_dir(root);
@@ -327,7 +399,12 @@ pub fn run(root: &Path) -> Result<()> {
     for (package, targets) in SHIPPED_TARGETS {
         for target in *targets {
             let args = shipped_tree_args(package, target);
-            found.extend(evaluate_shipped(package, &args, &capture(root, &args)?)?);
+            found.extend(evaluate_shipped_on(
+                package,
+                target,
+                &args,
+                &capture(root, &args)?,
+            )?);
         }
     }
     let args = server_tree_args();
@@ -491,6 +568,13 @@ mod tests {
         assert!(violations_in_tree("").is_err());
         assert!(violations_in_tree("earshot-cli v0.1.0\n└── reqwest v0.13.5\n").is_err());
         assert!(violations_in_tree("1reqwest v0.13.5\n").is_err());
+        // A line two levels below its parent: the parent of the line is unknown.
+        let jump = violations_in_tree("0earshot-android v0.9.2 (C:\\repo)\n2reqwest v0.13.5\n");
+        assert!(
+            jump.as_ref()
+                .is_err_and(|e| e.to_string().contains("deeper than its parent")),
+            "{jump:?}"
+        );
     }
 
     fn captured(stdout: &str, success: bool, stdout_complete: bool) -> CmdOutput {
@@ -622,6 +706,139 @@ mod tests {
         }
     }
 
+    // The Android app's graph as `cargo tree` prints it: Tauri pulls reqwest (and its stack)
+    // only on Android, for the dev-server proxy (PLAN D26).
+    const ANDROID: &str = "\
+0earshot-android v0.9.2 (C:\\repo\\apps\\android\\src-tauri)
+1tauri v2.12.4
+2reqwest v0.13.5
+3hyper v1.12.0
+3hyper-util v0.1.21
+4hyper v1.12.0
+3hyper-rustls v0.27.7
+2jni v0.21.1
+";
+
+    #[test]
+    fn net_android_app_is_checked_on_android_only() {
+        let (_, targets) = SHIPPED_TARGETS
+            .iter()
+            .find(|(p, _)| *p == "earshot-android")
+            .expect("earshot-android has shipped targets");
+        assert_eq!(*targets, ["aarch64-linux-android"]);
+        assert!(
+            tree_args()
+                .windows(2)
+                .any(|w| w == ["--exclude", "earshot-android"])
+        );
+        assert_eq!(
+            ALLOWED_BENEATH,
+            [(
+                "earshot-android",
+                "aarch64-linux-android",
+                "tauri",
+                "reqwest"
+            )]
+        );
+    }
+
+    #[test]
+    fn net_android_allows_reqwest_only_directly_beneath_tauri() {
+        const T: &str = "aarch64-linux-android";
+        let args = shipped_tree_args("earshot-android", T);
+        let on = |tree: &str| {
+            evaluate_shipped_on("earshot-android", T, &args, &captured(tree, true, true)).unwrap()
+        };
+        assert_eq!(on(ANDROID), vec![]);
+        // Without the allowance the same tree fails: the allowance is what passes it.
+        assert_eq!(
+            evaluate_shipped("earshot-android", &args, &captured(ANDROID, true, true)).unwrap(),
+            [
+                v("earshot-android", "hyper"),
+                v("earshot-android", "hyper-rustls"),
+                v("earshot-android", "hyper-util"),
+                v("earshot-android", "reqwest"),
+            ]
+        );
+        // Anything else in the app reaching an HTTP client still fails, reqwest included.
+        assert_eq!(
+            on(&format!("{ANDROID}1some-crate v1.0.0\n2reqwest v0.13.5\n")),
+            [v("earshot-android", "reqwest")]
+        );
+        assert_eq!(
+            on(&format!("{ANDROID}1ureq v3.4.2\n")),
+            [v("earshot-android", "ureq")]
+        );
+        // Directly beneath: reqwest as a grandchild of tauri is not covered.
+        assert_eq!(
+            on(&format!(
+                "{ANDROID}1tauri v2.12.4\n2tauri-runtime-wry v2.10.0\n3reqwest v0.13.5\n"
+            )),
+            [v("earshot-android", "reqwest")]
+        );
+        // `tauri` exactly: a crate whose name starts with it is not the parent.
+        assert_eq!(
+            on(&format!(
+                "{ANDROID}1tauri-plugin-http v2.5.0\n2reqwest v0.13.5\n"
+            )),
+            [v("earshot-android", "reqwest")]
+        );
+        // Another client directly beneath tauri is not covered.
+        assert_eq!(
+            on(&format!("{ANDROID}1tauri v2.12.4\n2ureq v3.4.2\n")),
+            [v("earshot-android", "ureq")]
+        );
+        // The allowance is the Android app's on Android: the same tree for another package or
+        // another target fails.
+        let desktop = ANDROID.replace("earshot-android", "earshot-desktop");
+        let win = shipped_tree_args("earshot-desktop", "aarch64-pc-windows-msvc");
+        assert!(
+            !evaluate_shipped_on(
+                "earshot-desktop",
+                "aarch64-pc-windows-msvc",
+                &win,
+                &captured(&desktop, true, true)
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let other = shipped_tree_args("earshot-android", "x86_64-linux-android");
+        assert!(
+            !evaluate_shipped_on(
+                "earshot-android",
+                "x86_64-linux-android",
+                &other,
+                &captured(ANDROID, true, true)
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn net_shipped_run_must_name_exactly_its_one_target() {
+        const T: &str = "aarch64-linux-android";
+        let out = captured(ANDROID, true, true);
+        let mut two = shipped_tree_args("earshot-android", T);
+        two.extend(["--target", "x86_64-linux-android"]);
+        assert!(evaluate_shipped_on("earshot-android", T, &two, &out).is_err());
+        let none: Vec<&str> = shipped_tree_args("earshot-android", T)
+            .into_iter()
+            .filter(|a| *a != "--target" && *a != T)
+            .collect();
+        assert!(evaluate_shipped_on("earshot-android", T, &none, &out).is_err());
+        let wrong = shipped_tree_args("earshot-android", "x86_64-linux-android");
+        assert!(evaluate_shipped_on("earshot-android", T, &wrong, &out).is_err());
+        let all = shipped_tree_args("earshot-android", "all");
+        assert!(evaluate_shipped_on("earshot-android", T, &all, &out).is_err());
+        // `--target-dir` is not a target.
+        let mut with_dir = shipped_tree_args("earshot-android", T);
+        with_dir.extend(["--target-dir", r"C:\eb"]);
+        assert_eq!(
+            evaluate_shipped_on("earshot-android", T, &with_dir, &out).unwrap(),
+            vec![]
+        );
+    }
     #[test]
     fn http_client_on_a_shipped_windows_target_still_fails() {
         let args = shipped_tree_args("earshot-desktop", "x86_64-pc-windows-msvc");

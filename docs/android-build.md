@@ -46,6 +46,20 @@ So whisper.cpp and the core run on the device. ONNX Runtime itself was not loade
 - **`libc++_shared.so`** from the NDK (`sysroot/usr/lib/aarch64-linux-android`). whisper-rs-sys links `c++_shared` on Android, so the app's `jniLibs/arm64-v8a` needs it beside the Rust library.
 - **Models** come from the models folder as on Windows. Nothing here bundles them.
 
+## The app's APK (T10.2a)
+
+```powershell
+cargo xtask android build
+```
+
+It runs `tauri android build --apk --target aarch64` in `apps/android` (the `@earshot/android` front end and the `earshot-android` crate). That builds the front end, then the Rust library through the Gradle project's Rust task, then a release APK. Output: `apps\android\src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release-unsigned.apk`, about 11 MB, `io.github.pitslug.earshot`, `arm64-v8a` only, minimum API 26, target API 37 (PLAN D26).
+
+- **Prerequisites:** GATE-05's, plus `JAVA_HOME` (Android Studio's `jbr`) and Windows **Developer Mode**. The Tauri CLI symlinks the built library into `jniLibs`, and without Developer Mode Windows refuses ("Creation symbolic link is not allowed").
+- **The Gradle project is committed** (`apps/android/src-tauri/gen/android`, from `tauri android init`). Its wrapper is pinned by `distributionSha256Sum` (Gradle 9.6.1, checked by `android_gradle_wrapper_is_pinned_by_sha256`). The Android Gradle plugin, Kotlin and AndroidX versions are fixed in its build files. A first build downloads them from services.gradle.org, Google's Maven and Maven Central, for the build only.
+- **No internet permission in release builds:** the generated manifest asked for `INTERNET` in every build. It now sits only in `src/debug/AndroidManifest.xml`, for `tauri android dev`'s dev server, and `android_release_manifest_asks_for_no_internet` pins that. `aapt2 dump permissions` on the release APK lists only AndroidX's own `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`. The Android TV launcher entries were removed too.
+- **reqwest:** Tauri depends on it on Android and calls it only under `cfg(all(dev, mobile))`, its dev-server proxy. The net guard allows it in `earshot-android`'s Android graph only as a direct dependency of `tauri` (`net_guard::ALLOWED_BENEATH`, D26). Tauri's `dev` cfg means "no `custom-protocol` feature", not the debug profile. So `earshot-android` turns `custom-protocol` on by default, and no build of it compiles the proxy unless default features are turned off for a dev build against the Vite server.
+- **Unsigned:** installing on the phone needs a signing key. That and the app's version (the APK says `1.0` until `tauri.conf.json` gets one) are open.
+
 ## Not covered
 
 - llama.cpp (local summaries), the store, the network crate and the runtime were not built for Android. T10.1's scope is the core and the two recogniser engines. Summaries on Android are not in v2's scope.
