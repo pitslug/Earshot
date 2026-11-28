@@ -750,7 +750,7 @@ Runs copy their steps when they start and continue from that copy (4.1, 4.3), so
 
 ### 12.11 Copy
 
-New copy goes in `fixtures/ui/summary_order_cases.json`, for the owner to approve, read by both suites:
+New copy goes in `fixtures/ui/summary_order_cases.json`, read by both suites (approved by the owner 2026-11-28, with the release note naming the services as the picker does):
 
 | Key | Text |
 |---|---|
@@ -765,7 +765,7 @@ New copy goes in `fixtures/ui/summary_order_cases.json`, for the owner to approv
 
 Service names reuse `steps.*`; destinations reuse `destinations.*`.
 
-**Release note** (CHANGELOG): "Summaries: the Summaries page now has one Online service row, where you choose Claude Code, Codex, the Anthropic API or your own server. Only that service is used, in your order and in Re-summarise. If your order listed more than one online service, the first is kept."
+**Release note** (CHANGELOG): "Summaries: the Summaries page now has one Online service row, where you choose Claude (through Claude Code), OpenAI (through Codex), the Anthropic API or your own server. Only that service is used, in your order and in Re-summarise. If your order listed more than one online service, the first is kept."
 
 ### 12.12 Questions for the owner (both decided 2026-11-28: the recommended answer)
 
