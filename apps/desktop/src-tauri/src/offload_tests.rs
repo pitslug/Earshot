@@ -798,12 +798,7 @@ impl earshot_runtime::claude_code::ClaudeCodeProbe for CountedClaude {
 }
 
 fn store_order(svc: &Services, steps: &[earshot_runtime::summary_order::OrderStep]) {
-    earshot_runtime::summary_order::set_summary_order(
-        &mut svc.store(),
-        &earshot_runtime::summary_order::SummaryOrder::new(steps.to_vec()).unwrap(),
-        None,
-    )
-    .unwrap();
+    crate::testutil::store_order(svc, steps, None);
 }
 
 /// The app's helper answers another computer's request through `helper_writer` only (T12.63b,

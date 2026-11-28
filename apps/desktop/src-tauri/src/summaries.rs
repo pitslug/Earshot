@@ -231,6 +231,13 @@ pub fn settings_view(services: &Services) -> Result<SummarySettingsView, IpcErro
 pub fn settings_error(e: SummarySettingsError) -> IpcError {
     match e {
         SummarySettingsError::Store(e) => IpcError::from(e),
+        // T14.72: fixed copy from the order's table.
+        SummarySettingsError::StaleProvider => {
+            IpcError::invalid(crate::summary_order::COPY.page.settings_changed.clone())
+        }
+        SummarySettingsError::NotTheService => {
+            IpcError::invalid(crate::summary_order::COPY.page.not_the_service.clone())
+        }
         other => IpcError::invalid(sentence(&other.to_string())),
     }
 }

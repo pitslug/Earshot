@@ -1300,9 +1300,7 @@ fn cuda_settings_meeting_preflight_beside_a_hung_trial() {
     use crate::meeting::{HostPrepare, MeetingSource, Prepare, StartRequest};
     use crate::meeting_events::CaptureMode;
     use earshot_runtime::model_settings::{ModelPick, ModelSettings, set_model_settings};
-    use earshot_runtime::summary_settings::{
-        EndpointProvider, SummarySettings, SummaryWriter, set_summary_settings,
-    };
+    use earshot_runtime::summary_settings::{EndpointProvider, SummarySettings, SummaryWriter};
 
     let dir = TempDir::new("cuda-hung");
     let svc = services(&dir);
@@ -1316,19 +1314,18 @@ fn cuda_settings_meeting_preflight_beside_a_hung_trial() {
             },
         )
         .unwrap();
-        // Nothing connects before a summary; only the trial's gate is being looked at here.
-        set_summary_settings(
-            &mut db,
-            &SummarySettings {
-                writer: SummaryWriter::OwnEndpoint,
-                provider: EndpointProvider::OpenAiCompatible,
-                url: "http://127.0.0.1:9/v1".into(),
-                model: "m".into(),
-                ..SummarySettings::default()
-            },
-        )
-        .unwrap();
     }
+    // Nothing connects before a summary; only the trial's gate is being looked at here.
+    crate::testutil::store_settings(
+        &svc,
+        &SummarySettings {
+            writer: SummaryWriter::OwnEndpoint,
+            provider: EndpointProvider::OpenAiCompatible,
+            url: "http://127.0.0.1:9/v1".into(),
+            model: "m".into(),
+            ..SummarySettings::default()
+        },
+    );
     // The start's own holds, and a trial that never ends.
     let (never, hung) = mpsc::channel::<()>();
     let latch = latched(

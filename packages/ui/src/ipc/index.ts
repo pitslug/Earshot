@@ -189,10 +189,23 @@ export type {
 } from "./sync";
 export { MOCK_SYNC_CODE, MOCK_SYNC_SECRET, OFFLOAD_COPY, createSyncMock, mockDeviceId, offloadCopy } from "./mockSync";
 export type { SyncMockData } from "./mockSync";
-export { ORDER_COPY, fillCopy, isRemoteWriter, mirrorWriter, sameStep, stepKey } from "./summaryOrder";
+export {
+  ORDER_COPY,
+  SERVICES,
+  fillCopy,
+  isEndpointService,
+  isRemoteWriter,
+  mirrorWriter,
+  sameStep,
+  serviceName,
+  stepKey,
+} from "./summaryOrder";
 export type {
+  OnlineRowView,
+  OnlineServiceSaved,
   ResummariseItem,
   ResummariseView,
+  ServiceChoice,
   StepChoice,
   StepView,
   SummaryOrderCommands,

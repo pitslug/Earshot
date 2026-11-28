@@ -10,7 +10,6 @@ use crate::backends::{Accelerator, ModelDir};
 use crate::host::{self, SkipReason, SummaryPlan, SummaryRequest};
 use crate::summary_settings::{
     ApiKey, ApiKeyError, ApiKeyStore, EndpointProvider, SummarySettings, SummaryWriter,
-    set_summary_settings,
 };
 use crate::testutil::{TempDir, meeting, services};
 
@@ -183,7 +182,7 @@ fn summary_kept_local_remote_writer_becomes_the_local_model_and_reads_no_key() {
     for (name, settings) in remote_writers() {
         let dir = TempDir::new("summary-kept-local-plan");
         let mut db = Store::open(&dir.0.join("earshot.db")).unwrap();
-        set_summary_settings(&mut db, &settings).unwrap();
+        crate::testutil::store_settings(&mut db, &settings);
         let keys = CountingKeys(Cell::new(0));
         let s = host::summary_from_settings(&db, CPU, &machine(), &keys, SummaryPrivacy::KeptLocal)
             .unwrap();
@@ -234,14 +233,13 @@ fn summary_kept_local_changes_nothing_for_this_computer_or_no_summary() {
     let mut db = Store::open(&dir.0.join("earshot.db")).unwrap();
     let keys = CountingKeys(Cell::new(0));
     for writer in [SummaryWriter::OnThisComputer, SummaryWriter::NoSummary] {
-        set_summary_settings(
+        crate::testutil::store_settings(
             &mut db,
             &SummarySettings {
                 writer,
                 ..SummarySettings::default()
             },
-        )
-        .unwrap();
+        );
         let read =
             |privacy| host::summary_from_settings(&db, CPU, &machine(), &keys, privacy).unwrap();
         let (kept, writer_side) = (

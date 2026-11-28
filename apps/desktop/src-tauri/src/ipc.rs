@@ -164,6 +164,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             crate::offload::stop_waiting_summary,
             crate::summary_order::summary_order,
             crate::summary_order::set_summary_order,
+            crate::summary_order::set_online_service,
             crate::summary_order::resummarise_writers,
             crate::summary_order::resummarise_with,
             crate::first_run::first_run_state,

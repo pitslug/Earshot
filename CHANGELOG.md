@@ -4,6 +4,12 @@ What each release changed, in plain words, newest first. It is written from the 
 
 [docs/compatibility.md](docs/compatibility.md) says what an update does to your data, to sync and to the relay and worker.
 
+## Unreleased
+
+### Changed
+
+- Summaries: the Summaries page now has one Online service row, where you choose Claude (through Claude Code), OpenAI (through Codex), the Anthropic API or your own server. Only that service is used, in your order and in Re-summarise. If your order listed more than one online service, the first is kept.
+
 ## 0.9.2 - 2026-11-28
 
 This release changes no synced row and no database step: a computer on 0.9.2 still syncs with one on 0.9.1. The relay can stay on 0.9.1. Update the summary worker to 0.9.2 for Stop to reach it: an older worker writes on until it finishes.

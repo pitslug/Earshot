@@ -2948,4 +2948,20 @@ mod cli_writers_tests {
             );
         }
     }
+    /// T14.72 (docs/summary-order.md 12.5, 12.13 item 10): the CLI never reads the online
+    /// service picked; a stored pick of Claude Code leaves its endpoint step as it was.
+    #[test]
+    fn cli_writers_ignore_the_online_service_picked() {
+        use earshot_runtime::summary_order::{Service, set_online_service};
+        let svc = services("pick");
+        set_online_service(&mut svc.store(), Service::ClaudeCode).unwrap();
+        let key = CliWriters::new(
+            &SummaryPlan::NoApiKey(earshot_runtime::summary_settings::ApiKeyError::Missing),
+            None,
+        );
+        assert!(matches!(
+            key.writer(&svc, WriterStep::Endpoint),
+            Built::Skip(SkipReason::NoApiKey(_))
+        ));
+    }
 }

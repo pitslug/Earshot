@@ -21,6 +21,54 @@ use crate::testutil::{TempDir, services};
 
 const SECRET: &str = "sk-ant-api03-summaries-test-secret-42";
 
+/// Picks the online service `value` names, as the Summaries page's picker does before it can be
+/// saved (T14.72, `testutil::pick_for`).
+fn pick_value(svc: &earshot_runtime::Services, value: &SummarySettingsValue) {
+    let steps: Vec<earshot_runtime::summary_order::OrderStep> =
+        earshot_runtime::summary_order::WriterStep::of_writer(value.settings().writer)
+            .map(earshot_runtime::summary_order::OrderStep::Writer)
+            .into_iter()
+            .collect();
+    crate::testutil::pick_for(svc, &steps, Some(value.settings().provider));
+}
+
+/// Saves `value` after [`pick_value`] as the page does since T14.72: its writer as the order's
+/// writer step (the order's computers kept) through the page's own `set_order` with the
+/// settings; returns the settings view as stored.
+fn save_after_pick(
+    svc: &earshot_runtime::Services,
+    value: &SummarySettingsValue,
+) -> Result<SummarySettingsView, crate::ipc::IpcError> {
+    use crate::summary_order::StepChoice;
+    let (order, _) = earshot_runtime::summary_order::summary_order(&svc.store()).unwrap();
+    let mut steps: Vec<StepChoice> = order
+        .steps()
+        .iter()
+        .filter(|s| matches!(s, earshot_runtime::summary_order::OrderStep::Computer(_)))
+        .map(|s| StepChoice::of(*s))
+        .collect();
+    steps.extend(
+        earshot_runtime::summary_order::WriterStep::of_writer(value.settings().writer)
+            .map(|w| StepChoice::of(earshot_runtime::summary_order::OrderStep::Writer(w))),
+    );
+    let host = crate::sync_settings::SyncHost::new(std::sync::Arc::new(
+        earshot_runtime::sync::MemoryVault::default(),
+    )
+        as std::sync::Arc<dyn earshot_runtime::sync::SyncVault>);
+    crate::summary_order::set_order(svc, &host, &steps, Some(value))?;
+    settings_view(svc)
+}
+
+/// The Summaries page's save of `value` since T14.72: [`pick_value`] then [`save_after_pick`]
+/// (before T14.72 `set_settings`, which also changed the order).
+fn save(
+    svc: &earshot_runtime::Services,
+    value: &SummarySettingsValue,
+) -> Result<SummarySettingsView, crate::ipc::IpcError> {
+    pick_value(svc, value);
+    save_after_pick(svc, value)
+}
+
 /// A stored meeting (T12.63b: a re-summary is a run of the order, which starts by recording its
 /// run on the meeting, so a meeting that does not exist fails before any writer is set up).
 fn stored_meeting(svc: &earshot_runtime::Services) -> EntityId {
@@ -139,7 +187,7 @@ fn summaries_settings_default_and_round_trip() {
             "claude-sonnet-4-5",
         )
     };
-    let stored = set_settings(&svc, &want).unwrap();
+    let stored = save(&svc, &want).unwrap();
     assert_eq!(stored.value.url, "https://api.anthropic.com");
     assert_eq!(stored.endpoint_host.as_deref(), Some("api.anthropic.com"));
     assert!(!stored.endpoint_local);
@@ -149,7 +197,7 @@ fn summaries_settings_default_and_round_trip() {
     );
     assert_eq!(settings_view(&svc).unwrap(), stored);
     // A LAN endpoint needs no warning.
-    let lan = set_settings(
+    let lan = save(
         &svc,
         &value(
             WriterChoice::OwnEndpoint,
@@ -160,7 +208,7 @@ fn summaries_settings_default_and_round_trip() {
     )
     .unwrap();
     assert!(lan.endpoint_local);
-    let none = set_settings(
+    let none = save(
         &svc,
         &value(
             WriterChoice::NoSummary,
@@ -217,7 +265,7 @@ fn summaries_refused_settings_are_invalid_setting_and_store_nothing() {
              https://api.anthropic.com.",
         ),
     ] {
-        let e = set_settings(&svc, &v).unwrap_err();
+        let e = save(&svc, &v).unwrap_err();
         assert_eq!(e.kind, "invalid_setting");
         assert_eq!(e.message, want);
         assert!(!e.retryable);
@@ -296,13 +344,13 @@ fn summaries_key_binding_follows_the_shared_case_table() {
         let vault = MemoryVault::default();
         match case["saved_for"].as_str() {
             Some(url) => {
-                set_settings(&svc, &anthropic(url)).unwrap();
+                save(&svc, &anthropic(url)).unwrap();
                 set_api_key(&svc, &vault, SECRET).unwrap();
             }
             // As before T14.31: the key alone, no recorded address.
             None => KeyVault::save(&vault, SECRET).unwrap(),
         }
-        set_settings(&svc, &anthropic(case["now"].as_str().unwrap())).unwrap();
+        save(&svc, &anthropic(case["now"].as_str().unwrap())).unwrap();
         let got = has_api_key(&svc, &vault).unwrap();
         if got != case["bound"].as_bool().unwrap() {
             wrong.push(format!("{name}: {got}"));
@@ -348,11 +396,11 @@ fn summaries_key_saved_for_another_address_is_never_read() {
         )
         .unwrap()
     };
-    set_settings(&svc, &endpoint("https://api.anthropic.com")).unwrap();
+    save(&svc, &endpoint("https://api.anthropic.com")).unwrap();
     set_api_key(&svc, &vault, SECRET).unwrap();
     assert!(setup(&vault).summary.is_some());
     // Another host: no key, never read, the summary skipped with the existing reason.
-    set_settings(&svc, &endpoint("https://proxy.example.invalid")).unwrap();
+    save(&svc, &endpoint("https://proxy.example.invalid")).unwrap();
     assert!(!has_api_key(&svc, &vault).unwrap());
     let s = setup(&NeverRead);
     assert!(s.summary.is_none());
@@ -367,14 +415,14 @@ fn summaries_key_saved_for_another_address_is_never_read() {
         setup(&vault).summary.expect("remote").service.model(),
         "claude-sonnet-4-5"
     );
-    set_settings(&svc, &endpoint("https://api.anthropic.com")).unwrap();
+    save(&svc, &endpoint("https://api.anthropic.com")).unwrap();
     assert!(!has_api_key(&svc, &vault).unwrap());
     // Removed: the address goes too, so a key saved later the old way counts for the
     // Anthropic API only.
     remove_api_key(&svc, &vault).unwrap();
     KeyVault::save(&vault, SECRET).unwrap();
     assert!(has_api_key(&svc, &vault).unwrap());
-    set_settings(&svc, &endpoint("https://proxy.example.invalid")).unwrap();
+    save(&svc, &endpoint("https://proxy.example.invalid")).unwrap();
     assert!(!has_api_key(&svc, &vault).unwrap());
 }
 
@@ -384,7 +432,7 @@ fn summaries_settings_responses_never_carry_the_key() {
     let svc = services(&dir);
     let vault = MemoryVault::default();
     set_api_key(&svc, &vault, SECRET).unwrap();
-    let v = set_settings(
+    let v = save(
         &svc,
         &value(
             WriterChoice::OwnEndpoint,
@@ -421,7 +469,7 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
     let models = earshot_runtime::backends::ModelDir::new(dir.0.join("models"));
     let vault = MemoryVault::default();
     // No summary: nothing runs, the existing skip reason.
-    set_settings(
+    save(
         &svc,
         &value(
             WriterChoice::NoSummary,
@@ -444,7 +492,7 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
     assert_eq!(s.no_summary, SkipReason::NotRequested);
     assert!(!s.local_chosen);
     // On this computer without the model installed: the not-installed skip.
-    set_settings(
+    save(
         &svc,
         &value(
             WriterChoice::OnThisComputer,
@@ -471,7 +519,7 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
     );
     assert!(s.local_chosen);
     // An OpenAI-compatible endpoint: a remote service, no key needed.
-    set_settings(
+    save(
         &svc,
         &value(
             WriterChoice::OwnEndpoint,
@@ -500,7 +548,7 @@ fn summaries_meeting_setup_follows_who_writes_the_summary() {
     );
     // Anthropic without a key: no service and the skip reason (the meeting still runs),
     // never a local model or another provider.
-    set_settings(
+    save(
         &svc,
         &value(
             WriterChoice::OwnEndpoint,
@@ -557,7 +605,7 @@ fn summaries_live_switch_is_honoured_only_on_this_computer() {
     .unwrap();
     assert!(matches!(live_summaries(&s, &order), (None, None)));
     // On with a local choice whose model is not installed: off for this meeting, told.
-    set_settings(
+    save(
         &svc,
         &SummarySettingsValue {
             live: true,
@@ -589,7 +637,7 @@ fn summaries_live_switch_is_honoured_only_on_this_computer() {
         )
     );
     // On with an endpoint: not used, and the page already says why.
-    set_settings(
+    save(
         &svc,
         &SummarySettingsValue {
             live: true,
@@ -629,7 +677,7 @@ impl ApiKeyStore for Counting {
 }
 
 fn anthropic(svc: &earshot_runtime::Services) {
-    set_settings(
+    save(
         svc,
         &value(
             WriterChoice::OwnEndpoint,
@@ -849,7 +897,7 @@ fn summaries_resummarise_without_an_api_key_fails_with_the_api_key_message() {
 }
 
 fn claude_code(svc: &earshot_runtime::Services, model: &str) {
-    set_settings(
+    save(
         svc,
         &SummarySettingsValue {
             claude_model: model.into(),
@@ -876,7 +924,7 @@ fn summaries_claude_code_choice_round_trips_with_its_model() {
         v.live_unavailable.as_deref(),
         Some("Summarising during the meeting needs a local summary model.")
     );
-    let e = set_settings(
+    let e = save(
         &svc,
         &SummarySettingsValue {
             claude_model: "--tools".into(),
@@ -915,7 +963,7 @@ fn summaries_claude_code_effort_round_trips_as_a_choice() {
     ] {
         let mut v = settings_view(&svc).unwrap().value;
         v.claude_effort = Some(choice);
-        let stored = set_settings(&svc, &v).unwrap();
+        let stored = save(&svc, &v).unwrap();
         assert_eq!(stored.value.claude_effort, Some(choice));
         assert_eq!(settings_view(&svc).unwrap(), stored);
         assert!(
@@ -928,7 +976,7 @@ fn summaries_claude_code_effort_round_trips_as_a_choice() {
     }
     let mut v = settings_view(&svc).unwrap().value;
     v.claude_effort = None;
-    assert_eq!(set_settings(&svc, &v).unwrap().value.claude_effort, None);
+    assert_eq!(save(&svc, &v).unwrap().value.claude_effort, None);
     // A stored word this version does not know reads as the default, reported.
     svc.store()
         .set_local_value("settings/summary-claude-code-effort", b"ultra")
@@ -1136,7 +1184,7 @@ fn summaries_handover_record_failure_is_a_warning_without_meeting_text() {
 }
 
 fn codex(svc: &earshot_runtime::Services, model: &str) {
-    set_settings(
+    save(
         svc,
         &SummarySettingsValue {
             codex_model: model.into(),
@@ -1167,7 +1215,7 @@ fn summaries_codex_choice_round_trips_with_its_model() {
         v.live_unavailable.as_deref(),
         Some("Summarising during the meeting needs a local summary model.")
     );
-    let e = set_settings(
+    let e = save(
         &svc,
         &SummarySettingsValue {
             codex_model: "--sandbox".into(),
@@ -1387,16 +1435,18 @@ fn summaries_settings_follow_the_shared_case_table() {
         let value: SummarySettingsValue = serde_json::from_value(input.clone()).unwrap();
         let dir = TempDir::new("summaries-cases");
         let svc = services(&dir);
-        let got = set_settings(&svc, &value);
+        // The case's service is picked first, as on the page (T14.72); the save itself is what
+        // the case judges.
+        pick_value(&svc, &value);
+        let before = settings_view(&svc).unwrap().value;
+        let got = save_after_pick(&svc, &value);
         match (&got, case["error"].as_str()) {
             (Err(e), Some(want)) => {
                 if e.kind != "invalid_setting" || e.message != want {
                     wrong.push(format!("{name}: refused {:?} {:?}", e.kind, e.message));
                 }
                 // Nothing stored.
-                if settings_view(&svc).unwrap().value
-                    != serde_json::from_value(table["base"].clone()).unwrap()
-                {
+                if settings_view(&svc).unwrap().value != before {
                     wrong.push(format!("{name}: a refusal stored something"));
                 }
             }
@@ -1434,7 +1484,7 @@ fn summaries_messages_match_the_shared_case_table() {
         "",
     );
     claude.live = false;
-    let view = set_settings(&svc, &claude).unwrap();
+    let view = save(&svc, &claude).unwrap();
     assert_eq!(
         view.live_unavailable.as_deref(),
         m["live_needs_local"].as_str()

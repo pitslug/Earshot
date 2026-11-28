@@ -957,7 +957,7 @@ fn summary_order_run_the_decision_is_made_when_the_summary_is_due() {
     let dir = TempDir::new("order-run-due");
     let (svc, _) = services(&dir);
     // The order at meeting start says Claude Code; it is removed during the meeting.
-    set_summary_order(&mut svc.store(), &order(&[CLAUDE]), None).unwrap();
+    crate::testutil::store_order(&mut svc.store(), &order(&[CLAUDE]), None);
     let outcome = crate::host::tests::recorded(&svc, 401);
     set_summary_order(&mut svc.store(), &order(&[LOCAL]), None).unwrap();
     let good = MockServer::start(vec![reply("Written by the local step")]).unwrap();
@@ -1047,7 +1047,7 @@ fn summary_order_run_a_helper_runs_only_its_advertised_writer() {
     let asker = DeviceId::from_bytes([5; 16]);
     let m = meeting(&svc, "Planning", 13);
     // This computer's own order is [local, Claude Code]; its local model fails.
-    set_summary_order(&mut svc.store(), &order(&[LOCAL, CLAUDE]), None).unwrap();
+    crate::testutil::store_order(&mut svc.store(), &order(&[LOCAL, CLAUDE]), None);
     let bad = failing();
     let writers = Writers::default().mock(WriterStep::Local, &bad);
     // A request another computer asked, claimed here.
@@ -1087,7 +1087,7 @@ fn summary_order_run_a_helper_runs_only_its_advertised_writer() {
 fn summary_order_run_a_helper_turns_a_remote_kind_local_for_a_kept_meeting() {
     let dir = TempDir::new("order-run-helper-kept");
     let (svc, _) = services(&dir);
-    set_summary_order(&mut svc.store(), &order(&[CLAUDE, LOCAL]), None).unwrap();
+    crate::testutil::store_order(&mut svc.store(), &order(&[CLAUDE, LOCAL]), None);
     let writers = Writers::default().with(WriterStep::Local, Fake::Skip(not_installed()));
     let w = helper_writer(&svc, &writers, crate::keep_local::SummaryPrivacy::KeptLocal);
     assert!(matches!(

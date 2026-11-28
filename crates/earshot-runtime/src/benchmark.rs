@@ -584,6 +584,9 @@ fn skip_of(reason: &SkipReason, skip: Option<&BenchSkip>) -> Result<BenchSkip, R
             "the benchmark summary was skipped after a failed final pass",
         )),
         // The benchmark runs no order (one prepared local step, no queue): never reached.
+        SkipReason::NotChosen => Err(RuntimeError::Internal(
+            "the benchmark reads no order of summary writers",
+        )),
         SkipReason::NotNow => Err(RuntimeError::Internal(
             "the benchmark summary was skipped as not now",
         )),

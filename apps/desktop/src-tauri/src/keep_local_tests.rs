@@ -11,7 +11,7 @@ use earshot_runtime::claude_code::{ClaudeCodeProbe, ClaudeCodeStatus};
 use earshot_runtime::codex::{CodexProbe, CodexStatus};
 use earshot_runtime::host::SkipReason;
 use earshot_runtime::summary_settings::{
-    ApiKey, ApiKeyError, ApiKeyStore, EndpointProvider, SummarySettings, set_summary_settings,
+    ApiKey, ApiKeyError, ApiKeyStore, EndpointProvider, SummarySettings,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
@@ -75,7 +75,7 @@ fn remote_writers() -> Vec<SummarySettings> {
 }
 
 fn set_writer(svc: &Services, settings: &SummarySettings) {
-    set_summary_settings(&mut svc.store(), settings).unwrap();
+    crate::testutil::store_settings(svc, settings);
 }
 
 /// A finished meeting row (distinct seeds per call).

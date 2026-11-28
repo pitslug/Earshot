@@ -405,6 +405,19 @@ fn host() -> SyncHost {
     SyncHost::new(Arc::new(MemoryVault::default()) as Arc<dyn SyncVault>)
 }
 
+/// The page's order of `steps` since T14.72: their online service picked first (the endpoint's
+/// by the provider of `settings`), then the page's own `set_order`.
+fn ordered(
+    svc: &Services,
+    host: &SyncHost,
+    steps: &[StepChoice],
+    settings: Option<&SummarySettingsValue>,
+) -> SummaryOrderView {
+    let order_steps: Vec<OrderStep> = steps.iter().map(|s| s.step().unwrap()).collect();
+    crate::testutil::pick_for(svc, &order_steps, settings.map(|v| v.settings().provider));
+    set_order(svc, host, steps, settings).unwrap()
+}
+
 fn endpoint_value() -> SummarySettingsValue {
     let mut v = crate::summaries::settings_view(&services(&TempDir::new("summary-order-value")))
         .unwrap()
@@ -428,31 +441,44 @@ fn summary_order_page_stores_and_refuses_orders() {
     );
     assert_eq!(v.max_steps, 3);
     assert_eq!(v.steps[0].destination, "Stays on this computer");
-    // The four writers are always offered.
-    for c in [
-        StepChoice::Local,
-        StepChoice::Endpoint,
-        StepChoice::ClaudeCode,
-        StepChoice::Codex,
-    ] {
-        assert!(v.offered.iter().any(|s| s.step == c), "{c:?}");
-    }
+    // T14.72: the local model is offered; the online writers are the one Online service row,
+    // which reads "Choose a service" and cannot be ticked until a service is picked.
+    assert_eq!(
+        v.offered.iter().map(|s| &s.step).collect::<Vec<_>>(),
+        [&StepChoice::Local]
+    );
+    assert_eq!(
+        v.online,
+        OnlineRowView {
+            service: None,
+            step: None,
+            reason: Some(COPY.page.choose_service.clone()),
+            label: None,
+            destination: None,
+        }
+    );
     // Three steps with a computer.
     let desk = StepChoice::Computer {
         device: DESK.to_string(),
     };
-    let v = set_order(
+    let v = ordered(
         &svc,
         &host,
         &[StepChoice::ClaudeCode, desk.clone(), StepChoice::Local],
         None,
-    )
-    .unwrap();
+    );
     assert_eq!(v.steps.len(), 3);
     assert!(
         v.offered.iter().any(|s| s.step == desk),
         "a chosen computer stays offered"
     );
+    assert!(
+        v.offered.iter().all(|s| s.step != StepChoice::ClaudeCode),
+        "the online writer is the Online service row, never an offered step"
+    );
+    assert_eq!(v.online.service, Some(ServiceChoice::ClaudeCode));
+    assert_eq!(v.online.step, Some(StepChoice::ClaudeCode));
+    assert_eq!(v.online.reason, None);
     assert_eq!(
         earshot_runtime::summary_order::summary_order(&svc.store())
             .unwrap()
@@ -496,13 +522,12 @@ fn summary_order_page_stores_and_refuses_orders() {
         [CLAUDE, OrderStep::Computer(DESK), LOCAL]
     );
     // An endpoint as step 2 with its fields, stored with the order in one go.
-    let v = set_order(
+    let v = ordered(
         &svc,
         &host,
         &[StepChoice::Local, StepChoice::Endpoint],
         Some(&endpoint_value()),
-    )
-    .unwrap();
+    );
     assert_eq!(v.steps[1].label, "Model server (127.0.0.1)");
     let (settings, _) = earshot_runtime::summary_settings::summary_settings(&svc.store()).unwrap();
     assert_eq!(settings.url, "http://127.0.0.1:8080/v1");
@@ -512,7 +537,7 @@ fn summary_order_page_stores_and_refuses_orders() {
         "the writer key mirrors step 1"
     );
     // No summary.
-    let v = set_order(&svc, &host, &[], None).unwrap();
+    let v = ordered(&svc, &host, &[], None);
     assert!(v.none);
     assert!(v.steps.is_empty());
 }
@@ -532,17 +557,16 @@ fn summary_order_live_switch_follows_the_order() {
             .is_none()
     };
     assert!(live(&svc), "the local model alone");
-    set_order(&svc, &host, &[desk.clone(), StepChoice::Local], None).unwrap();
+    ordered(&svc, &host, &[desk.clone(), StepChoice::Local], None);
     assert!(live(&svc), "a computer, then the local model");
-    set_order(
+    ordered(
         &svc,
         &host,
         &[StepChoice::ClaudeCode, StepChoice::Local],
         None,
-    )
-    .unwrap();
+    );
     assert!(!live(&svc), "Claude Code first");
-    set_order(&svc, &host, &[desk, StepChoice::ClaudeCode], None).unwrap();
+    ordered(&svc, &host, &[desk, StepChoice::ClaudeCode], None);
     assert!(!live(&svc));
 }
 
@@ -608,96 +632,120 @@ fn meeting_with_final(svc: &Services, seed: u64, n: usize) -> EntityId {
 fn summary_order_resummarise_menu_offers_what_can_run_here() {
     let dir = TempDir::new("summary-order-menu");
     let svc = services(&dir);
+    let host = host();
     let m = meeting_with_final(&svc, 3, 2);
-    let all = Here {
-        local: true,
-        key: true,
-        claude: true,
-        codex: true,
-    };
+    let all = nothing_but_all();
     let steps = |v: &ResummariseView| v.writers.iter().map(|w| w.step.clone()).collect::<Vec<_>>();
-    // No endpoint set: it is not offered.
-    let v = resummarise_view(&svc, m, &all).unwrap();
+    let menu = |here: &Here| steps(&resummarise_view(&svc, m, here).unwrap());
+    // Nothing picked: no online writer, whatever is installed.
+    assert_eq!(menu(&all), [StepChoice::Local]);
+    // T14.72 (12.9): Claude Code picked and installed is offered, ticked or not; Codex,
+    // installed and not picked, is not.
+    pick_service(&svc, &host, ServiceChoice::ClaudeCode).unwrap();
     assert_eq!(
-        steps(&v),
-        [StepChoice::Local, StepChoice::ClaudeCode, StepChoice::Codex]
+        earshot_runtime::summary_order::summary_order(&svc.store())
+            .unwrap()
+            .0
+            .steps(),
+        [LOCAL],
+        "not ticked"
     );
-    assert!(v.writers.iter().all(|w| w.disabled.is_none()));
-    // An Anthropic endpoint needs a saved key.
-    crate::summaries::set_settings(
+    assert_eq!(menu(&all), [StepChoice::Local, StepChoice::ClaudeCode]);
+    ordered(
         &svc,
-        &SummarySettingsValue {
-            provider: crate::summaries::ProviderChoice::Anthropic,
-            url: "https://api.anthropic.com".into(),
-            ..endpoint_value()
-        },
-    )
-    .unwrap();
-    assert!(steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
-    let no_key = Here { key: false, ..all };
-    assert!(!steps(&resummarise_view(&svc, m, &no_key).unwrap()).contains(&StepChoice::Endpoint));
-    // T14.31: a key saved for another address is not offered, as the Summaries page says and
-    // the run refuses; saved for this address, it is.
-    let proxy = SummarySettingsValue {
+        &host,
+        &[StepChoice::ClaudeCode, StepChoice::Local],
+        None,
+    );
+    assert_eq!(menu(&all), [StepChoice::Local, StepChoice::ClaudeCode]);
+    assert_eq!(
+        menu(&Here {
+            claude: false,
+            ..nothing_but_all()
+        }),
+        [StepChoice::Local],
+        "a picked CLI that is not installed is not offered"
+    );
+    // Codex picked and installed: offered, and Claude Code no longer.
+    pick_service(&svc, &host, ServiceChoice::Codex).unwrap();
+    assert_eq!(menu(&all), [StepChoice::Local, StepChoice::Codex]);
+    // A picked Anthropic endpoint needs a key saved for its address.
+    pick_service(&svc, &host, ServiceChoice::AnthropicApi).unwrap();
+    let anthropic = |url: &str| SummarySettingsValue {
         provider: crate::summaries::ProviderChoice::Anthropic,
-        url: "https://proxy.example.invalid".into(),
+        url: url.into(),
         ..endpoint_value()
     };
-    crate::summaries::set_settings(&svc, &proxy).unwrap();
-    assert!(!steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
+    ordered(
+        &svc,
+        &host,
+        &[StepChoice::Local, StepChoice::Endpoint],
+        Some(&anthropic("https://api.anthropic.com")),
+    );
+    assert!(menu(&all).contains(&StepChoice::Endpoint));
+    let no_key = Here {
+        key: false,
+        ..nothing_but_all()
+    };
+    assert!(!menu(&no_key).contains(&StepChoice::Endpoint));
+    // T14.31: a key saved for another address is not offered, as the Summaries page says and
+    // the run refuses; saved for this address, it is.
+    let proxy = anthropic("https://proxy.example.invalid");
+    ordered(
+        &svc,
+        &host,
+        &[StepChoice::Local, StepChoice::Endpoint],
+        Some(&proxy),
+    );
+    assert!(!menu(&all).contains(&StepChoice::Endpoint));
     {
         let mut db = svc.store();
         earshot_runtime::summary_settings::bind_api_key(&mut db, &proxy.settings()).unwrap();
     }
-    assert!(steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
-    crate::summaries::set_settings(
+    assert!(menu(&all).contains(&StepChoice::Endpoint));
+    ordered(
         &svc,
-        &SummarySettingsValue {
-            provider: crate::summaries::ProviderChoice::Anthropic,
-            url: "https://api.anthropic.com".into(),
-            ..endpoint_value()
-        },
-    )
-    .unwrap();
-    assert!(!steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
+        &host,
+        &[StepChoice::Local, StepChoice::Endpoint],
+        Some(&anthropic("https://api.anthropic.com")),
+    );
+    assert!(!menu(&all).contains(&StepChoice::Endpoint));
     {
         let mut db = svc.store();
         earshot_runtime::summary_settings::unbind_api_key(&mut db).unwrap();
     }
-    assert!(steps(&resummarise_view(&svc, m, &all).unwrap()).contains(&StepChoice::Endpoint));
+    assert!(menu(&all).contains(&StepChoice::Endpoint));
+    // A picked OpenAI-compatible endpoint needs no key; picking it clears the Anthropic address,
+    // so it is offered once its form is saved.
+    pick_service(&svc, &host, ServiceChoice::OwnServer).unwrap();
+    assert!(!menu(&no_key).contains(&StepChoice::Endpoint), "not set up");
+    ordered(
+        &svc,
+        &host,
+        &[StepChoice::Local, StepChoice::Endpoint],
+        Some(&endpoint_value()),
+    );
+    assert_eq!(menu(&no_key), [StepChoice::Local, StepChoice::Endpoint]);
     let nothing = Here {
         local: false,
         key: false,
         claude: false,
         codex: false,
     };
-    assert!(
-        resummarise_view(&svc, m, &nothing)
-            .unwrap()
-            .writers
-            .is_empty()
-    );
-    // A meeting kept on this computer: every remote writer is disabled with the reason.
+    assert_eq!(menu(&nothing), [StepChoice::Endpoint]);
+    // A meeting kept on this computer: the online writer is disabled with the reason.
     {
         let mut db = svc.store();
         let mut row = db.meeting(m).unwrap().unwrap();
         row.summary_kept_local = true;
         db.put_meeting(row).unwrap();
     }
-    let v = resummarise_view(
-        &svc,
-        m,
-        &Here {
-            key: true,
-            ..nothing_but_all()
-        },
-    )
-    .unwrap();
+    let v = resummarise_view(&svc, m, &all).unwrap();
     for w in &v.writers {
         let expected = (w.step != StepChoice::Local).then(|| COPY.resummarise.kept_local.clone());
         assert_eq!(w.disabled, expected, "{:?}", w.step);
     }
-    assert_eq!(v.writers.len(), 4);
+    assert_eq!(v.writers.len(), 2);
 }
 
 fn nothing_but_all() -> Here {
@@ -761,13 +809,12 @@ fn summary_order_kept_meeting_start_checks_ask_nothing_remote() {
     let dir = TempDir::new("summary-order-kept-start");
     let svc = services(&dir);
     let host = host();
-    set_order(
+    ordered(
         &svc,
         &host,
-        &[StepChoice::ClaudeCode, StepChoice::Codex, StepChoice::Local],
+        &[StepChoice::ClaudeCode, StepChoice::Local],
         None,
-    )
-    .unwrap();
+    );
     let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
     let keys = CountedKeys::default();
     let request = crate::meeting::StartRequest {
@@ -864,7 +911,7 @@ fn summary_order_an_order_changed_during_a_meeting_is_the_one_used() {
         model: "test-model".into(),
         ..endpoint_value()
     };
-    set_order(&svc, &host, &[StepChoice::Endpoint], Some(&value)).unwrap();
+    ordered(&svc, &host, &[StepChoice::Endpoint], Some(&value));
     let keys = Arc::new(CountedKeys::default());
     let codex = Arc::new(CountedCodex::default());
     let probes = SummaryProbes {
@@ -899,8 +946,16 @@ fn summary_order_an_order_changed_during_a_meeting_is_the_one_used() {
         ticket.summary(),
         earshot_runtime::meeting_queue::SummaryHold::OffThisComputer
     );
-    // During the meeting the user puts Codex in the endpoint's place.
-    set_order(&svc, &host, &[StepChoice::Codex], None).unwrap();
+    // During the meeting the user picks Codex as the online service: it takes the endpoint's
+    // place (T14.72).
+    pick_service(&svc, &host, ServiceChoice::Codex).unwrap();
+    assert_eq!(
+        earshot_runtime::summary_order::summary_order(&svc.store())
+            .unwrap()
+            .0
+            .steps(),
+        [CODEX]
+    );
     let m = meeting_with_final(&svc, 5, 2);
     let done = run_after(prepared, &svc, m);
     assert!(
@@ -919,8 +974,9 @@ fn summary_order_an_order_changed_during_a_meeting_is_the_one_used() {
     );
     assert!(done.network.is_empty());
     assert_eq!(codex.0.load(Ordering::SeqCst), 1);
-    // The negative control: with the endpoint still in the order, it writes the summary.
-    set_order(&svc, &host, &[StepChoice::Endpoint], Some(&value)).unwrap();
+    // The negative control: with the endpoint picked again (still set up, in Codex's place), it
+    // writes the summary.
+    pick_service(&svc, &host, ServiceChoice::OwnServer).unwrap();
     let prepared = preflight();
     let other = meeting_with_final(&svc, 6, 2);
     let done = run_after(prepared, &svc, other);
@@ -983,7 +1039,7 @@ fn summary_order_preflight_holds_the_local_model_when_any_step_is_it() {
         ),
         (vec![StepChoice::Local], true),
     ] {
-        set_order(&svc, &host, &steps, None).unwrap();
+        ordered(&svc, &host, &steps, None);
         let ticket = Arc::new(queue.enter());
         drop(
             prepare
@@ -1272,7 +1328,7 @@ fn summary_order_a_meetings_summary_says_each_writer_it_leaves() {
     use crate::meeting_events::PostProgressMapper;
     use earshot_runtime::model_settings::{ModelPick, ModelSettings, set_model_settings};
 
-    for codex_first in [true, false] {
+    for left_first in [true, false] {
         let dir = TempDir::new("summary-order-moves");
         let svc = services(&dir);
         let server = earshot_llm_replay::mock::MockServer::start(vec![summary_reply()]).unwrap();
@@ -1290,12 +1346,18 @@ fn summary_order_a_meetings_summary_says_each_writer_it_leaves() {
             model: "test-model".into(),
             ..endpoint_value()
         };
-        let order: &[StepChoice] = if codex_first {
-            &[StepChoice::Codex, StepChoice::Endpoint]
-        } else {
-            &[StepChoice::Endpoint, StepChoice::Codex]
+        // Since T14.72 an order holds one online writer: the writer left is a computer that
+        // cannot be asked (sync off; it was Codex before). Not the local model: a meeting reads
+        // the real models folder, where one may be installed.
+        let desk = StepChoice::Computer {
+            device: DESK.to_string(),
         };
-        set_order(&svc, &host, order, Some(&value)).unwrap();
+        let order: &[StepChoice] = if left_first {
+            &[desk, StepChoice::Endpoint]
+        } else {
+            &[StepChoice::Endpoint, desk]
+        };
+        ordered(&svc, &host, order, Some(&value));
         let probes = SummaryProbes {
             keys: Arc::new(CountedKeys::default()),
             claude: Arc::new(NeverClaude),
@@ -1333,7 +1395,7 @@ fn summary_order_a_meetings_summary_says_each_writer_it_leaves() {
             "{:?}",
             done.summary
         );
-        if codex_first {
+        if left_first {
             assert_eq!(
                 events,
                 vec![MeetingEvent::SummaryRunChanged {
@@ -1350,7 +1412,7 @@ fn summary_order_a_meetings_summary_says_each_writer_it_leaves() {
 /// `JobEvent::SummaryRunChanged`). Control: one whose first writer writes tells nothing.
 #[test]
 fn summary_order_a_resummary_says_each_writer_it_leaves() {
-    for codex_first in [true, false] {
+    for left_first in [true, false] {
         let dir = TempDir::new("summary-order-job-moves");
         let svc = services(&dir);
         let server = earshot_llm_replay::mock::MockServer::start(vec![summary_reply()]).unwrap();
@@ -1360,12 +1422,14 @@ fn summary_order_a_resummary_says_each_writer_it_leaves() {
             model: "test-model".into(),
             ..endpoint_value()
         };
-        let order: &[StepChoice] = if codex_first {
-            &[StepChoice::Codex, StepChoice::Endpoint]
+        // Since T14.72 an order holds one online writer: the writer left is the local model,
+        // not installed here (it was Codex before).
+        let order: &[StepChoice] = if left_first {
+            &[StepChoice::Local, StepChoice::Endpoint]
         } else {
-            &[StepChoice::Endpoint, StepChoice::Codex]
+            &[StepChoice::Endpoint, StepChoice::Local]
         };
-        set_order(&svc, &host, order, Some(&value)).unwrap();
+        ordered(&svc, &host, order, Some(&value));
         let m = meeting_with_final(&svc, 8, 2);
         let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
         let keys = CountedKeys::default();
@@ -1388,6 +1452,367 @@ fn summary_order_a_resummary_says_each_writer_it_leaves() {
             "{:?}",
             done.result
         );
-        assert_eq!(changes, usize::from(codex_first));
+        assert_eq!(changes, usize::from(left_first));
     }
+}
+
+// ---- T14.72: the one online service (docs/summary-order.md 12) ----
+
+/// The copy of 12.11 is the table's, word for word with the runtime's fixed notes and refusals.
+#[test]
+fn summary_order_online_service_copy_matches_the_shared_table() {
+    use earshot_runtime::summary_order as order;
+    let t = table();
+    let page = &COPY.page;
+    for (key, ours) in [
+        ("online_service", &page.online_service),
+        ("choose_service", &page.choose_service),
+        ("service_label", &page.service_label),
+        ("second_online_dropped", &page.second_online_dropped),
+        ("unknown_service", &page.unknown_service),
+        ("not_the_service", &page.not_the_service),
+        ("settings_changed", &page.settings_changed),
+    ] {
+        assert_eq!(t["page"][key].as_str(), Some(ours.as_str()), "{key}");
+    }
+    assert_eq!(page.online_service, "Online service");
+    assert_eq!(page.choose_service, "Choose a service");
+    assert_eq!(page.service_label, "Service");
+    // The runtime's notes and refusals are the same text.
+    assert_eq!(page.second_online_dropped, order::SECOND_ONLINE_DROPPED);
+    assert_eq!(page.unknown_service, order::UNKNOWN_SERVICE);
+    assert_eq!(page.not_the_service, order::NOT_THE_SERVICE);
+    assert_eq!(page.settings_changed, order::SETTINGS_CHANGED);
+    assert_eq!(word(OutcomeWord::NotChosen), "not chosen");
+    // Each refusal reaches the page as its fixed copy.
+    for (e, want) in [
+        (SummaryOrderError::StaleProvider, &page.settings_changed),
+        (SummaryOrderError::NotThePick, &page.not_the_service),
+        (SummaryOrderError::TwoOnline, &page.not_the_service),
+    ] {
+        let got = order_error(e);
+        assert_eq!((got.kind.as_str(), &got.message), ("invalid_setting", want));
+    }
+    for (e, want) in [
+        (
+            earshot_runtime::summary_settings::SummarySettingsError::StaleProvider,
+            &page.settings_changed,
+        ),
+        (
+            earshot_runtime::summary_settings::SummarySettingsError::NotTheService,
+            &page.not_the_service,
+        ),
+    ] {
+        let got = crate::summaries::settings_error(e);
+        assert_eq!((got.kind.as_str(), &got.message), ("invalid_setting", want));
+    }
+    // A one-step run whose step was not chosen says so in its banner (4.4).
+    assert_eq!(
+        crate::meeting_events::skip_copy(&SkipReason::NotChosen),
+        page.not_the_service
+    );
+    // The provider refusal joins the Summaries settings table.
+    assert_eq!(
+        crate::testutil::summary_cases()["messages"]["settings_changed"].as_str(),
+        Some(page.settings_changed.as_str())
+    );
+}
+
+/// Picking a service is one command that returns both views as stored (12.6, 12.8): the row
+/// names the pick, is tickable only when it can be a step, and the setting view follows the
+/// provider of an endpoint service.
+#[test]
+fn summary_order_online_service_pick_returns_both_views() {
+    let dir = TempDir::new("summary-order-online-pick");
+    let svc = services(&dir);
+    let host = host();
+    let saved = pick_service(&svc, &host, ServiceChoice::Codex).unwrap();
+    assert_eq!(saved.order.online.service, Some(ServiceChoice::Codex));
+    assert_eq!(saved.order.online.step, Some(StepChoice::Codex));
+    assert_eq!(saved.order, order_view(&svc, &host).unwrap());
+    assert_eq!(
+        saved.settings,
+        crate::summaries::settings_view(&svc).unwrap()
+    );
+    // An endpoint service not set up cannot be ticked yet, and says why.
+    let saved = pick_service(&svc, &host, ServiceChoice::AnthropicApi).unwrap();
+    assert_eq!(
+        saved.order.online.service,
+        Some(ServiceChoice::AnthropicApi)
+    );
+    assert_eq!(saved.order.online.step, None);
+    assert_eq!(
+        saved.order.online.reason,
+        Some(COPY.page.not_set_up.clone())
+    );
+    assert_eq!(
+        saved.settings.value.provider,
+        crate::summaries::ProviderChoice::Anthropic
+    );
+    // An order holding an online writer that is not the pick is refused with fixed copy.
+    let e = set_order(&svc, &host, &[StepChoice::Codex], None).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("invalid_setting", COPY.page.not_the_service.as_str())
+    );
+    // A stale settings save through the page's own command is refused with fixed copy.
+    let stale = crate::summaries::SummarySettingsValue {
+        provider: crate::summaries::ProviderChoice::OpenAiCompatible,
+        live: true,
+        ..saved.settings.value.clone()
+    };
+    let e = crate::summaries::set_settings(&svc, &stale).unwrap_err();
+    assert_eq!(e.message, COPY.page.settings_changed);
+    assert!(!crate::summaries::settings_view(&svc).unwrap().value.live);
+    // The control: the same save from the view just returned is stored.
+    let fresh = crate::summaries::SummarySettingsValue {
+        live: true,
+        ..saved.settings.value
+    };
+    assert!(
+        crate::summaries::set_settings(&svc, &fresh)
+            .unwrap()
+            .value
+            .live
+    );
+}
+
+/// 12.9: a named re-summarise of an online writer that is not the pick is refused before a job
+/// starts, and a job whose step finds the pick changed fails with the same copy and hands
+/// nothing over. Control: the picked service is accepted and runs.
+#[test]
+fn summary_order_online_service_named_start_takes_only_the_pick() {
+    let dir = TempDir::new("summary-order-online-named");
+    let svc = services(&dir);
+    let host = host();
+    pick_service(&svc, &host, ServiceChoice::ClaudeCode).unwrap();
+    let e = named_step_allowed(&svc, CODEX).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("invalid_setting", COPY.page.not_the_service.as_str())
+    );
+    named_step_allowed(&svc, CLAUDE).unwrap();
+    named_step_allowed(&svc, LOCAL).unwrap();
+    // The pick changed after the command: the job's step reads `not chosen`.
+    let m = meeting_with_final(&svc, 11, 2);
+    let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
+    let keys = CountedKeys::default();
+    let codex = CountedCodex::default();
+    let e = crate::jobs::summarise_run_with(
+        &svc,
+        m,
+        &crate::jobs::SummaryStart::Named(CODEX),
+        &CancelToken::new(),
+        &models,
+        (&keys, &NeverClaude, &codex),
+        None,
+        &mut |_| {},
+        &mut || {},
+    )
+    .unwrap_err();
+    assert_eq!(e.message, COPY.page.not_the_service);
+    assert_eq!(codex.0.load(Ordering::SeqCst), 0, "Codex never built");
+    // The control: the picked endpoint is accepted and writes.
+    let server = earshot_llm_replay::mock::MockServer::start(vec![summary_reply()]).unwrap();
+    let value = SummarySettingsValue {
+        url: server.endpoint().to_string(),
+        model: "test-model".into(),
+        ..endpoint_value()
+    };
+    ordered(&svc, &host, &[StepChoice::Endpoint], Some(&value));
+    named_step_allowed(&svc, ENDPOINT).unwrap();
+    let done = crate::jobs::summarise_run_with(
+        &svc,
+        m,
+        &crate::jobs::SummaryStart::Named(ENDPOINT),
+        &CancelToken::new(),
+        &models,
+        (&keys, &NeverClaude, &codex),
+        None,
+        &mut |_| {},
+        &mut || {},
+    )
+    .unwrap();
+    assert!(
+        matches!(done.result, SummaryResult::Stored { .. }),
+        "{:?}",
+        done.result
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// The coordinator's decision on T14.72's row: the Online service row's label and destination
+/// are exactly what a StepView of the picked step carries (the same Rust functions), so the UI
+/// keeps no name rule. Control: no pick gives neither.
+#[test]
+fn summary_order_online_service_row_is_labelled_as_its_step_view() {
+    let dir = TempDir::new("summary-order-online-label");
+    let svc = services(&dir);
+    let host = host();
+    let row = order_view(&svc, &host).unwrap().online;
+    assert_eq!((row.label, row.destination), (None, None), "no pick");
+    let server_value = SummarySettingsValue {
+        url: "http://127.0.0.1:8080/v1".into(),
+        model: "test-model".into(),
+        ..endpoint_value()
+    };
+    for (service, step, value) in [
+        (ServiceChoice::ClaudeCode, CLAUDE, None),
+        (ServiceChoice::Codex, CODEX, None),
+        (ServiceChoice::OwnServer, ENDPOINT, Some(&server_value)),
+    ] {
+        pick_service(&svc, &host, service).unwrap();
+        if let Some(v) = value {
+            ordered(&svc, &host, &[StepChoice::Endpoint], Some(v));
+        }
+        let row = order_view(&svc, &host).unwrap().online;
+        let want = step_view(step, &StepContext::read(&svc));
+        assert_eq!(
+            row.label.as_deref(),
+            Some(want.label.as_str()),
+            "{service:?}"
+        );
+        assert_eq!(
+            row.destination.as_deref(),
+            Some(want.destination.as_str()),
+            "{service:?}"
+        );
+    }
+    let row = order_view(&svc, &host).unwrap().online;
+    assert_eq!(row.label.as_deref(), Some("Model server (127.0.0.1)"));
+    assert_eq!(row.destination.as_deref(), Some("Goes to 127.0.0.1"));
+    // A ticked step reads the same in the order's own list.
+    let ticked = order_view(&svc, &host).unwrap();
+    assert_eq!(ticked.steps[0].label, row.label.unwrap());
+    // An Anthropic pick with no address yet (the switch cleared it) still names Anthropic
+    // (12.8); control: the own server with no address is "Your own server".
+    pick_service(&svc, &host, ServiceChoice::AnthropicApi).unwrap();
+    let row = order_view(&svc, &host).unwrap().online;
+    assert_eq!(row.label.as_deref(), Some("Anthropic API"));
+    assert_eq!(row.destination.as_deref(), Some("Goes to Anthropic"));
+    pick_service(&svc, &host, ServiceChoice::OwnServer).unwrap();
+    let row = order_view(&svc, &host).unwrap().online;
+    assert_eq!(row.label.as_deref(), Some("Your own server"));
+    assert_eq!(
+        row.destination.as_deref(),
+        Some("Goes to the address you enter")
+    );
+}
+
+/// Job work that records how each re-summary was started (and runs nothing).
+#[derive(Default)]
+struct RecordingWork(std::sync::Mutex<Vec<crate::jobs::SummaryStart>>);
+
+impl crate::jobs::JobWork for RecordingWork {
+    fn retranscribe(
+        &self,
+        _: &Services,
+        _: EntityId,
+        _: &CancelToken,
+        _: &mut dyn FnMut(earshot_runtime::host::HostStep<'_>),
+        _: &mut dyn FnMut(String),
+    ) -> Result<earshot_runtime::edit::Retranscribed, IpcError> {
+        unreachable!("only re-summaries here")
+    }
+
+    fn summarise(
+        &self,
+        _: &Services,
+        _: EntityId,
+        _: &CancelToken,
+        _: &mut dyn FnMut(String),
+    ) -> Result<SummaryResult, IpcError> {
+        unreachable!("the runner asks summarise_run")
+    }
+
+    fn summarise_run(
+        &self,
+        _: &Services,
+        _: EntityId,
+        start: &crate::jobs::SummaryStart,
+        _: &CancelToken,
+        _: &mut dyn FnMut(String),
+    ) -> Result<crate::jobs::JobSummary, IpcError> {
+        self.0.lock().unwrap().push(start.clone());
+        Ok(SummaryResult::Skipped {
+            reason: SkipReason::NotRequested,
+        }
+        .into())
+    }
+}
+
+/// Review advisory 2 (12.9): the command's own body refuses a named online writer that is not
+/// the pick before any job starts. Control: the pick is accepted and its job starts.
+#[test]
+fn summary_order_online_service_resummarise_with_refuses_before_a_job_starts() {
+    let dir = TempDir::new("summary-order-online-resummarise-with");
+    let svc = services(&dir);
+    let host = host();
+    let m = meeting_with_final(&svc, 13, 2);
+    pick_service(&svc, &host, ServiceChoice::ClaudeCode).unwrap();
+    let work = Arc::new(RecordingWork::default());
+    let sink: crate::jobs::JobSink = Arc::new(|_| {});
+    let runner = crate::jobs::JobRunner::new(
+        Arc::clone(&work) as Arc<dyn crate::jobs::JobWork>,
+        sink,
+        crate::activity::WorkGate::new(),
+        &crate::cuda_settings::CudaLatch::resolved_off(),
+    );
+    let e = resummarise_named(&svc, &runner, &m.to_string(), &StepChoice::Codex).unwrap_err();
+    assert_eq!(
+        (e.kind.as_str(), e.message.as_str()),
+        ("invalid_setting", COPY.page.not_the_service.as_str())
+    );
+    runner.join();
+    assert!(work.0.lock().unwrap().is_empty(), "no job started");
+    // The control: the pick starts its job.
+    resummarise_named(&svc, &runner, &m.to_string(), &StepChoice::ClaudeCode).unwrap();
+    runner.join();
+    assert_eq!(
+        *work.0.lock().unwrap(),
+        vec![crate::jobs::SummaryStart::Named(CLAUDE)]
+    );
+}
+
+/// Review advisory 3 (12.13 item 12): picking a service records no run, no handover and asks no
+/// CLI. Control: a run of the picked service afterwards does record a run and probe its CLI, so
+/// the same observations can see a run.
+#[test]
+fn summary_order_online_service_picking_alone_sends_nothing() {
+    let dir = TempDir::new("summary-order-online-pick-alone");
+    let svc = services(&dir);
+    let host = host();
+    let m = meeting_with_final(&svc, 17, 2);
+    let codex = CountedCodex::default();
+    let handovers = |svc: &Services| {
+        svc.store()
+            .local_value(&format!("summary-handovers/{m}"))
+            .unwrap()
+    };
+    pick_service(&svc, &host, ServiceChoice::Codex).unwrap();
+    assert_eq!(
+        earshot_runtime::summary_order::run::run_view(&svc.store(), m).unwrap(),
+        RunView::None
+    );
+    assert_eq!(handovers(&svc), None);
+    assert_eq!(codex.0.load(Ordering::SeqCst), 0);
+    // The control: a named run of the pick records its run and probes Codex once.
+    let models = earshot_runtime::backends::ModelDir::new(dir.0.join("no-models"));
+    let keys = CountedKeys::default();
+    let _ = crate::jobs::summarise_run_with(
+        &svc,
+        m,
+        &crate::jobs::SummaryStart::Named(CODEX),
+        &CancelToken::new(),
+        &models,
+        (&keys, &NeverClaude, &codex),
+        None,
+        &mut |_| {},
+        &mut || {},
+    );
+    assert_eq!(codex.0.load(Ordering::SeqCst), 1);
+    assert_ne!(
+        earshot_runtime::summary_order::run::run_view(&svc.store(), m).unwrap(),
+        RunView::None
+    );
 }

@@ -9,6 +9,7 @@ import {
   MOCK_SYNC_SECRET,
   type MockIpcData,
   ORDER_COPY,
+  type ServiceChoice,
   createMockIpc,
   fillCopy,
   mockDeviceId,
@@ -81,6 +82,14 @@ const CODEX_LABEL = ORDER_COPY.steps.codex;
 const tick = (writer: string) => screen.getByRole("checkbox", { name: fillCopy(PAGE.use, { writer }) });
 const up = (writer: string) => screen.queryByRole("button", { name: fillCopy(PAGE.move_up, { writer }) });
 const stored = async (ipc: Ipc) => (await ipc.summaryOrder()).steps.map((s) => s.step);
+/** The Online service row's picker (T14.72): the Summaries page's own. */
+const picker = () => screen.getByRole("combobox", { name: PAGE.service_label });
+/** Picks `service` and waits for it to be stored (the picker saves at once, as ticks do). */
+async function pickService(s: { ipc: Ipc; user: ReturnType<typeof userEvent.setup> }, service: ServiceChoice) {
+  await waitFor(() => expect(picker()).toBeEnabled());
+  await s.user.selectOptions(picker(), service);
+  await waitFor(async () => expect((await s.ipc.summaryOrder()).online.service).toBe(service));
+}
 
 /** The steps by name, for `toStep` and `STEPS[..]`. */
 const SYNC = STEPS.findIndex((s) => s.title === "Sync");
@@ -241,37 +250,51 @@ describe("First run wizard", () => {
 
   describe("Summaries", () => {
     it("is the Summaries page's list of writers, this computer ticked, each saying what is sent", async () => {
-      setup();
+      const s = setup();
       await screen.findByRole("list", { name: PAGE.list });
-      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+      await waitFor(() => expect(picker()).toBeEnabled());
       expect(tick(LOCAL_LABEL)).toBeChecked();
-      expect(tick(CLAUDE_LABEL)).not.toBeChecked();
-      expect(tick(CODEX_LABEL)).not.toBeChecked();
+      // The same one Online service row as the page (T14.72): nothing picked, it cannot be ticked.
+      const online = screen.getAllByRole("listitem").filter((r) => r.dataset.step === "online");
+      expect(online).toHaveLength(1);
+      expect(tick(PAGE.online_service)).toBeDisabled();
+      expect(within(online[0]).getAllByText(PAGE.choose_service).map((e) => e.tagName)).toEqual(["OPTION"]);
       // The one-writer radios are gone: the only radios are Write summaries and No summary.
       expect(screen.getAllByRole("radio").map((r) => r.getAttribute("value"))).toEqual(["Write", "NoSummary"]);
       expect(screen.queryByRole("radio", { name: /^On this computer/ })).toBeNull();
       expect(screen.queryByRole("button", { name: "Other" })).toBeNull();
-      expect(screen.getByText(CLAUDE_CODE_PRIVACY)).toBeInTheDocument();
-      expect(screen.getByText(CODEX_PRIVACY)).toBeInTheDocument();
       expect(screen.getByText(PAGE.kept_local)).toBeInTheDocument();
+      // A service's privacy line shows as soon as it is picked, before it is ticked.
+      expect(screen.queryByText(CLAUDE_CODE_PRIVACY)).toBeNull();
+      await pickService(s, "ClaudeCode");
+      expect(await screen.findByText(CLAUDE_CODE_PRIVACY)).toBeInTheDocument();
+      expect(tick(CLAUDE_LABEL)).not.toBeChecked();
+      await pickService(s, "Codex");
+      expect(await screen.findByText(CODEX_PRIVACY)).toBeInTheDocument();
+      expect(screen.queryByText(CLAUDE_CODE_PRIVACY)).toBeNull();
+      // Picking saved at once and ticked nothing.
+      expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
     });
 
     it("ticks and orders writers, each saved at once, and Next goes on", async () => {
-      const s = setup();
+      const desk = { kind: "Computer" as const, device: mockDeviceId("e4a17d30") };
+      const studio = fillCopy(ORDER_COPY.steps.computer, { device: "Studio", writer: "local model" });
+      const s = setup({ sync: { setUp: true } });
+      await pickService(s, "ClaudeCode");
       await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
       await s.user.click(tick(CLAUDE_LABEL));
       await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }]));
-      await s.user.click(tick(CODEX_LABEL));
-      await waitFor(async () =>
-        expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }, { kind: "Codex" }]),
-      );
-      await waitFor(() => expect(up(CODEX_LABEL)).toBeEnabled());
-      await s.user.click(up(CODEX_LABEL)!);
-      await waitFor(async () =>
-        expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }, { kind: "ClaudeCode" }]),
-      );
+      await waitFor(() => expect(tick(studio)).toBeEnabled());
+      await s.user.click(tick(studio));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "ClaudeCode" }, desk]));
+      await waitFor(() => expect(up(CLAUDE_LABEL)).toBeEnabled());
+      await s.user.click(up(CLAUDE_LABEL)!);
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "ClaudeCode" }, { kind: "Local" }, desk]));
+      // A pick changes the ticked service in its place, at once.
+      await pickService(s, "Codex");
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "Local" }, desk]));
       await s.user.click(tick(LOCAL_LABEL));
-      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, { kind: "ClaudeCode" }]));
+      await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Codex" }, desk]));
       // The old writer setting follows the first writer.
       expect((await s.ipc.summarySettings()).value.writer).toBe("Codex");
       await s.user.click(button("Next"));
@@ -291,7 +314,7 @@ describe("First run wizard", () => {
 
     it("No summary stores no order", async () => {
       const s = setup();
-      await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
+      await waitFor(() => expect(tick(LOCAL_LABEL)).toBeEnabled());
       await s.user.click(screen.getByRole("radio", { name: /^No summary/ }));
       await waitFor(async () => expect((await s.ipc.summaryOrder()).none).toBe(true));
       expect((await s.ipc.summarySettings()).value.writer).toBe("NoSummary");
@@ -300,7 +323,7 @@ describe("First run wizard", () => {
     });
 
     it("lets this computer be ticked before its model is downloaded, which the Download step fetches", async () => {
-      const s = setup(CLEAN);
+      const s = setup({ ...CLEAN, onlineService: "claude-code" });
       await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
       expect(screen.queryByText(PAGE.not_downloaded)).toBeNull();
       await s.user.click(tick(CLAUDE_LABEL));
@@ -315,7 +338,7 @@ describe("First run wizard", () => {
     });
 
     it("Next saves a typed endpoint and ticks it, with no Save button", async () => {
-      const s = setup();
+      const s = setup({ onlineService: "endpoint" });
       const group = await screen.findByRole("group", { name: "Your own server" });
       const form = within(group);
       expect(form.queryByRole("button", { name: /endpoint/ })).toBeNull();
@@ -333,7 +356,7 @@ describe("First run wizard", () => {
     });
 
     it("a refused endpoint stays on the step and says why, and emptying the form gets past it", async () => {
-      const s = setup();
+      const s = setup({ onlineService: "endpoint" });
       const form = within(await screen.findByRole("group", { name: "Your own server" }));
       const address = form.getByRole("textbox", { name: /^Address/ });
       await s.user.type(address, "http://127.0.0.1:8080/v1");
@@ -348,17 +371,16 @@ describe("First run wizard", () => {
       expect(await stored(s.ipc)).toEqual([{ kind: "Local" }]);
     });
 
-    it("choosing Anthropic alone fills in its address but holds nothing, and switching back undoes it", async () => {
+    it("picking Anthropic API alone fills in its address but holds nothing, and switching back undoes it", async () => {
       const s = setup();
-      const form = within(await screen.findByRole("group", { name: "Your own server" }));
-      const address = form.getByRole("textbox", { name: /^Address/ });
       const anthropicUrl = (await s.ipc.summarySettings()).anthropic_url;
-      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
-      expect(address).toHaveValue(anthropicUrl);
-      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "OpenAiCompatible");
-      expect(address).toHaveValue("");
-      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
-      expect(address).toHaveValue(anthropicUrl);
+      const address = () => screen.getByRole("textbox", { name: /^Address/ });
+      await pickService(s, "AnthropicApi");
+      await waitFor(() => expect(address()).toHaveValue(anthropicUrl));
+      await pickService(s, "OwnServer");
+      await waitFor(() => expect(address()).toHaveValue(""));
+      await pickService(s, "AnthropicApi");
+      await waitFor(() => expect(address()).toHaveValue(anthropicUrl));
       await s.user.click(button("Next"));
       await stepHeading(STEPS[SYNC].title);
       expect(screen.queryByText(SAVE_REFUSED_NOTE)).toBeNull();
@@ -368,8 +390,8 @@ describe("First run wizard", () => {
 
     it("a typed API key with only Anthropic's own address asks for the model, and saves no key", async () => {
       const s = setup();
-      const form = within(await screen.findByRole("group", { name: "Your own server" }));
-      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      await pickService(s, "AnthropicApi");
+      await screen.findByRole("group", { name: ORDER_COPY.steps.endpoint_anthropic });
       await s.user.type(await screen.findByLabelText(/^API key/), "test-key");
       await s.user.click(button("Next"));
       expect(await screen.findByText("Enter the model name the endpoint expects.")).toBeInTheDocument();
@@ -380,7 +402,7 @@ describe("First run wizard", () => {
     });
 
     it("names where the transcript would go as soon as an address that is not local is typed", async () => {
-      const s = setup();
+      const s = setup({ onlineService: "endpoint" });
       const form = within(await screen.findByRole("group", { name: "Your own server" }));
       const address = form.getByRole("textbox", { name: /^Address/ });
       await s.user.type(address, "http://192.168.1.20:8080/v1");
@@ -396,8 +418,8 @@ describe("First run wizard", () => {
 
     it("Next saves a typed API key with the endpoint", async () => {
       const s = setup();
-      const form = within(await screen.findByRole("group", { name: "Your own server" }));
-      await s.user.selectOptions(form.getByRole("combobox", { name: "Provider" }), "Anthropic");
+      await pickService(s, "AnthropicApi");
+      const form = within(await screen.findByRole("group", { name: ORDER_COPY.steps.endpoint_anthropic }));
       await s.user.type(form.getByRole("textbox", { name: /^Model/ }), "a-model");
       await s.user.type(await screen.findByLabelText(/^API key/), "test-key");
       expect(form.queryByRole("button", { name: "Save key" })).toBeNull();
@@ -407,7 +429,7 @@ describe("First run wizard", () => {
     });
 
     it("Next saves a typed Claude Code model, with no Save button", async () => {
-      const s = setup();
+      const s = setup({ onlineService: "claude-code" });
       await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
       await s.user.click(tick(CLAUDE_LABEL));
       const card = within(await screen.findByRole("group", { name: "Claude through Claude Code" }));
@@ -422,7 +444,7 @@ describe("First run wizard", () => {
     });
 
     it("applies a listed Claude Code model and effort at once, as the Summaries page does", async () => {
-      const s = setup();
+      const s = setup({ onlineService: "claude-code" });
       await waitFor(() => expect(tick(CLAUDE_LABEL)).toBeEnabled());
       await s.user.click(tick(CLAUDE_LABEL));
       const card = within(await screen.findByRole("group", { name: "Claude through Claude Code" }));
@@ -714,7 +736,7 @@ describe("First run wizard", () => {
     });
 
     it("goes by who writes first when the order cannot be read after the Summaries step", async () => {
-      const s = setup(CLEAN);
+      const s = setup({ ...CLEAN, onlineService: "codex" });
       await waitFor(() => expect(tick(CODEX_LABEL)).toBeEnabled());
       await s.user.click(tick(CODEX_LABEL));
       await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }]));
@@ -729,7 +751,7 @@ describe("First run wizard", () => {
     });
 
     it("leaves the summary model out unless the Summaries step chose this computer", async () => {
-      const s = setup(CLEAN);
+      const s = setup({ ...CLEAN, onlineService: "codex" });
       await waitFor(() => expect(tick(CODEX_LABEL)).toBeEnabled());
       await s.user.click(tick(CODEX_LABEL));
       await waitFor(async () => expect(await stored(s.ipc)).toEqual([{ kind: "Local" }, { kind: "Codex" }]));

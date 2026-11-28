@@ -64,6 +64,27 @@ impl ApiKeyStore for FakeKeys {
     }
 }
 
+/// The Summaries page's save of `s` since T14.72: the online service `s` names is picked
+/// first, then `s` is stored with its writer as the order's first writer step
+/// (`testutil::store_settings`, which goes through `set_summary_order`, the endpoint form's
+/// Save). Returns the settings as they read back.
+fn save(db: &mut Store, s: &SummarySettings) -> Result<SummarySettings, SummarySettingsError> {
+    crate::testutil::pick_for_settings(db, s);
+    crate::testutil::save_settings_after_pick(db, s).map_err(order_refusal)
+}
+
+/// A refused order as the settings' refusal it carries.
+fn order_refusal(e: crate::summary_order::SummaryOrderError) -> SummarySettingsError {
+    use crate::summary_order::SummaryOrderError as E;
+    match e {
+        E::Settings(e) => e,
+        E::Store(e) => SummarySettingsError::Store(e),
+        E::StaleProvider => SummarySettingsError::StaleProvider,
+        E::NotThePick | E::TwoOnline => SummarySettingsError::NotTheService,
+        other => panic!("an order refusal a settings save never gets: {other}"),
+    }
+}
+
 fn stored(db: &Store, key: &str) -> Option<String> {
     db.local_value(key)
         .unwrap()
@@ -91,7 +112,7 @@ fn summary_settings_round_trip_in_one_write() {
         live: false,
         ..endpoint(EndpointProvider::Anthropic, "", "")
     };
-    let saved = set_summary_settings(&mut db, &s).unwrap();
+    let saved = save(&mut db, &s).unwrap();
     assert_eq!(saved.url, "https://api.anthropic.com", "trimmed");
     assert_eq!(saved.model, "claude-sonnet-4-5");
     let (read, unknown) = summary_settings(&db).unwrap();
@@ -111,7 +132,7 @@ fn summary_settings_round_trip_in_one_write() {
                 live: writer == SummaryWriter::OnThisComputer,
                 ..saved.clone()
             };
-            assert_eq!(set_summary_settings(&mut db, &s).unwrap(), s);
+            assert_eq!(save(&mut db, &s).unwrap(), s);
             assert_eq!(
                 summary_settings(&db).unwrap().0,
                 s,
@@ -129,7 +150,7 @@ fn summary_settings_live_switch_is_the_live_summaries_key() {
         live: true,
         ..SummarySettings::default()
     };
-    set_summary_settings(&mut db, &on).unwrap();
+    save(&mut db, &on).unwrap();
     assert_eq!(stored(&db, LIVE_SUMMARIES_KEY).as_deref(), Some("on"));
     assert!(host::choose_live_summaries(&mut db, None, false).unwrap().0);
     // The CLI's writer of the same key is read back here.
@@ -256,8 +277,21 @@ fn summary_settings_validation_refuses_unusable_endpoints_and_stores_nothing() {
             "plain http",
         ),
     ];
+    let keys = [
+        SUMMARY_WRITER_KEY,
+        SUMMARY_PROVIDER_KEY,
+        SUMMARY_ENDPOINT_KEY,
+        SUMMARY_ENDPOINT_MODEL_KEY,
+        crate::summary_order::SUMMARY_ORDER_KEY,
+        crate::summary_order::ONLINE_SERVICE_KEY,
+    ];
     for (s, want) in cases {
-        let e = set_summary_settings(&mut db, s).unwrap_err();
+        // The service is picked first (as on the page); the refused save itself stores nothing.
+        crate::testutil::pick_for_settings(&mut db, s);
+        let before: Vec<_> = keys.iter().map(|k| stored(&db, k)).collect();
+        let e = crate::testutil::save_settings_after_pick(&mut db, s)
+            .map_err(order_refusal)
+            .unwrap_err();
         let text = e.to_string();
         assert!(
             matches!(
@@ -274,8 +308,9 @@ fn summary_settings_validation_refuses_unusable_endpoints_and_stores_nothing() {
             !text.contains("user:pw") && !text.contains("key=1"),
             "{text}"
         );
-        assert_eq!(stored(&db, SUMMARY_WRITER_KEY), None, "nothing stored");
-        assert_eq!(stored(&db, SUMMARY_ENDPOINT_KEY), None, "nothing stored");
+        let after: Vec<_> = keys.iter().map(|k| stored(&db, k)).collect();
+        assert_eq!(after, before, "nothing stored: {s:?}");
+        assert_eq!(stored(&db, SUMMARY_ENDPOINT_KEY).unwrap_or_default(), "");
     }
     // Accepted: https anywhere, http to loopback and the private LAN.
     for url in [
@@ -288,12 +323,12 @@ fn summary_settings_validation_refuses_unusable_endpoints_and_stores_nothing() {
         "http://[::1]:8080/v1",
     ] {
         let s = endpoint(openai, url, "m");
-        assert_eq!(set_summary_settings(&mut db, &s).unwrap(), s, "{url}");
+        assert_eq!(save(&mut db, &s).unwrap(), s, "{url}");
     }
     // Anthropic takes the API root, with or without its trailing slash.
     for url in ["https://api.anthropic.com", "https://api.anthropic.com/"] {
         let s = endpoint(EndpointProvider::Anthropic, url, "m");
-        assert_eq!(set_summary_settings(&mut db, &s).unwrap(), s, "{url}");
+        assert_eq!(save(&mut db, &s).unwrap(), s, "{url}");
     }
     // No endpoint at all is fine for the other writers.
     for writer in [SummaryWriter::OnThisComputer, SummaryWriter::NoSummary] {
@@ -301,7 +336,7 @@ fn summary_settings_validation_refuses_unusable_endpoints_and_stores_nothing() {
             writer,
             ..SummarySettings::default()
         };
-        assert_eq!(set_summary_settings(&mut db, &s).unwrap(), s);
+        assert_eq!(save(&mut db, &s).unwrap(), s);
     }
 }
 
@@ -345,7 +380,7 @@ fn summary_settings_api_key_errors_never_carry_a_key() {
 fn summary_settings_host_no_summary_skips_without_reading_a_key() {
     let dir = TempDir::new("summary-settings-host-none");
     let mut db = store(&dir);
-    set_summary_settings(
+    save(
         &mut db,
         &SummarySettings {
             writer: SummaryWriter::NoSummary,
@@ -382,7 +417,7 @@ fn summary_settings_host_no_summary_skips_without_reading_a_key() {
 fn summary_settings_host_on_this_computer_is_the_local_model() {
     let dir = TempDir::new("summary-settings-host-local");
     let mut db = store(&dir);
-    set_summary_settings(
+    save(
         &mut db,
         &SummarySettings {
             live: true,
@@ -410,7 +445,7 @@ fn summary_settings_host_on_this_computer_is_the_local_model() {
 fn summary_settings_host_openai_endpoint_allowlists_exactly_the_endpoint() {
     let dir = TempDir::new("summary-settings-host-openai");
     let mut db = store(&dir);
-    set_summary_settings(
+    save(
         &mut db,
         &SummarySettings {
             live: true,
@@ -480,7 +515,7 @@ fn summary_settings_anthropic_over_plain_http_is_this_computer_only() {
         "http://10.0.0.2",
         "http://[fd12:3456::1]:8080",
     ] {
-        let e = set_summary_settings(
+        let e = save(
             &mut db,
             &endpoint(EndpointProvider::Anthropic, url, "claude-sonnet-4-5"),
         )
@@ -497,14 +532,14 @@ fn summary_settings_anthropic_over_plain_http_is_this_computer_only() {
         "http://localhost:8080",
         "http://[::1]:8080",
     ] {
-        set_summary_settings(
+        save(
             &mut db,
             &endpoint(EndpointProvider::Anthropic, url, "claude-sonnet-4-5"),
         )
         .unwrap();
     }
     // An OpenAI-compatible server on the LAN is still allowed (it is sent no key).
-    set_summary_settings(
+    save(
         &mut db,
         &endpoint(
             EndpointProvider::OpenAiCompatible,
@@ -549,11 +584,11 @@ fn summary_settings_host_reads_the_key_only_for_the_address_it_was_saved_for() {
     };
     let anthropic = |url: &str| endpoint(EndpointProvider::Anthropic, url, "claude-sonnet-4-5");
     // Before T14.31: no recorded address. The Anthropic API reads the key; another host never.
-    set_summary_settings(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
+    save(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
     let (s, reads) = read(&db);
     assert_eq!(reads, 1);
     assert!(s.request.remote.is_some());
-    set_summary_settings(&mut db, &anthropic("https://proxy.example.invalid")).unwrap();
+    save(&mut db, &anthropic("https://proxy.example.invalid")).unwrap();
     let (s, reads) = read(&db);
     assert_eq!(reads, 0, "a key saved for another address is never read");
     assert!(s.request.remote.is_none());
@@ -567,13 +602,13 @@ fn summary_settings_host_reads_the_key_only_for_the_address_it_was_saved_for() {
     let (s, reads) = read(&db);
     assert_eq!(reads, 1);
     assert!(s.request.remote.is_some());
-    set_summary_settings(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
+    save(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
     assert_eq!(read(&db).1, 0);
-    set_summary_settings(&mut db, &anthropic("https://proxy.example.invalid:8443")).unwrap();
+    save(&mut db, &anthropic("https://proxy.example.invalid:8443")).unwrap();
     assert_eq!(read(&db).1, 0, "another port");
     // Forgotten with the key: back to the Anthropic API only.
     unbind_api_key(&mut db).unwrap();
-    set_summary_settings(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
+    save(&mut db, &anthropic("https://api.anthropic.com")).unwrap();
     assert_eq!(read(&db).1, 1);
     // Bound while the endpoint is not Anthropic's: the address the page offers.
     bind_api_key(
@@ -600,7 +635,7 @@ fn summary_settings_host_reads_the_key_only_for_the_address_it_was_saved_for() {
 fn summary_settings_host_anthropic_reads_the_key_at_use_time() {
     let dir = TempDir::new("summary-settings-host-anthropic");
     let mut db = store(&dir);
-    set_summary_settings(
+    save(
         &mut db,
         &endpoint(
             EndpointProvider::Anthropic,
@@ -704,7 +739,7 @@ fn summary_settings_host_notes_are_the_unknown_values_and_local_placement_only()
     .unwrap();
     assert_eq!(s.notes.len(), 1, "{:?}", s.notes);
     assert!(s.placement.note.is_some());
-    set_summary_settings(
+    save(
         &mut db,
         &SummarySettings {
             writer: SummaryWriter::NoSummary,
@@ -735,7 +770,7 @@ fn summary_settings_claude_code_model_round_trips_and_is_checked() {
         claude_model: "  opus ".into(),
         ..SummarySettings::default()
     };
-    let saved = set_summary_settings(&mut db, &s).unwrap();
+    let saved = save(&mut db, &s).unwrap();
     assert_eq!(saved.claude_model, "opus", "trimmed");
     assert_eq!(
         stored(&db, SUMMARY_WRITER_KEY).as_deref(),
@@ -751,13 +786,10 @@ fn summary_settings_claude_code_model_round_trips_and_is_checked() {
         claude_model: String::new(),
         ..saved.clone()
     };
-    assert_eq!(
-        set_summary_settings(&mut db, &default_model).unwrap(),
-        default_model
-    );
+    assert_eq!(save(&mut db, &default_model).unwrap(), default_model);
     // A name that would read as an option or holds a space is refused; nothing is stored.
     for bad in ["--tools", "opus sonnet", "op\"us"] {
-        let e = set_summary_settings(
+        let e = save(
             &mut db,
             &SummarySettings {
                 claude_model: bad.into(),
@@ -804,7 +836,7 @@ fn summary_settings_claude_code_effort_round_trips_and_an_unknown_one_reads_as_t
             claude_effort: Some(effort),
             ..SummarySettings::default()
         };
-        let saved = set_summary_settings(&mut db, &s).unwrap();
+        let saved = save(&mut db, &s).unwrap();
         assert_eq!(saved.claude_effort, Some(effort));
         assert_eq!(
             stored(&db, SUMMARY_CLAUDE_CODE_EFFORT_KEY).as_deref(),
@@ -817,7 +849,7 @@ fn summary_settings_claude_code_effort_round_trips_and_an_unknown_one_reads_as_t
         writer: SummaryWriter::ClaudeCode,
         ..SummarySettings::default()
     };
-    set_summary_settings(&mut db, &default).unwrap();
+    save(&mut db, &default).unwrap();
     assert_eq!(
         stored(&db, SUMMARY_CLAUDE_CODE_EFFORT_KEY).as_deref(),
         Some("")
@@ -873,7 +905,7 @@ fn summary_settings_host_claude_code_is_checked_and_never_falls_back() {
     use earshot_llm::{ClaudeCodeError, SignIn};
     let dir = TempDir::new("summary-settings-host-claude-code");
     let mut db = store(&dir);
-    set_summary_settings(
+    save(
         &mut db,
         &SummarySettings {
             writer: SummaryWriter::ClaudeCode,
@@ -988,7 +1020,7 @@ fn summary_settings_codex_model_round_trips_and_is_checked() {
         codex_model: "  gpt-5.6-luna ".into(),
         ..SummarySettings::default()
     };
-    let saved = set_summary_settings(&mut db, &s).unwrap();
+    let saved = save(&mut db, &s).unwrap();
     assert_eq!(saved.codex_model, "gpt-5.6-luna", "trimmed");
     assert_eq!(stored(&db, SUMMARY_WRITER_KEY).as_deref(), Some("codex"));
     assert_eq!(
@@ -1002,13 +1034,10 @@ fn summary_settings_codex_model_round_trips_and_is_checked() {
         codex_model: String::new(),
         ..saved.clone()
     };
-    assert_eq!(
-        set_summary_settings(&mut db, &default_model).unwrap(),
-        default_model
-    );
+    assert_eq!(save(&mut db, &default_model).unwrap(), default_model);
     // A name that would read as an option, holds a space, a quote or an `=` is refused.
     for bad in ["-m", "gpt 5", "gp\"t", "a=b", "--sandbox"] {
-        let e = set_summary_settings(
+        let e = save(
             &mut db,
             &SummarySettings {
                 codex_model: bad.into(),
@@ -1066,7 +1095,7 @@ fn summary_settings_host_codex_is_checked_and_never_falls_back() {
     use earshot_llm::{CodexError, CodexSignIn};
     let dir = TempDir::new("summary-settings-host-codex");
     let mut db = store(&dir);
-    set_summary_settings(
+    save(
         &mut db,
         &SummarySettings {
             writer: SummaryWriter::Codex,

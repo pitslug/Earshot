@@ -307,6 +307,9 @@ pub(crate) enum DeviceRecord {
     /// `settings/summary-order`: the order of summary writers (T12.63a;
     /// [`crate::summary_order`]).
     SummaryOrder,
+    /// `settings/online-service`: the one online service picked (T14.72;
+    /// [`crate::summary_order::online_service`]).
+    OnlineService,
     /// `summary-seen-start`: every meeting's summary from before T12.76 was marked seen
     /// ([`crate::summary_seen::mark_existing_once`]).
     SummarySeenStart,
@@ -390,6 +393,7 @@ impl DeviceRecord {
         DeviceRecord::SummaryOffloadDevice,
         DeviceRecord::OffloadTimes,
         DeviceRecord::SummaryOrder,
+        DeviceRecord::OnlineService,
         DeviceRecord::SummarySeenStart,
         DeviceRecord::IgnoreCopied,
         DeviceRecord::ReplacedTextSwept,
@@ -480,6 +484,7 @@ impl DeviceRecord {
                 DeviceRecord::SummaryOffloadDevice => crate::offload::OFFLOAD_DEVICE_KEY,
                 DeviceRecord::OffloadTimes => crate::offload::OFFLOAD_TIMES_KEY,
                 DeviceRecord::SummaryOrder => crate::summary_order::SUMMARY_ORDER_KEY,
+                DeviceRecord::OnlineService => crate::summary_order::ONLINE_SERVICE_KEY,
                 DeviceRecord::SummarySeenStart => crate::summary_seen::SEEN_START_KEY,
                 DeviceRecord::IgnoreCopied => crate::ignore_copy::COPIED_KEY,
                 DeviceRecord::ReplacedTextSwept => crate::replaced_text::SWEPT_KEY,

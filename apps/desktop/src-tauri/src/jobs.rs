@@ -959,6 +959,14 @@ pub(crate) fn summarise_run_with(
                     e.clone(),
                 )));
             }
+            // T14.72 (12.9): a named online writer that is no longer the service picked.
+            SummaryResult::Skipped {
+                reason: SkipReason::NotChosen,
+            } => {
+                return Err(IpcError::invalid(
+                    crate::summary_order::COPY.page.not_the_service.clone(),
+                ));
+            }
             SummaryResult::Skipped {
                 reason: SkipReason::ChosenNotInstalled { model },
             } => {

@@ -14,7 +14,7 @@ use crate::host::tests::fake_post;
 use crate::live::LiveTranscription;
 use crate::model_bench::StoredCheck;
 use crate::post::tests::levels;
-use crate::summary_settings::{SummarySettings, set_summary_settings};
+use crate::summary_settings::SummarySettings;
 use crate::testutil::{T0, TempDir, services};
 
 /// A clock the test moves.
@@ -614,7 +614,7 @@ fn benchmark_summary_never_prepares_a_summary_written_elsewhere() {
             model: "m".into(),
             ..SummarySettings::default()
         };
-        set_summary_settings(&mut svc.store(), &settings).unwrap();
+        crate::testutil::store_settings(&mut svc.store(), &settings);
         let BenchSummary::Skipped(got) = summary_of(&svc) else {
             panic!("{writer:?} prepared a summary");
         };
@@ -634,7 +634,7 @@ fn benchmark_live_summaries_written_elsewhere_are_recorded_as_not_run() {
         live: true,
         ..SummarySettings::default()
     };
-    set_summary_settings(&mut svc.store(), &settings).unwrap();
+    crate::testutil::store_settings(&mut svc.store(), &settings);
     let hw = earshot_hardware::Hardware::default();
     let read = host::summary_from_settings(
         &svc.store(),

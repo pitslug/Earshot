@@ -69,8 +69,8 @@ import { searchSample } from "./mockSearch";
 import { createSentRecord } from "./mockSnapshot";
 import { type SettingsMockData, createSettingsMock } from "./mockSettings";
 import { LIVE_NEEDS_LOCAL, NOT_A_WORD, type SummariesMockData, createSummariesMock } from "./mockSummaries";
-import { createSummaryOrderMock, liveAllowed } from "./mockSummaryOrder";
-import { ORDER_COPY, type StepChoice, fillCopy, isRemoteWriter } from "./summaryOrder";
+import { createSummaryOrderMock, liveAllowed, stepOfService } from "./mockSummaryOrder";
+import { ORDER_COPY, type StepChoice, fillCopy, isRemoteWriter, sameStep } from "./summaryOrder";
 import { type StorageMockData, createStorageMock } from "./mockStorage";
 import { type BenchmarkMockData, createBenchmarkMock } from "./mockBenchmark";
 import { type CudaMockData, createCudaMock } from "./mockCuda";
@@ -307,6 +307,9 @@ export interface MockIpcData {
   sync?: SyncMockData;
   /** The order of summary writers (T12.63b; default: the stored writer alone). */
   summaryOrder?: StepChoice[];
+  /** The text stored at `settings/online-service` (T14.72: `claude-code`, `codex`, `endpoint`, or
+   * any other text for one this version does not know; default: nothing stored). */
+  onlineService?: string;
   /** The meeting detail's account of a meeting's last summary run, by meeting id (T12.63b:
    * fixture data; the mock runs no order). */
   summaryRuns?: Record<string, string>;
@@ -474,6 +477,7 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
       keptLocal: (meeting) => keptLocal.has(meeting),
     },
     data.summaryOrder,
+    data.onlineService ?? null,
   );
   const summaryRuns = new Map(Object.entries(data.summaryRuns ?? {}));
   // The summary each meeting's detail last showed (`summary-seen/<meeting>`, T12.76).
@@ -856,19 +860,21 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
   const ipc: Ipc = {
     ...modelsMock,
     ...summaryCommands,
-    // The live switch follows the order (`live_summaries_allowed`), and a writer saved by the page
-    // takes the order's first writer step (`SummaryOrder::with_writer`).
+    // The live switch follows the order (`live_summaries_allowed`).
     summarySettings: async () => {
       const v = await summariesMock.summarySettings();
       return { ...v, live_unavailable: liveAllowed(await orderMock.steps()) ? null : LIVE_NEEDS_LOCAL };
     },
+    // T14.72 (docs/summary-order.md 12.7a): stored with the order as read, never changing the
+    // order or the provider (a provider other than the stored one is refused).
     setSummarySettings: async (s) => {
-      const v = await summariesMock.setSummarySettings(s);
-      await orderMock.writerSaved(v.value.writer);
+      await orderMock.saveSettings(s);
+      const v = await summariesMock.summarySettings();
       return { ...v, live_unavailable: liveAllowed(await orderMock.steps()) ? null : LIVE_NEEDS_LOCAL };
     },
     summaryOrder: () => orderMock.summaryOrder(),
     setSummaryOrder: (steps, settings) => orderMock.setSummaryOrder(steps, settings),
+    setOnlineService: (service) => orderMock.setOnlineService(service),
     resummariseWriters: async (meeting) => {
       detailOf(meeting);
       return orderMock.resummariseWriters(meeting);
@@ -1679,7 +1685,13 @@ export function createMockIpc(data: MockIpcData = {}): Ipc {
     },
     resummariseWith: async (meeting, step) => {
       call("resummariseWith", meeting, step);
-      // A named remote writer on a meeting kept here is refused (`summary_kept_local`).
+      // In Rust's order: an online writer that is not the service picked first (T14.72,
+      // `named_step_allowed`), then a named remote writer on a meeting kept here
+      // (`summary_kept_local`).
+      if (isRemoteWriter(step)) {
+        const pick = await orderMock.pick();
+        if (pick === null || !sameStep(stepOfService(pick), step)) fail("invalid_setting", ORDER_COPY.page.not_the_service);
+      }
       if (keptLocal.has(meeting) && isRemoteWriter(step)) {
         fail("summary_kept_local", ORDER_COPY.resummarise.kept_local);
       }

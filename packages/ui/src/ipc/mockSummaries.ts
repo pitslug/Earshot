@@ -340,6 +340,12 @@ function validate(s: SummarySettingsValue): SummarySettingsValue {
   return { ...s, url, model, claude_model, codex_model };
 }
 
+/** The settings rules alone, storing nothing: throws the app's refusal (`summary_settings::validate`).
+ * The order mock checks a write with it before anything is stored. */
+export function checkSummarySettings(s: SummarySettingsValue): void {
+  validate(s);
+}
+
 function view(s: SummarySettingsValue): SummarySettingsView {
   const u = s.url === "" ? null : parse(s.url);
   const host = u === null ? null : u.hostname.replace(/^\[|\]$/g, "");
