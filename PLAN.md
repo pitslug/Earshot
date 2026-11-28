@@ -2967,8 +2967,12 @@ Held from the review, with the reason (not done in this batch):
   - accept: `cargo xtask android build` produces an APK; `cargo test -p xtask net_guard`
 - [ ] T10.2b Recorder routes
   - deps: T10.2a
-  - do: the rest of T10.2: `packages/ui` with recorder-only routes on Android (record, meeting list, detail, settings), the IPC they need as Rust commands in `earshot-android` over the store (`earshot-runtime` without engines); Record stays unavailable until T10.3 and T10.4.
+  - do: decided by the owner (2026-11-28): bottom tabs Meetings | Record | Settings, Record in the middle. No live words while recording: the recording screen shows the timer and the mic level only. Meeting detail shows the Summary and the Transcript read-only; transcript line edits, word actions, moves and splits stay desktop-only for now. `packages/ui` gives Android these routes; the IPC they need are Rust commands in `earshot-android` over the store (`earshot-runtime` without engines). Record stays unavailable until T10.3 and T10.4 produce real meetings.
   - accept: `cargo xtask android build` produces an APK; `pnpm -r test`
+- [ ] T10.2c Speakers on Android
+  - deps: T10.2b
+  - do: split from T10.2b. Decided by the owner (2026-11-28): "I will need at least speaker identification on the phone", because audio never syncs, so only the device holding a meeting's audio can play a voice's clip. The meeting detail's Speakers panel on the phone: play a voice's sample clip (from the meeting's own FLAC), name it or link it to a person, Save voice (the per-voice consent), Not this person, ignore. The same runtime paths as the desktop (`edit::save_voice`, `link_speaker`, `ignore_speaker`, `not_this_person`, the sample from the meeting's audio) as `earshot-android` commands; built over the store and tested with the existing fakes until T10.3 and T10.4 record real meetings.
+  - accept: `cargo xtask android build` produces an APK; `pnpm -r test`; `cargo test -p earshot-android`
 - [ ] T10.3 Foreground service capture
   - deps: T10.2b
   - do: Kotlin Tauri plugin: microphone foreground service, permissions (RECORD_AUDIO, POST_NOTIFICATIONS, FOREGROUND_SERVICE_MICROPHONE), partial wake lock, `AudioRecord` -> a direct JNI native method on the service class (same process as the Rust library; never Tauri plugin IPC/JSON for PCM) -> `earshot-capture-android`.
